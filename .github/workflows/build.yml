@@ -124,20 +124,20 @@ jobs:
           unzip -q "$ARTIFACT_ZIP" -d "$TEMP_DIR"
 
           # Check for required files
-          REQUIRED_FILES=("main.py" "boot.py" "src")
+          REQUIRED_FILES=("main.py" "boot.py")
 
           for file in "${REQUIRED_FILES[@]}"; do
             if [ ! -e "$TEMP_DIR/$file" ]; then
-              echo "ERROR: Missing required file/directory: $file"
+              echo "ERROR: Missing required file: $file"
               exit 1
             fi
             echo "✓ Found: $file"
           done
 
           # Check that .mpy files were created
-          MPY_COUNT=$(find "$TEMP_DIR/src" -name "*.mpy" | wc -l)
+          MPY_COUNT=$(find "$TEMP_DIR" -name "*.mpy" | wc -l)
           echo ""
-          echo "Found $MPY_COUNT compiled .mpy files in src/"
+          echo "Found $MPY_COUNT compiled .mpy files"
 
           if [ "$MPY_COUNT" -eq 0 ]; then
             echo "ERROR: No .mpy files found - compilation may have failed"
