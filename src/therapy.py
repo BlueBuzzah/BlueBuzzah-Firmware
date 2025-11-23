@@ -113,7 +113,9 @@ def generate_random_permutation(
             mirror_pattern=True
         )
     """
-    rng = random.Random(random_seed)
+    # CircuitPython: Use module-level random.seed() instead of Random class
+    if random_seed is not None:
+        random.seed(random_seed)
 
     # Calculate cycle parameters
     cycle_duration_ms = time_on_ms + time_off_ms
@@ -121,14 +123,14 @@ def generate_random_permutation(
 
     # Generate left hand sequence (random permutation)
     left_sequence = list(range(num_fingers))
-    rng.shuffle(left_sequence)
+    random.shuffle(left_sequence)
 
     # Generate right hand sequence
     if mirror_pattern:
         right_sequence = left_sequence.copy()
     else:
         right_sequence = list(range(num_fingers))
-        rng.shuffle(right_sequence)
+        random.shuffle(right_sequence)
 
     # Generate timing with optional jitter
     timing_ms = []
@@ -136,7 +138,8 @@ def generate_random_permutation(
 
     for _ in range(num_fingers):
         if jitter_percent > 0:
-            jitter = rng.uniform(-jitter_amount, jitter_amount)
+            # CircuitPython random.uniform() takes (a, b) and returns float in [a, b]
+            jitter = random.uniform(-jitter_amount, jitter_amount)
             interval = inter_burst_interval_ms + jitter
             interval = max(0.0, interval)
         else:
@@ -182,7 +185,7 @@ def generate_sequential_pattern(
             reverse=False  # 0 → 1 → 2 → 3 → 4
         )
     """
-    rng = random.Random()
+    # CircuitPython: No Random class needed for sequential patterns
 
     # Calculate cycle parameters
     cycle_duration_ms = time_on_ms + time_off_ms
@@ -202,7 +205,8 @@ def generate_sequential_pattern(
 
     for _ in range(num_fingers):
         if jitter_percent > 0:
-            jitter = rng.uniform(-jitter_amount, jitter_amount)
+            # CircuitPython: Use module-level random.uniform()
+            jitter = random.uniform(-jitter_amount, jitter_amount)
             interval = inter_burst_interval_ms + jitter
             interval = max(0.0, interval)
         else:
@@ -248,7 +252,9 @@ def generate_mirrored_pattern(
             jitter_percent=23.5
         )
     """
-    rng = random.Random(random_seed)
+    # CircuitPython: Use module-level random.seed() instead of Random class
+    if random_seed is not None:
+        random.seed(random_seed)
 
     # Calculate cycle parameters
     cycle_duration_ms = time_on_ms + time_off_ms
@@ -257,7 +263,7 @@ def generate_mirrored_pattern(
     # Generate base sequence
     sequence = list(range(num_fingers))
     if randomize:
-        rng.shuffle(sequence)
+        random.shuffle(sequence)
 
     # Mirror to both hands
     left_sequence = sequence.copy()
@@ -269,7 +275,8 @@ def generate_mirrored_pattern(
 
     for _ in range(num_fingers):
         if jitter_percent > 0:
-            jitter = rng.uniform(-jitter_amount, jitter_amount)
+            # CircuitPython: Use module-level random.uniform()
+            jitter = random.uniform(-jitter_amount, jitter_amount)
             interval = inter_burst_interval_ms + jitter
             interval = max(0.0, interval)
         else:

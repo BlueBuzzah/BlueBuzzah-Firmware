@@ -103,9 +103,11 @@ else:
 # Keep REPL enabled for both development and production
 # This allows debugging via serial console if needed
 # Note: REPL is only accessible via USB serial, not Bluetooth
+# NOTE: data=False to prevent quadruple logging bug on nRF52840
+#       The USB CDC data channel was causing console output duplication
 try:
-    usb_cdc.enable(console=True, data=True)
-    print("[Boot] REPL enabled via USB serial")
+    usb_cdc.enable(console=True, data=False)
+    print("[Boot] REPL enabled via USB serial (console only)")
 except Exception as e:
     print(f"[Boot] WARNING: Failed to enable REPL: {e}")
 
