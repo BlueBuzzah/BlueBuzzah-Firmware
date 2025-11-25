@@ -455,8 +455,11 @@ sequenceDiagram
 
         loop Each Burst
             P->>S: EXECUTE_BUZZ(sequence_index)
-            P->>P: Execute burst (left hand)
-            S->>S: Execute buzz (right hand)
+            par
+              P->>P: Execute burst (left hand)
+            and
+              S->>S: Execute buzz (right hand)
+            end
             S->>P: BUZZ_COMPLETE
         end
     end
