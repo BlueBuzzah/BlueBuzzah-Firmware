@@ -64,8 +64,14 @@ During active therapy sessions, the BlueBuzzah (PRIMARY) glove sends internal sy
 
 **Internal PRIMARY↔SECONDARY Messages to Ignore:**
 
-- `EXECUTE_BUZZ:N\x04` - Command to execute buzz sequence N (sent every ~200ms during therapy)
-- `BUZZ_COMPLETE:N\x04` - Acknowledgment that sequence N completed
+The firmware uses a `SYNC:` prefix for internal synchronization messages:
+
+- `SYNC:EXECUTE_BUZZ:left_finger|N|right_finger|N|amplitude|N|seq|N|timestamp|N\x04` - Execute buzz
+- `SYNC:BUZZ_COMPLETE:seq|N\x04` - Buzz completion acknowledgment
+- `SYNC:HEARTBEAT:ts|N\x04` - Connection heartbeat (every 2 seconds)
+- `SYNC:START_SESSION:duration_sec|N|pattern_type|...\x04` - Start therapy session
+- `SYNC:STOP_SESSION:\x04` - Stop therapy session
+- `SYNC:PAUSE_SESSION:\x04` / `SYNC:RESUME_SESSION:\x04` - Pause/resume control
 - `PARAM_UPDATE:KEY:VAL:...\x04` - Profile parameter synchronization
 - `SEED:N\x04` - Random seed for jitter synchronization
 - `SEED_ACK\x04` - Seed acknowledgment
@@ -76,8 +82,9 @@ During active therapy sessions, the BlueBuzzah (PRIMARY) glove sends internal sy
 **Filtering Strategy:**
 
 Ignore messages that match these patterns:
-- Start with `EXECUTE_BUZZ:`
-- Start with `BUZZ_COMPLETE:`
+- Start with `SYNC:` (all internal synchronization messages)
+- Start with `EXECUTE_BUZZ:` (legacy format)
+- Start with `BUZZ_COMPLETE:` (legacy format)
 - Start with `PARAM_UPDATE:`
 - Start with `SEED:` or equal `SEED_ACK`
 - Equal `GET_BATTERY`
@@ -91,7 +98,9 @@ bool IsInternalMessage(string msg) {
     // Remove EOT for pattern matching
     msg = msg.Replace("\x04", "").Trim();
 
-    return msg.StartsWith("EXECUTE_BUZZ:") ||
+    // SYNC: prefix covers all internal sync messages
+    return msg.StartsWith("SYNC:") ||
+           msg.StartsWith("EXECUTE_BUZZ:") ||
            msg.StartsWith("BUZZ_COMPLETE:") ||
            msg.StartsWith("PARAM_UPDATE:") ||
            msg.StartsWith("SEED:") ||
@@ -244,6 +253,10 @@ All parameter names use shorthand notation to minimize BLE bandwidth usage.
 **Note:** All parameter names are case-sensitive. Use exact shorthand as documented.
 
 ## Commands
+
+> **See Also**: [Command Reference](COMMAND_REFERENCE.md) for firmware implementation details including code line references.
+
+This section provides command documentation from the **mobile app developer perspective**. For firmware implementation details, refer to the Command Reference.
 
 ### Device Information
 

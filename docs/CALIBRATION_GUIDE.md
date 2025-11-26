@@ -18,6 +18,16 @@
 
 ---
 
+## Terminology Note
+
+This document uses the following device role terminology:
+- **PRIMARY** (also known as VL, left glove): Initiates calibration, controls phone connection
+- **SECONDARY** (also known as VR, right glove): Receives relayed commands via PRIMARY
+
+Code examples may show `"VL"` and `"VR"` as BLE advertisement names for backward compatibility.
+
+---
+
 ## Overview
 
 ### Purpose

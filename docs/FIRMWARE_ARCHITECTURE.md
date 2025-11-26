@@ -19,6 +19,16 @@
 
 ---
 
+## Terminology Note
+
+This document uses the following device role terminology:
+- **PRIMARY** (also known as VL, left glove): Orchestrates therapy, manages phone connection
+- **SECONDARY** (also known as VR, right glove): Follows PRIMARY commands
+
+Configuration files use `BLE_NAME = "VL"` or `"VR"` for BLE advertisement names.
+
+---
+
 ## System Overview
 
 BlueBuzzah implements a **PRIMARY-SECONDARY architecture** for bilateral haptic therapy using two synchronized gloves communicating via Bluetooth Low Energy (BLE).
@@ -307,7 +317,7 @@ CircuitPython's I2C pull-up detection can fail if the bus is not stable at boot 
 def _configure_driver(driver, config):
     # 1. Set actuator type
     if config.ACTUATOR_TYPE == "LRA":
-        driver.use_LRM()  # Linear Resonant Actuator
+        driver.use_LRA()  # Linear Resonant Actuator
     else:
         driver.use_ERM()  # Eccentric Rotating Mass
 

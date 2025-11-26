@@ -58,14 +58,14 @@ class DeviceRole(Enum):
 **Methods:**
 
 ```python
-def is_primary() -> bool
+def is_primary()
 ```
-Check if this is the PRIMARY role.
+Check if this is the PRIMARY role. Returns bool.
 
 ```python
-def is_secondary() -> bool
+def is_secondary()
 ```
-Check if this is the SECONDARY role.
+Check if this is the SECONDARY role. Returns bool.
 
 **Usage:**
 ```python
@@ -97,44 +97,62 @@ class TherapyState(Enum):
     PHONE_DISCONNECTED = "phone_disconnected"
 ```
 
+**State Descriptions:**
+
+| State | Description |
+|-------|-------------|
+| `IDLE` | No active session, waiting for commands |
+| `CONNECTING` | Establishing BLE connections during boot |
+| `READY` | Connected and ready to start therapy |
+| `RUNNING` | Actively delivering therapy |
+| `PAUSED` | Therapy temporarily suspended by user |
+| `STOPPING` | Graceful shutdown in progress |
+| `ERROR` | Unrecoverable error occurred |
+| `LOW_BATTERY` | Battery below warning threshold (<3.4V) |
+| `CRITICAL_BATTERY` | Battery critically low (<3.3V), immediate shutdown |
+| `CONNECTION_LOST` | PRIMARY-SECONDARY connection lost during therapy |
+| `PHONE_DISCONNECTED` | Phone connection lost (informational, therapy continues) |
+
 **State Transitions:**
 ```
 IDLE → CONNECTING → READY → RUNNING ⇄ PAUSED → STOPPING → IDLE
-                        ↓
-                      ERROR
+                        ↓                           ↑
+                      ERROR/LOW_BATTERY/CRITICAL_BATTERY/CONNECTION_LOST
 ```
+
+**Note:** `PHONE_DISCONNECTED` is an informational state - therapy continues normally when the phone disconnects. Only `CONNECTION_LOST` (PRIMARY-SECONDARY) stops therapy.
 
 **Methods:**
 
 ```python
-def is_active() -> bool
+def is_active()
 ```
-Check if state represents an active session (RUNNING or PAUSED).
+Check if state represents an active session (RUNNING or PAUSED). Returns bool.
 
 ```python
-def is_error() -> bool
+def is_error()
 ```
-Check if state represents an error condition.
+Check if state represents an error condition. Returns bool.
 
 ```python
-def is_battery_warning() -> bool
+def is_battery_warning()
 ```
-Check if state represents a battery warning.
+Check if state represents a battery warning. Returns bool.
 
 ```python
-def can_start_therapy() -> bool
+def can_start_therapy()
 ```
-Check if therapy can be started from this state.
+Check if therapy can be started from this state. Returns bool.
 
 ```python
-def can_pause() -> bool
+def can_pause()
 ```
-Check if therapy can be paused from this state.
+Check if therapy can be paused from this state. Returns bool.
 
 ```python
-def can_resume() -> bool
+def can_resume()
 ```
-Check if therapy can be resumed from this state.
+Check if therapy can be resumed from this state. Returns bool.
 
 **Usage:**
 ```python
@@ -162,18 +180,18 @@ class BootResult(Enum):
 **Methods:**
 
 ```python
-def is_success() -> bool
+def is_success()
 ```
-Check if boot was successful.
+Check if boot was successful. Returns bool.
 
 ```python
-def has_phone() -> bool
+def has_phone()
 ```
-Check if phone connection was established.
+Check if phone connection was established. Returns bool.
 
 **Usage:**
 ```python
-result = await boot_manager.execute_boot_sequence()
+result = boot_manager.execute_boot_sequence()
 if result.is_success():
     if result.has_phone():
         wait_for_phone_commands()
@@ -185,29 +203,39 @@ if result.is_success():
 
 #### BatteryStatus
 
-Battery status information dataclass.
+Battery status information class.
 
 ```python
-@dataclass
 class BatteryStatus:
-    voltage: float          # Current voltage in volts
-    percentage: int         # Battery percentage (0-100)
-    status: str            # Status string ("OK", "LOW", "CRITICAL")
-    is_low: bool          # True if below LOW_VOLTAGE threshold
-    is_critical: bool     # True if below CRITICAL_VOLTAGE threshold
+    """
+    Battery status container.
+
+    Attributes:
+        voltage - Current voltage in volts (float)
+        percentage - Battery percentage 0-100 (int)
+        status - Status string: "OK", "LOW", or "CRITICAL"
+        is_low - True if below LOW_VOLTAGE threshold
+        is_critical - True if below CRITICAL_VOLTAGE threshold
+    """
+    def __init__(self, voltage, percentage, status, is_low, is_critical):
+        self.voltage = voltage
+        self.percentage = percentage
+        self.status = status
+        self.is_low = is_low
+        self.is_critical = is_critical
 ```
 
 **Methods:**
 
 ```python
-def is_ok() -> bool
+def is_ok()
 ```
-Check if battery status is OK (not low or critical).
+Check if battery status is OK (not low or critical). Returns bool.
 
 ```python
-def requires_action() -> bool
+def requires_action()
 ```
-Check if battery status requires user action.
+Check if battery status requires user action. Returns bool.
 
 **Usage:**
 ```python
@@ -223,35 +251,46 @@ print(f"Battery: {battery.voltage:.2f}V ({battery.percentage}%)")
 
 #### SessionInfo
 
-Therapy session information dataclass.
+Therapy session information class.
 
 ```python
-@dataclass
 class SessionInfo:
-    session_id: str        # Unique session identifier
-    start_time: float      # Session start timestamp (monotonic time)
-    duration_sec: int      # Total session duration in seconds
-    elapsed_sec: int       # Elapsed time in seconds (excluding pauses)
-    profile_name: str      # Therapy profile name
-    state: TherapyState    # Current therapy state
+    """
+    Therapy session information container.
+
+    Attributes:
+        session_id - Unique session identifier (str)
+        start_time - Session start timestamp, monotonic time (float)
+        duration_sec - Total session duration in seconds (int)
+        elapsed_sec - Elapsed time in seconds, excluding pauses (int)
+        profile_name - Therapy profile name (str)
+        state - Current therapy state (TherapyState)
+    """
+    def __init__(self, session_id, start_time, duration_sec, elapsed_sec, profile_name, state):
+        self.session_id = session_id
+        self.start_time = start_time
+        self.duration_sec = duration_sec
+        self.elapsed_sec = elapsed_sec
+        self.profile_name = profile_name
+        self.state = state
 ```
 
 **Methods:**
 
 ```python
-def progress_percentage() -> int
+def progress_percentage()
 ```
-Calculate session progress as percentage (0-100).
+Calculate session progress as percentage (0-100). Returns int.
 
 ```python
-def remaining_sec() -> int
+def remaining_sec()
 ```
-Calculate remaining session time in seconds.
+Calculate remaining session time in seconds. Returns int.
 
 ```python
-def is_complete() -> bool
+def is_complete()
 ```
-Check if session has reached its duration.
+Check if session has reached its duration. Returns bool.
 
 **Usage:**
 ```python
@@ -277,7 +316,7 @@ System-wide constants for timing, hardware, battery thresholds, and more.
 #### Firmware Version
 
 ```python
-FIRMWARE_VERSION: str = "2.0.0"
+FIRMWARE_VERSION = "2.0.0"
 ```
 Current firmware version following semantic versioning.
 
@@ -286,27 +325,27 @@ Current firmware version following semantic versioning.
 #### Timing Constants
 
 ```python
-STARTUP_WINDOW: int = 30
+STARTUP_WINDOW = const(30)
 ```
 Boot sequence connection window in seconds.
 
 ```python
-CONNECTION_TIMEOUT: int = 30
+CONNECTION_TIMEOUT = const(30)
 ```
 BLE connection establishment timeout in seconds.
 
 ```python
-BLE_INTERVAL: float = 0.0075
+BLE_INTERVAL = 0.0075
 ```
 BLE connection interval in seconds (7.5ms) for sub-10ms synchronization.
 
 ```python
-SYNC_INTERVAL: float = 1.0
+SYNC_INTERVAL = 1.0
 ```
 Periodic synchronization interval in seconds (SYNC_ADJ messages).
 
 ```python
-COMMAND_TIMEOUT: float = 5.0
+COMMAND_TIMEOUT = 5.0
 ```
 General BLE command timeout in seconds.
 
@@ -315,27 +354,28 @@ General BLE command timeout in seconds.
 #### Hardware Constants
 
 ```python
-I2C_MULTIPLEXER_ADDR: int = 0x70
+I2C_MULTIPLEXER_ADDR = const(0x70)
 ```
 TCA9548A I2C multiplexer address.
 
 ```python
-DRV2605_DEFAULT_ADDR: int = 0x5A
+DRV2605_DEFAULT_ADDR = const(0x5A)
 ```
 DRV2605 haptic driver I2C address.
 
 ```python
-I2C_FREQUENCY: int = 400000
+I2C_FREQUENCY = const(400000)
 ```
 I2C bus frequency in Hz (400 kHz Fast Mode).
 
 ```python
-MAX_ACTUATORS: int = 5
+MAX_ACTUATORS = const(5)
 ```
-Maximum number of haptic actuators per device (5 fingers).
+Maximum number of haptic actuators per device. Note: In practice, 4 actuators
+are used per glove (thumb through ring finger).
 
 ```python
-MAX_AMPLITUDE: int = 100
+MAX_AMPLITUDE = const(100)
 ```
 Maximum haptic amplitude percentage (0-100).
 
@@ -344,22 +384,22 @@ Maximum haptic amplitude percentage (0-100).
 #### Pin Assignments
 
 ```python
-NEOPIXEL_PIN: str = "D13"
+NEOPIXEL_PIN = "D13"
 ```
 NeoPixel LED data pin for visual feedback.
 
 ```python
-BATTERY_PIN: str = "A6"
+BATTERY_PIN = "A6"
 ```
 Battery voltage monitoring analog pin.
 
 ```python
-I2C_SDA_PIN: str = "SDA"
+I2C_SDA_PIN = "SDA"
 ```
 I2C data line pin.
 
 ```python
-I2C_SCL_PIN: str = "SCL"
+I2C_SCL_PIN = "SCL"
 ```
 I2C clock line pin.
 
@@ -368,13 +408,13 @@ I2C clock line pin.
 #### LED Colors
 
 ```python
-LED_BLUE: Tuple[int, int, int] = (0, 0, 255)     # BLE operations
-LED_GREEN: Tuple[int, int, int] = (0, 255, 0)    # Success/Normal
-LED_RED: Tuple[int, int, int] = (255, 0, 0)      # Error/Critical
-LED_WHITE: Tuple[int, int, int] = (255, 255, 255) # Special indicators
-LED_YELLOW: Tuple[int, int, int] = (255, 255, 0)  # Paused
-LED_ORANGE: Tuple[int, int, int] = (255, 128, 0)  # Low battery
-LED_OFF: Tuple[int, int, int] = (0, 0, 0)        # LED off
+LED_BLUE = (0, 0, 255)      # BLE operations
+LED_GREEN = (0, 255, 0)     # Success/Normal
+LED_RED = (255, 0, 0)       # Error/Critical
+LED_WHITE = (255, 255, 255) # Special indicators
+LED_YELLOW = (255, 255, 0)  # Paused
+LED_ORANGE = (255, 128, 0)  # Low battery
+LED_OFF = (0, 0, 0)         # LED off
 ```
 
 ---
@@ -382,17 +422,17 @@ LED_OFF: Tuple[int, int, int] = (0, 0, 0)        # LED off
 #### Battery Thresholds
 
 ```python
-CRITICAL_VOLTAGE: float = 3.3
+CRITICAL_VOLTAGE = 3.3
 ```
 Critical battery voltage (immediate shutdown).
 
 ```python
-LOW_VOLTAGE: float = 3.4
+LOW_VOLTAGE = 3.4
 ```
 Low battery warning voltage (warning, therapy continues).
 
 ```python
-BATTERY_CHECK_INTERVAL: float = 60.0
+BATTERY_CHECK_INTERVAL = 60.0
 ```
 Battery voltage check interval in seconds during therapy.
 
@@ -401,12 +441,12 @@ Battery voltage check interval in seconds during therapy.
 #### Memory Management
 
 ```python
-GC_THRESHOLD: int = 4096
+GC_THRESHOLD = const(4096)
 ```
 Garbage collection threshold in bytes.
 
 ```python
-GC_ENABLED: bool = True
+GC_ENABLED = True
 ```
 Enable automatic garbage collection.
 
@@ -421,14 +461,27 @@ Enable automatic garbage collection.
 Base configuration with system defaults.
 
 ```python
-@dataclass
 class BaseConfig:
-    device_role: DeviceRole
-    firmware_version: str = "2.0.0"
-    startup_window_sec: int = 30
-    connection_timeout_sec: int = 30
-    ble_interval: float = 0.0075
-    sync_interval: float = 1.0
+    """
+    Base configuration container.
+
+    Attributes:
+        device_role - DeviceRole (PRIMARY or SECONDARY)
+        firmware_version - Firmware version string (default "2.0.0")
+        startup_window_sec - Boot sequence timeout (default 30)
+        connection_timeout_sec - Connection timeout (default 30)
+        ble_interval - BLE connection interval (default 0.0075)
+        sync_interval - Sync message interval (default 1.0)
+    """
+    def __init__(self, device_role, firmware_version="2.0.0",
+                 startup_window_sec=30, connection_timeout_sec=30,
+                 ble_interval=0.0075, sync_interval=1.0):
+        self.device_role = device_role
+        self.firmware_version = firmware_version
+        self.startup_window_sec = startup_window_sec
+        self.connection_timeout_sec = connection_timeout_sec
+        self.ble_interval = ble_interval
+        self.sync_interval = sync_interval
 ```
 
 **Usage:**
@@ -451,39 +504,57 @@ config = BaseConfig(
 Therapy-specific configuration.
 
 ```python
-@dataclass
 class TherapyConfig:
-    profile_name: str
-    burst_duration_ms: int
-    inter_burst_interval_ms: int
-    bursts_per_cycle: int
-    pattern_type: str
-    actuator_type: ActuatorType
-    frequency_hz: int
-    amplitude_percent: int
-    jitter_percent: float = 0.0
-    mirror_pattern: bool = True
+    """
+    Therapy configuration container.
+
+    Attributes:
+        profile_name - Profile identifier (str)
+        burst_duration_ms - Burst duration in ms (int)
+        inter_burst_interval_ms - Interval between bursts in ms (int)
+        bursts_per_cycle - Number of bursts per cycle (int)
+        pattern_type - Pattern generation algorithm (str)
+        actuator_type - LRA or ERM (ActuatorType)
+        frequency_hz - Haptic frequency in Hz (int)
+        amplitude_percent - Amplitude 0-100 (int)
+        jitter_percent - Timing jitter percentage (default 0.0)
+
+    Note: All patterns use mandatory bilateral mirroring - the same anatomical
+    finger is always stimulated simultaneously on both hands.
+    """
+    def __init__(self, profile_name, burst_duration_ms, inter_burst_interval_ms,
+                 bursts_per_cycle, pattern_type, actuator_type, frequency_hz,
+                 amplitude_percent, jitter_percent=0.0):
+        self.profile_name = profile_name
+        self.burst_duration_ms = burst_duration_ms
+        self.inter_burst_interval_ms = inter_burst_interval_ms
+        self.bursts_per_cycle = bursts_per_cycle
+        self.pattern_type = pattern_type
+        self.actuator_type = actuator_type
+        self.frequency_hz = frequency_hz
+        self.amplitude_percent = amplitude_percent
+        self.jitter_percent = jitter_percent
 ```
 
 **Class Methods:**
 
 ```python
 @classmethod
-def default_noisy_vcr() -> TherapyConfig
+def default_noisy_vcr(cls)
 ```
-Create default Noisy vCR therapy configuration.
+Create default Noisy vCR therapy configuration. Returns TherapyConfig.
 
 ```python
 @classmethod
-def default_regular_vcr() -> TherapyConfig
+def default_regular_vcr(cls)
 ```
-Create default Regular vCR therapy configuration.
+Create default Regular vCR therapy configuration. Returns TherapyConfig.
 
 ```python
 @classmethod
-def default_hybrid_vcr() -> TherapyConfig
+def default_hybrid_vcr(cls)
 ```
-Create default Hybrid vCR therapy configuration.
+Create default Hybrid vCR therapy configuration. Returns TherapyConfig.
 
 **Usage:**
 ```python
@@ -517,10 +588,12 @@ Loads and validates configuration from JSON files.
 ```python
 class ConfigLoader:
     @staticmethod
-    def load_from_json(path: str) -> Config
+    def load_from_json(path)
+        # Returns Config dict
 
     @staticmethod
-    def validate(config: Config) -> List[str]
+    def validate(config)
+        # Returns list of error strings
 ```
 
 **Usage:**
@@ -548,23 +621,20 @@ Publish-subscribe event bus for decoupled component communication.
 
 ```python
 class EventBus:
-    def __init__(self)
+    def __init__(self):
+        self._handlers = {}
 
-    def subscribe(
-        self,
-        event_type: Type[Event],
-        handler: Callable[[Event], None]
-    ) -> None
+    def subscribe(self, event_type, handler):
+        # Register handler for event_type
 
-    def unsubscribe(
-        self,
-        event_type: Type[Event],
-        handler: Callable[[Event], None]
-    ) -> None
+    def unsubscribe(self, event_type, handler):
+        # Remove handler for event_type
 
-    def publish(self, event: Event) -> None
+    def publish(self, event):
+        # Dispatch event to all registered handlers
 
-    def clear(self) -> None
+    def clear(self):
+        # Remove all handlers
 ```
 
 **Usage:**
@@ -601,49 +671,57 @@ bus.unsubscribe(SessionStartedEvent, on_session_started)
 Base event class and specific event types.
 
 ```python
-@dataclass
 class Event:
     """Base event class."""
-    timestamp: float = field(default_factory=time.monotonic)
+    def __init__(self):
+        self.timestamp = time.monotonic()
 
-@dataclass
 class SessionStartedEvent(Event):
-    session_id: str
-    profile: str
-    duration_sec: int
+    def __init__(self, session_id, profile, duration_sec):
+        super().__init__()
+        self.session_id = session_id
+        self.profile = profile
+        self.duration_sec = duration_sec
 
-@dataclass
 class SessionPausedEvent(Event):
-    session_id: str
+    def __init__(self, session_id):
+        super().__init__()
+        self.session_id = session_id
 
-@dataclass
 class SessionResumedEvent(Event):
-    session_id: str
+    def __init__(self, session_id):
+        super().__init__()
+        self.session_id = session_id
 
-@dataclass
 class SessionStoppedEvent(Event):
-    session_id: str
-    elapsed_sec: int
-    cycles_completed: int
+    def __init__(self, session_id, elapsed_sec, cycles_completed):
+        super().__init__()
+        self.session_id = session_id
+        self.elapsed_sec = elapsed_sec
+        self.cycles_completed = cycles_completed
 
-@dataclass
 class BatteryLowEvent(Event):
-    voltage: float
-    percentage: int
+    def __init__(self, voltage, percentage):
+        super().__init__()
+        self.voltage = voltage
+        self.percentage = percentage
 
-@dataclass
 class BatteryCriticalEvent(Event):
-    voltage: float
+    def __init__(self, voltage):
+        super().__init__()
+        self.voltage = voltage
 
-@dataclass
 class ConnectionLostEvent(Event):
-    device_type: str  # "PRIMARY", "SECONDARY", or "PHONE"
+    def __init__(self, device_type):
+        super().__init__()
+        self.device_type = device_type  # "PRIMARY", "SECONDARY", or "PHONE"
 
-@dataclass
 class StateTransitionEvent(Event):
-    from_state: TherapyState
-    to_state: TherapyState
-    trigger: str
+    def __init__(self, from_state, to_state, trigger):
+        super().__init__()
+        self.from_state = from_state
+        self.to_state = to_state
+        self.trigger = trigger
 ```
 
 **Usage:**
@@ -671,20 +749,25 @@ Explicit state machine for therapy session management.
 
 ```python
 class TherapyStateMachine:
-    def __init__(self, event_bus: Optional[EventBus] = None)
+    def __init__(self, event_bus=None):
+        self._state = TherapyState.IDLE
+        self._event_bus = event_bus
+        self._observers = []
 
-    def get_current_state(self) -> TherapyState
+    def get_current_state(self):
+        # Returns current TherapyState
 
-    def transition(self, trigger: StateTrigger) -> bool
+    def transition(self, trigger):
+        # Attempt state transition, returns bool success
 
-    def can_transition(self, trigger: StateTrigger) -> bool
+    def can_transition(self, trigger):
+        # Check if transition is valid, returns bool
 
-    def reset(self) -> None
+    def reset(self):
+        # Reset to IDLE state
 
-    def add_observer(
-        self,
-        callback: Callable[[TherapyState, TherapyState], None]
-    ) -> None
+    def add_observer(self, callback):
+        # Register callback for state changes
 ```
 
 **StateTrigger Enum:**
@@ -739,91 +822,91 @@ state_machine.reset()
 
 ### Module: `hardware.haptic`
 
-#### HapticController (Abstract Base Class)
+#### HapticController Interface
 
-Abstract interface for haptic motor control.
+Interface for haptic motor control. Note: CircuitPython does not support
+ABC or async/await. This documents the expected interface.
 
 ```python
-from abc import ABC, abstractmethod
+class HapticController:
+    """Interface for haptic motor control."""
 
-class HapticController(ABC):
-    @abstractmethod
-    async def activate(self, finger: int, amplitude: int) -> None:
-        """Activate motor for specified finger."""
-        pass
+    def activate(self, finger, amplitude):
+        """Activate motor for specified finger (0-4)."""
+        raise NotImplementedError
 
-    @abstractmethod
-    async def deactivate(self, finger: int) -> None:
+    def deactivate(self, finger):
         """Deactivate motor for specified finger."""
-        pass
+        raise NotImplementedError
 
-    @abstractmethod
-    async def deactivate_all(self) -> None:
+    def deactivate_all(self):
         """Deactivate all motors."""
-        pass
+        raise NotImplementedError
 
-    @abstractmethod
-    def is_active(self, finger: int) -> bool:
-        """Check if motor is currently active."""
-        pass
+    def is_active(self, finger):
+        """Check if motor is currently active. Returns bool."""
+        raise NotImplementedError
 ```
 
 ---
 
 #### DRV2605Controller
 
-Concrete implementation for DRV2605 haptic drivers.
+Implementation for DRV2605 haptic drivers via I2C multiplexer.
 
 ```python
 class DRV2605Controller(HapticController):
-    def __init__(
-        self,
-        i2c: I2C,
-        multiplexer: I2CMultiplexer,
-        actuator_type: ActuatorType = ActuatorType.LRA,
-        frequency_hz: int = 175
-    )
+    def __init__(self, multiplexer, actuator_type=ActuatorType.LRA,
+                 frequency_hz=175, i2c_addr=0x5A):
+        self.multiplexer = multiplexer
+        self.actuator_type = actuator_type
+        self.default_frequency = frequency_hz
+        self.i2c_addr = i2c_addr
+        self.active_fingers = {}
+        self.frequencies = {}
 
-    async def activate(self, finger: int, amplitude: int) -> None
+    def activate(self, finger, amplitude):
+        # Activate motor (finger 0-4, amplitude 0-100%)
 
-    async def deactivate(self, finger: int) -> None
+    def deactivate(self, finger):
+        # Deactivate motor for finger
 
-    async def deactivate_all(self) -> None
+    def stop_all(self, force_all=False):
+        # Stop all motors
 
-    def is_active(self, finger: int) -> bool
+    def is_active(self, finger):
+        # Returns bool
 
-    def set_frequency(self, frequency_hz: int) -> None
-
-    def set_actuator_type(self, actuator_type: ActuatorType) -> None
+    def set_frequency(self, finger, frequency):
+        # Set resonant frequency for LRA (150-250 Hz)
 ```
 
 **Usage:**
 ```python
-from hardware.haptic import DRV2605Controller
-from hardware.multiplexer import I2CMultiplexer
+from hardware import DRV2605Controller, I2CMultiplexer, BoardConfig
 from core.types import ActuatorType
-import board
-import busio
 
-# Initialize I2C and multiplexer
-i2c = busio.I2C(board.SCL, board.SDA, frequency=400000)
-mux = I2CMultiplexer(i2c, address=0x70)
+# Initialize board and multiplexer
+board_config = BoardConfig()
+mux = I2CMultiplexer(board_config.i2c, address=0x70)
 
 # Create haptic controller
 haptic = DRV2605Controller(
-    i2c=i2c,
     multiplexer=mux,
     actuator_type=ActuatorType.LRA,
     frequency_hz=175
 )
 
-# Activate motor
-await haptic.activate(finger=0, amplitude=100)  # Thumb at 100%
-await asyncio.sleep(0.1)
-await haptic.deactivate(finger=0)
+# Initialize finger
+haptic.initialize_finger(0)
 
-# Deactivate all motors
-await haptic.deactivate_all()
+# Activate motor
+haptic.activate(finger=0, amplitude=100)  # Thumb at 100%
+time.sleep(0.1)
+haptic.deactivate(finger=0)
+
+# Stop all motors
+haptic.stop_all()
 ```
 
 ---
@@ -836,23 +919,28 @@ Battery voltage monitoring and status reporting.
 
 ```python
 class BatteryMonitor:
-    def __init__(
-        self,
-        battery_pin: Pin,
-        voltage_divider_ratio: float = 2.0,
-        low_voltage: float = 3.4,
-        critical_voltage: float = 3.3
-    )
+    def __init__(self, adc_pin, divider_ratio=2.0, sample_count=10,
+                 warning_voltage=3.4, critical_voltage=3.3):
+        self.pin = adc_pin
+        self.divider_ratio = divider_ratio
+        self.sample_count = sample_count
+        self.warning_voltage = warning_voltage
+        self.critical_voltage = critical_voltage
 
-    def read_voltage(self) -> float
+    def read_voltage(self):
+        # Returns float voltage
 
-    def get_percentage(self) -> int
+    def get_percentage(self, voltage=None):
+        # Returns int percentage 0-100
 
-    def get_status(self) -> BatteryStatus
+    def get_status(self, voltage=None):
+        # Returns BatteryStatus
 
-    def is_low(self) -> bool
+    def is_low(self, voltage=None):
+        # Returns bool
 
-    def is_critical(self) -> bool
+    def is_critical(self, voltage=None):
+        # Returns bool
 ```
 
 **Usage:**
@@ -893,17 +981,19 @@ TCA9548A I2C multiplexer for managing multiple DRV2605 devices.
 
 ```python
 class I2CMultiplexer:
-    def __init__(
-        self,
-        i2c: I2C,
-        address: int = 0x70
-    )
+    def __init__(self, i2c, address=0x70):
+        self.i2c = i2c
+        self.address = address
+        self.active_channel = None
 
-    def select_channel(self, channel: int) -> None
+    def select_channel(self, channel):
+        # Select channel 0-7
 
-    def disable_all_channels(self) -> None
+    def deselect_all(self):
+        # Disable all channels
 
-    def get_current_channel(self) -> Optional[int]
+    def get_current_channel(self):
+        # Returns int or None
 ```
 
 **Usage:**
@@ -938,31 +1028,26 @@ Base NeoPixel LED controller.
 
 ```python
 class LEDController:
-    def __init__(self, pixel_pin: Pin, num_pixels: int = 1)
+    def __init__(self, pixel_pin, num_pixels=1):
+        self.pixel = neopixel.NeoPixel(pixel_pin, num_pixels, brightness=0.1)
 
-    def set_color(self, color: Tuple[int, int, int]) -> None
+    def set_color(self, color):
+        # color is (r, g, b) tuple
 
-    def off(self) -> None
+    def off(self):
+        # Turn LED off
 
-    def rapid_flash(
-        self,
-        color: Tuple[int, int, int],
-        frequency: float = 10.0
-    ) -> None
+    def rapid_flash(self, color, frequency=10.0):
+        # Flash at high frequency
 
-    def slow_flash(
-        self,
-        color: Tuple[int, int, int],
-        frequency: float = 1.0
-    ) -> None
+    def slow_flash(self, color, frequency=1.0):
+        # Flash at low frequency
 
-    def flash_count(
-        self,
-        color: Tuple[int, int, int],
-        count: int
-    ) -> None
+    def flash_count(self, color, count):
+        # Flash specific number of times
 
-    def solid(self, color: Tuple[int, int, int]) -> None
+    def solid(self, color):
+        # Set solid color
 ```
 
 **Usage:**
@@ -996,48 +1081,55 @@ Abstracted BLE communication service.
 
 ```python
 class BLEService:
-    def __init__(
-        self,
-        device_name: str,
-        event_bus: Optional[EventBus] = None
-    )
+    def __init__(self, device_name, event_bus=None):
+        self.device_name = device_name
+        self.event_bus = event_bus
+        self._connections = []
 
-    async def advertise(self, name: str) -> None
+    def advertise(self, name):
+        # Start BLE advertising
 
-    async def scan_and_connect(self, target_name: str) -> Connection
+    def scan_and_connect(self, target_name):
+        # Scan for and connect to target device
 
-    async def send(self, connection: Connection, data: bytes) -> None
+    def send(self, connection, data):
+        # Send bytes over connection
 
-    async def receive(self, connection: Connection) -> Optional[bytes]
+    def receive(self, connection):
+        # Receive bytes, returns bytes or None
 
-    async def disconnect(self, connection: Connection) -> None
+    def disconnect(self, connection):
+        # Disconnect from peer
 
-    def is_connected(self) -> bool
+    def is_connected(self):
+        # Returns bool
 
-    def get_connections(self) -> List[Connection]
+    def get_connections(self):
+        # Returns list of connections
 ```
 
 **Usage:**
 ```python
-from communication.ble.service import BLEService
+from ble import BLEConnection
 
-# Create BLE service
-ble = BLEService(device_name="BlueBuzzah")
+# Create BLE connection manager
+ble = BLEConnection()
 
-# PRIMARY: Advertise
-await ble.advertise(name="BlueBuzzah")
+# PRIMARY: Start advertising
+ble.start_advertising("BlueBuzzah")
 
 # SECONDARY: Scan and connect
-connection = await ble.scan_and_connect(target_name="BlueBuzzah")
+ble.scan_and_connect("BlueBuzzah")
 
 # Send data
-await ble.send(connection, b"PING\n")
+ble.send(b"PING\n")
 
 # Receive data
-data = await ble.receive(connection)
+data = ble.receive()
 
-# Disconnect
-await ble.disconnect(connection)
+# Check connection
+if ble.is_connected():
+    print("Connected")
 ```
 
 ---
@@ -1086,28 +1178,28 @@ class CommandType(Enum):
 #### Command Classes
 
 ```python
-@dataclass
 class Command:
-    command_type: CommandType
-    parameters: Dict[str, Any] = field(default_factory=dict)
-    raw: Optional[str] = None
+    def __init__(self, command_type, parameters=None, raw=None):
+        self.command_type = command_type
+        self.parameters = parameters if parameters else {}
+        self.raw = raw
 
-@dataclass
 class InfoCommand(Command):
-    command_type: CommandType = CommandType.INFO
+    def __init__(self):
+        super().__init__(CommandType.INFO)
 
-@dataclass
 class SessionStartCommand(Command):
-    command_type: CommandType = CommandType.SESSION_START
-    profile: str = ""
-    duration_sec: int = 7200
+    def __init__(self, profile="", duration_sec=7200):
+        super().__init__(CommandType.SESSION_START)
+        self.profile = profile
+        self.duration_sec = duration_sec
 
-@dataclass
 class CalibrateCommand(Command):
-    command_type: CommandType = CommandType.CALIBRATE_BUZZ
-    finger: int = 0
-    amplitude: int = 100
-    duration_ms: int = 100
+    def __init__(self, finger=0, amplitude=100, duration_ms=100):
+        super().__init__(CommandType.CALIBRATE_BUZZ)
+        self.finger = finger
+        self.amplitude = amplitude
+        self.duration_ms = duration_ms
 ```
 
 **Usage:**
@@ -1137,34 +1229,34 @@ BLE protocol message parsing and routing.
 
 ```python
 class ProtocolHandler:
-    def __init__(self, command_processor: CommandProcessor)
+    def __init__(self, command_processor):
+        self.processor = command_processor
 
-    def parse_command(self, data: bytes) -> Command
+    def parse_command(self, data):
+        # Parse bytes into Command, returns Command
 
-    def format_response(self, response: Response) -> bytes
+    def format_response(self, response):
+        # Format Response to bytes, returns bytes
 
-    async def handle_command(self, command: Command) -> Response
+    def handle_command(self, command):
+        # Process command, returns Response
 
-    def validate_message(self, message: bytes) -> bool
+    def validate_message(self, message):
+        # Validate message format, returns bool
 ```
 
 **Usage:**
 ```python
-from communication.protocol.handler import ProtocolHandler
-from application.commands.processor import CommandProcessor
+from menu import MenuController
 
-# Create handler
-processor = CommandProcessor(...)
-handler = ProtocolHandler(command_processor=processor)
+# Create menu controller (handles command parsing/routing)
+menu = MenuController(session_manager, haptic_controller, ble)
 
-# Parse incoming command
-command = handler.parse_command(b"SESSION_START:noisy_vcr:7200\n")
+# Process incoming command string
+response = menu.process_command("SESSION_START:noisy_vcr:7200")
 
-# Handle command
-response = await handler.handle_command(command)
-
-# Format response
-response_bytes = handler.format_response(response)
+# Response is a string to send back
+print(response)
 ```
 
 ---
@@ -1179,118 +1271,110 @@ Core therapy execution engine.
 
 ```python
 class TherapyEngine:
-    def __init__(
-        self,
-        pattern_generator: PatternGenerator,
-        haptic_controller: HapticController,
-        battery_monitor: Optional[BatteryMonitor] = None,
-        state_machine: Optional[TherapyStateMachine] = None
-    )
+    def __init__(self, pattern_generator, haptic_controller,
+                 battery_monitor=None, state_machine=None):
+        self.pattern_gen = pattern_generator
+        self.haptic = haptic_controller
+        self.battery = battery_monitor
+        self.state_machine = state_machine
 
-    async def execute_session(
-        self,
-        config: TherapyConfig,
-        duration_sec: int
-    ) -> ExecutionStats
+    def execute_session(self, config, duration_sec):
+        # Execute therapy session, returns ExecutionStats
 
-    async def execute_cycle(self, config: PatternConfig) -> None
+    def execute_cycle(self, config):
+        # Execute single therapy cycle
 
-    async def execute_pattern(self, pattern: Pattern) -> None
+    def execute_pattern(self, pattern):
+        # Execute pattern sequence
 
-    def pause(self) -> None
+    def pause(self):
+        # Pause therapy
 
-    def resume(self) -> None
+    def resume(self):
+        # Resume therapy
 
-    def stop(self) -> None
+    def stop(self):
+        # Stop therapy
 
-    def is_paused(self) -> bool
+    def is_paused(self):
+        # Returns bool
 
-    def is_stopped(self) -> bool
+    def is_stopped(self):
+        # Returns bool
 
-    def get_stats(self) -> ExecutionStats
+    def get_stats(self):
+        # Returns ExecutionStats
 
-    def on_cycle_complete(
-        self,
-        callback: Callable[[int], None]
-    ) -> None
+    def on_cycle_complete(self, callback):
+        # Register callback for cycle completion
 
-    def on_battery_warning(
-        self,
-        callback: Callable[[BatteryStatus], None]
-    ) -> None
+    def on_battery_warning(self, callback):
+        # Register callback for battery warnings
 
-    def on_error(
-        self,
-        callback: Callable[[Exception], None]
-    ) -> None
+    def on_error(self, callback):
+        # Register callback for errors
 ```
 
 **ExecutionStats:**
 ```python
-@dataclass
 class ExecutionStats:
-    cycles_completed: int = 0
-    total_activations: int = 0
-    average_cycle_duration_ms: float = 0.0
-    timing_drift_ms: float = 0.0
-    pause_count: int = 0
-    total_pause_duration_sec: float = 0.0
+    def __init__(self):
+        self.cycles_completed = 0
+        self.total_activations = 0
+        self.average_cycle_duration_ms = 0.0
+        self.timing_drift_ms = 0.0
+        self.pause_count = 0
+        self.total_pause_duration_sec = 0.0
 ```
 
 **Usage:**
 ```python
-from therapy.engine import TherapyEngine
-from therapy.patterns.rndp import RandomPermutationGenerator
-from hardware.haptic import DRV2605Controller
-from hardware.battery import BatteryMonitor
-from state.machine import TherapyStateMachine
-from config.therapy import TherapyConfig
+from therapy import TherapyEngine
+from hardware import DRV2605Controller, BatteryMonitor
+from state import StateMachine
+from config import load_therapy_profile
 
 # Initialize components
-pattern_gen = RandomPermutationGenerator()
-haptic = DRV2605Controller(...)
-battery = BatteryMonitor(...)
-state_machine = TherapyStateMachine()
+haptic = DRV2605Controller(mux)
+battery = BatteryMonitor(board_config.battery_sense_pin)
+state_machine = StateMachine()
 
 # Create engine
 engine = TherapyEngine(
-    pattern_generator=pattern_gen,
     haptic_controller=haptic,
     battery_monitor=battery,
     state_machine=state_machine
 )
 
 # Register callbacks
-engine.on_cycle_complete(lambda count: print(f"Cycle {count}"))
-engine.on_battery_warning(lambda status: print(f"Battery: {status}"))
+engine.on_cycle_complete(lambda count: print("Cycle", count))
+engine.on_battery_warning(lambda status: print("Battery:", status))
 
 # Execute therapy session
-config = TherapyConfig.default_noisy_vcr()
-stats = await engine.execute_session(config, duration_sec=7200)
+profile = load_therapy_profile("noisy_vcr")
+stats = engine.execute_session(profile, duration_sec=7200)
 
-print(f"Completed {stats.cycles_completed} cycles")
-print(f"Average cycle duration: {stats.average_cycle_duration_ms:.1f}ms")
-print(f"Timing drift: {stats.timing_drift_ms:.2f}ms")
+print("Completed", stats.cycles_completed, "cycles")
+print("Average cycle duration:", stats.average_cycle_duration_ms, "ms")
 ```
 
 ---
 
 ### Module: `therapy.patterns.generator`
 
-#### PatternGenerator (Abstract Base Class)
+#### PatternGenerator Interface
 
-Abstract pattern generation interface.
+Pattern generation interface. Note: CircuitPython does not support ABC.
 
 ```python
-from abc import ABC, abstractmethod
+class PatternGenerator:
+    """Interface for pattern generation."""
 
-class PatternGenerator(ABC):
-    @abstractmethod
-    def generate(self, config: PatternConfig) -> Pattern:
-        """Generate therapy pattern from configuration."""
-        pass
+    def generate(self, config):
+        """Generate therapy pattern from configuration. Returns Pattern."""
+        raise NotImplementedError
 
-    def validate_config(self, config: PatternConfig) -> None:
+    def validate_config(self, config):
         """Validate pattern configuration."""
         pass
 ```
@@ -1299,23 +1383,24 @@ class PatternGenerator(ABC):
 
 #### Pattern
 
-Therapy pattern dataclass.
+Therapy pattern class.
 
 ```python
-@dataclass
 class Pattern:
-    left_sequence: List[int]        # Left hand finger sequence
-    right_sequence: List[int]       # Right hand finger sequence
-    timing_ms: List[int]            # Inter-burst intervals (ms)
-    burst_duration_ms: int          # Duration of each burst
-    inter_burst_interval_ms: int   # Base interval between bursts
+    def __init__(self, left_sequence, right_sequence, timing_ms,
+                 burst_duration_ms, inter_burst_interval_ms):
+        self.left_sequence = left_sequence      # Left hand finger sequence (list)
+        self.right_sequence = right_sequence    # Right hand finger sequence (list)
+        self.timing_ms = timing_ms              # Inter-burst intervals in ms (list)
+        self.burst_duration_ms = burst_duration_ms
+        self.inter_burst_interval_ms = inter_burst_interval_ms
 
-    def get_finger_pair(self, index: int) -> Tuple[int, int]:
-        """Get left and right finger for given index."""
+    def get_finger_pair(self, index):
+        """Get left and right finger for given index. Returns tuple."""
         return (self.left_sequence[index], self.right_sequence[index])
 
-    def get_total_duration_ms(self) -> float:
-        """Calculate total pattern duration in milliseconds."""
+    def get_total_duration_ms(self):
+        """Calculate total pattern duration in milliseconds. Returns float."""
         return sum(self.timing_ms) + len(self.timing_ms) * self.burst_duration_ms
 ```
 
@@ -1325,24 +1410,26 @@ class Pattern:
 
 Pattern generation configuration.
 
+All patterns use mandatory bilateral mirroring - the same anatomical finger is always stimulated simultaneously on both hands.
+
 ```python
-@dataclass
 class PatternConfig:
-    num_fingers: int = 5
-    time_on_ms: int = 100
-    time_off_ms: int = 67
-    bursts_per_cycle: int = 3
-    jitter_percent: float = 0.0
-    mirror_pattern: bool = True
-    random_seed: Optional[int] = None
+    def __init__(self, num_fingers=4, time_on_ms=100, time_off_ms=67,
+                 bursts_per_cycle=3, jitter_percent=0.0, random_seed=None):
+        self.num_fingers = num_fingers
+        self.time_on_ms = time_on_ms
+        self.time_off_ms = time_off_ms
+        self.bursts_per_cycle = bursts_per_cycle
+        self.jitter_percent = jitter_percent
+        self.random_seed = random_seed
 
     @classmethod
-    def from_therapy_config(cls, therapy_config: TherapyConfig) -> PatternConfig:
-        """Convert TherapyConfig to PatternConfig."""
+    def from_therapy_config(cls, therapy_config):
+        """Convert TherapyConfig to PatternConfig. Returns PatternConfig."""
         pass
 
-    def get_total_duration_ms(self) -> float:
-        """Calculate total cycle duration in milliseconds."""
+    def get_total_duration_ms(self):
+        """Calculate total cycle duration in milliseconds. Returns float."""
         pass
 ```
 
@@ -1352,14 +1439,14 @@ from therapy.patterns.generator import PatternConfig, Pattern
 
 # Create configuration
 config = PatternConfig(
-    num_fingers=5,
+    num_fingers=4,
     time_on_ms=100,
     time_off_ms=67,
-    jitter_percent=23.5,
-    mirror_pattern=True
+    jitter_percent=23.5
 )
 
 # Pattern is generated by PatternGenerator implementations
+# Both hands always receive the same finger sequence (bilateral mirroring)
 ```
 
 ---
@@ -1372,9 +1459,11 @@ Random permutation pattern generator for Noisy vCR therapy.
 
 ```python
 class RandomPermutationGenerator(PatternGenerator):
-    def __init__(self, random_seed: Optional[int] = None)
+    def __init__(self, random_seed=None):
+        self.random_seed = random_seed
 
-    def generate(self, config: PatternConfig) -> Pattern
+    def generate(self, config):
+        # Returns Pattern with random permutation sequence
 ```
 
 **Usage:**
@@ -1404,9 +1493,11 @@ Sequential pattern generator for Regular vCR therapy.
 
 ```python
 class SequentialGenerator(PatternGenerator):
-    def __init__(self)
+    def __init__(self):
+        pass
 
-    def generate(self, config: PatternConfig) -> Pattern
+    def generate(self, config):
+        # Returns Pattern with sequential order
 ```
 
 **Usage:**
@@ -1435,9 +1526,11 @@ Mirrored bilateral pattern generator for Hybrid vCR therapy.
 
 ```python
 class MirroredPatternGenerator(PatternGenerator):
-    def __init__(self)
+    def __init__(self):
+        pass
 
-    def generate(self, config: PatternConfig) -> Pattern
+    def generate(self, config):
+        # Returns Pattern with mirrored bilateral sequences
 ```
 
 **Usage:**
@@ -1469,27 +1562,20 @@ Time synchronization between PRIMARY and SECONDARY devices.
 
 ```python
 class SyncProtocol:
-    def __init__(self)
+    def __init__(self):
+        self.offset = 0
 
-    def calculate_offset(
-        self,
-        primary_time: int,
-        secondary_time: int
-    ) -> int
+    def calculate_offset(self, primary_time, secondary_time):
+        # Returns int offset in nanoseconds
 
-    def apply_compensation(
-        self,
-        timestamp: int,
-        offset: int
-    ) -> int
+    def apply_compensation(self, timestamp, offset):
+        # Returns int compensated timestamp
 
-    def format_sync_message(
-        self,
-        command_type: SyncCommandType,
-        payload: Dict[str, Any]
-    ) -> bytes
+    def format_sync_message(self, command_type, payload):
+        # Returns bytes formatted message
 
-    def parse_sync_message(self, data: bytes) -> Tuple[SyncCommandType, Dict]
+    def parse_sync_message(self, data):
+        # Returns tuple (command_type, payload_dict)
 ```
 
 **Usage:**
@@ -1531,58 +1617,52 @@ Coordinates bilateral synchronization between devices.
 
 ```python
 class SyncCoordinator:
-    def __init__(
-        self,
-        role: DeviceRole,
-        sync_protocol: SyncProtocol,
-        ble_service: BLEService
-    )
+    def __init__(self, role, sync_protocol, ble_service):
+        self.role = role
+        self.sync_protocol = sync_protocol
+        self.ble = ble_service
 
-    async def establish_sync(self) -> bool
+    def establish_sync(self):
+        # Returns bool success
 
-    async def send_sync_adjustment(self, timestamp: int) -> None
+    def send_sync_adjustment(self, timestamp):
+        # Send SYNC_ADJ message
 
-    async def send_execute_command(
-        self,
-        sequence_index: int,
-        timestamp: int
-    ) -> None
+    def send_execute_command(self, sequence_index, timestamp):
+        # Send EXECUTE_BUZZ command
 
-    async def wait_for_acknowledgment(self, timeout: float = 2.0) -> bool
+    def wait_for_acknowledgment(self, timeout=2.0):
+        # Returns bool success
 
-    def get_time_offset(self) -> int
+    def get_time_offset(self):
+        # Returns int offset in nanoseconds
 ```
 
 **Usage:**
 ```python
-from domain.sync.coordinator import SyncCoordinator
-from domain.sync.protocol import SyncProtocol
-from communication.ble.service import BLEService
+from sync import SyncManager
+from ble import BLEConnection
 from core.types import DeviceRole
+import time
 
-# Initialize coordinator (PRIMARY)
-sync_protocol = SyncProtocol()
-ble = BLEService("BlueBuzzah")
-coordinator = SyncCoordinator(
-    role=DeviceRole.PRIMARY,
-    sync_protocol=sync_protocol,
-    ble_service=ble
-)
+# Initialize sync manager (PRIMARY)
+ble = BLEConnection()
+sync = SyncManager(role=DeviceRole.PRIMARY, ble=ble)
 
 # Establish initial synchronization
-success = await coordinator.establish_sync()
+success = sync.establish_sync()
 
 # Send periodic sync adjustment
-await coordinator.send_sync_adjustment(timestamp=time.monotonic_ns())
+sync.send_sync_adjustment(timestamp=time.monotonic_ns())
 
 # Send execute command
-await coordinator.send_execute_command(
+sync.send_execute_command(
     sequence_index=2,
     timestamp=time.monotonic_ns()
 )
 
 # Wait for acknowledgment
-ack = await coordinator.wait_for_acknowledgment(timeout=2.0)
+ack = sync.wait_for_acknowledgment(timeout=2.0)
 ```
 
 ---
@@ -1597,66 +1677,59 @@ High-level session lifecycle management.
 
 ```python
 class SessionManager:
-    def __init__(
-        self,
-        therapy_engine: TherapyEngine,
-        profile_manager: ProfileManager,
-        event_bus: EventBus
-    )
+    def __init__(self, therapy_engine, profile_manager, event_bus):
+        self.engine = therapy_engine
+        self.profiles = profile_manager
+        self.event_bus = event_bus
+        self.current_session = None
 
-    async def start_session(
-        self,
-        profile_name: str,
-        duration_sec: int
-    ) -> SessionInfo
+    def start_session(self, profile_name, duration_sec):
+        # Returns SessionInfo
 
-    async def pause_session(self) -> None
+    def pause_session(self):
+        # Pause current session
 
-    async def resume_session(self) -> None
+    def resume_session(self):
+        # Resume paused session
 
-    async def stop_session(self) -> None
+    def stop_session(self):
+        # Stop current session
 
-    def get_current_session(self) -> Optional[SessionInfo]
+    def get_current_session(self):
+        # Returns SessionInfo or None
 
-    def get_status(self) -> Dict[str, Any]
+    def get_status(self):
+        # Returns dict with session status
 ```
 
 **Usage:**
 ```python
 from application.session.manager import SessionManager
-from therapy.engine import TherapyEngine
-from application.profile.manager import ProfileManager
-from events.bus import EventBus
+from therapy import TherapyEngine
+from config import load_therapy_profile
 
 # Initialize manager
-engine = TherapyEngine(...)
-profile_mgr = ProfileManager()
-event_bus = EventBus()
-
-session_mgr = SessionManager(
-    therapy_engine=engine,
-    profile_manager=profile_mgr,
-    event_bus=event_bus
-)
+engine = TherapyEngine(haptic, battery, state_machine)
+session_mgr = SessionManager(engine)
 
 # Start session
-session = await session_mgr.start_session(
+session = session_mgr.start_session(
     profile_name="noisy_vcr",
     duration_sec=7200
 )
 
 # Pause session
-await session_mgr.pause_session()
+session_mgr.pause_session()
 
 # Resume session
-await session_mgr.resume_session()
+session_mgr.resume_session()
 
 # Get status
 status = session_mgr.get_status()
-print(f"Session: {status}")
+print("Session:", status)
 
 # Stop session
-await session_mgr.stop_session()
+session_mgr.stop_session()
 ```
 
 ---
@@ -1669,21 +1742,23 @@ Therapy profile management and loading.
 
 ```python
 class ProfileManager:
-    def __init__(self, profiles_dir: str = "/profiles")
+    def __init__(self, profiles_dir="/profiles"):
+        self.profiles_dir = profiles_dir
 
-    def list_profiles(self) -> List[str]
+    def list_profiles(self):
+        # Returns list of profile names
 
-    def load_profile(self, profile_name: str) -> TherapyConfig
+    def load_profile(self, profile_name):
+        # Returns TherapyConfig dict
 
-    def save_profile(
-        self,
-        profile_name: str,
-        config: TherapyConfig
-    ) -> None
+    def save_profile(self, profile_name, config):
+        # Save profile to storage
 
-    def delete_profile(self, profile_name: str) -> None
+    def delete_profile(self, profile_name):
+        # Delete profile from storage
 
-    def get_default_profile(self) -> TherapyConfig
+    def get_default_profile(self):
+        # Returns default TherapyConfig
 ```
 
 **Usage:**
@@ -1718,61 +1793,50 @@ Calibration mode for individual finger testing.
 
 ```python
 class CalibrationController:
-    def __init__(
-        self,
-        haptic_controller: HapticController,
-        event_bus: EventBus
-    )
+    def __init__(self, haptic_controller, event_bus=None):
+        self.haptic = haptic_controller
+        self.event_bus = event_bus
+        self.active = False
 
-    async def start_calibration(self) -> None
+    def start_calibration(self):
+        # Enter calibration mode
 
-    async def test_finger(
-        self,
-        finger: int,
-        amplitude: int = 100,
-        duration_ms: int = 100
-    ) -> None
+    def test_finger(self, finger, amplitude=100, duration_ms=100):
+        # Test individual finger motor
 
-    async def test_all_fingers(
-        self,
-        amplitude: int = 100,
-        duration_ms: int = 100
-    ) -> None
+    def test_all_fingers(self, amplitude=100, duration_ms=100):
+        # Test all fingers sequentially
 
-    async def stop_calibration(self) -> None
+    def stop_calibration(self):
+        # Exit calibration mode
 
-    def is_calibrating(self) -> bool
+    def is_calibrating(self):
+        # Returns bool
 ```
 
 **Usage:**
 ```python
-from application.calibration.controller import CalibrationController
-from hardware.haptic import DRV2605Controller
-from events.bus import EventBus
+from hardware import DRV2605Controller
 
 # Create controller
-haptic = DRV2605Controller(...)
-event_bus = EventBus()
-calibration = CalibrationController(
-    haptic_controller=haptic,
-    event_bus=event_bus
-)
+haptic = DRV2605Controller(mux)
+calibration = CalibrationController(haptic_controller=haptic)
 
 # Start calibration mode
-await calibration.start_calibration()
+calibration.start_calibration()
 
 # Test individual finger
-await calibration.test_finger(
+calibration.test_finger(
     finger=0,       # Thumb
     amplitude=75,   # 75% intensity
     duration_ms=200 # 200ms buzz
 )
 
 # Test all fingers sequentially
-await calibration.test_all_fingers(amplitude=100, duration_ms=100)
+calibration.test_all_fingers(amplitude=100, duration_ms=100)
 
 # Stop calibration
-await calibration.stop_calibration()
+calibration.stop_calibration()
 ```
 
 ---
@@ -1785,41 +1849,32 @@ Central command routing and processing.
 
 ```python
 class CommandProcessor:
-    def __init__(
-        self,
-        session_manager: SessionManager,
-        profile_manager: ProfileManager,
-        calibration_controller: CalibrationController,
-        battery_monitor: BatteryMonitor
-    )
+    def __init__(self, session_manager, profile_manager,
+                 calibration_controller, battery_monitor):
+        self.session_mgr = session_manager
+        self.profile_mgr = profile_manager
+        self.calibration = calibration_controller
+        self.battery = battery_monitor
+        self._handlers = {}
 
-    async def process_command(self, command: Command) -> Response
+    def process_command(self, command):
+        # Process command and return Response
 
-    def register_handler(
-        self,
-        command_type: CommandType,
-        handler: Callable[[Command], Response]
-    ) -> None
+    def register_handler(self, command_type, handler):
+        # Register handler for command type
 ```
 
 **Usage:**
 ```python
-from application.commands.processor import CommandProcessor
-from communication.protocol.commands import SessionStartCommand
+from menu import MenuController
 
-# Create processor
-processor = CommandProcessor(
-    session_manager=session_mgr,
-    profile_manager=profile_mgr,
-    calibration_controller=calibration,
-    battery_monitor=battery
-)
+# Create menu controller (wraps command processing)
+menu = MenuController(session_mgr, haptic, ble)
 
-# Process command
-command = SessionStartCommand(profile="noisy_vcr", duration_sec=7200)
-response = await processor.process_command(command)
+# Process command string
+response = menu.process_command("SESSION_START:noisy_vcr:7200")
 
-print(f"Response: {response.status}")
+print("Response:", response)
 ```
 
 ---
@@ -1875,32 +1930,28 @@ LED controller for therapy session visual feedback.
 
 ```python
 class TherapyLEDController(LEDController):
-    def set_therapy_state(self, state: TherapyState) -> None
+    def set_therapy_state(self, state):
+        # Set LED pattern based on TherapyState
 
-    def update_breathing(self) -> None
+    def update_breathing(self):
+        # Update breathing animation (call at ~20Hz)
 
-    def fade_out(
-        self,
-        color: Tuple[int, int, int],
-        duration_sec: float
-    ) -> None
+    def fade_out(self, color, duration_sec):
+        # Fade LED from color to off
 
-    def alternate_flash(
-        self,
-        color1: Tuple[int, int, int],
-        color2: Tuple[int, int, int],
-        frequency: float
-    ) -> None
+    def alternate_flash(self, color1, color2, frequency):
+        # Alternate between two colors
 ```
 
 **Usage:**
 ```python
-from ui.therapy_led import TherapyLEDController
+from led import LEDController
 from core.types import TherapyState
 import board
+import time
 
-# Create therapy LED controller
-led = TherapyLEDController(pixel_pin=board.D13)
+# Create LED controller
+led = LEDController(board.NEOPIXEL)
 
 # Set state-based LED patterns
 led.set_therapy_state(TherapyState.RUNNING)  # Breathing green
@@ -1910,7 +1961,7 @@ led.set_therapy_state(TherapyState.STOPPING) # Fading green
 # Update breathing effect (call periodically at ~20Hz)
 while therapy_running:
     led.update_breathing()
-    await asyncio.sleep(0.05)
+    time.sleep(0.05)
 ```
 
 ---
@@ -1920,100 +1971,82 @@ while therapy_running:
 ### Complete System Initialization
 
 ```python
-import asyncio
+import gc
+import time
 import board
 import busio
-from core.types import DeviceRole
-from config.loader import ConfigLoader
-from config.therapy import TherapyConfig
-from events.bus import EventBus
-from state.machine import TherapyStateMachine
-from hardware.haptic import DRV2605Controller
-from hardware.battery import BatteryMonitor
-from hardware.multiplexer import I2CMultiplexer
-from communication.ble.service import BLEService
-from therapy.engine import TherapyEngine
-from therapy.patterns.rndp import RandomPermutationGenerator
+from config import load_device_config, load_therapy_profile
+from hardware import BoardConfig, I2CMultiplexer, DRV2605Controller, BatteryMonitor
+from led import LEDController
+from ble import BLEConnection
+from state import StateMachine
+from therapy import TherapyEngine
 from application.session.manager import SessionManager
-from application.profile.manager import ProfileManager
-from ui.boot_led import BootSequenceLEDController
-from ui.therapy_led import TherapyLEDController
-from boot.manager import BootSequenceManager
+from boot import BootSequence
 
-async def main():
+def main():
+    # Collect garbage after imports
+    gc.collect()
+
     # Load device configuration
-    config = ConfigLoader.load_from_json("/settings.json")
-
-    # Initialize event bus
-    event_bus = EventBus()
+    config = load_device_config("settings.json")
 
     # Initialize hardware
-    i2c = busio.I2C(board.SCL, board.SDA, frequency=400000)
-    mux = I2CMultiplexer(i2c, address=0x70)
-    haptic = DRV2605Controller(i2c, mux)
-    battery = BatteryMonitor(board.A6)
+    board_config = BoardConfig()
+    mux = I2CMultiplexer(board_config.i2c, address=0x70)
+    haptic = DRV2605Controller(mux)
+    battery = BatteryMonitor(board_config.battery_sense_pin)
+    led = LEDController(board_config.neopixel_pin)
 
-    # Initialize LED controllers
-    boot_led = BootSequenceLEDController(board.D13)
-    therapy_led = TherapyLEDController(board.D13)
+    # Initialize fingers
+    for finger in range(4):
+        haptic.initialize_finger(finger)
 
     # Initialize BLE
-    ble = BLEService(device_name="BlueBuzzah", event_bus=event_bus)
+    ble = BLEConnection()
 
     # Execute boot sequence
-    boot_manager = BootSequenceManager(
-        role=config.device.role,
-        ble_service=ble,
-        led_controller=boot_led
-    )
-    boot_result = await boot_manager.execute_boot_sequence()
+    boot = BootSequence(config, ble, led)
+    boot_result = boot.execute()
 
     if not boot_result.is_success():
         print("Boot failed - exiting")
         return
 
     # Initialize therapy components
-    state_machine = TherapyStateMachine(event_bus=event_bus)
-    pattern_gen = RandomPermutationGenerator()
-    therapy_engine = TherapyEngine(
-        pattern_generator=pattern_gen,
-        haptic_controller=haptic,
-        battery_monitor=battery,
-        state_machine=state_machine
-    )
+    state_machine = StateMachine()
+    engine = TherapyEngine(haptic, battery, state_machine)
 
-    # Initialize application layer
-    profile_mgr = ProfileManager()
-    session_mgr = SessionManager(
-        therapy_engine=therapy_engine,
-        profile_manager=profile_mgr,
-        event_bus=event_bus
-    )
+    # Initialize session manager
+    session_mgr = SessionManager(engine)
+
+    # Load therapy profile
+    profile = load_therapy_profile("noisy_vcr")
 
     # Start therapy session
-    therapy_config = TherapyConfig.default_noisy_vcr()
-    session = await session_mgr.start_session(
+    session = session_mgr.start_session(
         profile_name="noisy_vcr",
         duration_sec=7200
     )
 
-    print(f"Session started: {session.session_id}")
+    print("Session started:", session.session_id)
 
     # Main loop
     while not session.is_complete():
         # Update LED
-        therapy_led.set_therapy_state(state_machine.get_current_state())
-        therapy_led.update_breathing()
+        led.set_therapy_state(state_machine.get_current_state())
+        led.update_breathing()
 
         # Check for commands from phone
-        # ...
+        ble.poll_commands()
 
-        await asyncio.sleep(0.05)
+        # Yield to system
+        time.sleep(0.05)
 
     print("Session complete")
 
 # Run application
-asyncio.run(main())
+main()
 ```
 
 ---
@@ -2021,26 +2054,27 @@ asyncio.run(main())
 ### Simple Therapy Execution
 
 ```python
-from therapy.engine import TherapyEngine
-from therapy.patterns.rndp import RandomPermutationGenerator
-from hardware.haptic import DRV2605Controller
-from config.therapy import TherapyConfig
+from therapy import TherapyEngine
+from hardware import DRV2605Controller, I2CMultiplexer, BoardConfig
+from config import load_therapy_profile
 
-# Create components
-pattern_gen = RandomPermutationGenerator()
-haptic = DRV2605Controller()  # Actual hardware controller
+# Initialize hardware
+board_config = BoardConfig()
+mux = I2CMultiplexer(board_config.i2c)
+haptic = DRV2605Controller(mux)
+
+# Initialize fingers
+for finger in range(4):
+    haptic.initialize_finger(finger)
 
 # Create engine
-engine = TherapyEngine(
-    pattern_generator=pattern_gen,
-    haptic_controller=haptic
-)
+engine = TherapyEngine(haptic_controller=haptic)
 
-# Execute therapy
-config = TherapyConfig.default_noisy_vcr()
-stats = await engine.execute_session(config, duration_sec=60)
+# Load profile and execute therapy
+profile = load_therapy_profile("noisy_vcr")
+stats = engine.execute_session(profile, duration_sec=60)
 
-print(f"Completed {stats.cycles_completed} cycles")
+print("Completed", stats.cycles_completed, "cycles")
 ```
 
 ---
@@ -2090,18 +2124,18 @@ bus.publish(SessionStartedEvent(
 
 ```python
 from therapy.patterns.generator import PatternGenerator, Pattern, PatternConfig
-from typing import List
 
 class CustomPatternGenerator(PatternGenerator):
     """Custom pattern with specific research requirements."""
 
-    def generate(self, config: PatternConfig) -> Pattern:
+    def generate(self, config):
         # Validate configuration
         self.validate_config(config)
 
         # Generate custom sequence (e.g., alternating pairs)
-        left_sequence = [0, 0, 1, 1, 2, 2, 3, 3, 4, 4]
-        right_sequence = [0, 0, 1, 1, 2, 2, 3, 3, 4, 4]
+        # Using 4 fingers per hand (0-3)
+        left_sequence = [0, 0, 1, 1, 2, 2, 3, 3]
+        right_sequence = [0, 0, 1, 1, 2, 2, 3, 3]
 
         # Calculate timing
         timing_ms = [config.time_on_ms + config.time_off_ms] * len(left_sequence)
@@ -2159,62 +2193,43 @@ if current.can_start_therapy():
 ### Common Import Patterns
 
 ```python
-# Core types
-from core.types import (
-    DeviceRole, TherapyState, BootResult,
-    ActuatorType, BatteryStatus, SessionInfo
-)
+# Core types (from core/ module)
+from core.types import DeviceRole, TherapyState, ActuatorType, BatteryStatus
 
-# Constants
+# Constants (from core/ module)
 from core.constants import (
     FIRMWARE_VERSION,
     STARTUP_WINDOW,
-    BLE_INTERVAL,
     CRITICAL_VOLTAGE,
     LOW_VOLTAGE,
-    LED_GREEN,
-    LED_RED
 )
 
-# Configuration
-from config.base import BaseConfig
-from config.therapy import TherapyConfig
-from config.loader import ConfigLoader
+# Configuration (from src/config.py)
+from config import load_device_config, load_therapy_profile
 
-# Events
-from events.bus import EventBus
-from events.events import (
-    SessionStartedEvent,
-    SessionPausedEvent,
-    BatteryLowEvent
+# State management (from src/state.py)
+from state import StateMachine
+
+# Hardware (from src/hardware.py)
+from hardware import (
+    BoardConfig,
+    I2CMultiplexer,
+    DRV2605Controller,
+    BatteryMonitor,
+    LEDPin
 )
 
-# State management
-from state.machine import TherapyStateMachine, StateTrigger
+# BLE Communication (from src/ble.py)
+from ble import BLEConnection
 
-# Hardware
-from hardware.haptic import HapticController, DRV2605Controller
-from hardware.battery import BatteryMonitor
-from hardware.multiplexer import I2CMultiplexer
+# LED control (from src/led.py)
+from led import LEDController
 
-# Communication
-from communication.ble.service import BLEService
-from communication.protocol.commands import Command, CommandType
-from communication.protocol.handler import ProtocolHandler
+# Therapy (from src/therapy.py)
+from therapy import TherapyEngine
 
-# Therapy
-from therapy.engine import TherapyEngine
-from therapy.patterns.generator import PatternGenerator, Pattern
-from therapy.patterns.rndp import RandomPermutationGenerator
-
-# Application
+# Session management (from src/application/session/manager.py)
 from application.session.manager import SessionManager
-from application.profile.manager import ProfileManager
-from application.calibration.controller import CalibrationController
-
-# UI
-from ui.boot_led import BootSequenceLEDController
-from ui.therapy_led import TherapyLEDController
 ```
 
 ---
@@ -2226,28 +2241,30 @@ from ui.therapy_led import TherapyLEDController
 ```python
 # Configuration errors
 try:
-    config = ConfigLoader.load_from_json("/settings.json")
-except FileNotFoundError:
+    config = load_device_config("settings.json")
+except OSError:
     print("Settings file not found")
 except ValueError as e:
-    print(f"Invalid configuration: {e}")
+    print("Invalid configuration:", e)
 
 # Therapy errors
 try:
-    await engine.execute_session(config, duration_sec=7200)
+    engine.execute_session(profile, duration_sec=7200)
 except RuntimeError as e:
-    print(f"Therapy execution failed: {e}")
+    print("Therapy execution failed:", e)
     state_machine.transition(StateTrigger.ERROR_OCCURRED)
 
 # Battery errors
 if battery.is_critical():
-    raise RuntimeError(f"Critical battery: {battery.read_voltage()}V")
+    voltage = battery.read_voltage()
+    print("Critical battery:", voltage, "V")
+    # Handle critical battery
 
 # BLE errors
 try:
-    connection = await ble.scan_and_connect("BlueBuzzah")
-except TimeoutError:
-    print("Connection timeout")
+    ble.scan_and_connect("BlueBuzzah")
+except Exception as e:
+    print("Connection failed:", e)
     boot_result = BootResult.FAILED
 ```
 
@@ -2289,9 +2306,9 @@ BlueBuzzah v2 uses **hardware integration testing** to validate firmware functio
 - [Architecture Guide](ARCHITECTURE.md) - System design and patterns
 - [Boot Sequence](BOOT_SEQUENCE.md) - Boot process and LED indicators
 - [Therapy Engine](THERAPY_ENGINE.md) - Pattern generation and timing
-- [Deployment Guide](DEPLOYMENT.md) - Deployment procedures
+- [Firmware Architecture](FIRMWARE_ARCHITECTURE.md) - Module structure and design
 - [Testing Guide](TESTING.md) - Hardware integration testing procedures
-- [Changelog](CHANGELOG.md) - Version history
+- [Synchronization Protocol](SYNCHRONIZATION_PROTOCOL.md) - Device sync details
 
 ---
 

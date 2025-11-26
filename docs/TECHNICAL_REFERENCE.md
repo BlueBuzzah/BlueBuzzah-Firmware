@@ -21,6 +21,16 @@
 
 ---
 
+## Terminology Note
+
+This document uses the following device role terminology:
+- **PRIMARY** (also known as VL, left glove): Main controller, phone connection point
+- **SECONDARY** (also known as VR, right glove): Receives commands via PRIMARY
+
+Hardware specifications apply equally to both gloves.
+
+---
+
 ## Hardware Specifications
 
 ### Microcontroller (nRF52840)
@@ -77,7 +87,7 @@
 
 | Specification | Value | Notes |
 |---------------|-------|-------|
-| **Quantity** | 8 total (4 per glove) | Linear Resonant Actuators |
+| **Quantity** | 8 total (4 per glove) | Linear Resonant Actuators (firmware supports up to 5 per device) |
 | **Resonance Frequency** | 250 Hz nominal | 200-300 Hz typical |
 | **Operating Voltage** | 2.0-3.0V RMS | 2.5V default |
 | **Peak Voltage** | 3.0-4.0V | During resonance |
@@ -182,7 +192,7 @@ voltage = (adc_value / 65535) * 3.3 * 2.0  # Scale to battery voltage
 | `SESSION` | 1-180 | 120 | minutes | Total session duration |
 | `TIME_RELAX` | calculated | 0.668 | seconds | 4 × (ON + OFF) |
 | `TIME_JITTER` | calculated | ±0.0196 | seconds | JITTER% of (ON+OFF)/2 |
-| `STARTUP_WINDOW` | 1-30 | 6 | seconds | BLE command window |
+| `STARTUP_WINDOW` | 1-300 | 30 | seconds | BLE command window |
 
 **Timing Formulas**:
 ```python
@@ -532,10 +542,82 @@ Total: 3100-3568ms (average 3334ms)
 
 | Constant | Value | Location | Notes |
 |----------|-------|----------|-------|
-| `STARTUP_WINDOW` | 6s | config (default) | BLE command window |
+| `STARTUP_WINDOW` | 30s | config (default) | BLE command window |
 | `I2C_RETRY_DELAY` | 0.5s | haptic_controller.py:93 | Between I2C init attempts |
 | `GC_INTERVAL` | per macrocycle | vcr_engine.py:234 | Garbage collection |
 | `POLLING_INTERVAL` | 1-10ms | various | BLE message polling |
+
+---
+
+## Synchronization Statistics
+
+### SyncStats Module (sync_stats.py)
+
+The `SyncStats` module tracks timing metrics for bilateral synchronization validation. It ensures the SimpleSyncProtocol meets the <10ms latency requirement for vCR therapy.
+
+**Metrics Tracked**:
+
+| Metric | Description | Unit |
+|--------|-------------|------|
+| `network_latency` | BLE transmission time (PRIMARY → SECONDARY) | µs |
+| `execution_time` | Motor activation processing on SECONDARY | µs |
+| `total_latency` | End-to-end synchronization accuracy | µs |
+
+**Usage** (SECONDARY device):
+```python
+from sync_stats import SyncStats
+
+# Initialize with circular buffer
+stats = SyncStats(max_samples=100)
+
+# During EXECUTE_BUZZ processing
+def handle_execute_buzz(primary_timestamp_us):
+    receive_time_us = time.monotonic_ns() // 1000
+    network_latency = receive_time_us - primary_timestamp_us
+
+    # Execute motor activation
+    activate_motors()
+
+    # Calculate execution time
+    execution_time = (time.monotonic_ns() // 1000) - receive_time_us
+    total_latency = network_latency + execution_time
+
+    # Record sample
+    stats.add_sample(network_latency, execution_time, total_latency)
+
+# Print report periodically
+stats.print_report()
+```
+
+**Statistics Output Example**:
+```
+============================================================
+SYNCHRONIZATION TIMING STATISTICS
+============================================================
+Total samples: 1234
+Buffer size: 100/100
+Last sample: 0.5s ago
+
+NETWORK LATENCY:
+  Mean:    2847.32 µs ( 2.847 ms)
+  Median:  2654.00 µs ( 2.654 ms)
+  P95:     4123.00 µs ( 4.123 ms)
+  P99:     5892.00 µs ( 5.892 ms)
+
+TOTAL LATENCY:
+  Mean:    4521.18 µs ( 4.521 ms)
+  Median:  4312.00 µs ( 4.312 ms)
+  P95:     6789.00 µs ( 6.789 ms)
+  P99:     8456.00 µs ( 8.456 ms)
+
+vCR THERAPY REQUIREMENTS (< 10ms total latency):
+  Mean:   ✅ PASS (4.521 ms)
+  P95:    ✅ PASS (6.789 ms)
+  P99:    ✅ PASS (8.456 ms)
+============================================================
+```
+
+**vCR Requirement**: Total latency must be <10ms for bilateral coordination.
 
 ---
 

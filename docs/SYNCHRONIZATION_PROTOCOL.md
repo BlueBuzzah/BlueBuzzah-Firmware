@@ -18,14 +18,24 @@
 
 ---
 
+### Terminology Note
+
+This document uses the following device role terminology:
+- **PRIMARY** (also known as VL, left glove): Initiates therapy, controls timing
+- **SECONDARY** (also known as VR, right glove): Follows PRIMARY commands
+
+Code examples may show `"VL"` as the BLE advertisement name for backward compatibility.
+
+---
+
 ## Protocol Overview
 
 ### Core Principles
 
-1. **PRIMARY commands, SECONDARY obeys**: VL sends explicit commands before every action
-2. **Blocking waits**: VR blocks on `receive_execute_buzz()` until VL commands
-3. **Acknowledgments**: VR confirms completion with `BUZZ_COMPLETE`
-4. **Safety timeout**: VR halts therapy if PRIMARY disconnects (10s timeout)
+1. **PRIMARY commands, SECONDARY obeys**: PRIMARY sends explicit commands before every action
+2. **Blocking waits**: SECONDARY blocks on `receive_execute_buzz()` until PRIMARY commands
+3. **Acknowledgments**: SECONDARY confirms completion with `BUZZ_COMPLETE`
+4. **Safety timeout**: SECONDARY halts therapy if PRIMARY disconnects (10s timeout)
 
 ### Synchronization Accuracy
 
@@ -939,7 +949,48 @@ if not ack_received:
 
 ### Connection Health Monitoring
 
-**Periodic Health Check** (ble_connection.py:734-777):
+#### Heartbeat Protocol
+
+During active therapy sessions, PRIMARY sends periodic heartbeat messages to SECONDARY to detect connection loss early.
+
+**Heartbeat Parameters** (app.py:227-234):
+
+| Parameter | Value | Description |
+|-----------|-------|-------------|
+| `HEARTBEAT_INTERVAL_SEC` | 2.0 | PRIMARY sends heartbeat every 2 seconds |
+| `HEARTBEAT_TIMEOUT_SEC` | 6.0 | SECONDARY timeout (3 missed heartbeats) |
+
+**Heartbeat Message Format**:
+```
+SYNC:HEARTBEAT:ts|<timestamp_microseconds>
+```
+
+**PRIMARY Heartbeat Sender**:
+```python
+# During therapy, PRIMARY sends heartbeat every 2 seconds
+if time.monotonic() - last_heartbeat_time >= HEARTBEAT_INTERVAL_SEC:
+    timestamp_us = int(time.monotonic_ns() // 1000)
+    ble.send("secondary", f"SYNC:HEARTBEAT:ts|{timestamp_us}")
+    last_heartbeat_time = time.monotonic()
+```
+
+**SECONDARY Heartbeat Receiver**:
+```python
+# SECONDARY monitors for heartbeat timeout
+if time.monotonic() - last_heartbeat_received > HEARTBEAT_TIMEOUT_SEC:
+    print("[SECONDARY] Heartbeat timeout - PRIMARY connection lost")
+    transition_to_state(TherapyState.CONNECTION_LOST)
+```
+
+**Recovery Behavior**:
+- SECONDARY detects timeout after 6 seconds (3 missed heartbeats)
+- Motors are stopped immediately for safety
+- LED shows red flashing pattern
+- Device requires manual restart
+
+#### Periodic Health Check
+
+**Connection Status Check** (ble_connection.py:734-777):
 ```python
 def check_connection_health():
     result = {"phone": False, "vr": False, "phone_lost": False, "vr_lost": False}

@@ -1276,8 +1276,6 @@ The boot sequence ensures that therapy can only begin when:
 
 - [API Reference](API_REFERENCE.md) - Complete API documentation
 - [Architecture Guide](ARCHITECTURE.md) - System design and patterns
-- [Deployment Guide](DEPLOYMENT.md) - Deployment procedures
-- [Troubleshooting Guide](TROUBLESHOOTING.md) - Detailed problem resolution
 
 ---
 

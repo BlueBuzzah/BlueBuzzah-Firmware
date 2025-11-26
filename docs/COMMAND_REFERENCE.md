@@ -21,6 +21,22 @@
 
 ---
 
+## Terminology Note
+
+This document uses the following device role terminology:
+- **PRIMARY** (also known as VL, left glove): Receives phone commands, forwards to SECONDARY
+- **SECONDARY** (also known as VR, right glove): Receives commands only via PRIMARY
+
+Code examples and protocol messages may show `"VL"` and `"VR"` as BLE advertisement names.
+
+---
+
+> **See Also**: [BLE Protocol](BLE_PROTOCOL.md) for mobile app developer documentation including connection setup, timing specifications, parsing examples, and troubleshooting.
+
+This document provides **firmware implementation details** with code line references. For client-side (mobile app) documentation, refer to the BLE Protocol guide.
+
+---
+
 ## Protocol Overview
 
 ### Message Format

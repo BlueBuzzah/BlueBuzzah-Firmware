@@ -18,6 +18,16 @@
 
 ---
 
+## Terminology Note
+
+This document uses the following device role terminology:
+- **PRIMARY** (also known as VL, left glove): Generates patterns, controls therapy timing
+- **SECONDARY** (also known as VR, right glove): Receives synchronization commands
+
+Code examples use `role = "PRIMARY"` or `"SECONDARY"` for device role parameters.
+
+---
+
 ## Therapy Overview
 
 ### Vibrotactile Coordinated Reset (vCR)
@@ -142,10 +152,9 @@ def rndp_sequence():
     pattern_left_rndp = random.choice(L_RNDP)   # e.g., (2, 0, 3, 1)
 
     if config.MIRROR:
-        # Symmetric bilateral pattern: RIGHT mirrors LEFT
-        pattern_right_rndp = [x - 4 for x in pattern_left_rndp]
-        # LEFT:  (2, 0, 3, 1) → RIGHT: (2-4, 0-4, 3-4, 1-4) = (-2, -4, -1, -3) ???
-        # CORRECTION: This appears incorrect - should be (6, 4, 7, 5) for fingers 4-7
+        # Symmetric bilateral pattern: RIGHT mirrors LEFT (same indices 0-4)
+        pattern_right_rndp = pattern_left_rndp.copy()
+        # LEFT: (2, 0, 3, 1) → RIGHT: (2, 0, 3, 1) - identical sequence
     else:
         # Independent bilateral pattern: RIGHT randomly chosen
         pattern_right_rndp = random.choice(R_RNDP)  # e.g., (5, 7, 4, 6)
@@ -157,22 +166,23 @@ def rndp_sequence():
 
 **Pattern Space**:
 - LEFT permutations: 4! = 24 patterns
-- RIGHT permutations: 4! = 24 patterns
-- Total combinations (non-mirrored): 24 × 24 = 576 unique patterns
-- Total combinations (mirrored): 24 patterns (L determines R)
+- RIGHT permutations: Always mirrors LEFT (bilateral symmetry required)
+- Total combinations: 24 patterns (L determines R)
 
-**Code Issue Identified** (line 128):
+**Bilateral Mirroring** (src/therapy.py:149-155):
+
+All patterns enforce bilateral mirroring - the same anatomical finger is always stimulated simultaneously on both hands. This is a therapeutic requirement, not a configurable option.
+
 ```python
-# CURRENT CODE (appears incorrect for MIRROR mode)
-pattern_right_rndp = [x - 4 for x in pattern_left_rndp]
+# Generate sequence (random permutation)
+left_sequence = list(range(num_fingers))
+_shuffle_in_place(left_sequence)
 
-# ISSUE: If pattern_left_rndp = (2, 0, 3, 1), then:
-# pattern_right_rndp = (2-4, 0-4, 3-4, 1-4) = (-2, -4, -1, -3) ❌
-
-# EXPECTED for MIRROR mode (fingers 4-7):
-# pattern_right_rndp = (6, 4, 7, 5) ✓
-# CORRECT formula: [x + 4 for x in pattern_left_rndp]
+# Bilateral mirroring: both hands use identical sequence
+right_sequence = left_sequence.copy()
 ```
+
+Both hands use finger indices 0-3, with the hardware wiring ensuring each channel maps to the same anatomical finger on both gloves (channel 0 = pinky on both, etc.).
 
 ### Seed Synchronization
 
@@ -426,7 +436,7 @@ def reconfigure_for_random_frequency(self, config):
         if driver:
             # Set actuator type
             if config.ACTUATOR_TYPE == "LRA":
-                driver.use_LRM()
+                driver.use_LRA()
             else:
                 driver.use_ERM()
 
@@ -682,7 +692,7 @@ MIRROR = True                      # Symmetric L/R patterns
 SYNC_LED = True                    # Flash LED at end of macrocycle
 
 # System Configuration
-STARTUP_WINDOW = 6                 # BLE command window (seconds)
+STARTUP_WINDOW = 30                # BLE command window (seconds)
 TIME_END = time.time() + 60 * TIME_SESSION  # Session end timestamp
 ```
 
@@ -758,7 +768,7 @@ def _cmd_profile_load(self, profile_id):
 def _configure_driver(driver, config):
     # 1. Set actuator type (LRA vs ERM)
     if config.ACTUATOR_TYPE == "LRA":
-        driver.use_LRM()  # Sets FEEDBACK_CTRL[7] = 1
+        driver.use_LRA()  # Sets FEEDBACK_CTRL[7] = 1
     else:
         driver.use_ERM()  # Sets FEEDBACK_CTRL[7] = 0
 
