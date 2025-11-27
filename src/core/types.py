@@ -238,12 +238,21 @@ class SyncCommandType(Enum):
         EXECUTE_BUZZ: Command to execute specific buzz sequence
         BUZZ_COMPLETE: Acknowledgment of buzz sequence completion
         FIRST_SYNC: Initial time synchronization during boot
+        ACK_SYNC_ADJ: Acknowledgment of synchronization adjustment
+        START_SESSION: Command to start therapy session
+        PAUSE_SESSION: Command to pause therapy session
+        RESUME_SESSION: Command to resume paused session
+        STOP_SESSION: Command to stop therapy session
+        DEACTIVATE: Command to deactivate device/connection
+        HEARTBEAT: Periodic heartbeat to verify connection
 
     Protocol flow:
         1. FIRST_SYNC - Establish initial time offset
         2. SYNC_ADJ - Periodic adjustments (every macrocycle)
-        3. EXECUTE_BUZZ - PRIMARY commands SECONDARY to buzz
-        4. BUZZ_COMPLETE - SECONDARY confirms completion
+        3. START_SESSION - Begin therapy session
+        4. EXECUTE_BUZZ - PRIMARY commands SECONDARY to buzz
+        5. BUZZ_COMPLETE - SECONDARY confirms completion
+        6. HEARTBEAT - Periodic connection verification
 
     Usage:
         command = SyncCommandType.EXECUTE_BUZZ
@@ -258,6 +267,12 @@ SyncCommandType.EXECUTE_BUZZ = SyncCommandType("EXECUTE_BUZZ", "EXECUTE_BUZZ")
 SyncCommandType.BUZZ_COMPLETE = SyncCommandType("BUZZ_COMPLETE", "BUZZ_COMPLETE")
 SyncCommandType.FIRST_SYNC = SyncCommandType("FIRST_SYNC", "FIRST_SYNC")
 SyncCommandType.ACK_SYNC_ADJ = SyncCommandType("ACK_SYNC_ADJ", "ACK_SYNC_ADJ")
+SyncCommandType.START_SESSION = SyncCommandType("START_SESSION", "START_SESSION")
+SyncCommandType.PAUSE_SESSION = SyncCommandType("PAUSE_SESSION", "PAUSE_SESSION")
+SyncCommandType.RESUME_SESSION = SyncCommandType("RESUME_SESSION", "RESUME_SESSION")
+SyncCommandType.STOP_SESSION = SyncCommandType("STOP_SESSION", "STOP_SESSION")
+SyncCommandType.DEACTIVATE = SyncCommandType("DEACTIVATE", "DEACTIVATE")
+SyncCommandType.HEARTBEAT = SyncCommandType("HEARTBEAT", "HEARTBEAT")
 
 
 class BatteryStatus:

@@ -9,7 +9,7 @@ This tool provides streamlined deployment of firmware to PRIMARY and SECONDARY
 devices with automatic role assignment, library installation, and validation.
 
 Features:
-    - Auto-detection of CIRCUITPY drives (macOS/Linux/Windows)
+    - Auto-detection of CIRCUITPY or BLUEBUZZAH drives (macOS/Linux/Windows)
     - Automatic role assignment for 2-device deployments
     - Interactive mode for manual device selection
     - Clean deployment option (wipe before deploy)
@@ -85,7 +85,7 @@ class DeviceRole(Enum):
 
 @dataclass
 class DeviceInfo:
-    """Information about a detected CIRCUITPY device."""
+    """Information about a detected CIRCUITPY or BLUEBUZZAH device."""
 
     path: Path
     role: Optional[DeviceRole] = None
@@ -171,12 +171,12 @@ class BlueBuzzahDeployer:
 
     def auto_detect_devices(self) -> List[DeviceInfo]:
         """
-        Auto-detect connected CIRCUITPY drives.
+        Auto-detect connected CIRCUITPY or BLUEBUZZAH drives.
 
-        Searches for CIRCUITPY volumes on all supported platforms:
-            - macOS: /Volumes/CIRCUITPY*
-            - Linux: /media/*/CIRCUITPY*
-            - Windows: Drive letters with CIRCUITPY
+        Searches for CIRCUITPY or BLUEBUZZAH volumes on all supported platforms:
+            - macOS: /Volumes/CIRCUITPY* or /Volumes/BLUEBUZZAH*
+            - Linux: /media/*/CIRCUITPY* or /media/*/BLUEBUZZAH*
+            - Windows: Drive letters with CIRCUITPY or BLUEBUZZAH
 
         Returns:
             List of DeviceInfo objects for detected devices
@@ -193,7 +193,7 @@ class BlueBuzzahDeployer:
                 devices = [
                     DeviceInfo(path=d)
                     for d in volumes.iterdir()
-                    if d.is_dir() and "CIRCUITPY" in d.name
+                    if d.is_dir() and ("CIRCUITPY" in d.name or "BLUEBUZZAH" in d.name)
                 ]
 
         elif sys.platform.startswith("linux"):  # Linux
@@ -205,7 +205,7 @@ class BlueBuzzahDeployer:
                             [
                                 DeviceInfo(path=d)
                                 for d in user_dir.iterdir()
-                                if d.is_dir() and "CIRCUITPY" in d.name
+                                if d.is_dir() and ("CIRCUITPY" in d.name or "BLUEBUZZAH" in d.name)
                             ]
                         )
 
@@ -214,7 +214,7 @@ class BlueBuzzahDeployer:
 
             c = wmi.WMI()
             for drive in c.Win32_LogicalDisk():
-                if drive.VolumeName and "CIRCUITPY" in drive.VolumeName:
+                if drive.VolumeName and ("CIRCUITPY" in drive.VolumeName or "BLUEBUZZAH" in drive.VolumeName):
                     devices.append(DeviceInfo(path=Path(f"{drive.DeviceID}\\")))
 
         return sorted(devices, key=lambda d: d.path.name)
@@ -610,15 +610,15 @@ class BlueBuzzahDeployer:
         print("=" * 50)
 
         # Auto-detect devices
-        print("\nScanning for CIRCUITPY devices...")
+        print("\nScanning for CIRCUITPY/BLUEBUZZAH devices...")
         devices = self.auto_detect_devices()
 
         if len(devices) == 0:
-            print(f"{Colors.FAIL}✗ No CIRCUITPY devices found!{Colors.ENDC}")
+            print(f"{Colors.FAIL}✗ No CIRCUITPY/BLUEBUZZAH devices found!{Colors.ENDC}")
             print("\nTroubleshooting:")
             print("  1. Ensure device is connected via USB")
             print("  2. Check that CircuitPython is installed")
-            print("  3. Verify CIRCUITPY drive is mounted")
+            print("  3. Verify CIRCUITPY or BLUEBUZZAH drive is mounted")
             return False
 
         print(f"{Colors.OKGREEN}✓ Found {len(devices)} device(s){Colors.ENDC}")

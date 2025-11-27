@@ -12,9 +12,9 @@ This module:
 - Handles top-level errors and recovery
 - Monitors memory usage
 
-The code.py file is automatically executed by CircuitPython on device boot.
+The main.py file is automatically executed by CircuitPython on device boot.
 
-Module: code
+Module: main
 Version: 2.0.0
 Author: BlueBuzzah Team
 """
@@ -166,7 +166,7 @@ def run_application(
         pass
 
 
-def main_async():
+def run_main():
     """
     Main entry point.
 
@@ -211,13 +211,13 @@ def main_async():
 
 def main():
     """
-    Synchronous main entry point.
+    Application entry point.
 
-    Runs the main application logic.
+    Called when CircuitPython executes main.py on boot.
     """
     try:
         # Run main logic
-        main_async()
+        run_main()
 
     except Exception as e:
         print()

@@ -78,6 +78,9 @@ class I2CMultiplexer:
         active_channel: Currently selected channel
     """
 
+    # I2C lock timeout to prevent infinite busy-wait
+    I2C_LOCK_TIMEOUT_SEC = 0.1  # 100ms
+
     def __init__(self, i2c, address= I2C_MULTIPLEXER_ADDR):
         """
         Initialize I2C multiplexer.
@@ -94,7 +97,26 @@ class I2CMultiplexer:
         try:
             self.deselect_all()
         except Exception as e:
-            raise RuntimeError(f"Multiplexer not found at 0x{address:02X}: {e}")
+            raise RuntimeError("Multiplexer not found at 0x{:02X}: {}".format(address, e))
+
+    def _acquire_i2c_lock(self, timeout_sec=None):
+        """
+        Acquire I2C lock with timeout to prevent infinite busy-wait.
+
+        Args:
+            timeout_sec: Timeout in seconds (default: I2C_LOCK_TIMEOUT_SEC)
+
+        Raises:
+            RuntimeError: If lock cannot be acquired within timeout
+        """
+        if timeout_sec is None:
+            timeout_sec = self.I2C_LOCK_TIMEOUT_SEC
+
+        start = time.monotonic()
+        while not self.i2c.try_lock():
+            if time.monotonic() - start > timeout_sec:
+                raise RuntimeError("I2C lock timeout after {}s".format(timeout_sec))
+            time.sleep(0.001)  # 1ms yield between attempts
 
     def select_channel(self, channel):
         """
@@ -105,36 +127,40 @@ class I2CMultiplexer:
 
         Raises:
             ValueError: If channel out of range
+            RuntimeError: If I2C lock timeout or communication fails
         """
         if not (0 <= channel <= 7):
-            raise ValueError(f"Channel {channel} out of range (0-7)")
+            raise ValueError("Channel {} out of range (0-7)".format(channel))
 
         try:
             channel_mask = 1 << channel
-            # Acquire I2C lock for CircuitPython
-            while not self.i2c.try_lock():
-                pass
+            # Acquire I2C lock with timeout (prevents infinite busy-wait)
+            self._acquire_i2c_lock()
             try:
                 self.i2c.writeto(self.address, bytes([channel_mask]))
                 self.active_channel = channel
             finally:
                 self.i2c.unlock()
         except Exception as e:
-            raise RuntimeError(f"Failed to select channel {channel}: {e}")
+            raise RuntimeError("Failed to select channel {}: {}".format(channel, e))
 
     def deselect_all(self):
-        """Disable all multiplexer channels."""
+        """
+        Disable all multiplexer channels.
+
+        Raises:
+            RuntimeError: If I2C lock timeout or communication fails
+        """
         try:
-            # Acquire I2C lock for CircuitPython
-            while not self.i2c.try_lock():
-                pass
+            # Acquire I2C lock with timeout (prevents infinite busy-wait)
+            self._acquire_i2c_lock()
             try:
                 self.i2c.writeto(self.address, bytes([0x00]))
                 self.active_channel = None
             finally:
                 self.i2c.unlock()
         except Exception as e:
-            raise RuntimeError(f"Failed to deselect channels: {e}")
+            raise RuntimeError("Failed to deselect channels: {}".format(e))
 
 
 # ============================================================================
@@ -198,37 +224,59 @@ class DRV2605Controller:
             finger: Finger index (0-4)
         """
         if not (0 <= finger < 5):
-            raise ValueError(f"Finger {finger} out of range (0-4)")
+            raise ValueError("Finger {} out of range (0-4)".format(finger))
 
-        self.multiplexer.select_channel(finger)
+        # CRITICAL FIX: Retry I2C initialization up to 3 times
+        # Finger 4 (channel 4) may have longer I2C path or timing issues
+        max_retries = 3
+        for attempt in range(max_retries):
+            self.multiplexer.select_channel(finger)
 
-        try:
-            # Exit standby
-            self._write_register(self.REG_MODE, 0x00)
+            try:
+                # Exit standby
+                self._write_register(self.REG_MODE, 0x00)
 
-            # DRV2605 datasheet section 7.4.2:
-            # "Wait 5ms after exiting standby before writing to registers"
-            time.sleep(0.005)
+                # DRV2605 datasheet section 7.4.2:
+                # "Wait 5ms after exiting standby before writing to registers"
+                # CRITICAL FIX: Increase delay for channel 4 (longer I2C path)
+                if finger == 4:
+                    time.sleep(0.010)  # 10ms for finger 4
+                else:
+                    time.sleep(0.005)  # 5ms for others
 
-            # Configure for actuator type
-            if self.actuator_type == ActuatorType.LRA:
-                self._write_register(self.REG_FEEDBACK_CTRL, 0x80)  # LRA mode
-                self._write_register(self.REG_CONTROL3, 0x01)  # LRA mode bit
-            else:
-                self._write_register(self.REG_FEEDBACK_CTRL, 0x00)  # ERM mode
-                self._write_register(self.REG_CONTROL3, 0x00)  # ERM mode
+                # Configure for actuator type
+                if self.actuator_type == ActuatorType.LRA:
+                    self._write_register(self.REG_FEEDBACK_CTRL, 0x80)  # LRA mode
+                    self._write_register(self.REG_CONTROL3, 0x01)  # LRA mode bit
+                else:
+                    self._write_register(self.REG_FEEDBACK_CTRL, 0x00)  # ERM mode
+                    self._write_register(self.REG_CONTROL3, 0x00)  # ERM mode
 
-            # Set RTP mode
-            self._write_register(self.REG_MODE, self.MODE_REALTIME_PLAYBACK)
+                # Set RTP mode
+                self._write_register(self.REG_MODE, self.MODE_REALTIME_PLAYBACK)
 
-            # Set frequency if LRA
-            if self.actuator_type == ActuatorType.LRA:
-                self.set_frequency(finger, self.default_frequency)
+                # Set frequency if LRA
+                if self.actuator_type == ActuatorType.LRA:
+                    self.set_frequency(finger, self.default_frequency)
 
-            self.active_fingers[finger] = False
+                self.active_fingers[finger] = False
 
-        finally:
-            self.multiplexer.deselect_all()
+                # Success - break out of retry loop
+                break
+
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    # Retry after short delay
+                    print("[WARNING] Finger {} init attempt {} failed: {}, retrying...".format(finger, attempt + 1, e))
+                    time.sleep(0.050)  # 50ms delay before retry
+                else:
+                    # Final attempt failed - mark as disabled
+                    print("[ERROR] Finger {} init failed after {} attempts: {}".format(finger, max_retries, e))
+                    self.active_fingers[finger] = None  # Mark as disabled
+                    raise
+
+            finally:
+                self.multiplexer.deselect_all()
 
     def activate(self, finger, amplitude):
         """
@@ -239,9 +287,14 @@ class DRV2605Controller:
             amplitude: Vibration amplitude (0-100%)
         """
         if not (0 <= finger < 5):
-            raise ValueError(f"Finger {finger} out of range (0-4)")
+            raise ValueError("Finger {} out of range (0-4)".format(finger))
         if not (0 <= amplitude <= MAX_AMPLITUDE):
-            raise ValueError(f"Amplitude {amplitude} out of range (0-{MAX_AMPLITUDE})")
+            raise ValueError("Amplitude {} out of range (0-{})".format(amplitude, MAX_AMPLITUDE))
+
+        # CRITICAL FIX: Skip if finger is disabled (None)
+        if self.active_fingers.get(finger, False) is None:
+            # Finger is disabled due to init failure - skip silently
+            return
 
         # Convert 0-100% to 0-127
         rtp_value = int((amplitude / 100.0) * 127)
@@ -251,6 +304,11 @@ class DRV2605Controller:
         try:
             self._write_register(self.REG_RTP_INPUT, rtp_value)
             self.active_fingers[finger] = True
+        except Exception as e:
+            # Mark finger as disabled on persistent errors
+            print("[ERROR] Finger {} activation failed: {}, disabling".format(finger, e))
+            self.active_fingers[finger] = None
+            raise
         finally:
             self.multiplexer.deselect_all()
 
@@ -262,13 +320,23 @@ class DRV2605Controller:
             finger: Finger index (0-4)
         """
         if not (0 <= finger < 5):
-            raise ValueError(f"Finger {finger} out of range (0-4)")
+            raise ValueError("Finger {} out of range (0-4)".format(finger))
+
+        # CRITICAL FIX: Skip if finger is disabled (None)
+        if self.active_fingers.get(finger, False) is None:
+            # Finger is disabled due to init failure - skip silently
+            return
 
         self.multiplexer.select_channel(finger)
 
         try:
             self._write_register(self.REG_RTP_INPUT, 0x00)
             self.active_fingers[finger] = False
+        except Exception as e:
+            # Mark finger as disabled on persistent errors
+            print("[ERROR] Finger {} deactivation failed: {}, disabling".format(finger, e))
+            self.active_fingers[finger] = None
+            raise
         finally:
             self.multiplexer.deselect_all()
 
@@ -281,9 +349,9 @@ class DRV2605Controller:
             frequency: Resonant frequency (150-250 Hz)
         """
         if not (0 <= finger < 5):
-            raise ValueError(f"Finger {finger} out of range (0-4)")
+            raise ValueError("Finger {} out of range (0-4)".format(finger))
         if not (MIN_FREQUENCY_HZ <= frequency <= MAX_FREQUENCY_HZ):
-            raise ValueError(f"Frequency {frequency} Hz out of range")
+            raise ValueError("Frequency {} Hz out of range".format(frequency))
 
         self.frequencies[finger] = frequency
 
@@ -309,10 +377,20 @@ class DRV2605Controller:
         """
         return self.active_fingers.get(finger, False)
 
-    def stop_all(self):
-        """Stop all haptic motors immediately."""
+    def stop_all(self, force_all=False):
+        """
+        Stop all haptic motors immediately.
+
+        Args:
+            force_all: If True, turn off ALL motors regardless of tracked state.
+                      Use at boot to ensure clean state. Default: False
+        """
         for finger in range(5):
-            if self.active_fingers.get(finger, False):
+            # Force mode: turn off unconditionally (for boot/shutdown)
+            # Normal mode: only turn off if tracked as active
+            should_stop = force_all or self.active_fingers.get(finger, False)
+
+            if should_stop:
                 try:
                     self.multiplexer.select_channel(finger)
                     self._write_register(self.REG_RTP_INPUT, 0x00)
@@ -323,8 +401,11 @@ class DRV2605Controller:
                     self.multiplexer.deselect_all()
 
     def emergency_stop(self):
-        """Emergency stop all motors (synchronous version)."""
-        self.stop_all()
+        """
+        Emergency stop all motors (synchronous version).
+        Forces unconditional shutoff of ALL motors.
+        """
+        self.stop_all(force_all=True)
 
     def _write_register(self, register, value):
         """
@@ -337,15 +418,18 @@ class DRV2605Controller:
         try:
             i2c = self.multiplexer.i2c
             buffer = bytearray([register, value])
-            # Acquire I2C lock for CircuitPython
+            # Acquire I2C lock with timeout to prevent infinite busy-wait
+            timeout_start = time.monotonic()
             while not i2c.try_lock():
-                pass
+                if time.monotonic() - timeout_start > 0.1:  # 100ms timeout
+                    raise RuntimeError("I2C lock timeout writing to register 0x{:02X}".format(register))
+                time.sleep(0.001)  # 1ms yield between attempts
             try:
                 i2c.writeto(self.i2c_addr, buffer)
             finally:
                 i2c.unlock()
         except Exception as e:
-            raise RuntimeError(f"Failed to write register 0x{register:02X}: {e}")
+            raise RuntimeError("Failed to write register 0x{:02X}: {}".format(register, e))
 
 
 # ============================================================================

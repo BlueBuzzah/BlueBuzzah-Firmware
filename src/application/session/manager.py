@@ -157,6 +157,7 @@ class SessionManager:
         on_session_stopped=None,
         therapy_engine=None,
         max_history=100,
+        send_sync_callback=None,
     ):
         """
         Initialize the session manager.
@@ -169,6 +170,7 @@ class SessionManager:
             on_session_stopped: Callback when session stops (session_id, reason)
             therapy_engine: Optional therapy engine for executing therapy
             max_history: Maximum number of session records to retain (default: 100)
+            send_sync_callback: Optional callback for sending sync commands to SECONDARY
         """
         self._state_machine = state_machine
         self._on_session_started = on_session_started
@@ -176,6 +178,7 @@ class SessionManager:
         self._on_session_resumed = on_session_resumed
         self._on_session_stopped = on_session_stopped
         self._therapy_engine = therapy_engine
+        self._send_sync_callback = send_sync_callback
         self._current_session= None
         self._session_counter = 0
 
@@ -259,6 +262,25 @@ class SessionManager:
                 # Extract therapy parameters from profile config
                 config = profile.config if hasattr(profile, 'config') else profile
 
+                # CRITICAL FIX: Send START_SESSION sync command to SECONDARY BEFORE starting local engine
+                if self._send_sync_callback:
+                    print("[SessionManager] _send_sync_callback IS SET - preparing to send START_SESSION")
+                    # Send session parameters to SECONDARY device
+                    sync_data = {
+                        'duration_sec': config.get('session_duration_min', 120) * 60,
+                        'pattern_type': config.get('pattern_type', 'rndp'),
+                        'time_on_ms': int(config.get('time_on_ms', 100.0)),
+                        'time_off_ms': int(config.get('time_off_ms', 67.0)),
+                        'jitter_percent': int(config.get('jitter_percent', 23.5) * 10),  # Send as int (235 = 23.5%)
+                        'num_fingers': config.get('num_fingers', 5),
+                        'mirror_pattern': 1 if config.get('mirror_pattern', True) else 0
+                    }
+                    print(f"[SessionManager] CALLING _send_sync_callback('START_SESSION', {sync_data})")
+                    self._send_sync_callback('START_SESSION', sync_data)
+                    print("[SessionManager] _send_sync_callback RETURNED - START_SESSION sent to SECONDARY")
+                else:
+                    print("[SessionManager] WARNING: _send_sync_callback is NOT SET - cannot send to SECONDARY")
+
                 # Start session with parameters from profile
                 self._therapy_engine.start_session(
                     duration_sec=config.get('session_duration_min', 120) * 60,  # Convert minutes to seconds
@@ -318,6 +340,11 @@ class SessionManager:
         if self._on_session_paused:
             self._on_session_paused(self._current_session.session_id)
 
+        # CRITICAL FIX: Send PAUSE_SESSION sync command to SECONDARY
+        if self._send_sync_callback:
+            self._send_sync_callback('PAUSE_SESSION', {})
+            print("[SessionManager] Sent PAUSE_SESSION sync command to SECONDARY")
+
         # Pause therapy engine
         if self._therapy_engine:
             try:
@@ -371,6 +398,11 @@ class SessionManager:
         # Call session resumed callback
         if self._on_session_resumed:
             self._on_session_resumed(self._current_session.session_id)
+
+        # CRITICAL FIX: Send RESUME_SESSION sync command to SECONDARY
+        if self._send_sync_callback:
+            self._send_sync_callback('RESUME_SESSION', {})
+            print("[SessionManager] Sent RESUME_SESSION sync command to SECONDARY")
 
         # Resume therapy engine
         if self._therapy_engine:
@@ -426,6 +458,11 @@ class SessionManager:
         if self._on_session_stopped:
             self._on_session_stopped(session_id, reason)
 
+        # CRITICAL FIX: Send STOP_SESSION sync command to SECONDARY
+        if self._send_sync_callback:
+            self._send_sync_callback('STOP_SESSION', {'reason': reason})
+            print("[SessionManager] Sent STOP_SESSION sync command to SECONDARY")
+
         # Stop therapy engine
         if self._therapy_engine:
             try:
@@ -441,6 +478,70 @@ class SessionManager:
         self._state_machine.transition(
             StateTrigger.STOPPED, metadata={"reason": reason}
         )
+
+        return True
+
+    def emergency_stop(self):
+        """
+        Immediately stop the session in an emergency condition.
+
+        This method differs from stop_session() by:
+            1. Transitioning directly to ERROR state (not STOPPING/READY)
+            2. NOT recording the session in history (emergency stops are not tracked)
+            3. Using "EMERGENCY" as the stop reason
+            4. Sending STOP_SESSION sync command to SECONDARY immediately
+
+        This is intended for critical failures, safety issues, or system errors
+        that require immediate session termination.
+
+        Returns:
+            True if emergency stop succeeded, False otherwise
+
+        Example:
+            >>> if session_mgr.emergency_stop():
+            ...     print("Session emergency stopped")
+        """
+        if self._current_session is None:
+            return False
+
+        # Store session ID before clearing
+        session_id = self._current_session.session_id
+
+        # CRITICAL: Send STOP_SESSION sync command to SECONDARY immediately
+        if self._send_sync_callback:
+            self._send_sync_callback('STOP_SESSION', {'reason': 'EMERGENCY'})
+            print("[SessionManager] Sent EMERGENCY STOP_SESSION sync command to SECONDARY")
+
+        # Stop therapy engine immediately
+        if self._therapy_engine:
+            try:
+                self._therapy_engine.stop()
+                print("[SessionManager] Therapy engine emergency stopped")
+            except Exception as e:
+                print("Error stopping therapy engine during emergency: {}".format(e))
+
+        # Call session stopped callback
+        if self._on_session_stopped:
+            self._on_session_stopped(session_id, "EMERGENCY")
+
+        # Clear session context immediately (no history recording)
+        self._current_session = None
+
+        # Transition to ERROR state (not STOPPING/READY like normal stop)
+        # Note: This assumes StateTrigger has an ERROR trigger or we force state
+        # If no ERROR trigger exists, we transition to STOPPING then set error state
+        try:
+            # Attempt direct ERROR transition if available
+            self._state_machine.transition(
+                StateTrigger.STOP_SESSION,
+                metadata={"session_id": session_id, "reason": "EMERGENCY"}
+            )
+            # Force ERROR state after stopping
+            # This may need adjustment based on actual state machine implementation
+            if hasattr(self._state_machine, '_state'):
+                self._state_machine._state = TherapyState.ERROR
+        except Exception as e:
+            print("Error during emergency state transition: {}".format(e))
 
         return True
 

@@ -25,13 +25,21 @@ import asyncio
 import sys
 from pathlib import Path
 from typing import Optional
+from unittest.mock import MagicMock
 
 # Add src directory to Python path
 src_path = Path(__file__).parent.parent / "src"
 sys.path.insert(0, str(src_path))
 
+# Mock micropython module before importing code that requires it
+if 'micropython' not in sys.modules:
+    micropython_mock = MagicMock()
+    micropython_mock.const = lambda x: x
+    sys.modules['micropython'] = micropython_mock
+
 # Import core components
-from core.types import DeviceRole, ActuatorType
+from core.types import DeviceRole, ActuatorType, TherapyState
+from state import TherapyStateMachine, StateTrigger
 
 # Import mocks
 from tests.mocks.hardware import (
@@ -103,8 +111,8 @@ def mock_haptic_controller():
         MockHapticController: Mock haptic controller with tracking
 
     Usage:
-        async def test_haptic_activation(mock_haptic_controller):
-            await mock_haptic_controller.activate(finger=0, amplitude=75)
+        def test_haptic_activation(mock_haptic_controller):
+            mock_haptic_controller.activate(finger=0, amplitude=75)
             assert mock_haptic_controller.is_active(0)
             assert mock_haptic_controller.get_activation_count() == 1
     """

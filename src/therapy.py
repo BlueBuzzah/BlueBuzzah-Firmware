@@ -17,6 +17,32 @@ import random
 import time
 
 # ============================================================================
+# Utility Functions
+# ============================================================================
+
+
+def _shuffle_in_place(sequence):
+    """
+    In-place Fisher-Yates shuffle for CircuitPython.
+
+    CircuitPython's random module does not include shuffle(), so we implement
+    the Fisher-Yates algorithm manually. This operates in-place to avoid
+    memory allocation.
+
+    Args:
+        sequence: List to shuffle in-place
+
+    Memory: Zero allocations (modifies list in-place)
+    """
+    n = len(sequence)
+    for i in range(n - 1, 0, -1):
+        # random.randint(a, b) returns random integer N such that a <= N <= b
+        j = random.randint(0, i)
+        # Swap elements at i and j
+        sequence[i], sequence[j] = sequence[j], sequence[i]
+
+
+# ============================================================================
 # Pattern Data Structures
 # ============================================================================
 
@@ -81,12 +107,12 @@ class Pattern:
 
 
 def generate_random_permutation(
-    num_fingers= 5,
-    time_on_ms= 100.0,
-    time_off_ms= 67.0,
-    jitter_percent= 0.0,
-    mirror_pattern= True,
-    random_seed= None,
+    num_fingers=5,
+    time_on_ms=100.0,
+    time_off_ms=67.0,
+    jitter_percent=0.0,
+    mirror_pattern=True,
+    random_seed=None,
 ):
     """
     Generate random permutation (RNDP) pattern.
@@ -98,19 +124,25 @@ def generate_random_permutation(
         time_on_ms: Duration of each vibration burst
         time_off_ms: Duration between bursts
         jitter_percent: Timing jitter percentage for noisy vCR (0-100)
-        mirror_pattern: If True, use same sequence for both hands
+        mirror_pattern: If True, both hands use same sequence (mirrored bilateral).
+                        If False, each hand gets independent random sequence.
+                        Research: Use True for noisy vCR, False for regular vCR.
         random_seed: Optional random seed for reproducibility
 
     Returns:
         Pattern with randomized finger sequences
 
     Usage:
+        # Noisy vCR (mirrored - same finger on both hands)
         pattern = generate_random_permutation(
-            num_fingers=5,
-            time_on_ms=100,
-            time_off_ms=67,
             jitter_percent=23.5,
             mirror_pattern=True
+        )
+
+        # Regular vCR (non-mirrored - independent sequences per hand)
+        pattern = generate_random_permutation(
+            jitter_percent=0.0,
+            mirror_pattern=False
         )
     """
     # CircuitPython: Use module-level random.seed() instead of Random class
@@ -123,14 +155,18 @@ def generate_random_permutation(
 
     # Generate left hand sequence (random permutation)
     left_sequence = list(range(num_fingers))
-    random.shuffle(left_sequence)
+    _shuffle_in_place(left_sequence)
 
-    # Generate right hand sequence
+    # Generate right hand sequence based on mirror setting
     if mirror_pattern:
+        # Mirrored: same finger on both hands (for noisy vCR)
+        # Avoids bilateral masking interference
         right_sequence = left_sequence.copy()
     else:
+        # Non-mirrored: independent random sequence (for regular vCR)
+        # Increases spatial randomization for synaptic decoupling
         right_sequence = list(range(num_fingers))
-        random.shuffle(right_sequence)
+        _shuffle_in_place(right_sequence)
 
     # Generate timing with optional jitter
     timing_ms = []
@@ -156,12 +192,12 @@ def generate_random_permutation(
 
 
 def generate_sequential_pattern(
-    num_fingers= 5,
-    time_on_ms= 100.0,
-    time_off_ms= 67.0,
-    jitter_percent= 0.0,
-    mirror_pattern= True,
-    reverse= False,
+    num_fingers=5,
+    time_on_ms=100.0,
+    time_off_ms=67.0,
+    jitter_percent=0.0,
+    mirror_pattern=True,
+    reverse=False,
 ):
     """
     Generate sequential pattern.
@@ -173,7 +209,9 @@ def generate_sequential_pattern(
         time_on_ms: Duration of each vibration burst
         time_off_ms: Duration between bursts
         jitter_percent: Timing jitter percentage (0-100)
-        mirror_pattern: If True, use same sequence for both hands
+        mirror_pattern: If True, both hands use same sequence (mirrored bilateral).
+                        If False, right hand uses reverse of left sequence.
+                        Research: Use True for noisy vCR, False for regular vCR.
         reverse: If True, generate reverse order (4 → 0)
 
     Returns:
@@ -182,11 +220,10 @@ def generate_sequential_pattern(
     Usage:
         pattern = generate_sequential_pattern(
             num_fingers=5,
+            mirror_pattern=True,
             reverse=False  # 0 → 1 → 2 → 3 → 4
         )
     """
-    # CircuitPython: No Random class needed for sequential patterns
-
     # Calculate cycle parameters
     cycle_duration_ms = time_on_ms + time_off_ms
     inter_burst_interval_ms = 4 * cycle_duration_ms
@@ -196,8 +233,15 @@ def generate_sequential_pattern(
     if reverse:
         sequence.reverse()
 
+    # Generate sequences based on mirror setting
     left_sequence = sequence.copy()
-    right_sequence = sequence.copy()
+    if mirror_pattern:
+        # Mirrored: same finger on both hands
+        right_sequence = sequence.copy()
+    else:
+        # Non-mirrored: right hand uses opposite order
+        right_sequence = sequence.copy()
+        right_sequence.reverse()
 
     # Generate timing with optional jitter
     timing_ms = []
@@ -263,7 +307,7 @@ def generate_mirrored_pattern(
     # Generate base sequence
     sequence = list(range(num_fingers))
     if randomize:
-        random.shuffle(sequence)
+        _shuffle_in_place(sequence)
 
     # Mirror to both hands
     left_sequence = sequence.copy()
@@ -359,6 +403,9 @@ class TherapyEngine:
         self.total_activations= 0
         self.timing_drift_ms= 0.0
 
+        # Sequence tracking for command loss detection
+        self._buzz_sequence_id = 0
+
         # Callbacks
         self._send_command_callback= None
         self._activate_callback= None
@@ -404,12 +451,12 @@ class TherapyEngine:
     def start_session(
         self,
         duration_sec,
-        pattern_type= "rndp",
-        time_on_ms= 100.0,
-        time_off_ms= 67.0,
-        jitter_percent= 23.5,
-        num_fingers= 5,
-        mirror_pattern= True,
+        pattern_type="rndp",
+        time_on_ms=100.0,
+        time_off_ms=67.0,
+        jitter_percent=23.5,
+        num_fingers=5,
+        mirror_pattern=True,
     ):
         """
         Start therapy session.
@@ -421,13 +468,24 @@ class TherapyEngine:
             time_off_ms: Time between bursts
             jitter_percent: Timing jitter for noisy vCR (0-100)
             num_fingers: Number of fingers per hand (1-5)
-            mirror_pattern: Use mirrored bilateral pattern
+            mirror_pattern: If True, same finger on both hands (noisy vCR).
+                            If False, independent sequences (regular vCR).
 
         Usage:
+            # Noisy vCR (mirrored bilateral)
             engine.start_session(
                 duration_sec=7200,
                 pattern_type='rndp',
-                jitter_percent=23.5
+                jitter_percent=23.5,
+                mirror_pattern=True
+            )
+
+            # Regular vCR (non-mirrored bilateral)
+            engine.start_session(
+                duration_sec=7200,
+                pattern_type='rndp',
+                jitter_percent=0.0,
+                mirror_pattern=False
             )
         """
         # Reset state
@@ -522,14 +580,18 @@ class TherapyEngine:
 
             # Send sync command to SECONDARY (if PRIMARY)
             if self._send_command_callback:
+                # Include sequence number and timestamp for command loss detection
                 self._send_command_callback(
                     "EXECUTE_BUZZ",
                     {
                         "left_finger": left_finger,
                         "right_finger": right_finger,
                         "amplitude": 100,
+                        "seq": self._buzz_sequence_id,
+                        "timestamp": int(time.monotonic_ns() // 1000),  # Microseconds
                     },
                 )
+                self._buzz_sequence_id += 1
 
             # Activate local motors
             if self._activate_callback:
@@ -556,9 +618,15 @@ class TherapyEngine:
             self._pattern_index += 1
 
     def _generate_next_pattern(self):
-        """Generate the next pattern based on configuration."""
+        """Generate the next pattern based on configuration.
+
+        Bilateral mirroring is controlled by the mirror_pattern config:
+        - True: Same finger on both hands (noisy vCR)
+        - False: Independent sequences per hand (regular vCR)
+        """
         config = self._pattern_config
         pattern_type = config.get("pattern_type", "rndp")
+        mirror = config.get("mirror_pattern", True)
 
         if pattern_type == "rndp":
             self._current_pattern = generate_random_permutation(
@@ -566,7 +634,7 @@ class TherapyEngine:
                 time_on_ms=config.get("time_on_ms", 100.0),
                 time_off_ms=config.get("time_off_ms", 67.0),
                 jitter_percent=config.get("jitter_percent", 23.5),
-                mirror_pattern=config.get("mirror_pattern", True),
+                mirror_pattern=mirror,
             )
         elif pattern_type == "sequential":
             self._current_pattern = generate_sequential_pattern(
@@ -574,7 +642,7 @@ class TherapyEngine:
                 time_on_ms=config.get("time_on_ms", 100.0),
                 time_off_ms=config.get("time_off_ms", 67.0),
                 jitter_percent=config.get("jitter_percent", 0.0),
-                mirror_pattern=config.get("mirror_pattern", True),
+                mirror_pattern=mirror,
             )
         elif pattern_type == "mirrored":
             self._current_pattern = generate_mirrored_pattern(

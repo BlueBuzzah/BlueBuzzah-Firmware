@@ -224,8 +224,8 @@ class MenuController:
             battery_secondary = 0.0  # Placeholder - query from SECONDARY
 
             # Get session status
-            session_state = self.session_mgr.get_state()
-            status = str(session_state).upper()
+            session_active = self.session_mgr.is_session_active()
+            status = "ACTIVE" if session_active else "IDLE"
 
             return self.format_response(
                 ROLE=self.device_role,
@@ -304,7 +304,7 @@ class MenuController:
             params[0]: Profile ID (1, 2, or 3)
         """
         # Validate session state
-        if self.session_mgr.is_active():
+        if self.session_mgr.is_session_active():
             return self.format_error("Cannot modify parameters during active session")
 
         if not params:
@@ -368,7 +368,7 @@ class MenuController:
         Format: PROFILE_CUSTOM:KEY1:VALUE1:KEY2:VALUE2:...
         """
         # Validate session state
-        if self.session_mgr.is_active():
+        if self.session_mgr.is_session_active():
             return self.format_error("Cannot modify parameters during active session")
 
         if len(params) < 2 or len(params) % 2 != 0:
@@ -410,7 +410,7 @@ class MenuController:
         """
         try:
             # Check prerequisites
-            if self.session_mgr.is_active():
+            if self.session_mgr.is_session_active():
                 return self.format_error("Session already active")
 
             # Check battery levels
@@ -423,8 +423,13 @@ class MenuController:
                 # TODO: Check if SECONDARY is connected
                 pass
 
-            # Start session
-            success = self.session_mgr.start_session()
+            # Get current profile to pass to start_session
+            profile = self.profile_mgr.get_current_profile()
+            if profile is None:
+                return self.format_error("No profile loaded")
+
+            # Start session with profile
+            success = self.session_mgr.start_session(profile)
 
             if success:
                 return self.format_response(SESSION_STATUS="RUNNING")
@@ -441,7 +446,7 @@ class MenuController:
         Pause active therapy session.
         """
         try:
-            if not self.session_mgr.is_active():
+            if not self.session_mgr.is_session_active():
                 return self.format_error("No active session")
 
             success = self.session_mgr.pause_session()
@@ -461,8 +466,14 @@ class MenuController:
         Resume paused therapy session.
         """
         try:
-            if not self.session_mgr.is_paused():
-                return self.format_error("No paused session")
+            # Check if session is active and paused
+            session_info = self.session_mgr.get_session_info()
+            if session_info is None:
+                return self.format_error("No active session")
+
+            # Check if session is actually paused
+            if not hasattr(session_info.state, 'can_resume') or not session_info.state.can_resume():
+                return self.format_error("Session is not paused")
 
             success = self.session_mgr.resume_session()
 
@@ -499,13 +510,25 @@ class MenuController:
         Get current session status with elapsed time and progress.
         """
         try:
-            status = self.session_mgr.get_status()
+            session_info = self.session_mgr.get_session_info()
+
+            if session_info is None:
+                # No active session, return IDLE status
+                return self.format_response(
+                    SESSION_STATUS="IDLE",
+                    ELAPSED="0",
+                    TOTAL="0",
+                    PROGRESS="0"
+                )
+
+            # Get state name (convert TherapyState enum to string)
+            state_name = str(session_info.state).split('.')[-1].upper()
 
             return self.format_response(
-                SESSION_STATUS=status.state.upper(),
-                ELAPSED=str(int(status.elapsed_sec)),
-                TOTAL=str(int(status.total_sec)),
-                PROGRESS=str(int(status.progress_percent))
+                SESSION_STATUS=state_name,
+                ELAPSED=str(session_info.elapsed_sec),
+                TOTAL=str(session_info.duration_sec),
+                PROGRESS=str(int(session_info.progress_percentage()))
             )
 
         except Exception as e:
@@ -525,7 +548,7 @@ class MenuController:
         Format: PARAM_SET:PARAM_NAME:VALUE
         """
         # Validate session state
-        if self.session_mgr.is_active():
+        if self.session_mgr.is_session_active():
             return self.format_error("Cannot modify parameters during active session")
 
         if len(params) < 2:

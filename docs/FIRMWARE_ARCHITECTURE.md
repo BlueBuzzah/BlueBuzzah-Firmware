@@ -363,10 +363,7 @@ The system has 11 distinct states defined in `core/types.py`:
 stateDiagram-v2
     [*] --> IDLE
 
-    IDLE --> CONNECTING: POWER_ON/CONNECT
-    CONNECTING --> READY: CONNECTED
-    CONNECTING --> ERROR: ERROR_OCCURRED
-    CONNECTING --> IDLE: DISCONNECTED
+    IDLE --> READY: CONNECTED (boot sequence)
 
     READY --> RUNNING: START_SESSION
     READY --> ERROR: ERROR_OCCURRED
@@ -384,14 +381,14 @@ stateDiagram-v2
     PAUSED --> STOPPING: STOP_SESSION
     PAUSED --> CONNECTION_LOST: DISCONNECTED
 
-    LOW_BATTERY --> RUNNING: BATTERY_OK
-    LOW_BATTERY --> CRITICAL_BATTERY: BATTERY_CRITICAL
+    LOW_BATTERY --> RUNNING: BATTERY_OK (force_state)
+    LOW_BATTERY --> CRITICAL_BATTERY: BATTERY_CRITICAL (force_state)
     LOW_BATTERY --> STOPPING: STOP_SESSION
 
     CRITICAL_BATTERY --> IDLE: FORCED_SHUTDOWN
 
-    CONNECTION_LOST --> READY: RECONNECTED
-    CONNECTION_LOST --> IDLE: RECONNECT_FAILED
+    CONNECTION_LOST --> READY: RECONNECTED (force_state)
+    CONNECTION_LOST --> IDLE: RECONNECT_FAILED (force_state)
 
     PHONE_DISCONNECTED --> RUNNING: PHONE_RECONNECTED
     PHONE_DISCONNECTED --> IDLE: PHONE_TIMEOUT
@@ -402,6 +399,11 @@ stateDiagram-v2
     ERROR --> IDLE: RESET
     ERROR --> IDLE: DISCONNECTED
 ```
+
+**Implementation Note:** Battery recovery (LOW_BATTERY → RUNNING) and connection recovery
+(CONNECTION_LOST → READY/IDLE) transitions use `force_state()` rather than `transition()`
+for immediate state changes without validation. This is intentional for emergency/recovery
+scenarios where normal transition guards should be bypassed.
 
 **State Descriptions:**
 

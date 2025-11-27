@@ -16,7 +16,6 @@ Version: 2.0.0
 """
 
 import pytest
-import asyncio
 import time
 from typing import List
 
@@ -41,15 +40,14 @@ from core.types import ActuatorType, BatteryStatus, DeviceRole
 class TestMockHapticController:
     """Validate MockHapticController behavior."""
 
-    @pytest.mark.asyncio
-    async def test_activation_tracking(self):
+    def test_activation_tracking(self):
         """Test that activations are properly tracked."""
         haptic = MockHapticController()
 
         # Activate multiple fingers
-        await haptic.activate(finger=0, amplitude=75)
-        await haptic.activate(finger=1, amplitude=50)
-        await haptic.activate(finger=2, amplitude=100)
+        haptic.activate(finger=0, amplitude=75)
+        haptic.activate(finger=1, amplitude=50)
+        haptic.activate(finger=2, amplitude=100)
 
         # Verify tracking
         assert haptic.get_activation_count() == 3
@@ -63,21 +61,19 @@ class TestMockHapticController:
         assert last.finger == 2
         assert last.amplitude == 100
 
-    @pytest.mark.asyncio
-    async def test_deactivation_tracking(self):
+    def test_deactivation_tracking(self):
         """Test that deactivations are properly tracked."""
         haptic = MockHapticController()
 
         # Activate and deactivate
-        await haptic.activate(finger=0, amplitude=75)
+        haptic.activate(finger=0, amplitude=75)
         assert haptic.is_active(0)
 
-        await haptic.deactivate(finger=0)
+        haptic.deactivate(finger=0)
         assert not haptic.is_active(0)
         assert haptic.was_finger_deactivated(0)
 
-    @pytest.mark.asyncio
-    async def test_frequency_setting(self):
+    def test_frequency_setting(self):
         """Test frequency configuration."""
         haptic = MockHapticController()
 
@@ -90,28 +86,26 @@ class TestMockHapticController:
         assert haptic.frequencies[0] == 175
         assert haptic.frequencies[1] == 200
 
-    @pytest.mark.asyncio
-    async def test_validation_errors(self):
+    def test_validation_errors(self):
         """Test that validation errors are raised."""
         haptic = MockHapticController()
 
         # Invalid finger
         with pytest.raises(ValueError, match="out of range"):
-            await haptic.activate(finger=5, amplitude=75)
+            haptic.activate(finger=5, amplitude=75)
 
         # Invalid amplitude
         with pytest.raises(ValueError, match="out of range"):
-            await haptic.activate(finger=0, amplitude=150)
+            haptic.activate(finger=0, amplitude=150)
 
-    @pytest.mark.asyncio
-    async def test_failure_simulation(self):
+    def test_failure_simulation(self):
         """Test simulated hardware failures."""
         haptic = MockHapticController()
         haptic.fail_on_activate = 0
 
         # Should raise RuntimeError
         with pytest.raises(RuntimeError, match="Mock activation failure"):
-            await haptic.activate(finger=0, amplitude=75)
+            haptic.activate(finger=0, amplitude=75)
 
 
 class TestMockBatteryMonitor:
@@ -399,8 +393,7 @@ class TestPytestFixtures:
 class TestMockIntegration:
     """Test integration of multiple mocks."""
 
-    @pytest.mark.asyncio
-    async def test_therapy_simulation(
+    def test_therapy_simulation(
         self,
         mock_haptic_controller,
         mock_battery_monitor,
@@ -409,9 +402,9 @@ class TestMockIntegration:
         """Test simulated therapy session."""
         # Simulate a few activations
         for finger in range(5):
-            await mock_haptic_controller.activate(finger=finger, amplitude=75)
-            await asyncio.sleep(0.01)
-            await mock_haptic_controller.deactivate(finger=finger)
+            mock_haptic_controller.activate(finger=finger, amplitude=75)
+            time.sleep(0.01)
+            mock_haptic_controller.deactivate(finger=finger)
 
         # Verify activations
         assert mock_haptic_controller.get_activation_count() == 5

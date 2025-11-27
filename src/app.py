@@ -38,6 +38,9 @@ from therapy import TherapyEngine
 from profiles import ProfileManager, create_default_therapy_config
 import sync
 
+# CRITICAL-004: Sync accuracy validation
+from sync_stats import SyncStats
+
 # Application layer - RE-ENABLED after memory optimizations
 # Memory freed: ~160 bytes (const) + ~2KB (JSON removal) = ~2.16KB
 # SessionManager + CalibrationController estimated cost: ~2.2KB (acceptable)
@@ -135,12 +138,12 @@ class BlueBuzzahApplication:
 
     Usage:
         >>> # Load configuration
-        >>> base_config = ConfigLoader.load_base_config()
-        >>> therapy_config = ConfigLoader.load_therapy_config()
+        >>> device_config = load_device_config("settings.json")
+        >>> therapy_config = load_therapy_profile("default")
         >>>
         >>> # Create and run application
-        >>> app = BlueBuzzahApplication(base_config, therapy_config)
-        >>> await app.run()
+        >>> app = BlueBuzzahApplication(device_config, therapy_config)
+        >>> app.run()  # Synchronous - blocks until shutdown
     """
 
     def __init__(
@@ -209,6 +212,34 @@ class BlueBuzzahApplication:
         self.secondary_connection= None
         self.phone_connection= None
         self.primary_connection= None
+
+        # CRITICAL-004: Sync statistics (SECONDARY only, for validation)
+        if self.role == DeviceRole.SECONDARY:
+            self.sync_stats = SyncStats(max_samples=200)
+            self._stats_print_interval = 60  # Print every 60 seconds
+            self._last_stats_print = time.monotonic()
+            print(f"{DEVICE_TAG} Sync statistics enabled (validation mode)")
+        else:
+            self.sync_stats = None
+
+        # Heartbeat protocol for detecting silent disconnections
+        # PRIMARY sends heartbeats during therapy, SECONDARY detects timeout
+        self.HEARTBEAT_INTERVAL_SEC = 2.0   # Send heartbeat every 2 seconds
+        self.HEARTBEAT_TIMEOUT_SEC = 6.0    # 3 missed heartbeats = timeout
+        self._last_heartbeat_sent = 0.0     # PRIMARY: timestamp of last heartbeat sent
+        self._last_heartbeat_received = None  # SECONDARY: timestamp of last heartbeat received
+
+        # Sequence tracking for command loss detection
+        self._last_received_seq = -1
+        self._missed_commands = 0
+
+        # SYNC command timeout tracking (10s per architecture spec)
+        # Detects stale sessions when PRIMARY stops sending commands but heartbeat continues
+        self._last_sync_command_received = None
+        self.SYNC_COMMAND_TIMEOUT_SEC = 10.0
+
+        # Memory check tracking - check once per minute
+        self._last_memory_check = 0
 
         # Initialize all layers
         self._initialize_core_systems()
@@ -397,6 +428,13 @@ class BlueBuzzahApplication:
             if DEBUG_ENABLED:
                 print(f"{DEVICE_TAG} [DEBUG] All haptic drivers initialized")
 
+            # CRITICAL: Turn OFF all tactors immediately after initialization
+            # This ensures clean boot state for debugging and prevents residual activation
+            # force_all=True ensures ALL motors are disabled regardless of tracked state
+            print(f"{DEVICE_TAG} Disabling all tactors at boot...")
+            self.haptic_controller.stop_all(force_all=True)
+            print(f"{DEVICE_TAG} All tactors OFF")
+
             # Profile manager
             self.profile_manager = ProfileManager()
             if DEBUG_ENABLED:
@@ -418,13 +456,57 @@ class BlueBuzzahApplication:
         try:
             # Session manager with callbacks (optional - memory constrained)
             if APPLICATION_LAYER_AVAILABLE and SessionManager:
+                # Create send_sync_callback for PRIMARY→SECONDARY synchronization
+                def send_sync_to_secondary(command_type, data):
+                    """Send sync command to SECONDARY device."""
+                    # APP-003 FIX: Guard debug prints to avoid f-string allocations in hot path
+                    if DEBUG_ENABLED:
+                        print("{} [SYNC] send_sync_to_secondary() CALLED: type={}, data={}".format(DEVICE_TAG, command_type, data))
+
+                    if self.role != DeviceRole.PRIMARY:
+                        if DEBUG_ENABLED:
+                            print("{} [SYNC] SKIPPED: Not PRIMARY (role={})".format(DEVICE_TAG, self.role))
+                        return
+
+                    if not self.secondary_connection:
+                        if DEBUG_ENABLED:
+                            print("{} [SYNC] SKIPPED: No SECONDARY connection".format(DEVICE_TAG))
+                        return
+
+                    try:
+                        # Format: "SYNC:command_type:key1|val1|key2|val2"
+                        data_str = ""
+                        if data:
+                            parts = []
+                            for key, value in data.items():
+                                parts.append(str(key))
+                                parts.append(str(value))
+                            data_str = "|".join(parts)
+
+                        message = "SYNC:" + command_type + ":" + data_str
+                        if DEBUG_ENABLED:
+                            print("{} [SYNC] Sending: {}...".format(DEVICE_TAG, message[:80]))
+
+                        result = self.ble.send(self.secondary_connection, message)
+
+                        if DEBUG_ENABLED:
+                            if result:
+                                print("{} [SYNC] ble.send() SUCCESS".format(DEVICE_TAG))
+                            else:
+                                print("{} [SYNC] ble.send() FAILURE".format(DEVICE_TAG))
+                    except Exception as e:
+                        print("{} [SYNC] EXCEPTION: {}".format(DEVICE_TAG, e))
+                        import traceback
+                        traceback.print_exception(e, e, e.__traceback__)
+
                 self.session_manager = SessionManager(
                     state_machine=self.state_machine,
                     on_session_started=self._on_session_started,
                     on_session_paused=self._on_session_paused,
                     on_session_resumed=self._on_session_resumed,
                     on_session_stopped=self._on_session_stopped,
-                    therapy_engine=self.therapy_engine
+                    therapy_engine=self.therapy_engine,
+                    send_sync_callback=send_sync_to_secondary
                 )
                 if DEBUG_ENABLED:
                     print(f"{DEVICE_TAG} [DEBUG] Session manager initialized")
@@ -499,7 +581,9 @@ class BlueBuzzahApplication:
     # Callback handlers (called directly instead of via events)
     def _on_session_started(self, session_id, profile_name):
         """Handle session started."""
-        print(f"{DEVICE_TAG} Session started: {profile_name}")
+        # Debug: Track how many times this callback is executed
+        import supervisor
+        print(f"{DEVICE_TAG} Session started: {profile_name} (timestamp: {supervisor.ticks_ms()})")
         self.therapy_led_controller.set_therapy_state(TherapyState.RUNNING)
 
     def _on_session_paused(self, session_id):
@@ -804,6 +888,17 @@ class BlueBuzzahApplication:
             if self.therapy_engine:
                 self.therapy_engine.update()
 
+            # Heartbeat: Send periodic heartbeat to SECONDARY during therapy
+            if self.secondary_connection and self.therapy_engine and self.therapy_engine.is_running():
+                now = time.monotonic()
+                if now - self._last_heartbeat_sent >= self.HEARTBEAT_INTERVAL_SEC:
+                    try:
+                        ts = int(time.monotonic_ns() // 1000)  # Microseconds
+                        self.ble.send(self.secondary_connection, f"SYNC:HEARTBEAT:ts|{ts}")
+                        self._last_heartbeat_sent = now
+                    except Exception as e:
+                        print(f"{DEVICE_TAG} [WARN] Failed to send heartbeat: {e}")
+
             # Process BLE commands (consolidated from coordinator.update())
             self._process_incoming_ble_messages()
             self._process_message_queue()
@@ -815,10 +910,12 @@ class BlueBuzzahApplication:
             self._check_battery()
 
             # Periodic garbage collection and memory monitoring
-            if int(time.monotonic()) % 60 == 0:  # Every 60 seconds
+            now = time.monotonic()
+            if now - self._last_memory_check >= 60:
+                self._last_memory_check = now
                 gc.collect()
                 free_mem = gc.mem_free()
-                print(f"[MEMORY] Free: {free_mem} bytes ({free_mem / 1024:.1f} KB)")
+                print("[MEMORY] Free: {} bytes ({} KB)".format(free_mem, free_mem / 1024))
 
                 # Memory warnings
                 if free_mem < 10000:  # Less than 10KB
@@ -847,12 +944,37 @@ class BlueBuzzahApplication:
 
         # Main processing loop
         while self.running:
-            # Update therapy engine (execute patterns, timing, motor control)
-            if self.therapy_engine:
-                self.therapy_engine.update()
+            # CRITICAL FIX: SECONDARY is a FOLLOWER - do NOT run local TherapyEngine
+            # Motor activations come exclusively from PRIMARY's EXECUTE_BUZZ commands
+            # Running therapy_engine.update() here caused dual-activation conflicts:
+            # - SECONDARY generated its own patterns (different from PRIMARY)
+            # - SECONDARY also received EXECUTE_BUZZ and activated again
+            # - Result: Motors fired twice per cycle with conflicting sequences
+            # if self.therapy_engine:
+            #     self.therapy_engine.update()  # DISABLED - causes sync conflict
 
-            # Process sync commands from PRIMARY
-            self.sync_coordinator.update()
+            # CRITICAL: Process incoming BLE messages from PRIMARY
+            # This is how SECONDARY receives EXECUTE_BUZZ commands
+            self._process_incoming_ble_messages()
+
+            # Heartbeat: Check for timeout during active therapy session
+            if self._last_heartbeat_received is not None:
+                elapsed = time.monotonic() - self._last_heartbeat_received
+                if elapsed > self.HEARTBEAT_TIMEOUT_SEC:
+                    print(f"{DEVICE_TAG} [ERROR] Heartbeat timeout ({elapsed:.1f}s) - PRIMARY connection lost!")
+                    self._handle_heartbeat_timeout()
+
+            # SYNC command timeout check - warns if PRIMARY stops sending commands during session
+            # Heartbeat timeout (6s) handles connection loss; this detects stale sessions
+            if self._last_sync_command_received is not None:
+                sync_elapsed = time.monotonic() - self._last_sync_command_received
+                if sync_elapsed > self.SYNC_COMMAND_TIMEOUT_SEC:
+                    current_state = self.state_machine.get_current_state()
+                    if current_state == TherapyState.RUNNING:
+                        print("{} [WARN] No SYNC command for {:.1f}s (timeout: {}s)".format(
+                            DEVICE_TAG, sync_elapsed, self.SYNC_COMMAND_TIMEOUT_SEC))
+                        # Reset timestamp to avoid repeated warnings
+                        self._last_sync_command_received = time.monotonic()
 
             # Update LED based on current state
             self._update_led_state()
@@ -861,16 +983,25 @@ class BlueBuzzahApplication:
             self._check_battery()
 
             # Periodic garbage collection and memory monitoring
-            if int(time.monotonic()) % 60 == 0:  # Every 60 seconds
+            now = time.monotonic()
+            if now - self._last_memory_check >= 60:
+                self._last_memory_check = now
                 gc.collect()
                 free_mem = gc.mem_free()
-                print(f"[MEMORY] Free: {free_mem} bytes ({free_mem / 1024:.1f} KB)")
+                print("[MEMORY] Free: {} bytes ({} KB)".format(free_mem, free_mem / 1024))
 
                 # Memory warnings
                 if free_mem < 10000:  # Less than 10KB
                     print("[WARNING] Low memory! Free < 10KB")
                 elif free_mem < 5000:  # Less than 5KB
                     print("[CRITICAL] Very low memory! Free < 5KB")
+
+            # CRITICAL-004: Periodic sync statistics reporting (SECONDARY only)
+            if self.sync_stats:
+                now = time.monotonic()
+                if now - self._last_stats_print >= self._stats_print_interval:
+                    self.sync_stats.print_report()
+                    self._last_stats_print = now
 
             # Brief sleep to avoid busy-waiting (cooperative multitasking)
             time.sleep(0.05)  # 20Hz update rate
@@ -978,8 +1109,14 @@ class BlueBuzzahApplication:
             self._process_connection_messages(self.phone_connection, "phone")
 
         # Check PRIMARY connection for sync commands (SECONDARY only)
-        if self.primary_connection and self.ble.is_connected(self.primary_connection):
-            self._process_connection_messages(self.primary_connection, "primary")
+        if self.primary_connection:
+            # Debug logging for SECONDARY
+            if self.role == DeviceRole.SECONDARY:
+                is_conn = self.ble.is_connected(self.primary_connection)
+                print(f"{DEVICE_TAG} [POLL] PRIMARY connection check: conn_id='{self.primary_connection}', is_connected={is_conn}")
+
+            if self.ble.is_connected(self.primary_connection):
+                self._process_connection_messages(self.primary_connection, "primary")
 
         # Check SECONDARY connection for responses (PRIMARY only)
         if self.secondary_connection and self.ble.is_connected(self.secondary_connection):
@@ -991,21 +1128,223 @@ class BlueBuzzahApplication:
         Consolidated from coordinator._process_connection_messages()
         """
         try:
+            # CRITICAL-003 FIX: Removed high-frequency polling logs (executed 20Hz)
+            # Lines 1048-1060 removed to eliminate f-string allocations in hot path
+
             # Receive data with short timeout (non-blocking)
             message = self.ble.receive(connection, timeout=0.01)
 
             if message is None:
                 return  # No data available
 
+            # Log message receipt (only when data actually received)
+            print(f"{DEVICE_TAG} [RX] Received from {connection_type}: '{message[:100]}...'")
+
+            # CRITICAL FIX: Handle SYNC commands from PRIMARY (SECONDARY only)
+            if connection_type == "primary" and message.startswith("SYNC:"):
+                self._handle_sync_command(message)
+                return  # Don't queue response for sync commands
+
             # Handle command with consolidated menu controller
             response = self.menu.handle_command(message)
 
             # Queue response for sending (simple list for CircuitPython)
             self.message_queue.append((connection, response))
+            if DEBUG_ENABLED:
+                print(f"{DEVICE_TAG} [RX] Response queued: '{response[:100]}...'")
 
         except Exception as e:
+            print(f"{DEVICE_TAG} [RX] EXCEPTION processing {connection_type} message: {e}")
+            import traceback
+            traceback.print_exception(e, e, e.__traceback__)
+
+    def _handle_sync_command(self, message):
+        """
+        Handle SYNC command from PRIMARY device (SECONDARY only).
+
+        SYNC command format: "SYNC:command_type:key1|val1|key2|val2"
+
+        Args:
+            message: Raw SYNC message string
+        """
+        # CRITICAL-004: Capture receive timestamp immediately for latency measurement
+        t_receive = time.monotonic_ns()
+
+        # APP-003 FIX: Guard debug prints to avoid f-string allocations in hot path
+        if DEBUG_ENABLED:
+            print("{} [SYNC_RX] Received: {}".format(DEVICE_TAG, message[:60]))
+
+        try:
+            # Parse: "SYNC:command_type:data_str"
+            parts = message.strip().split(':', 2)
+
+            if len(parts) < 2:
+                # Keep error print but convert to .format() to avoid f-string overhead
+                print("{} [SYNC_RX] ERROR: Invalid SYNC format: {}".format(DEVICE_TAG, message[:40]))
+                return
+
+            command_type = parts[1]
+            data_str = parts[2] if len(parts) == 3 else ""
+
+            # Update SYNC command timestamp for timeout detection
+            self._last_sync_command_received = time.monotonic()
+
             if DEBUG_ENABLED:
-                print(f"{DEVICE_TAG} [DEBUG] Error processing {connection_type} message: {e}")
+                print("{} [SYNC_RX] Parsed: cmd={}, data={}".format(DEVICE_TAG, command_type, data_str[:40]))
+
+            # Parse data (pipe-delimited key|value pairs)
+            data = {}
+            command_timestamp = None
+            if data_str:
+                data_parts = data_str.split('|')
+                for i in range(0, len(data_parts), 2):
+                    if i + 1 < len(data_parts):
+                        key = data_parts[i]
+                        value = data_parts[i + 1]
+                        # Try to convert to int
+                        try:
+                            value = int(value)
+                        except ValueError:
+                            pass
+                        data[key] = value
+                        # Capture timestamp if present
+                        if key == 'timestamp':
+                            command_timestamp = value
+
+            # Handle command types
+            if command_type == "EXECUTE_BUZZ":
+                # Sequence gap detection for command loss monitoring
+                seq = data.get('seq', -1)
+                if seq >= 0:
+                    if seq > self._last_received_seq + 1 and self._last_received_seq >= 0:
+                        gap = seq - self._last_received_seq - 1
+                        self._missed_commands += gap
+                        # Keep warning for operational visibility but use .format()
+                        print("{} [WARN] Sequence gap: missed {} cmds".format(DEVICE_TAG, gap))
+                    self._last_received_seq = seq
+
+                # CRITICAL-004: Calculate network latency if timestamp available
+                network_latency_us = 0
+                if command_timestamp and self.sync_stats:
+                    t_receive_us = t_receive // 1000  # Convert ns to µs
+                    network_latency_us = t_receive_us - command_timestamp
+                    if DEBUG_ENABLED:
+                        print("[SYNC_TIMING] Network latency: {} us".format(network_latency_us))
+
+                # Execute haptic activation on SECONDARY
+                left_finger = data.get('left_finger', 0)
+                right_finger = data.get('right_finger', 0)
+                amplitude = data.get('amplitude', 100)
+
+                if DEBUG_ENABLED:
+                    print(f"{DEVICE_TAG} [DEBUG] SYNC: Activate fingers L{left_finger}/R{right_finger} @ {amplitude}%")
+
+                # CRITICAL-004: Capture execution start timestamp
+                t_exec_start = time.monotonic_ns()
+
+                # Activate local motors on SECONDARY
+                try:
+                    self.haptic_controller.activate(left_finger, amplitude)
+                except Exception as e:
+                    print(f"{DEVICE_TAG} [ERROR] Failed to activate finger {left_finger}: {e}")
+
+                try:
+                    self.haptic_controller.activate(right_finger, amplitude)
+                except Exception as e:
+                    print(f"{DEVICE_TAG} [ERROR] Failed to activate finger {right_finger}: {e}")
+
+                # CRITICAL-004: Calculate timing statistics
+                if self.sync_stats:
+                    t_exec_complete = time.monotonic_ns()
+                    exec_time_us = (t_exec_complete - t_exec_start) // 1000
+                    total_latency_us = (t_exec_complete - t_receive) // 1000
+
+                    print(f"[SYNC_TIMING] Execution time: {exec_time_us} µs ({exec_time_us / 1000:.2f} ms)")
+                    print(f"[SYNC_TIMING] Total latency: {total_latency_us} µs ({total_latency_us / 1000:.2f} ms)")
+
+                    # Add sample to statistics
+                    self.sync_stats.add_sample(network_latency_us, exec_time_us, total_latency_us)
+
+            elif command_type == "DEACTIVATE":
+                # Deactivate motors
+                left_finger = data.get('left_finger', 0)
+                right_finger = data.get('right_finger', 0)
+
+                try:
+                    self.haptic_controller.deactivate(left_finger)
+                    self.haptic_controller.deactivate(right_finger)
+                except Exception as e:
+                    print(f"{DEVICE_TAG} [ERROR] Failed to deactivate: {e}")
+
+            elif command_type == "START_SESSION":
+                # SECONDARY enters therapy mode as FOLLOWER
+                # CRITICAL: Do NOT start local TherapyEngine - SECONDARY only responds to EXECUTE_BUZZ
+                print(f"{DEVICE_TAG} [SYNC] Received START_SESSION from PRIMARY")
+
+                # Log session config for reference (but don't use it to start local engine)
+                duration_sec = data.get('duration_sec', 7200)
+                pattern_type = data.get('pattern_type', 'rndp')
+                jitter_int = data.get('jitter_percent', 235)
+                jitter_percent = float(jitter_int) / 10.0
+                print(f"{DEVICE_TAG} [DEBUG] Session config: duration={duration_sec}s, pattern={pattern_type}, jitter={jitter_percent}%")
+
+                # Update state machine to RUNNING to match PRIMARY
+                # This enables LED feedback and state tracking, but NO local pattern generation
+                self.state_machine.transition(StateTrigger.START_SESSION)
+
+                # Update LED to show therapy active
+                self.therapy_led_controller.set_therapy_state(TherapyState.RUNNING)
+
+                print(f"{DEVICE_TAG} SECONDARY: Entered therapy mode (follower - awaiting EXECUTE_BUZZ commands)")
+
+            elif command_type == "PAUSE_SESSION":
+                # Pause therapy session on SECONDARY
+                if DEBUG_ENABLED:
+                    print(f"{DEVICE_TAG} [DEBUG] SYNC: Pause session")
+
+                if self.therapy_engine:
+                    self.therapy_engine.pause()
+                    # Update state machine to match PRIMARY
+                    self.state_machine.transition(StateTrigger.PAUSE_SESSION)
+                    print(f"{DEVICE_TAG} SECONDARY: Therapy session paused")
+
+            elif command_type == "RESUME_SESSION":
+                # Resume therapy session on SECONDARY
+                if DEBUG_ENABLED:
+                    print(f"{DEVICE_TAG} [DEBUG] SYNC: Resume session")
+
+                if self.therapy_engine:
+                    self.therapy_engine.resume()
+                    # Update state machine to match PRIMARY
+                    self.state_machine.transition(StateTrigger.RESUME_SESSION)
+                    print(f"{DEVICE_TAG} SECONDARY: Therapy session resumed")
+
+            elif command_type == "STOP_SESSION":
+                # Stop therapy session on SECONDARY
+                if DEBUG_ENABLED:
+                    print(f"{DEVICE_TAG} [DEBUG] SYNC: Stop session")
+
+                if self.therapy_engine:
+                    self.therapy_engine.stop()
+                    # Update state machine to match PRIMARY
+                    self.state_machine.transition(StateTrigger.STOP_SESSION)
+                    self.state_machine.transition(StateTrigger.STOPPED)
+                    print(f"{DEVICE_TAG} SECONDARY: Therapy session stopped")
+
+            elif command_type == "HEARTBEAT":
+                # Heartbeat from PRIMARY - update last received timestamp
+                self._last_heartbeat_received = time.monotonic()
+                # Optionally log timestamp from PRIMARY for drift analysis
+                if DEBUG_ENABLED:
+                    ts = data.get('ts', 0)
+                    print(f"{DEVICE_TAG} [DEBUG] Heartbeat received (PRIMARY ts: {ts})")
+
+            else:
+                if DEBUG_ENABLED:
+                    print(f"{DEVICE_TAG} [DEBUG] Unknown SYNC command: {command_type}")
+
+        except Exception as e:
+            print(f"{DEVICE_TAG} [ERROR] Failed to handle SYNC command: {e}")
 
     def _process_message_queue(self):
         """
@@ -1031,6 +1370,91 @@ class BlueBuzzahApplication:
     # ============================================================================
     # Shutdown and emergency methods
     # ============================================================================
+
+    def _handle_heartbeat_timeout(self):
+        """
+        Handle heartbeat timeout on SECONDARY device.
+
+        Called when SECONDARY hasn't received a heartbeat from PRIMARY within
+        the timeout period. This indicates PRIMARY may have disconnected silently
+        (without triggering a BLE disconnect event).
+
+        Actions:
+        1. Emergency stop all motors (safety)
+        2. Update state machine to CONNECTION_LOST
+        3. Update LED to indicate connection lost
+        4. Reset heartbeat tracking
+        5. Attempt reconnection to PRIMARY
+        """
+        print(f"{DEVICE_TAG} [RECOVERY] Heartbeat timeout - entering recovery mode")
+
+        # 1. Emergency stop all motors for safety
+        if self.haptic_controller:
+            try:
+                self.haptic_controller.emergency_stop()
+                print(f"{DEVICE_TAG} [RECOVERY] Motors stopped")
+            except Exception as e:
+                print(f"{DEVICE_TAG} [ERROR] Failed to stop motors: {e}")
+
+        # 2. Update state machine
+        self.state_machine.force_state(TherapyState.CONNECTION_LOST, reason="heartbeat_timeout")
+
+        # 3. Update LED
+        self.therapy_led_controller.set_therapy_state(TherapyState.CONNECTION_LOST)
+
+        # 4. Reset heartbeat tracking
+        self._last_heartbeat_received = None
+
+        # 5. Attempt reconnection
+        self._attempt_reconnect_to_primary()
+
+    def _attempt_reconnect_to_primary(self):
+        """
+        Attempt to reconnect to PRIMARY device after connection loss.
+
+        Makes multiple attempts to scan and reconnect. If successful,
+        returns to READY state. If all attempts fail, enters IDLE state.
+
+        Returns:
+            bool: True if reconnection successful, False otherwise
+        """
+        MAX_ATTEMPTS = 3
+        DELAY_SEC = 2.0
+
+        print(f"{DEVICE_TAG} [RECOVERY] Starting reconnection attempts to PRIMARY")
+
+        for attempt in range(MAX_ATTEMPTS):
+            print(f"{DEVICE_TAG} [RECOVERY] Attempt {attempt + 1}/{MAX_ATTEMPTS}")
+
+            # Update LED to show scanning
+            self.therapy_led_controller.indicate_ble_init()
+
+            try:
+                # Scan for PRIMARY device
+                connection = self.ble.scan_and_connect(
+                    self.config.get('ble_name', 'BlueBuzzah'),
+                    timeout=10.0,
+                    conn_id="primary"
+                )
+
+                if connection:
+                    self.primary_connection = connection
+                    self.state_machine.force_state(TherapyState.READY)
+                    self.therapy_led_controller.indicate_ready()
+                    print(f"{DEVICE_TAG} [RECOVERY] Reconnected to PRIMARY successfully!")
+                    return True
+
+            except Exception as e:
+                print(f"{DEVICE_TAG} [RECOVERY] Attempt {attempt + 1} failed: {e}")
+
+            # Wait before next attempt
+            time.sleep(DELAY_SEC)
+
+        # All attempts failed
+        print(f"{DEVICE_TAG} [RECOVERY] Failed to reconnect after {MAX_ATTEMPTS} attempts")
+        self.state_machine.force_state(TherapyState.IDLE)
+        self.therapy_led_controller.indicate_failure()
+        return False
 
     def _emergency_shutdown(self, reason):
         """

@@ -56,7 +56,7 @@ class MockHapticController:
         haptic = MockHapticController()
 
         # Activate finger
-        await haptic.activate(finger=0, amplitude=75)
+        haptic.activate(finger=0, amplitude=75)
         assert haptic.is_active(0)
 
         # Verify activation
@@ -67,7 +67,7 @@ class MockHapticController:
         assert haptic.was_finger_activated(0)
 
         # Deactivate
-        await haptic.deactivate(finger=0)
+        haptic.deactivate(finger=0)
         assert not haptic.is_active(0)
     """
 
@@ -91,7 +91,7 @@ class MockHapticController:
         self.fail_on_activate: Optional[int] = None  # Finger index to fail on
         self.fail_on_deactivate: Optional[int] = None
 
-    async def activate(self, finger: int, amplitude: int) -> None:
+    def activate(self, finger: int, amplitude: int) -> None:
         """
         Activate haptic motor for specified finger.
 
@@ -123,7 +123,7 @@ class MockHapticController:
         # Update active state
         self.active_fingers[finger] = True
 
-    async def deactivate(self, finger: int) -> None:
+    def deactivate(self, finger: int) -> None:
         """
         Deactivate haptic motor for specified finger.
 

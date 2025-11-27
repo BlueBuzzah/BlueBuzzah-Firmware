@@ -103,11 +103,9 @@ else:
 # Keep REPL enabled for both development and production
 # This allows debugging via serial console if needed
 # Note: REPL is only accessible via USB serial, not Bluetooth
-# NOTE: data=False to prevent quadruple logging bug on nRF52840
-#       The USB CDC data channel was causing console output duplication
 try:
     usb_cdc.enable(console=True, data=False)
-    print("[Boot] REPL enabled via USB serial (console only)")
+    print("[Boot] REPL enabled via USB serial")
 except Exception as e:
     print(f"[Boot] WARNING: Failed to enable REPL: {e}")
 
@@ -130,10 +128,8 @@ except Exception as e:
 # Set USB device name (appears in device manager/system info)
 try:
     import supervisor
-    supervisor.set_usb_identification(
-        manufacturer="BlueBuzzah",
-        product=DEVICE_NAME
-    )
+
+    supervisor.set_usb_identification(manufacturer="BlueBuzzah", product=DEVICE_NAME)
     print(f"[Boot] USB device name: {DEVICE_NAME}")
 except ImportError:
     # supervisor module may not be available on all CircuitPython versions
