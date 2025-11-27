@@ -1,25 +1,13 @@
-name: CI Build
+name: Build
 
 on:
-  push:
-    branches: [main, develop]
   pull_request:
     branches: [main]
-  workflow_dispatch:
-    inputs:
-      circuitpy_version:
-        description: "CircuitPython version to target"
-        required: false
-        default: "9.2.4"
 
 jobs:
   build:
     name: Build Firmware
     runs-on: ubuntu-latest
-
-    strategy:
-      matrix:
-        optimization: [0, 2] # Build both debug (O0) and optimized (O2) versions
 
     steps:
       - name: Checkout repository
@@ -38,15 +26,11 @@ jobs:
           echo "============================"
           echo "Branch: ${{ github.ref_name }}"
           echo "Commit: ${{ github.sha }}"
-          echo "Optimization Level: O${{ matrix.optimization }}"
-          echo "CircuitPython Version: ${{ github.event.inputs.circuitpy_version || '9.2.4' }}"
-          echo "mpy-cross: $(which mpy-cross)"
           echo ""
 
       - name: Build firmware
         run: |
           python build/build.py \
-            --optimize ${{ matrix.optimization }} \
             --clean \
             --verbose
 
@@ -61,18 +45,9 @@ jobs:
 
       - name: Create build archive
         run: |
-          # Determine archive name based on optimization level
-          if [ "${{ matrix.optimization }}" = "0" ]; then
-            ARCHIVE_NAME="bluebuzzah-firmware-debug"
-          else
-            ARCHIVE_NAME="bluebuzzah-firmware-O${{ matrix.optimization }}"
-          fi
-
-          # Use short commit SHA for CI builds
           SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
-          ARCHIVE_NAME="${ARCHIVE_NAME}-${SHORT_SHA}"
+          ARCHIVE_NAME="bluebuzzah-firmware-${SHORT_SHA}"
 
-          # Create archive
           cd dist
           zip -r "../${ARCHIVE_NAME}.zip" .
           cd ..
@@ -80,15 +55,7 @@ jobs:
           echo "Created archive: ${ARCHIVE_NAME}.zip"
           ls -lh "${ARCHIVE_NAME}.zip"
 
-          # Save archive name for upload step
           echo "ARCHIVE_NAME=${ARCHIVE_NAME}" >> $GITHUB_ENV
-
-      - name: Upload build artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ env.ARCHIVE_NAME }}
-          path: ${{ env.ARCHIVE_NAME }}.zip
-          retention-days: 30
 
   validate:
     name: Validate Build
@@ -99,53 +66,8 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Download debug build artifact
+      - name: Download build artifact
         uses: actions/download-artifact@v4
         with:
-          pattern: bluebuzzah-firmware-debug-*
+          pattern: bluebuzzah-firmware-*
           path: artifacts
-
-      - name: Validate build structure
-        run: |
-          echo "Validating build structure..."
-
-          # Find the downloaded artifact
-          ARTIFACT_ZIP=$(find artifacts -name "*.zip" -type f | head -n 1)
-
-          if [ -z "$ARTIFACT_ZIP" ]; then
-            echo "ERROR: No artifact found"
-            exit 1
-          fi
-
-          echo "Found artifact: $ARTIFACT_ZIP"
-
-          # Extract and validate
-          TEMP_DIR=$(mktemp -d)
-          unzip -q "$ARTIFACT_ZIP" -d "$TEMP_DIR"
-
-          # Check for required files
-          REQUIRED_FILES=("main.py" "boot.py")
-
-          for file in "${REQUIRED_FILES[@]}"; do
-            if [ ! -e "$TEMP_DIR/$file" ]; then
-              echo "ERROR: Missing required file: $file"
-              exit 1
-            fi
-            echo "✓ Found: $file"
-          done
-
-          # Check that .mpy files were created
-          MPY_COUNT=$(find "$TEMP_DIR" -name "*.mpy" | wc -l)
-          echo ""
-          echo "Found $MPY_COUNT compiled .mpy files"
-
-          if [ "$MPY_COUNT" -eq 0 ]; then
-            echo "ERROR: No .mpy files found - compilation may have failed"
-            exit 1
-          fi
-
-          echo ""
-          echo "✓ Build validation passed"
-
-          # Cleanup
-          rm -rf "$TEMP_DIR"

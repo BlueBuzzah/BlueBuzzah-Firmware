@@ -34,7 +34,7 @@ from typing import Optional
 # =============================================================================
 
 # Default CircuitPython version
-DEFAULT_CIRCUITPY_VERSION = "9.2.0"
+DEFAULT_CIRCUITPY_VERSION = "9.2.4"
 
 # Files to keep as .py (CircuitPython requirements)
 # These files must remain as .py in the final deployment
@@ -336,13 +336,17 @@ class BlueBuzzahBuilder:
                 # Skip all dotfiles (files starting with .)
                 if source_file.name.startswith("."):
                     if self.config.verbose:
-                        print(f"  ⊘ Skipped (dotfile): {source_file.relative_to(self.base_path)}")
+                        print(
+                            f"  ⊘ Skipped (dotfile): {source_file.relative_to(self.base_path)}"
+                        )
                     self.stats.files_skipped += 1
                     continue
                 # Skip markdown files
                 if source_file.suffix.lower() == ".md":
                     if self.config.verbose:
-                        print(f"  ⊘ Skipped (markdown): {source_file.relative_to(self.base_path)}")
+                        print(
+                            f"  ⊘ Skipped (markdown): {source_file.relative_to(self.base_path)}"
+                        )
                     self.stats.files_skipped += 1
                     continue
                 # Skip src/lib/ - libraries come from root lib/
