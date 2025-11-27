@@ -166,20 +166,32 @@ def rndp_sequence():
 
 **Pattern Space**:
 - LEFT permutations: 4! = 24 patterns
-- RIGHT permutations: Always mirrors LEFT (bilateral symmetry required)
-- Total combinations: 24 patterns (L determines R)
+- RIGHT permutations: 4! = 24 patterns (independent when non-mirrored)
+- Total combinations (mirrored): 24 patterns (L determines R)
+- Total combinations (non-mirrored): 24 × 24 = 576 unique patterns
 
-**Bilateral Mirroring** (src/therapy.py:149-155):
+**Bilateral Mirroring** (src/therapy.py:160-169):
 
-All patterns enforce bilateral mirroring - the same anatomical finger is always stimulated simultaneously on both hands. This is a therapeutic requirement, not a configurable option.
+Mirroring is controlled by the `mirror_pattern` parameter based on vCR type:
+
+| vCR Type | `mirror_pattern` | Behavior | Rationale |
+|----------|------------------|----------|-----------|
+| Noisy vCR | `True` | Same finger on both hands | Avoids bilateral masking interference |
+| Regular vCR | `False` | Independent sequences per hand | Increases spatial randomization for synaptic decoupling |
 
 ```python
-# Generate sequence (random permutation)
+# Generate left hand sequence (random permutation)
 left_sequence = list(range(num_fingers))
 _shuffle_in_place(left_sequence)
 
-# Bilateral mirroring: both hands use identical sequence
-right_sequence = left_sequence.copy()
+# Generate right hand sequence based on mirror setting
+if mirror_pattern:
+    # Mirrored: same finger on both hands (for noisy vCR)
+    right_sequence = left_sequence.copy()
+else:
+    # Non-mirrored: independent random sequence (for regular vCR)
+    right_sequence = list(range(num_fingers))
+    _shuffle_in_place(right_sequence)
 ```
 
 Both hands use finger indices 0-3, with the hardware wiring ensuring each channel maps to the same anatomical finger on both gloves (channel 0 = pinky on both, etc.).

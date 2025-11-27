@@ -219,11 +219,17 @@ sequenceDiagram
     loop Every pattern interval (configurable)
         PRIMARY->>PRIMARY: Generate pattern<br/>(RANDOM/SEQUENTIAL/MIRRORED)
 
-        PRIMARY->>PRIMARY: Execute local buzz<br/>activate_motor(channel, intensity, duration)
+        PRIMARY->>PRIMARY: Execute local buzz<br/>activate_motor(left_channel, intensity, duration)
 
-        Note over PRIMARY,SECONDARY: Bilateral mirroring: same channel on both devices<br/>(same anatomical finger stimulated on both hands)
-        PRIMARY->>SECONDARY: SYNC:EXECUTE_BUZZ:ch|2|int|75|dur|100
-        SECONDARY->>SECONDARY: activate_motor(2, 75, 100)
+        alt Noisy vCR (mirror_pattern=True)
+            Note over PRIMARY,SECONDARY: Mirrored: same finger on both hands<br/>(avoids bilateral masking interference)
+            PRIMARY->>SECONDARY: SYNC:EXECUTE_BUZZ:ch|2|int|75|dur|100
+            SECONDARY->>SECONDARY: activate_motor(2, 75, 100)
+        else Regular vCR (mirror_pattern=False)
+            Note over PRIMARY,SECONDARY: Non-mirrored: independent finger sequences<br/>(increases spatial randomization)
+            PRIMARY->>SECONDARY: SYNC:EXECUTE_BUZZ:ch|3|int|75|dur|100
+            SECONDARY->>SECONDARY: activate_motor(3, 75, 100)
+        end
     end
 
     loop Every 2 seconds
