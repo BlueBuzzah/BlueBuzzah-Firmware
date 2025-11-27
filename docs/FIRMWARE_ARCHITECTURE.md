@@ -1,5 +1,5 @@
 # BlueBuzzah Firmware Architecture
-**Version:** 1.0.0
+**Version:** 2.0.0
 **Platform:** CircuitPython 9.x on nRF52840
 
 ---
@@ -14,18 +14,9 @@
 6. [Hardware Abstraction](#hardware-abstraction)
 7. [State Management](#state-management)
 8. [Error Handling Strategy](#error-handling-strategy)
-9. [Memory Management](#memory-management)
-10. [Development Guidelines](#development-guidelines)
-
----
-
-## Terminology Note
-
-This document uses the following device role terminology:
-- **PRIMARY** (also known as VL, left glove): Orchestrates therapy, manages phone connection
-- **SECONDARY** (also known as VR, right glove): Follows PRIMARY commands
-
-Configuration files use `BLE_NAME = "VL"` or `"VR"` for BLE advertisement names.
+9. [Heartbeat Protocol](#heartbeat-protocol)
+10. [Memory Management](#memory-management)
+11. [Development Guidelines](#development-guidelines)
 
 ---
 
@@ -35,18 +26,24 @@ BlueBuzzah implements a **PRIMARY-SECONDARY architecture** for bilateral haptic 
 
 ### Design Philosophy
 
-**Unified Codebase**: Both gloves run identical firmware with role-aware behavior controlled by `config.py`:
+**Unified Codebase**: Both gloves run identical firmware with role-aware behavior controlled by `config.py` and `settings.json`:
 
 ```python
-# Primary (Left Glove - VL)
-GLOVE_ROLE = "PRIMARY"
-BLE_NAME = "VL"
-DEVICE_TAG = "[VL]"
+# config.py - Role detection from settings.json
+def load_device_config():
+    with open("/settings.json") as f:
+        data = json.load(f)
+    return {
+        'role': DeviceRole.PRIMARY if data['deviceRole'] == 'Primary' else DeviceRole.SECONDARY,
+        'ble_name': 'BlueBuzzah',
+        'device_tag': f"[{data['deviceRole']}]"
+    }
 
-# Secondary (Right Glove - VR)
-GLOVE_ROLE = "SECONDARY"
-BLE_NAME = "VR"
-DEVICE_TAG = "[VR]"
+# settings.json for PRIMARY device
+{"deviceRole": "Primary"}
+
+# settings.json for SECONDARY device
+{"deviceRole": "Secondary"}
 ```
 
 **Benefits of Unified Architecture:**
@@ -79,46 +76,47 @@ else:
 ```
 
 ### 2. **Command-Driven Synchronization**
-VL (PRIMARY) explicitly commands VR (SECONDARY) for every action:
+PRIMARY explicitly commands SECONDARY for every action using SYNC protocol:
 
 ```
-VL → VR: EXECUTE_BUZZ:0
-VL: <executes local buzz>
-VR: <waits for command, then executes>
-VR → VL: BUZZ_COMPLETE:0
+PRIMARY → SECONDARY: SYNC:EXECUTE_BUZZ:left_finger|2|right_finger|2|amplitude|100
+PRIMARY: <executes local buzz>
+SECONDARY: <waits for command, then executes>
 ```
 
 **Why not time-based?**
 - Eliminates clock drift over 2-hour sessions
 - Guarantees bilateral synchronization (±7.5ms BLE latency)
-- Simplifies error recovery (VR halts if PRIMARY disconnects)
+- Simplifies error recovery (SECONDARY halts if PRIMARY disconnects)
 
 ### 3. **Multi-Connection Support** (PRIMARY Only)
 PRIMARY supports **simultaneous connections** to:
-1. **Smartphone** (phone_uart) - Configuration, monitoring, control
-2. **SECONDARY glove** (vr_uart) - Bilateral therapy coordination
+1. **Smartphone** (phone_connection) - Configuration, monitoring, control
+2. **SECONDARY glove** (secondary_connection) - Bilateral therapy coordination
 
 **Connection Detection:**
 ```python
-conn_type = ble._detect_connection_type(connection, timeout=3.0)
-# Returns: "PHONE", "VR", or None
-# Phone sends: INFO, PING, BATTERY, PROFILE, SESSION commands
-# VR sends: READY message immediately after connecting
+# Boot sequence handles connection establishment
+# PRIMARY advertises as "BlueBuzzah"
+# SECONDARY scans for "BlueBuzzah" and connects
+# Phone app connects to PRIMARY for control
 ```
 
 ### 4. **Separation of Concerns**
 
 | Module | Responsibility | Depends On |
 |--------|---------------|------------|
-| `code.py` | Entry point, connection orchestration | All modules |
-| `ble_connection.py` | BLE radio, connection management | `adafruit_ble` |
-| `vcr_engine.py` | Therapy execution, pattern generation | `haptic_controller`, `sync_protocol` |
-| `haptic_controller.py` | Motor control, I2C multiplexer | `adafruit_drv2605` |
-| `menu_controller.py` | BLE command processing | `profile_manager`, `session_manager`, `calibration_mode` |
-| `sync_protocol.py` | VL↔VR message passing | `ble_connection` |
-| `profile_manager.py` | Therapy parameter management | `validators` |
-| `session_manager.py` | Session state machine | None (pure state) |
-| `calibration_mode.py` | Individual motor testing | `haptic_controller`, `ble_connection` |
+| `main.py` | Entry point | `app.py` |
+| `app.py` | Application orchestrator, boot sequence | All modules |
+| `ble.py` | BLE radio, connection management | `adafruit_ble` |
+| `therapy.py` | Therapy execution, pattern generation | `hardware`, `sync` |
+| `hardware.py` | Motor control, battery, I2C multiplexer | `adafruit_drv2605` |
+| `menu.py` | BLE command processing | `profiles`, `application/session` |
+| `sync.py` | PRIMARY↔SECONDARY message passing | `ble` |
+| `profiles.py` | Therapy parameter management | `utils/validation` |
+| `state.py` | Therapy state machine | `core/types` |
+| `application/session/manager.py` | Session lifecycle | `state`, `therapy` |
+| `application/calibration/controller.py` | Motor testing | `hardware` |
 
 ---
 
@@ -126,141 +124,150 @@ conn_type = ble._detect_connection_type(connection, timeout=3.0)
 
 ```
 src/
-├── code.py                     # Entry point (164 lines)
-├── config.py                   # Device-specific configuration
-├── auth_token.py               # Security validation
+├── main.py                         # Entry point
+├── app.py                          # Main application orchestrator (BlueBuzzahApplication)
+├── config.py                       # Device-specific configuration
+├── boot.py                         # Boot configuration (USB/storage mode)
 │
-├── modules/
+├── application/                    # Application layer
 │   ├── __init__.py
-│   ├── ble_connection.py       # BLE radio management (897 lines)
-│   ├── vcr_engine.py           # Therapy execution (491 lines)
-│   ├── haptic_controller.py    # Motor control (306 lines)
-│   ├── menu_controller.py      # Command processor (1057 lines)
-│   ├── sync_protocol.py        # VL↔VR messaging (338 lines)
-│   ├── profile_manager.py      # Parameter management (274 lines)
-│   ├── session_manager.py      # Session state machine (329 lines)
-│   ├── calibration_mode.py     # Motor testing (275 lines)
-│   ├── response_formatter.py   # BLE response formatting
-│   ├── validators.py           # Parameter validation
-│   └── utils.py                # Battery, LEDs, filesystem utilities
+│   ├── session/
+│   │   ├── __init__.py
+│   │   └── manager.py              # Session lifecycle management
+│   └── calibration/
+│       ├── __init__.py
+│       └── controller.py           # Calibration workflows
 │
-└── profiles/
-    ├── __init__.py
-    ├── defaults.py             # Active therapy profile (loaded at boot)
-    ├── reg_vcr.py              # Regular VCR preset
-    ├── noisy_vcr.py            # Noisy VCR preset (DEFAULT)
-    ├── hybrid_vcr.py           # Hybrid VCR preset
-    └── custom_vcr.py           # User-defined preset
+├── core/                           # Core types and constants
+│   ├── __init__.py
+│   ├── types.py                    # DeviceRole, TherapyState, enums
+│   └── constants.py                # System constants (FIRMWARE_VERSION, etc.)
+│
+├── utils/                          # Utilities
+│   ├── __init__.py
+│   └── validation.py               # Parameter validation
+│
+├── ble.py                          # BLE connection management
+├── therapy.py                      # Therapy engine (pattern generation, execution)
+├── hardware.py                     # DRV2605Controller, BatteryMonitor, I2CMultiplexer
+├── menu.py                         # BLE command processing (MenuController)
+├── sync.py                         # PRIMARY↔SECONDARY messaging protocol
+├── state.py                        # TherapyStateMachine
+├── led.py                          # LEDController (boot and therapy modes)
+├── profiles.py                     # ProfileManager, therapy profiles
+└── sync_stats.py                   # Sync statistics (validation/debugging)
 ```
 
-**Total Source Lines**: ~4,500 lines (excluding libraries)
+**Architecture Layers:**
+- **Presentation**: `led.py`, `menu.py` (BLE command interface)
+- **Application**: `application/session/`, `application/calibration/`
+- **Domain**: `therapy.py`, `sync.py`, `state.py`
+- **Infrastructure**: `ble.py`, `hardware.py`, `profiles.py`
 
 ---
 
 ## Role-Based Architecture
 
-### PRIMARY (VL - Left Glove)
+### PRIMARY (Left Glove)
 
 **Responsibilities:**
-1. **Advertise** as BLE peripheral ("VL")
+
+1. **Advertise** as BLE peripheral ("BlueBuzzah")
 2. **Accept connections** from smartphone + SECONDARY
-3. **Detect connection types** (phone vs VR)
-4. **Orchestrate therapy**: Send EXECUTE_BUZZ commands
-5. **Broadcast parameters** to SECONDARY on profile changes
-6. **Query VR battery** via GET_BATTERY command
-7. **Process smartphone commands** (18 BLE protocol commands)
+3. **Execute boot sequence**: Wait for SECONDARY, optionally phone
+4. **Orchestrate therapy**: Send SYNC:EXECUTE_BUZZ commands
+5. **Send heartbeats** to SECONDARY during therapy
+6. **Broadcast parameters** to SECONDARY on profile changes
+7. **Process smartphone commands** via MenuController
 
-**Key Methods:**
-- `BLEConnection._primary_advertise_and_wait()` - Legacy single connection
-- `BLEConnection._detect_connection_type()` - Identify phone vs VR
-- `BLEConnection._assign_connections_by_type()` - Multi-connection setup
-- `BLEConnection._complete_vr_handshake()` - VR synchronization
-- `BLEConnection.query_vr_battery()` - Remote battery query
-- `MenuController._broadcast_param_update()` - Parameter sync to VR
-- `vcr_engine.run_vcr()` - Therapy loop with EXECUTE_BUZZ sending
+**Key Methods (app.py):**
 
-### SECONDARY (VR - Right Glove)
+- `BlueBuzzahApplication._primary_boot_sequence()` - Boot and connection
+- `BlueBuzzahApplication._run_primary_loop()` - Main therapy loop
+- `SessionManager.start_session()` - Sends SYNC:START_SESSION to SECONDARY
+- `TherapyEngine.update()` - Pattern generation and motor control
+
+### SECONDARY (Right Glove)
 
 **Responsibilities:**
-1. **Scan** for "VL" BLE advertisement
-2. **Connect** to PRIMARY and send READY
-3. **Receive time sync** (FIRST_SYNC with +21ms BLE compensation)
-4. **Wait for commands**: EXECUTE_BUZZ (blocking)
-5. **Execute synchronized buzzes** after command received
-6. **Respond to queries**: GET_BATTERY, PARAM_UPDATE
-7. **Safety halt** if PRIMARY disconnects (timeout detection)
 
-**Key Methods:**
-- `BLEConnection._secondary_scan_and_connect()` - Connect to VL
-- `BLEConnection.initial_time_offset` - Stores sync timestamp
-- `vcr_engine.receive_execute_buzz()` - Blocking wait for buzz command
-- `vcr_engine.send_buzz_complete()` - Acknowledgment after execution
-- `MenuController._handle_battery_query()` - Respond to VL query
-- `MenuController._handle_param_update()` - Apply VL parameter changes
+1. **Scan** for "BlueBuzzah" BLE advertisement
+2. **Connect** to PRIMARY during boot sequence
+3. **Receive SYNC commands**: START_SESSION, EXECUTE_BUZZ, HEARTBEAT
+4. **Execute synchronized buzzes** after command received
+5. **Monitor heartbeat timeout** (6 seconds)
+6. **Safety halt** if PRIMARY disconnects or heartbeat times out
+
+**Key Methods (app.py):**
+
+- `BlueBuzzahApplication._secondary_boot_sequence()` - Scan and connect
+- `BlueBuzzahApplication._run_secondary_loop()` - Wait for SYNC commands
+- `BlueBuzzahApplication._handle_sync_command()` - Process SYNC messages
+- `BlueBuzzahApplication._handle_heartbeat_timeout()` - Connection recovery
 
 ---
 
 ## Entry Point Flow
 
-### Code.py Execution Sequence
+### main.py → app.py Execution Sequence
 
 ```python
+# main.py
+from app import BlueBuzzahApplication
+import config
+
 def main():
-    # 1. Security Validation
-    validate_auth_token()  # Halt with red LED if unauthorized
+    # 1. Load configuration from settings.json
+    device_config = config.load_device_config()
+    therapy_config = config.load_therapy_config()
 
-    # 2. Initialize BLE Connection
-    ble = BLEConnection(GLOVE_ROLE, BLE_NAME)
+    # 2. Create and run application
+    app = BlueBuzzahApplication(device_config, therapy_config)
+    app.run()
 
-    # 3. Initialize Menu Controller
-    menu = MenuController(ble, GLOVE_ROLE)
-
-    # 4. Startup Window (default 6 seconds)
-    command_received = menu.wait_for_command(timeout_sec=STARTUP_WINDOW)
-
-    if command_received:
-        # User sent BLE command → Enter utility mode
-        menu.run_utility_loop()  # Infinite loop accepting commands
+# app.py - BlueBuzzahApplication.run()
+def run(self):
+    # 1. Execute boot sequence (role-specific)
+    if SKIP_BOOT_SEQUENCE:
+        self.boot_result = BootResult.SUCCESS_NO_PHONE
     else:
-        # No command → Auto-start therapy
+        self.boot_result = self._execute_boot_sequence()
 
-        # 5. Connection Detection (PRIMARY only, multi-connection)
-        if ble.ble.connected and len(ble.ble.connections) > 0:
-            # Identify existing connections (phone/VR)
-            for conn in ble.ble.connections:
-                conn_type = ble._detect_connection_type(conn, timeout=2.0)
+    if self.boot_result == BootResult.FAILED:
+        self.boot_led_controller.indicate_failure()
+        return
 
-            # Assign connections by type
-            assigned = ble._assign_connections_by_type(typed_connections)
+    # 2. Switch to therapy LED mode
+    self._switch_to_therapy_led()
 
-            # Handle different scenarios
-            if has_phone and has_vr:
-                connection_success = ble._complete_vr_handshake()
-            elif has_phone and not has_vr:
-                connection_success = ble._scan_for_vr_while_advertising()
-            elif has_vr and not has_phone:
-                connection_success = ble._complete_vr_handshake()
-        else:
-            # Legacy single connection mode (VR only)
-            connection_success = ble.establish_connection()
-
-        # 6. Load Therapy Profile
-        import profiles.defaults as config
-
-        # 7. Execute Therapy Session
-        vr_uart = ble.vr_uart if ble.vr_uart else ble.uart
-        run_vcr(vr_uart, GLOVE_ROLE, config)
-
-        # 8. Enter Low Power Mode
-        enter_low_power_mode()
+    # 3. Enter role-specific main loop
+    if self.role == DeviceRole.PRIMARY:
+        self._run_primary_loop()
+    else:
+        self._run_secondary_loop()
 ```
 
+**Boot Sequence (PRIMARY):**
+
+1. Initialize BLE and advertise as "BlueBuzzah"
+2. LED: Rapid blue flash during connection wait
+3. Wait for SECONDARY connection (required)
+4. Optionally wait for phone connection
+5. Success: Solid blue LED
+
+**Boot Sequence (SECONDARY):**
+
+1. Initialize BLE and scan for "BlueBuzzah"
+2. LED: Rapid blue flash during scanning
+3. Connect to PRIMARY within timeout
+4. Success: Solid blue LED
+
 **Timing Breakdown:**
-- **Lines 1-48**: Security check (~0.5s)
-- **Lines 49-80**: Startup window (6-30s configurable)
-- **Lines 82-136**: Connection detection/handshake (2-15s)
-- **Lines 138-158**: Therapy execution (2-180 minutes)
-- **Lines 160-162**: Cleanup and shutdown
+
+- Boot sequence: 0-30s (configurable startup_window_sec)
+- Connection handshake: 2-15s
+- Therapy execution: 2-180 minutes
+- Shutdown: <1s
 
 ---
 
@@ -278,7 +285,7 @@ def main():
             └── Port 3: DRV2605 (Ring)    @ 0x5A
 ```
 
-**I2C Initialization Strategy** (lines 69-145 in `haptic_controller.py`):
+**I2C Initialization Strategy** (hardware.py - DRV2605Controller):
 
 ```python
 # 1. Try standard board.I2C() (3 retries with 0.5s delay)
@@ -311,7 +318,7 @@ CircuitPython's I2C pull-up detection can fail if the bus is not stable at boot 
 
 ### DRV2605 Configuration
 
-**Per-Driver Setup** (lines 183-210):
+**Per-Driver Setup** (hardware.py):
 
 ```python
 def _configure_driver(driver, config):
@@ -348,31 +355,84 @@ def _configure_driver(driver, config):
 
 ## State Management
 
-### Session State Machine
+### Therapy State Machine (11 States)
+
+The system has 11 distinct states defined in `core/types.py`:
 
 ```mermaid
 stateDiagram-v2
     [*] --> IDLE
-    IDLE --> RUNNING: SESSION_START
-    RUNNING --> PAUSED: SESSION_PAUSE
-    PAUSED --> RUNNING: SESSION_RESUME
-    RUNNING --> IDLE: SESSION_STOP
-    PAUSED --> IDLE: SESSION_STOP
-    RUNNING --> IDLE: Time Elapsed (auto-complete)
+
+    IDLE --> CONNECTING: POWER_ON/CONNECT
+    CONNECTING --> READY: CONNECTED
+    CONNECTING --> ERROR: ERROR_OCCURRED
+    CONNECTING --> IDLE: DISCONNECTED
+
+    READY --> RUNNING: START_SESSION
+    READY --> ERROR: ERROR_OCCURRED
+    READY --> CONNECTION_LOST: DISCONNECTED
+
+    RUNNING --> PAUSED: PAUSE_SESSION
+    RUNNING --> STOPPING: STOP_SESSION
+    RUNNING --> STOPPING: SESSION_COMPLETE
+    RUNNING --> LOW_BATTERY: BATTERY_WARNING
+    RUNNING --> CONNECTION_LOST: DISCONNECTED
+    RUNNING --> PHONE_DISCONNECTED: PHONE_LOST
+    RUNNING --> ERROR: ERROR/EMERGENCY_STOP
+
+    PAUSED --> RUNNING: RESUME_SESSION
+    PAUSED --> STOPPING: STOP_SESSION
+    PAUSED --> CONNECTION_LOST: DISCONNECTED
+
+    LOW_BATTERY --> RUNNING: BATTERY_OK
+    LOW_BATTERY --> CRITICAL_BATTERY: BATTERY_CRITICAL
+    LOW_BATTERY --> STOPPING: STOP_SESSION
+
+    CRITICAL_BATTERY --> IDLE: FORCED_SHUTDOWN
+
+    CONNECTION_LOST --> READY: RECONNECTED
+    CONNECTION_LOST --> IDLE: RECONNECT_FAILED
+
+    PHONE_DISCONNECTED --> RUNNING: PHONE_RECONNECTED
+    PHONE_DISCONNECTED --> IDLE: PHONE_TIMEOUT
+
+    STOPPING --> READY: STOPPED
+    STOPPING --> IDLE: DISCONNECTED
+
+    ERROR --> IDLE: RESET
+    ERROR --> IDLE: DISCONNECTED
 ```
 
-**State Transitions** (session_manager.py):
+**State Descriptions:**
 
-| From | To | Command | Validation |
-|------|----|---------| ------------|
-| IDLE | RUNNING | SESSION_START | Profile loaded, VR connected |
-| RUNNING | PAUSED | SESSION_PAUSE | - |
-| PAUSED | RUNNING | SESSION_RESUME | - |
-| RUNNING | IDLE | SESSION_STOP | - |
-| PAUSED | IDLE | SESSION_STOP | - |
-| RUNNING | IDLE | (auto) | elapsed >= duration |
+| State | Description |
+|-------|-------------|
+| `IDLE` | No active session, system ready |
+| `CONNECTING` | Establishing BLE connection during boot |
+| `READY` | Connected, ready for therapy |
+| `RUNNING` | Active therapy session |
+| `PAUSED` | Session paused, can resume |
+| `STOPPING` | Session ending, cleanup in progress |
+| `ERROR` | Error condition, motors stopped |
+| `LOW_BATTERY` | Battery < 20%, session can continue |
+| `CRITICAL_BATTERY` | Battery < 5%, forced shutdown |
+| `CONNECTION_LOST` | PRIMARY-SECONDARY BLE lost, attempting recovery |
+| `PHONE_DISCONNECTED` | Phone BLE lost (PRIMARY only, informational) |
 
-**Timing Management:**
+**State Transitions** (state.py):
+
+| From | To | Trigger | Notes |
+|------|----|---------|-------|
+| IDLE | READY | CONNECTED | After successful boot |
+| READY/IDLE | RUNNING | START_SESSION | Profile loaded |
+| RUNNING | PAUSED | PAUSE_SESSION | - |
+| PAUSED | RUNNING | RESUME_SESSION | - |
+| RUNNING/PAUSED | STOPPING | STOP_SESSION | - |
+| STOPPING | IDLE | STOPPED | Cleanup complete |
+| Any | ERROR | ERROR/EMERGENCY_STOP | Force transition |
+
+**Timing Management (SessionManager):**
+
 ```python
 # Elapsed time excludes pause durations
 elapsed_time = (current_time - session_start_time) - total_pause_time
@@ -381,29 +441,19 @@ elapsed_time = (current_time - session_start_time) - total_pause_time
 progress = int((elapsed_time / session_duration) * 100)
 ```
 
-### Connection State (BLE)
+### Connection State (app.py)
 
-**Primary Connection States:**
-- `ble.phone_connection`: Phone connection object (or None)
-- `ble.phone_uart`: Phone UART service (or None)
-- `ble.vr_connection`: VR connection object (or None)
-- `ble.vr_uart`: VR UART service (or None)
-- `ble.uart`: Legacy single connection (fallback)
+**BlueBuzzahApplication connection attributes:**
 
-**Health Check** (line 734-777 in ble_connection.py):
-```python
-def check_connection_health():
-    result = {"phone": False, "vr": False, "phone_lost": False, "vr_lost": False}
+- `self.phone_connection`: Phone connection object (or None)
+- `self.secondary_connection`: SECONDARY glove connection (PRIMARY only)
+- `self.primary_connection`: PRIMARY glove connection (SECONDARY only)
 
-    if phone_connection and not phone_connection.connected:
-        result["phone_lost"] = True
-        phone_connection = None  # Clear stale reference
+**Connection Health Monitoring:**
 
-    if vr_connection and not vr_connection.connected:
-        result["vr_lost"] = True
-        vr_connection = None  # Clear stale reference
-        # CRITICAL: VR disconnect halts therapy
-```
+- PRIMARY sends heartbeats every 2 seconds during therapy
+- SECONDARY monitors for heartbeat timeout (6 seconds)
+- On timeout: Emergency stop motors, attempt reconnection
 
 ---
 
@@ -412,31 +462,92 @@ def check_connection_health():
 ### Hierarchical Error Responses
 
 **Level 1: Fatal Errors** (Halt with LED indicator)
-- Authorization failure → Red LED flash loop (code.py:44-54)
-- I2C initialization failure → Diagnostic message + halt (haptic_controller.py:138-145)
-- VR timeout during EXECUTE_BUZZ → Red LED + motor shutoff (vcr_engine.py:206-218)
+
+- Boot sequence failure → Red LED flash, halt (app.py)
+- I2C initialization failure → Diagnostic message + halt (hardware.py)
+- Heartbeat timeout → Emergency stop motors, attempt reconnect (app.py)
 
 **Level 2: Recoverable Errors** (Log + Continue)
-- SYNC_ADJ timeout → Log warning, proceed (sync_protocol.py:76-78)
-- Battery query timeout → Return None (ble_connection.py:891)
-- File read failure → Return error tuple (profile_manager.py:164-165)
+
+- SYNC command timeout → Log warning, proceed
+- Battery query timeout → Return None
+- File read failure → Return error tuple (profiles.py)
 
 **Level 3: User Errors** (BLE Error Response)
-- Invalid command → `ERROR:Unknown command` (menu_controller.py:362)
-- Invalid parameter → `ERROR:Value out of range` (validators.py)
-- Command during session → `ERROR:Cannot modify during active session` (menu_controller.py:616)
+
+- Invalid command → `ERROR:Unknown command` (menu.py)
+- Invalid parameter → `ERROR:Value out of range` (utils/validation.py)
+- Command during session → `ERROR:Cannot modify during active session` (menu.py)
 
 ### Timeout Handling Matrix
 
 | Operation | Timeout | Failure Action | Location |
 |-----------|---------|----------------|----------|
-| BLE connection | 15s | Red LED, halt | ble_connection.py:323 |
-| READY signal | 8s | Red LED, halt | ble_connection.py:358 |
-| SYNC ACK | 2s | Warning, proceed | sync_protocol.py:76 |
-| EXECUTE_BUZZ | 10s | Red LED, halt therapy | sync_protocol.py:219-244 |
-| BUZZ_COMPLETE | 3s | Warning, proceed | sync_protocol.py:336 |
-| Connection type detect | 3s | Treat as unknown | ble_connection.py:102 |
-| VR battery query | 1s | Return None | ble_connection.py:869-891 |
+| Boot sequence | 30s | Red LED, halt | app.py |
+| BLE scan (SECONDARY) | 30s | Red LED, halt | app.py |
+| Heartbeat | 6s | Reconnect attempt | app.py |
+| SYNC command | 10s | Log warning | app.py |
+| BLE receive | 0.01s | Return None (non-blocking) | app.py |
+
+---
+
+## Heartbeat Protocol
+
+PRIMARY sends periodic heartbeats during therapy to detect silent disconnections (BLE connections that drop without triggering disconnect events).
+
+### Parameters
+
+| Parameter | Value | Description |
+|-----------|-------|-------------|
+| Interval | 2 seconds | Time between heartbeat messages |
+| Timeout | 6 seconds | 3 missed heartbeats = connection lost |
+| Recovery attempts | 3 | Number of reconnection attempts |
+| Recovery delay | 2 seconds | Delay between reconnection attempts |
+
+### Message Format
+
+```
+SYNC:HEARTBEAT:ts|<microseconds>
+```
+
+Example: `SYNC:HEARTBEAT:ts|1234567890`
+
+### Protocol Flow
+
+**PRIMARY (sender):**
+
+```python
+# In _run_primary_loop() during active therapy
+if now - self._last_heartbeat_sent >= HEARTBEAT_INTERVAL_SEC:
+    ts = int(time.monotonic_ns() // 1000)  # Microseconds
+    self.ble.send(self.secondary_connection, f"SYNC:HEARTBEAT:ts|{ts}")
+    self._last_heartbeat_sent = now
+```
+
+**SECONDARY (receiver):**
+
+```python
+# In _handle_sync_command() for HEARTBEAT
+elif command_type == "HEARTBEAT":
+    self._last_heartbeat_received = time.monotonic()
+
+# In _run_secondary_loop()
+if self._last_heartbeat_received is not None:
+    elapsed = time.monotonic() - self._last_heartbeat_received
+    if elapsed > HEARTBEAT_TIMEOUT_SEC:
+        self._handle_heartbeat_timeout()
+```
+
+### Connection Recovery
+
+On heartbeat timeout, SECONDARY executes recovery:
+
+1. Emergency stop all motors (safety)
+2. Update state machine to CONNECTION_LOST
+3. Update LED to indicate connection lost
+4. Attempt reconnection (up to 3 attempts, 2s apart)
+5. If successful: Return to READY state
+6. If failed: Enter IDLE state
 
 ---
 
@@ -449,16 +560,21 @@ def check_connection_health():
 
 ### Garbage Collection Strategy
 
-**Periodic Collection** (vcr_engine.py:234):
+**Periodic Collection** (app.py main loops):
+
 ```python
-# After each buzz macrocycle (every ~2-3 seconds)
-gc.collect()
+# Every 60 seconds in main loop
+if int(time.monotonic()) % 60 == 0:
+    gc.collect()
+    free_mem = gc.mem_free()
+    print(f"[MEMORY] Free: {free_mem} bytes")
 ```
 
-**Why after macrocycles?**
+**Why periodic collection?**
+
 - Pattern generation creates temporary lists
 - BLE message parsing allocates strings
-- Frequency: ~20-30 times per minute (minimal overhead)
+- Prevents heap fragmentation over long sessions
 
 ### Memory-Efficient Patterns
 
@@ -507,53 +623,92 @@ print(msg)
 ### 1. **Role-Aware Code Patterns**
 
 ```python
-# GOOD: Role check with clear branching
-if self.role == "PRIMARY":
+# GOOD: Role check with clear branching (using DeviceRole enum)
+if self.role == DeviceRole.PRIMARY:
     # PRIMARY-specific behavior
-    send_execute_buzz(uart, idx)
+    self._run_primary_loop()
 else:
     # SECONDARY-specific behavior
-    idx = receive_execute_buzz(uart)
+    self._run_secondary_loop()
 
-# AVOID: Duplicate code in separate files
-# (Old architecture had VL/code_primary.py and VR/code_secondary.py)
+# GOOD: Using settings.json for role configuration
+# settings.json: {"deviceRole": "Primary"}
 ```
 
 ### 2. **BLE Message Protocol**
 
-**Command Format:**
+**Phone → PRIMARY Commands:**
+
 ```
 COMMAND_NAME:ARG1:ARG2:...\n
 ```
 
-**Response Format:**
+**PRIMARY → Phone Responses:**
+
 ```
 KEY1:VALUE1\n
 KEY2:VALUE2\n
 \x04
 ```
 
-**Internal VL↔VR Messages** (no EOT terminator):
+**PRIMARY ↔ SECONDARY SYNC Messages:**
+
 ```
-EXECUTE_BUZZ:0\n
-BUZZ_COMPLETE:0\n
-PARAM_UPDATE:ON:0.150:JITTER:10\n
-GET_BATTERY\n
-BAT_RESPONSE:3.68\n
+SYNC:<command>:<key1>|<val1>|<key2>|<val2>
 ```
 
-### 3. **Testing Checklist**
+**SYNC Commands:**
+
+| Command | Direction | Description |
+|---------|-----------|-------------|
+| START_SESSION | P→S | Begin therapy with config |
+| PAUSE_SESSION | P→S | Pause current session |
+| RESUME_SESSION | P→S | Resume paused session |
+| STOP_SESSION | P→S | Stop session |
+| EXECUTE_BUZZ | P→S | Trigger motor activation |
+| DEACTIVATE | P→S | Stop motor activation |
+| HEARTBEAT | P→S | Connection keepalive |
+
+**Examples:**
+
+```
+SYNC:START_SESSION:duration_sec|7200|pattern_type|rndp|jitter_percent|235
+SYNC:EXECUTE_BUZZ:left_finger|2|right_finger|2|amplitude|100|timestamp|123456
+SYNC:HEARTBEAT:ts|1234567890
+```
+
+### 3. **Bilateral Mirroring**
+
+The `mirror_pattern` parameter controls finger sequence coordination:
+
+| vCR Type | mirror_pattern | Behavior |
+|----------|----------------|----------|
+| **Noisy vCR** | `True` | Same finger activated on both hands |
+| **Regular vCR** | `False` | Independent random sequences per hand |
+
+**Implementation:**
+
+```python
+if mirror_pattern:
+    # Same finger on both hands (noisy vCR)
+    right_sequence = left_sequence.copy()
+else:
+    # Independent sequences (regular vCR)
+    right_sequence = generate_random_permutation()
+```
+
+### 4. **Testing Checklist**
 
 Before committing changes:
 
-- [ ] **Desktop simulation passes**: `python test_desktop.py`
-- [ ] **Both roles tested**: Set GLOVE_ROLE to PRIMARY/SECONDARY
-- [ ] **BLE commands verified**: Test with Serial UART app
+- [ ] **Both roles tested**: Test with settings.json set to Primary and Secondary
+- [ ] **BLE commands verified**: Test phone commands via BLE
 - [ ] **Memory stable**: No OOM crashes during 5-minute test
-- [ ] **Synchronization accurate**: VL/VR buzz within 20ms (serial logs)
+- [ ] **Synchronization accurate**: PRIMARY/SECONDARY buzz within 20ms (serial logs)
+- [ ] **Heartbeat working**: Verify 2s heartbeat, 6s timeout detection
 - [ ] **Error handling**: Test disconnection, invalid commands, low battery
 
-### 4. **CircuitPython Gotchas**
+### 5. **CircuitPython Gotchas**
 
 **List Comprehensions** (limited):
 ```python
@@ -594,33 +749,28 @@ def buzz_finger(index, intensity):
     """
 ```
 
-### 5. **Performance Optimization**
+### 6. **Performance Optimization**
 
 **Minimize BLE writes** (combine messages):
+
 ```python
 # BAD: 3 separate writes
-uart.write("KEY1:VAL1\n")
-uart.write("KEY2:VAL2\n")
-uart.write("\x04")
+ble.send(conn, "KEY1:VAL1\n")
+ble.send(conn, "KEY2:VAL2\n")
+ble.send(conn, "\x04")
 
 # GOOD: Single write
 response = "KEY1:VAL1\nKEY2:VAL2\n\x04"
-uart.write(response.encode())
+ble.send(conn, response)
 ```
 
-**Avoid blocking operations** in therapy loop:
-```python
-# BAD: Blocking read in critical path
-while therapy_active:
-    if uart.in_waiting:
-        cmd = uart.readline()  # Blocks until \n
-    buzz_sequence()
+**Non-blocking BLE receive** in main loop:
 
-# GOOD: Non-blocking poll
-while therapy_active:
-    if uart.in_waiting:
-        cmd = uart.readline()  # Only called if data ready
-    buzz_sequence()
+```python
+# GOOD: Non-blocking poll with short timeout
+message = self.ble.receive(connection, timeout=0.01)
+if message:
+    self._handle_command(message)
 ```
 
 ---
@@ -628,19 +778,22 @@ while therapy_active:
 ## Next Steps
 
 See companion documents:
-- **SYNCHRONIZATION_PROTOCOL.md** - BLE timing, handshake, command protocol
-- **THERAPY_ENGINE.md** - VCR patterns, haptic control, session execution
-- **COMMAND_REFERENCE.md** - BLE Protocol v2.0.0 complete specification
-- **CALIBRATION_GUIDE.md** - Motor testing, intensity tuning, finger mapping
+
+- **ARCHITECTURE.md** - Clean architecture principles, design patterns
+- **THERAPY_ENGINE.md** - vCR patterns, haptic control, session execution
+- **API_REFERENCE.md** - BLE Protocol complete specification
+- **STATE_DIAGRAM.md** - State machine visualization
 
 ---
 
 **Document Maintenance:**
+
 Update this document when:
+
 - Adding new modules or significant refactoring
 - Changing role-based behavior patterns
 - Modifying error handling strategy
 - Updating hardware initialization logic
 
-**Last Updated:** 2025-01-23
+**Last Updated:** 2025-11-27
 **Reviewed By:** Technical Architecture Team
