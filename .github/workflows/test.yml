@@ -46,7 +46,7 @@ jobs:
         if: always()
         run: |
           lcov --directory .pio/build/native_coverage_gcc --capture --output-file coverage.info
-          lcov --remove coverage.info '*/test/*' '*/Unity/*' '*/mocks/*' '/usr/*' --output-file coverage.lcov
+          lcov --remove coverage.info '*/test/*' '*/Unity/*' '*/mocks/*' '/usr/*' --output-file coverage.lcov --ignore-errors unused
           lcov --list coverage.lcov
 
       - name: Generate summary
