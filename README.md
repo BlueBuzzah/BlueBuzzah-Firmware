@@ -37,6 +37,7 @@ python deploy.py
 ```
 
 The deploy script automatically:
+
 - Detects connected Feather nRF52840 devices
 - Builds and uploads firmware
 - **1 device**: Prompts for role selection (PRIMARY/SECONDARY)
@@ -46,6 +47,7 @@ The deploy script automatically:
 Role is persisted to flash and survives power cycles.
 
 **Manual commands** (if needed):
+
 ```bash
 python deploy.py --list    # List connected devices
 pio device monitor         # Open serial monitor (115200 baud)
