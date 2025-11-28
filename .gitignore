@@ -3,6 +3,16 @@ temp/
 
 # Test coverage reports
 coverage/
+coverage.*
+
+# LLVM profiling/coverage artifacts
+*.profraw
+*.profdata
+
+# GCC coverage artifacts
+*.gcda
+*.gcno
+*.gcov
 
 # Platform IO Cache
 .pio
