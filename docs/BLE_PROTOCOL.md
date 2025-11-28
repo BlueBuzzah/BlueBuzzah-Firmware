@@ -1,8 +1,9 @@
 # BlueBuzzah BLE Protocol
 
 **Version:** 2.0.0
-**Date:** 2025-01-04
+**Date:** 2025-01-23
 **Platform:** .NET MAUI App ↔ BlueBuzzah (PRIMARY) Glove
+**Firmware:** Arduino C++ / PlatformIO
 
 ## Connection
 

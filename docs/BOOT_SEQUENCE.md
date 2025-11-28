@@ -3,6 +3,7 @@
 **Comprehensive boot sequence documentation for bilateral haptic therapy system**
 
 Version: 2.0.0
+Platform: Arduino C++ on Adafruit Feather nRF52840 Express
 Last Updated: 2025-01-11
 
 ---
@@ -116,17 +117,25 @@ stateDiagram-v2
 
 **Duration**: 1-2 seconds
 
-```python
-async def _primary_boot_sequence(self) -> BootResult:
-    """PRIMARY device boot sequence."""
-    print("[PRIMARY] Starting boot sequence")
+```cpp
+// src/main.cpp
 
-    # Initialize BLE
-    self.led.indicate_ble_init()  # Rapid blue flash
-    await self.ble.initialize()
+BootResult primaryBootSequence() {
+    Serial.println(F("[PRIMARY] Starting boot sequence"));
 
-    # Start advertising
-    await self.ble.advertise("BlueBuzzah")
+    // Initialize LED
+    ledController.indicateBLEInit();  // Rapid blue flash
+
+    // Initialize BLE
+    if (!bleManager.begin(deviceConfig)) {
+        ledController.indicateFailure();
+        return BootResult::FAILED;
+    }
+
+    // Start advertising
+    bleManager.startAdvertising();
+    // ...
+}
 ```
 
 **LED Indicator**: Rapid blue flash (10Hz)
@@ -138,27 +147,31 @@ async def _primary_boot_sequence(self) -> BootResult:
 
 **Duration**: 0-30 seconds (depends on connection timing)
 
-```python
-    start_time = time.monotonic()
-    secondary_connected = False
-    phone_connected = False
+```cpp
+// src/main.cpp
 
-    while time.monotonic() - start_time < self.connection_timeout:
-        # Check for new connections
-        connections = await self.ble.check_connections()
+uint32_t startTime = millis();
+bool secondaryConnected = false;
+bool phoneConnected = false;
 
-        for conn in connections:
-            if self._is_secondary(conn):
-                secondary_connected = True
-                self.secondary_connection = conn
-                self.led.indicate_connection_success()  # 5x green flash
+while (millis() - startTime < CONNECTION_TIMEOUT_MS) {
+    // Check for new connections (handled via callbacks)
+    if (bleManager.hasSecondaryConnection() && !secondaryConnected) {
+        secondaryConnected = true;
+        ledController.indicateConnectionSuccess();  // 5x green flash
 
-                if not phone_connected:
-                    self.led.indicate_waiting_for_phone()  # Slow blue flash
+        if (!phoneConnected) {
+            ledController.indicateWaitingForPhone();  // Slow blue flash
+        }
+    }
 
-            elif self._is_phone(conn):
-                phone_connected = True
-                self.phone_connection = conn
+    if (bleManager.hasPhoneConnection() && !phoneConnected) {
+        phoneConnected = true;
+    }
+
+    // Small delay to prevent busy loop
+    delay(10);
+}
 ```
 
 **LED Indicators**:
@@ -174,17 +187,18 @@ async def _primary_boot_sequence(self) -> BootResult:
 
 **At 30 seconds**: Evaluate connection status and determine outcome
 
-```python
-        # Check if timeout reached
-        if time.monotonic() - start_time >= self.connection_timeout:
-            if not secondary_connected:
-                # CRITICAL FAILURE: No SECONDARY
-                print("[PRIMARY] ERROR: SECONDARY not connected")
-                self.led.indicate_failure()  # Slow red flash
-                return BootResult.FAILED
+```cpp
+// Check if timeout reached
+if (millis() - startTime >= CONNECTION_TIMEOUT_MS) {
+    if (!secondaryConnected) {
+        // CRITICAL FAILURE: No SECONDARY
+        Serial.println(F("[PRIMARY] ERROR: SECONDARY not connected"));
+        ledController.indicateFailure();  // Slow red flash
+        return BootResult::FAILED;
+    }
 
-            # SECONDARY connected, proceed with or without phone
-            break
+    // SECONDARY connected, proceed with or without phone
+}
 ```
 
 **Outcomes**:
@@ -198,16 +212,17 @@ async def _primary_boot_sequence(self) -> BootResult:
 
 **Final LED**: Solid green
 
-```python
-    # Determine final state
-    self.led.indicate_ready()  # Solid green
+```cpp
+// Determine final state
+ledController.indicateReady();  // Solid green
 
-    if secondary_connected and phone_connected:
-        print("[PRIMARY] All connections established")
-        return BootResult.SUCCESS_WITH_PHONE
-    elif secondary_connected:
-        print("[PRIMARY] SECONDARY connected, no phone")
-        return BootResult.SUCCESS_NO_PHONE
+if (secondaryConnected && phoneConnected) {
+    Serial.println(F("[PRIMARY] All connections established"));
+    return BootResult::SUCCESS_WITH_PHONE;
+} else if (secondaryConnected) {
+    Serial.println(F("[PRIMARY] SECONDARY connected, no phone"));
+    return BootResult::SUCCESS_NO_PHONE;
+}
 ```
 
 **Purpose**: Signal that device is ready to begin therapy
@@ -273,14 +288,23 @@ stateDiagram-v2
 
 **Duration**: 1-2 seconds
 
-```python
-async def _secondary_boot_sequence(self) -> BootResult:
-    """SECONDARY device boot sequence."""
-    print("[SECONDARY] Starting boot sequence")
+```cpp
+// src/main.cpp
 
-    # Initialize BLE
-    self.led.indicate_ble_init()  # Rapid blue flash
-    await self.ble.initialize()
+BootResult secondaryBootSequence() {
+    Serial.println(F("[SECONDARY] Starting boot sequence"));
+
+    // Initialize LED
+    ledController.indicateBLEInit();  // Rapid blue flash
+
+    // Initialize BLE
+    if (!bleManager.begin(deviceConfig)) {
+        ledController.indicateFailure();
+        return BootResult::FAILED;
+    }
+
+    // ...
+}
 ```
 
 **LED Indicator**: Rapid blue flash (10Hz)
@@ -292,34 +316,27 @@ async def _secondary_boot_sequence(self) -> BootResult:
 
 **Duration**: 0-30 seconds (until PRIMARY found or timeout)
 
-```python
-    start_time = time.monotonic()
-    connected = False
+```cpp
+uint32_t startTime = millis();
+bool connected = false;
 
-    while time.monotonic() - start_time < self.connection_timeout:
-        # Scan for PRIMARY device
-        devices = await self.ble.scan(timeout=1.0)
+while (millis() - startTime < CONNECTION_TIMEOUT_MS) {
+    // Scan for PRIMARY device
+    if (bleManager.scanAndConnect("BlueBuzzah", 1000)) {
+        connected = true;
 
-        for device in devices:
-            if device.name == "BlueBuzzah":
-                # Found PRIMARY - attempt connection
-                print(f"[SECONDARY] Found PRIMARY: {device.address}")
+        // Success indicators
+        ledController.indicateConnectionSuccess();  // 5x green flash
+        delay(500);  // Brief pause after success flash
+        ledController.indicateReady();  // Solid green
 
-                connection = await self.ble.connect(device)
-                if connection:
-                    connected = True
-                    self.primary_connection = connection
+        Serial.println(F("[SECONDARY] Connected to PRIMARY"));
+        return BootResult::SUCCESS;
+    }
 
-                    # Success indicators
-                    self.led.indicate_connection_success()  # 5x green flash
-                    await asyncio.sleep(0.5)  # Brief pause after success flash
-                    self.led.indicate_ready()  # Solid green
-
-                    print("[SECONDARY] Connected to PRIMARY")
-                    return BootResult.SUCCESS
-
-        # Small delay between scan attempts
-        await asyncio.sleep(0.1)
+    // Small delay between scan attempts
+    delay(100);
+}
 ```
 
 **LED Indicator**: Rapid blue flash (continues during scanning)
@@ -336,12 +353,13 @@ async def _secondary_boot_sequence(self) -> BootResult:
 2. Brief pause (0.5s)
 3. Solid green (ready state)
 
-```python
-        if connected:
-            self.led.indicate_connection_success()  # 5x green flash
-            await asyncio.sleep(0.5)
-            self.led.indicate_ready()  # Solid green
-            return BootResult.SUCCESS
+```cpp
+if (connected) {
+    ledController.indicateConnectionSuccess();  // 5x green flash
+    delay(500);
+    ledController.indicateReady();  // Solid green
+    return BootResult::SUCCESS;
+}
 ```
 
 **Purpose**: Confirm connection establishment to user
@@ -352,11 +370,11 @@ async def _secondary_boot_sequence(self) -> BootResult:
 
 **At 30 seconds**: If PRIMARY not found
 
-```python
-    # Timeout - connection failed
-    print("[SECONDARY] ERROR: PRIMARY not found within timeout")
-    self.led.indicate_failure()  # Slow red flash
-    return BootResult.FAILED
+```cpp
+// Timeout - connection failed
+Serial.println(F("[SECONDARY] ERROR: PRIMARY not found within timeout"));
+ledController.indicateFailure();  // Slow red flash
+return BootResult::FAILED;
 ```
 
 **LED Indicator**: Slow red flash (1Hz)
@@ -405,9 +423,9 @@ Time  | State                | LED                    | Status
 ### LED Pattern Details
 
 #### Rapid Blue Flash (BLE Init)
-```python
-# Pattern: 100ms on, 100ms off
-led.rapid_flash(LED_BLUE, frequency=10.0)
+```cpp
+// Pattern: 100ms on, 100ms off
+ledController.rapidFlash(LED_BLUE, 10.0f);
 ```
 - **Duration**: Until connection attempt completes
 - **Purpose**: Indicates active BLE operations
@@ -416,9 +434,9 @@ led.rapid_flash(LED_BLUE, frequency=10.0)
 ---
 
 #### 5x Green Flash (Connection Success)
-```python
-# Pattern: 5 flashes, 100ms on, 100ms off each
-led.flash_count(LED_GREEN, count=5)
+```cpp
+// Pattern: 5 flashes, 100ms on, 100ms off each
+ledController.flashCount(LED_GREEN, 5);
 ```
 - **Duration**: ~1 second (5 × 200ms)
 - **Purpose**: Confirms PRIMARY-SECONDARY connection
@@ -428,9 +446,9 @@ led.flash_count(LED_GREEN, count=5)
 ---
 
 #### Slow Blue Flash (Waiting for Phone)
-```python
-# Pattern: 500ms on, 500ms off
-led.slow_flash(LED_BLUE, frequency=1.0)
+```cpp
+// Pattern: 500ms on, 500ms off
+ledController.slowFlash(LED_BLUE);
 ```
 - **Duration**: Until phone connects or 30s timeout
 - **Purpose**: Indicates waiting for phone connection
@@ -439,9 +457,9 @@ led.slow_flash(LED_BLUE, frequency=1.0)
 ---
 
 #### Solid Green (Ready)
-```python
-# Pattern: Continuous solid green
-led.solid(LED_GREEN)
+```cpp
+// Pattern: Continuous solid green
+ledController.setColor(LED_GREEN);
 ```
 - **Duration**: Until therapy starts
 - **Purpose**: Boot complete, system ready
@@ -451,9 +469,9 @@ led.solid(LED_GREEN)
 ---
 
 #### Slow Red Flash (Failure)
-```python
-# Pattern: 500ms on, 500ms off
-led.slow_flash(LED_RED, frequency=1.0)
+```cpp
+// Pattern: 500ms on, 500ms off
+ledController.slowFlash(LED_RED);
 ```
 - **Duration**: Continuous (until power cycle)
 - **Purpose**: Boot sequence failed
@@ -513,14 +531,18 @@ PRIMARY/SECONDARY Boot (Failure):
 
 ### BLE Advertisement Parameters (PRIMARY)
 
-```python
-# PRIMARY advertises with these parameters
-advertisement_params = {
-    "name": "BlueBuzzah",
-    "interval": 0.5,  # 500ms advertising interval
-    "timeout": 30,    # Advertise for 30 seconds
-    "connectable": True,
-    "discoverable": True
+```cpp
+// src/ble_manager.cpp
+
+void BLEManager::startAdvertising() {
+    Bluefruit.Advertising.addFlags(BLE_GAP_ADV_FLAGS_LE_ONLY_GENERAL_DISC_MODE);
+    Bluefruit.Advertising.addTxPower();
+    Bluefruit.Advertising.addService(_bleuart);
+    Bluefruit.Advertising.addName();
+
+    Bluefruit.Advertising.setInterval(800, 800);  // 500ms interval (in 0.625ms units)
+    Bluefruit.Advertising.setFastTimeout(30);     // Advertise for 30 seconds
+    Bluefruit.Advertising.start(30);              // 30 second timeout
 }
 ```
 
@@ -533,13 +555,17 @@ advertisement_params = {
 
 ### BLE Scanning Parameters (SECONDARY)
 
-```python
-# SECONDARY scans with these parameters
-scan_params = {
-    "scan_duration": 1.0,  # 1-second scan periods
-    "scan_interval": 0.1,   # 100ms between scans
-    "active_scan": True,    # Request scan responses
-    "timeout": 30           # Total scan timeout
+```cpp
+// src/ble_manager.cpp
+
+bool BLEManager::scanAndConnect(const char* targetName, uint32_t timeoutMs) {
+    Bluefruit.Scanner.setRxCallback(scanCallback);
+    Bluefruit.Scanner.filterRssi(-80);
+    Bluefruit.Scanner.setInterval(160, 80);  // 100ms interval, 50ms window
+    Bluefruit.Scanner.start(timeoutMs / 1000);
+
+    // Wait for callback or timeout
+    // ...
 }
 ```
 
@@ -555,25 +581,26 @@ scan_params = {
 
 Both devices validate connections after establishment:
 
-```python
-def validate_connection(connection) -> bool:
-    """Validate BLE connection quality."""
-    # Check connection parameters
-    if connection.interval_ms > 10:  # Expect 7.5ms interval
-        print(f"Warning: High connection interval ({connection.interval_ms}ms)")
+```cpp
+// src/ble_manager.cpp
 
-    # Verify service discovery
-    services = connection.discover_services()
-    if UART_SERVICE_UUID not in services:
-        print("Error: UART service not found")
-        return False
+bool BLEManager::validateConnection(uint16_t connHandle) {
+    BLEConnection* conn = Bluefruit.Connection(connHandle);
 
-    # Test round-trip latency
-    latency_ms = test_ping_latency(connection)
-    if latency_ms > 20:
-        print(f"Warning: High latency ({latency_ms}ms)")
+    // Check connection parameters
+    uint16_t intervalMs = conn->getConnectionInterval() * 1.25;
+    if (intervalMs > 10) {
+        Serial.printf("[WARN] High connection interval (%dms)\n", intervalMs);
+    }
 
-    return True
+    // Verify service discovery
+    if (!_bleuart.discover(connHandle)) {
+        Serial.println(F("[ERROR] UART service not found"));
+        return false;
+    }
+
+    return true;
+}
 ```
 
 ---
@@ -582,27 +609,33 @@ def validate_connection(connection) -> bool:
 
 After PRIMARY-SECONDARY connection, initial time sync is established:
 
-```python
-# PRIMARY sends FIRST_SYNC
-async def establish_initial_sync(self):
-    """Establish initial time synchronization."""
-    primary_time = time.monotonic_ns()
+```cpp
+// src/sync_protocol.cpp
 
-    # Send FIRST_SYNC message
-    await self.ble.send(
-        self.secondary_connection,
-        f"FIRST_SYNC:{primary_time}\n".encode()
-    )
+bool SyncProtocol::establishInitialSync() {
+    uint32_t primaryTime = millis();
 
-    # Wait for ACK with SECONDARY timestamp
-    response = await self.ble.receive(self.secondary_connection, timeout=2.0)
-    secondary_time = int(response.decode().split(':')[1])
+    // Send FIRST_SYNC message
+    char syncMsg[32];
+    snprintf(syncMsg, sizeof(syncMsg), "FIRST_SYNC:%lu\n", primaryTime);
+    _bleManager.sendToSecondary(syncMsg);
 
-    # Calculate offset
-    offset = self.sync_protocol.calculate_offset(primary_time, secondary_time)
-    self.time_offset = offset
+    // Wait for ACK with SECONDARY timestamp
+    char response[64];
+    if (!receiveWithTimeout(response, sizeof(response), 2000)) {
+        return false;
+    }
 
-    print(f"[SYNC] Initial offset: {offset / 1e6:.2f}ms")
+    // Parse response and calculate offset
+    uint32_t secondaryTime = 0;
+    if (sscanf(response, "ACK:%lu", &secondaryTime) == 1) {
+        _timeOffset = calculateOffset(primaryTime, secondaryTime);
+        Serial.printf("[SYNC] Initial offset: %ldms\n", _timeOffset);
+        return true;
+    }
+
+    return false;
+}
 ```
 
 This ensures sub-10ms bilateral synchronization before therapy begins.
@@ -615,17 +648,14 @@ This ensures sub-10ms bilateral synchronization before therapy begins.
 
 The 30-second boot window is **strictly enforced** and begins immediately after BLE initialization completes.
 
-```python
-start_time = time.monotonic()
-connection_timeout = 30.0  # seconds
+```cpp
+uint32_t startTime = millis();
+const uint32_t CONNECTION_TIMEOUT_MS = 30000;
 
-while time.monotonic() - start_time < connection_timeout:
-    # Connection attempts
-    ...
-
-    # Check timeout
-    if time.monotonic() - start_time >= connection_timeout:
-        break
+while (millis() - startTime < CONNECTION_TIMEOUT_MS) {
+    // Connection attempts
+    // ...
+}
 ```
 
 ---
@@ -641,14 +671,17 @@ while time.monotonic() - start_time < connection_timeout:
 | SECONDARY + Phone | Both | Proceed | Solid Green | SUCCESS_WITH_PHONE |
 
 **Code**:
-```python
-if timeout_reached:
-    if not secondary_connected:
-        self.led.indicate_failure()
-        return BootResult.FAILED
-    else:
-        self.led.indicate_ready()
-        return BootResult.SUCCESS_NO_PHONE if not phone_connected else BootResult.SUCCESS_WITH_PHONE
+```cpp
+if (timeoutReached) {
+    if (!secondaryConnected) {
+        ledController.indicateFailure();
+        return BootResult::FAILED;
+    } else {
+        ledController.indicateReady();
+        return phoneConnected ? BootResult::SUCCESS_WITH_PHONE
+                              : BootResult::SUCCESS_NO_PHONE;
+    }
+}
 ```
 
 ---
@@ -661,11 +694,13 @@ if timeout_reached:
 | PRIMARY not found | None | Fail | Slow Red | FAILED |
 
 **Code**:
-```python
-if timeout_reached:
-    if not connected:
-        self.led.indicate_failure()
-        return BootResult.FAILED
+```cpp
+if (timeoutReached) {
+    if (!connected) {
+        ledController.indicateFailure();
+        return BootResult::FAILED;
+    }
+}
 ```
 
 ---
@@ -700,12 +735,13 @@ if timeout_reached:
 
 **Recovery**: Power cycle both devices
 
-```python
-if not secondary_connected:
-    print("[PRIMARY] CRITICAL: SECONDARY not connected")
-    print("[PRIMARY] Cannot proceed without bilateral synchronization")
-    self.led.indicate_failure()
-    return BootResult.FAILED
+```cpp
+if (!secondaryConnected) {
+    Serial.println(F("[PRIMARY] CRITICAL: SECONDARY not connected"));
+    Serial.println(F("[PRIMARY] Cannot proceed without bilateral synchronization"));
+    ledController.indicateFailure();
+    return BootResult::FAILED;
+}
 ```
 
 ---
@@ -724,12 +760,13 @@ if not secondary_connected:
 
 **Recovery**: Power cycle both devices
 
-```python
-if not connected:
-    print("[SECONDARY] CRITICAL: PRIMARY not found")
-    print("[SECONDARY] Ensure PRIMARY is powered on and in range")
-    self.led.indicate_failure()
-    return BootResult.FAILED
+```cpp
+if (!connected) {
+    Serial.println(F("[SECONDARY] CRITICAL: PRIMARY not found"));
+    Serial.println(F("[SECONDARY] Ensure PRIMARY is powered on and in range"));
+    ledController.indicateFailure();
+    return BootResult::FAILED;
+}
 ```
 
 ---
@@ -745,13 +782,14 @@ if not connected:
 - Hardware issue
 
 **Detection**:
-```python
-def monitor_connection_during_boot():
-    """Monitor connection health during boot."""
-    if not self.ble.is_connected(self.secondary_connection):
-        print("[PRIMARY] WARNING: SECONDARY connection lost during boot")
-        self.led.indicate_failure()
-        return BootResult.FAILED
+```cpp
+void monitorConnectionDuringBoot() {
+    if (!bleManager.isSecondaryConnected()) {
+        Serial.println(F("[PRIMARY] WARNING: SECONDARY connection lost during boot"));
+        ledController.indicateFailure();
+        return BootResult::FAILED;
+    }
+}
 ```
 
 **Recovery**: Power cycle both devices
@@ -768,22 +806,25 @@ def monitor_connection_during_boot():
 - Firmware version mismatch
 
 **Detection**:
-```python
-def validate_connection_params(connection):
-    """Validate connection parameters meet therapy requirements."""
-    interval = connection.connection_interval
-    latency = connection.slave_latency
-    timeout = connection.supervision_timeout
+```cpp
+bool validateConnectionParams(BLEConnection* conn) {
+    uint16_t interval = conn->getConnectionInterval();
+    uint16_t latency = conn->getSlaveLatency();
+    uint16_t timeout = conn->getSupervisionTimeout();
 
-    if interval > 10:  # Need < 10ms for sub-10ms sync
-        print(f"ERROR: Connection interval too high ({interval}ms)")
-        return False
+    if (interval > 8) {  // Need < 10ms for sub-10ms sync (interval in 1.25ms units)
+        Serial.printf("[ERROR] Connection interval too high (%dms)\n",
+                      (int)(interval * 1.25));
+        return false;
+    }
 
-    if latency > 0:  # Need zero latency for real-time sync
-        print(f"ERROR: Slave latency not zero ({latency})")
-        return False
+    if (latency > 0) {  // Need zero latency for real-time sync
+        Serial.printf("[ERROR] Slave latency not zero (%d)\n", latency);
+        return false;
+    }
 
-    return True
+    return true;
+}
 ```
 
 **Recovery**: Retry connection or power cycle
@@ -794,25 +835,21 @@ def validate_connection_params(connection):
 
 All boot errors are logged with detailed context:
 
-```python
-def log_boot_error(error_type: str, details: Dict[str, Any]):
-    """Log boot sequence errors for diagnostics."""
-    timestamp = time.monotonic()
-    print(f"[BOOT ERROR] {timestamp:.2f}s - {error_type}")
-    for key, value in details.items():
-        print(f"  {key}: {value}")
+```cpp
+void logBootError(const char* errorType, uint32_t timestamp) {
+    Serial.printf("[BOOT ERROR] %.2fs - %s\n",
+                  timestamp / 1000.0f, errorType);
 
-    # Store in non-volatile storage for later retrieval
-    store_error_log(timestamp, error_type, details)
+    BatteryStatus battery = hardware.getBatteryStatus();
+    Serial.printf("  battery_voltage: %.2fV\n", battery.voltage);
+    Serial.printf("  firmware_version: %s\n", FIRMWARE_VERSION);
+}
 ```
 
 **Example Log**:
 ```
 [BOOT ERROR] 30.15s - SECONDARY_NOT_FOUND
   timeout: 30.0s
-  scans_performed: 300
-  devices_discovered: 0
-  rssi_min: -100 dBm
   battery_voltage: 3.7V
   firmware_version: 2.0.0
 ```
@@ -839,18 +876,18 @@ def log_boot_error(error_type: str, details: Dict[str, Any]):
 Event                          | Time    | Duration | Cumulative
 -------------------------------|---------|----------|------------
 Power On                       | 0.0s    | -        | 0.0s
-CircuitPython Boot             | 0.0s    | 0.5s     | 0.5s
-BLE Stack Init                 | 0.5s    | 1.0s     | 1.5s
-Start Advertising/Scanning     | 1.5s    | 0.1s     | 1.6s
-Device Discovery               | 1.6s    | 1.5s     | 3.1s
-Connection Establishment       | 3.1s    | 0.5s     | 3.6s
-Service Discovery              | 3.6s    | 0.3s     | 3.9s
-Initial Sync                   | 3.9s    | 0.5s     | 4.4s
-LED Success Indicators         | 4.4s    | 1.0s     | 5.4s
-Boot Complete                  | 5.4s    | -        | 5.4s
+Arduino Boot                   | 0.0s    | 0.3s     | 0.3s
+BLE Stack Init                 | 0.3s    | 1.0s     | 1.3s
+Start Advertising/Scanning     | 1.3s    | 0.1s     | 1.4s
+Device Discovery               | 1.4s    | 1.5s     | 2.9s
+Connection Establishment       | 2.9s    | 0.5s     | 3.4s
+Service Discovery              | 3.4s    | 0.3s     | 3.7s
+Initial Sync                   | 3.7s    | 0.5s     | 4.2s
+LED Success Indicators         | 4.2s    | 1.0s     | 5.2s
+Boot Complete                  | 5.2s    | -        | 5.2s
 ```
 
-**Total Boot Time (Typical Success)**: ~5.4 seconds
+**Total Boot Time (Typical Success)**: ~5.2 seconds
 
 ---
 
@@ -860,10 +897,10 @@ Boot Complete                  | 5.4s    | -        | 5.4s
 Event                          | Time    | Duration | Cumulative
 -------------------------------|---------|----------|------------
 Power On                       | 0.0s    | -        | 0.0s
-CircuitPython Boot             | 0.0s    | 0.5s     | 0.5s
-BLE Stack Init                 | 0.5s    | 2.0s     | 2.5s
-Start Advertising/Scanning     | 2.5s    | 0.1s     | 2.6s
-Scanning (no device found)     | 2.6s    | 27.4s    | 30.0s
+Arduino Boot                   | 0.0s    | 0.3s     | 0.3s
+BLE Stack Init                 | 0.3s    | 2.0s     | 2.3s
+Start Advertising/Scanning     | 2.3s    | 0.1s     | 2.4s
+Scanning (no device found)     | 2.4s    | 27.6s    | 30.0s
 Timeout Reached                | 30.0s   | -        | 30.0s
 LED Failure Indication         | 30.0s   | 0.5s     | 30.5s
 Boot Failed                    | 30.5s   | -        | 30.5s
@@ -921,13 +958,8 @@ Boot Failed                    | 30.5s   | -        | 30.5s
    - Avoid metal surfaces
 
 3. **Check Settings Files**:
-   ```python
-   # Verify settings.json exists and is valid
-   import json
-   with open("/settings.json", "r") as f:
-       settings = json.load(f)
-       print(f"Device role: {settings.get('deviceRole')}")
-   ```
+   - Use serial monitor to verify device role is correct
+   - Check that settings.json exists in LittleFS
 
 4. **Reduce BLE Interference**:
    - Move away from Wi-Fi routers
@@ -938,10 +970,6 @@ Boot Failed                    | 30.5s   | -        | 30.5s
    - Turn off both devices
    - Wait 5 seconds
    - Power on simultaneously
-
-6. **Check CircuitPython Version**:
-   - Must be 9.0+ for BLE features
-   - Update if necessary
 
 ---
 
@@ -961,36 +989,18 @@ Boot Failed                    | 30.5s   | -        | 30.5s
 **Solutions**:
 
 1. **Verify Device Roles**:
-   ```bash
-   # Check settings.json on both devices
-   # PRIMARY:
-   {"deviceRole": "Primary"}
+   - Check serial monitor for device role output
+   - PRIMARY should show `[PRIMARY]` tag
+   - SECONDARY should show `[SECONDARY]` tag
 
-   # SECONDARY:
-   {"deviceRole": "Secondary"}
-   ```
-
-2. **Redeploy Firmware**:
+2. **Reflash Firmware**:
    ```bash
-   python deploy/deploy.py --clean
+   pio run -t upload
    ```
 
 3. **Test Hardware**:
-   ```python
-   # Simple BLE test (run on each device)
-   from communication.ble.service import BLEService
-   ble = BLEService("TestDevice")
-   print(f"BLE initialized: {ble.is_initialized()}")
-   ```
-
-4. **Check Logs**:
-   ```python
-   # Review serial console output for errors
-   # Look for:
-   # - "BLE init failed"
-   # - "Connection timeout"
-   # - "SECONDARY not found"
-   ```
+   - Check serial monitor for I2C errors
+   - Verify BLE initialization succeeds
 
 ---
 
@@ -1014,22 +1024,8 @@ Boot Failed                    | 30.5s   | -        | 30.5s
    - PRIMARY should see SECONDARY within 5 seconds
 
 2. **Check SECONDARY BLE**:
-   ```python
-   # On SECONDARY, test scanning
-   from communication.ble.service import BLEService
-   ble = BLEService("Secondary")
-   devices = await ble.scan(timeout=5.0)
-   print(f"Devices found: {[d.name for d in devices]}")
-   ```
-
-3. **Verify PRIMARY Advertisement**:
-   ```python
-   # On PRIMARY, verify advertising
-   from communication.ble.service import BLEService
-   ble = BLEService("BlueBuzzah")
-   await ble.advertise("BlueBuzzah")
-   print("Advertising as BlueBuzzah")
-   ```
+   - Check serial monitor for scan results
+   - Verify "BlueBuzzah" device is found
 
 ---
 
@@ -1049,34 +1045,16 @@ Boot Failed                    | 30.5s   | -        | 30.5s
 **Solutions**:
 
 1. **Test Haptic Hardware**:
-   ```python
-   # Enter calibration mode
-   from application.calibration.controller import CalibrationController
-   cal = CalibrationController(haptic_controller, event_bus)
-   await cal.start_calibration()
-   await cal.test_all_fingers()
-   ```
+   - Enter calibration mode
+   - Test each finger individually
 
 2. **Verify I2C Communication**:
-   ```python
-   # Check I2C bus
-   import board
-   import busio
-   i2c = busio.I2C(board.SCL, board.SDA)
-   while not i2c.try_lock():
-       pass
-   devices = i2c.scan()
-   print(f"I2C devices: {[hex(d) for d in devices]}")
-   i2c.unlock()
-   # Should see: 0x70 (multiplexer), 0x5A (DRV2605 on each channel)
-   ```
+   - Check serial monitor for I2C addresses
+   - Should see 0x70 (multiplexer), 0x5A (DRV2605 per channel)
 
 3. **Check Sync Protocol**:
-   ```python
-   # Verify time offset was established
-   print(f"Time offset: {sync_coordinator.get_time_offset()}ns")
-   # Should be non-zero if sync was successful
-   ```
+   - Verify time offset was established
+   - Check for SYNC errors in serial output
 
 ---
 
@@ -1096,131 +1074,88 @@ Boot Failed                    | 30.5s   | -        | 30.5s
 **Solutions**:
 
 1. **Monitor Battery Voltage**:
-   ```python
-   from hardware.battery import BatteryMonitor
-   battery = BatteryMonitor(board.A6)
-   voltage = battery.read_voltage()
-   print(f"Battery: {voltage:.2f}V")
-   # Should be > 3.5V for reliable operation
-   ```
+   - Check serial output for battery status
+   - Should be > 3.5V for reliable operation
 
-2. **Check Memory Usage**:
-   ```python
-   import gc
-   gc.collect()
-   free = gc.mem_free()
-   print(f"Free memory: {free} bytes")
-   # Should have > 50KB free
-   ```
+2. **Enable Debug Logging**:
+   - Add Serial.print statements to track boot progress
 
-3. **Enable Debug Logging**:
-   ```python
-   # In core/constants.py
-   DEBUG_ENABLED = True
-   LOG_LEVEL = "DEBUG"
-   ```
-
-4. **Increase Boot Timeout** (temporary diagnostic):
-   ```python
-   # In boot/manager.py
-   connection_timeout = 45.0  # Increase to 45 seconds
-   ```
+3. **Increase Boot Timeout** (temporary diagnostic):
+   - Modify CONNECTION_TIMEOUT_MS in config.h
 
 ---
 
 ## Implementation Details
 
-### BootSequenceManager Class
+### Boot Sequence in main.cpp
 
-The boot sequence is implemented in `boot/manager.py`:
+The boot sequence is orchestrated in `main.cpp`:
 
-```python
-class BootSequenceManager:
-    """Orchestrates device boot sequence with connection establishment."""
+```cpp
+// src/main.cpp
 
-    def __init__(
-        self,
-        role: DeviceRole,
-        ble_service: BLEService,
-        led_controller: BootSequenceLEDController,
-        connection_timeout: float = 30.0
-    ):
-        self.role = role
-        self.ble = ble_service
-        self.led = led_controller
-        self.connection_timeout = connection_timeout
-        self.tracker = ConnectionTracker(timeout_sec=connection_timeout)
+void setup() {
+    Serial.begin(115200);
+    while (!Serial) delay(10);
 
-    async def execute_boot_sequence(self) -> BootResult:
-        """Execute role-specific boot sequence."""
-        if self.role == DeviceRole.PRIMARY:
-            return await self._primary_boot_sequence()
-        else:
-            return await self._secondary_boot_sequence()
+    // 1. Initialize filesystem
+    if (!LittleFS.begin()) {
+        Serial.println(F("[ERROR] LittleFS mount failed"));
+    }
+
+    // 2. Load configuration
+    deviceConfig = loadDeviceConfig();
+    Serial.printf("[INFO] Role: %s\n", deviceConfig.deviceTag);
+
+    // 3. Initialize hardware
+    if (!hardware.begin()) {
+        ledController.indicateFailure();
+        while (true) { delay(1000); }
+    }
+
+    ledController.begin();
+
+    // 4. Execute boot sequence based on role
+    if (deviceConfig.role == DeviceRole::PRIMARY) {
+        bootResult = primaryBootSequence();
+    } else {
+        bootResult = secondaryBootSequence();
+    }
+
+    if (bootResult == BootResult::FAILED) {
+        ledController.indicateFailure();
+        while (true) { delay(1000); }
+    }
+
+    ledController.indicateReady();
+    Serial.println(F("[INFO] Boot complete, entering main loop"));
+}
 ```
 
 ---
 
-### Connection Tracking
+### LED Controller Class
 
-The `ConnectionTracker` class monitors connection attempts:
+```cpp
+// include/led_controller.h
 
-```python
-class ConnectionTracker:
-    """Track connection attempts and timing during boot."""
+class LEDController {
+public:
+    void begin();
 
-    def __init__(self, timeout_sec: float):
-        self.timeout_sec = timeout_sec
-        self.start_time = None
-        self.connections = {}
-        self.scan_count = 0
+    void indicateBLEInit();           // Rapid blue flash
+    void indicateConnectionSuccess(); // 5x green flash
+    void indicateWaitingForPhone();   // Slow blue flash
+    void indicateReady();             // Solid green
+    void indicateFailure();           // Slow red flash
 
-    def start(self):
-        """Start tracking boot sequence."""
-        self.start_time = time.monotonic()
-
-    def is_timeout(self) -> bool:
-        """Check if boot timeout has been reached."""
-        if self.start_time is None:
-            return False
-        return time.monotonic() - self.start_time >= self.timeout_sec
-
-    def elapsed(self) -> float:
-        """Get elapsed time since boot start."""
-        if self.start_time is None:
-            return 0.0
-        return time.monotonic() - self.start_time
-```
-
----
-
-### Boot LED Controller
-
-The `BootSequenceLEDController` provides boot-specific LED patterns:
-
-```python
-class BootSequenceLEDController(LEDController):
-    """Specialized LED controller for boot sequence."""
-
-    def indicate_ble_init(self) -> None:
-        """Rapid blue flash during BLE initialization."""
-        self.rapid_flash(LED_BLUE, frequency=10.0)
-
-    def indicate_connection_success(self) -> None:
-        """5x green flash for successful connection."""
-        self.flash_count(LED_GREEN, count=5)
-
-    def indicate_waiting_for_phone(self) -> None:
-        """Slow blue flash while waiting for phone."""
-        self.slow_flash(LED_BLUE, frequency=1.0)
-
-    def indicate_ready(self) -> None:
-        """Solid green when ready."""
-        self.solid(LED_GREEN)
-
-    def indicate_failure(self) -> None:
-        """Slow red flash for connection failure."""
-        self.slow_flash(LED_RED, frequency=1.0)
+private:
+    Adafruit_NeoPixel _pixel;
+    void rapidFlash(uint32_t color, float frequency);
+    void slowFlash(uint32_t color);
+    void flashCount(uint32_t color, uint8_t count);
+    void setColor(uint32_t color);
+};
 ```
 
 ---
@@ -1248,7 +1183,7 @@ class BootSequenceLEDController(LEDController):
 
 1. **Use mock implementations** for testing without hardware
 2. **Enable debug logging** for detailed diagnostics
-3. **Monitor timing** with monotonic time measurements
+3. **Monitor timing** with millis() measurements
 4. **Test timeout scenarios** explicitly
 5. **Validate all LED patterns** visually
 
@@ -1279,5 +1214,6 @@ The boot sequence ensures that therapy can only begin when:
 
 ---
 
+**Platform**: Arduino C++ with PlatformIO
 **Last Updated**: 2025-01-11
-**Document Version**: 1.0.0
+**Document Version**: 2.0.0

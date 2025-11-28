@@ -2,6 +2,9 @@
 
 This document provides a detailed explanation of the BlueBuzzah v2 system architecture, design patterns, and component interactions.
 
+**Platform**: Arduino C++ on Adafruit Feather nRF52840 Express
+**Build System**: PlatformIO with Adafruit nRF52 BSP
+
 ## Table of Contents
 
 - [Overview](#overview)
@@ -28,22 +31,22 @@ BlueBuzzah v2 is built using Clean Architecture principles, separating concerns 
 ### High-Level Structure
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                    Presentation Layer                       │
-│  • BLE Command Handler  • Response Formatter  • LED UI      │
-├─────────────────────────────────────────────────────────────┤
-│                    Application Layer                        │
-│  • Session Manager  • Profile Manager  • Command Processor  │
-├─────────────────────────────────────────────────────────────┤
-│                      Domain Layer                           │
-│  • Therapy Engine  • Pattern Generator  • Sync Protocol     │
-├─────────────────────────────────────────────────────────────┤
-│                   Infrastructure Layer                      │
-│  • BLE Service  • Haptic Driver  • Storage  • Battery Mon   │
-├─────────────────────────────────────────────────────────────┤
-│                      Hardware Layer                         │
-│  • nRF52840  • DRV2605  • TCA9548A  • LRA Motors           │
-└─────────────────────────────────────────────────────────────┘
++-------------------------------------------------------------+
+|                    Presentation Layer                       |
+|  - BLE Command Handler  - Response Formatter  - LED UI      |
++-------------------------------------------------------------+
+|                    Application Layer                        |
+|  - Session Manager  - Profile Manager  - Command Processor  |
++-------------------------------------------------------------+
+|                      Domain Layer                           |
+|  - Therapy Engine  - Pattern Generator  - Sync Protocol     |
++-------------------------------------------------------------+
+|                   Infrastructure Layer                      |
+|  - BLE Service  - Haptic Driver  - Storage  - Battery Mon   |
++-------------------------------------------------------------+
+|                      Hardware Layer                         |
+|  - nRF52840  - DRV2605  - TCA9548A  - LRA Motors           |
++-------------------------------------------------------------+
 ```
 
 ## Design Principles
@@ -52,7 +55,7 @@ BlueBuzzah v2 is built using Clean Architecture principles, separating concerns 
 
 **Dependency Rule**: Dependencies point inward
 
-- Presentation → Application → Domain → Infrastructure → Hardware
+- Presentation -> Application -> Domain -> Infrastructure -> Hardware
 - Inner layers know nothing about outer layers
 - Interfaces define boundaries
 
@@ -64,81 +67,80 @@ BlueBuzzah v2 is built using Clean Architecture principles, separating concerns 
 
 ### 2. SOLID Principles
 
-> **CircuitPython Note**: CircuitPython doesn't support type hints, ABC, or decorators like `@abstractmethod`. We use duck typing and document expected interfaces through docstrings instead.
-
 **Single Responsibility**: Each class has one reason to change
 
-```python
-class TherapyEngine:
-    """Responsible ONLY for executing therapy patterns"""
+```cpp
+// Each class has one responsibility
+class TherapyEngine {
+    // Responsible ONLY for executing therapy patterns
+};
 
-class PatternGenerator:
-    """Responsible ONLY for generating patterns"""
+class PatternGenerator {
+    // Responsible ONLY for generating patterns
+};
 
-class HapticController:
-    """Responsible ONLY for controlling motors"""
+class HardwareController {
+    // Responsible ONLY for controlling motors
+};
 ```
 
 **Open/Closed**: Open for extension, closed for modification
 
-```python
-class PatternGenerator:
-    """Base pattern generator - extend by creating new generators.
+```cpp
+// include/pattern_generator.h
 
-    Expected interface:
-        generate(config) - Returns Pattern object
-    """
-    def generate(self, config):
-        raise NotImplementedError("Subclasses must implement generate()")
+// Base pattern generator - extend by creating new generators
+class PatternGenerator {
+public:
+    virtual ~PatternGenerator() = default;
+    virtual Pattern generate(const PatternConfig& config) = 0;
+};
 
-class RandomPermutationGenerator(PatternGenerator):
-    """Concrete implementation - extends without modifying base"""
-    def generate(self, config):
-        # Implementation here
-        pass
+// Concrete implementation - extends without modifying base
+class RandomPermutationGenerator : public PatternGenerator {
+public:
+    Pattern generate(const PatternConfig& config) override {
+        // Implementation here
+    }
+};
 ```
 
 **Liskov Substitution**: Subtypes must be substitutable
 
-```python
-# Any HapticController can be used interchangeably
-haptic = DRV2605Controller(...)
-haptic = MockHapticController()  # For testing
+```cpp
+// Any HardwareController implementation can be used interchangeably
+HardwareController* haptic = new DRV2605Controller(...);
+HardwareController* haptic = new MockHapticController();  // For testing
 ```
 
 **Interface Segregation**: Clients shouldn't depend on unused interfaces
 
-```python
-# Small, focused interfaces (duck typing)
-class HapticController:
-    """Expected interface for haptic control.
+```cpp
+// Small, focused interfaces
+class HapticInterface {
+public:
+    virtual void activate(uint8_t finger, uint8_t amplitude) = 0;
+    virtual void deactivate(uint8_t finger) = 0;
+};
 
-    Methods:
-        activate(finger, amplitude) - Activate motor
-        deactivate(finger) - Deactivate motor
-    """
-    def activate(self, finger, amplitude):
-        raise NotImplementedError()
-
-    def deactivate(self, finger):
-        raise NotImplementedError()
-
-# Not one massive "DeviceController" interface
+// Not one massive "DeviceController" interface
 ```
 
 **Dependency Inversion**: Depend on abstractions, not concretions
 
-```python
-class TherapyEngine:
-    def __init__(self, pattern_generator, haptic_controller):
-        """
-        Args:
-            pattern_generator: Object with generate() method
-            haptic_controller: Object with activate()/deactivate() methods
-        """
-        # Depends on interfaces (duck typing), not concrete implementations
-        self.pattern_generator = pattern_generator
-        self.haptic_controller = haptic_controller
+```cpp
+class TherapyEngine {
+public:
+    // Depends on interfaces, not concrete implementations
+    TherapyEngine(PatternGenerator& patternGen, HapticInterface& haptic)
+        : _patternGenerator(patternGen)
+        , _haptic(haptic)
+    {}
+
+private:
+    PatternGenerator& _patternGenerator;
+    HapticInterface& _haptic;
+};
 ```
 
 ### 3. Domain-Driven Design
@@ -166,10 +168,8 @@ class TherapyEngine:
 
 **Components**:
 
-- `communication/protocol/handler.py`: Parse and validate BLE commands
-- `ui/led_controller.py`: Visual feedback to user
-- `ui/boot_led.py`: Boot sequence indicators
-- `ui/therapy_led.py`: Therapy session indicators
+- `menu_controller.h/.cpp`: Parse and validate BLE commands
+- `led_controller.h/.cpp`: Visual feedback to user
 
 **Characteristics**:
 
@@ -179,22 +179,32 @@ class TherapyEngine:
 
 **Example**:
 
-```python
-class ProtocolHandler:
-    """Parse BLE commands and route to application layer"""
+```cpp
+// src/menu_controller.cpp
 
-    def handle_command(self, raw_command):
-        # Parse command
-        command = self.parse(raw_command)
+void MenuController::processCommand(const char* command,
+                                     char* response,
+                                     size_t responseSize) {
+    // Parse command
+    char cmdType[32];
+    parseCommandType(command, cmdType, sizeof(cmdType));
 
-        # Route to application layer
-        if command.type == "START_SESSION":
-            result = self.session_manager.start_session(command.profile)
-            return Response.success(result)
+    // Route to application layer
+    if (strcmp(cmdType, "SESSION_START") == 0) {
+        char profile[32];
+        uint32_t duration;
+        parseSessionParams(command, profile, &duration);
 
-        elif command.type == "GET_STATUS":
-            status = self.session_manager.get_status()
-            return Response.success(status)
+        if (_session.startSession(profile, duration)) {
+            snprintf(response, responseSize, "OK:Session started\n\x04");
+        } else {
+            snprintf(response, responseSize, "ERROR:Cannot start session\n\x04");
+        }
+    }
+    else if (strcmp(cmdType, "SESSION_STATUS") == 0) {
+        _session.getStatus(response, responseSize);
+    }
+}
 ```
 
 ### Application Layer
@@ -203,60 +213,43 @@ class ProtocolHandler:
 
 **Components**:
 
-> **CircuitPython File Structure Note**: This project uses a flat file structure rather than deep directory nesting. This is intentional for CircuitPython memory optimization:
-> - **Import costs**: Each module import allocates RAM. Fewer modules = less memory overhead.
-> - **Path resolution**: Deep paths increase import time and RAM usage.
-> - **Heap fragmentation**: Many small modules fragment memory more than fewer larger modules.
-> - **Conceptual layers**: The architecture maintains logical separation through code organization within files, even though physical directories are consolidated.
-
-**Conceptual Components** (may be consolidated in actual files):
-
-- `session_manager` / `manager.py`: Session lifecycle management
-- `profile_manager`: Profile loading and validation
-- `calibration_controller`: Calibration workflows
-- `command_processor`: Command routing
+- `session_manager.h/.cpp`: Session lifecycle management
+- `profile_manager.h/.cpp`: Profile loading and validation
+- `calibration_controller.h/.cpp`: Calibration workflows
 
 **Characteristics**:
 
 - Use case implementations
 - Transaction boundaries
 - Error handling and recovery
-- Event publishing
 
 **Example**:
 
-```python
-class SessionManager:
-    """Manage therapy session lifecycle"""
+```cpp
+// src/session_manager.cpp
 
-    def start_session(self, profile_name, duration_sec):
-        """
-        Start a therapy session.
+bool SessionManager::startSession(const char* profileName, uint32_t durationSec) {
+    // Load profile (application service)
+    TherapyConfig config;
+    if (!_profiles.loadProfile(profileName, config)) {
+        return false;
+    }
 
-        Args:
-            profile_name: Name of therapy profile to load
-            duration_sec: Session duration in seconds
+    // Validate preconditions
+    if (!canStartSession()) {
+        return false;
+    }
 
-        Returns:
-            SessionInfo object with session details
-        """
-        # Load profile (application service)
-        profile = self.profile_manager.load_profile(profile_name)
+    // Execute therapy (domain service)
+    if (!_engine.startSession(config, durationSec)) {
+        return false;
+    }
 
-        # Validate preconditions
-        if not self.can_start_session():
-            raise RuntimeError("Cannot start session in current state")
+    // Update state
+    _stateMachine.transition(StateTrigger::START_SESSION);
 
-        # Execute therapy (domain service)
-        self.current_session = self.therapy_engine.execute_session(
-            config=profile.therapy_config,
-            duration_sec=duration_sec
-        )
-
-        # Publish event
-        self.event_bus.publish(SessionStartedEvent(self.current_session))
-
-        return self.current_session
+    return true;
+}
 ```
 
 ### Domain Layer
@@ -265,10 +258,9 @@ class SessionManager:
 
 **Components**:
 
-- `therapy/engine.py`: Therapy execution logic
-- `therapy/patterns/generator.py`: Pattern generation algorithms
-- `domain/sync/protocol.py`: Bilateral synchronization
-- `state/machine.py`: Therapy state machine
+- `therapy_engine.h/.cpp`: Therapy execution logic
+- `sync_protocol.h/.cpp`: Bilateral synchronization
+- `state_machine.h/.cpp`: Therapy state machine
 
 **Characteristics**:
 
@@ -279,34 +271,36 @@ class SessionManager:
 
 **Example**:
 
-```python
-class TherapyEngine:
-    """Core therapy execution - pure domain logic"""
+```cpp
+// src/therapy_engine.cpp
 
-    def execute_cycle(self, config):
-        """Execute one therapy cycle.
+void TherapyEngine::executeCycle() {
+    // Generate pattern (domain logic)
+    generatePattern();
 
-        Args:
-            config: PatternConfig with timing and pattern settings
-        """
-        # Generate pattern (domain logic)
-        pattern = self.pattern_generator.generate(config)
+    // Execute with precise timing
+    for (uint8_t i = 0; i < _config.burstsPerCycle; i++) {
+        uint8_t leftFinger = _leftSequence[i];
+        uint8_t rightFinger = _rightSequence[i];
 
-        # Execute with precise timing (domain logic)
-        for i in range(len(pattern)):
-            left_finger, right_finger = pattern.get_finger_pair(i)
+        // Bilateral activation (infrastructure call through interface)
+        activateBilateral(leftFinger, rightFinger, _config.amplitudePercent);
 
-            # Bilateral activation (infrastructure call through interface)
-            self._activate_bilateral(left_finger, right_finger, amplitude=100)
+        // Timing control (domain logic)
+        delay(_config.burstDurationMs);
 
-            # Timing control (domain logic) - synchronous sleep
-            time.sleep(pattern.burst_duration_ms / 1000.0)
+        deactivateBilateral(leftFinger, rightFinger);
 
-            self._deactivate_bilateral(left_finger, right_finger)
+        // Apply jitter if configured
+        uint16_t interval = _config.interBurstIntervalMs;
+        if (_config.jitterPercent > 0) {
+            interval += calculateJitter();
+        }
+        delay(interval);
+    }
 
-            # Drift compensation (domain logic)
-            adjusted_interval = self._calculate_timing_adjustment(pattern, i)
-            time.sleep(adjusted_interval / 1000.0)
+    _cycleCount++;
+}
 ```
 
 ### Infrastructure Layer
@@ -315,10 +309,9 @@ class TherapyEngine:
 
 **Components**:
 
-- `communication/ble/service.py`: BLE communication
-- `hardware/haptic.py`: Motor control (DRV2605)
-- `hardware/battery.py`: Battery monitoring
-- `hardware/multiplexer.py`: I2C multiplexing
+- `ble_manager.h/.cpp`: BLE communication
+- `hardware.h/.cpp`: Motor control (DRV2605), battery, I2C mux
+- `profile_manager.h/.cpp`: LittleFS profile storage
 
 **Characteristics**:
 
@@ -329,25 +322,25 @@ class TherapyEngine:
 
 **Example**:
 
-```python
-class DRV2605Controller(HapticController):
-    """Concrete implementation of HapticController interface"""
+```cpp
+// src/hardware.cpp
 
-    def activate(self, finger, amplitude):
-        """Activate motor for specified finger.
+void HardwareController::buzzFinger(uint8_t finger, uint8_t amplitude) {
+    // Infrastructure-level details
+    _tca.select(finger);
 
-        Args:
-            finger: Finger index (0-3)
-            amplitude: Amplitude 0-100
-        """
-        # Infrastructure-level details
-        self.multiplexer.select_channel(finger)
+    // Hardware-specific protocol
+    uint8_t registerValue = (amplitude * 127) / 100;
+    _drv[finger].setRealtimeValue(registerValue);
 
-        # Hardware-specific protocol
-        register_value = self._amplitude_to_register(amplitude)
-        self.i2c.writeto(DRV2605_ADDR, bytes([RTP_REGISTER, register_value]))
+    _motorActive[finger] = true;
+}
 
-        self._active_fingers[finger] = amplitude
+void HardwareController::stopFinger(uint8_t finger) {
+    _tca.select(finger);
+    _drv[finger].setRealtimeValue(0);
+    _motorActive[finger] = false;
+}
 ```
 
 ## Component Details
@@ -418,151 +411,136 @@ stateDiagram-v2
 
 **Implementation**:
 
-```python
-class TherapyStateMachine:
-    """Explicit state machine with validated transitions"""
+```cpp
+// src/state_machine.cpp
 
-    def __init__(self):
-        self._current_state = TherapyState.IDLE
-        self._transition_table = self._build_transition_table()
+bool StateMachine::transition(StateTrigger trigger) {
+    TherapyState nextState;
 
-    def transition(self, trigger):
-        """Attempt state transition.
+    switch (_currentState) {
+        case TherapyState::IDLE:
+            if (trigger == StateTrigger::CONNECTED) {
+                nextState = TherapyState::READY;
+            } else {
+                return false;  // Invalid transition
+            }
+            break;
 
-        Args:
-            trigger: StateTrigger value
+        case TherapyState::READY:
+            if (trigger == StateTrigger::START_SESSION) {
+                nextState = TherapyState::RUNNING;
+            } else if (trigger == StateTrigger::DISCONNECTED) {
+                nextState = TherapyState::CONNECTION_LOST;
+            } else {
+                return false;
+            }
+            break;
 
-        Returns:
-            True if transition succeeded, False if invalid
-        """
-        key = (self._current_state, trigger)
+        // ... additional state transitions
+    }
 
-        if key not in self._transition_table:
-            return False  # Invalid transition
+    // Notify callback if registered
+    if (_callback) {
+        _callback(_currentState, nextState);
+    }
 
-        next_state = self._transition_table[key]
-        self._emit_state_change(self._current_state, next_state, trigger)
-        self._current_state = next_state
-        return True
+    _currentState = nextState;
+    return true;
+}
 ```
 
 ### Bilateral Mirroring
 
-The `mirror_pattern` parameter controls whether both hands receive the same finger sequence or independent sequences. This is based on vCR research findings:
+The `mirrorPattern` parameter controls whether both hands receive the same finger sequence or independent sequences. This is based on vCR research findings:
 
-| vCR Type | `mirror_pattern` | Behavior | Rationale |
-|----------|------------------|----------|-----------|
-| **Noisy vCR** | `True` | Same finger on both hands | Avoids bilateral masking interference |
-| **Regular vCR** | `False` | Independent sequences per hand | Increases spatial randomization for synaptic decoupling |
-
-**Implementation**:
-
-```python
-def generate_random_permutation(num_fingers=4, mirror_pattern=True):
-    """Generate random permutation pattern.
-
-    Args:
-        num_fingers: Number of fingers (4 = no thumb)
-        mirror_pattern: True for noisy vCR, False for regular vCR
-    """
-    # Generate left hand sequence
-    left_sequence = list(range(num_fingers))
-    shuffle_in_place(left_sequence)
-
-    # Generate right hand sequence based on mirror setting
-    if mirror_pattern:
-        # Mirrored: same finger on both hands (noisy vCR)
-        right_sequence = left_sequence.copy()
-    else:
-        # Non-mirrored: independent random sequence (regular vCR)
-        right_sequence = list(range(num_fingers))
-        shuffle_in_place(right_sequence)
-
-    return Pattern(left_sequence, right_sequence, ...)
-```
-
-**Hardware Note**: Both gloves use identical channel-to-finger mapping (channel 0 = pinky on both gloves). The `mirror_pattern` setting controls whether the same channel number is sent to both devices (mirrored) or different channels (non-mirrored).
-
-### Event System
-
-**Purpose**: Decouple components through event-driven communication
+| vCR Type | `mirrorPattern` | Behavior | Rationale |
+|----------|-----------------|----------|-----------|
+| **Noisy vCR** | `true` | Same finger on both hands | Avoids bilateral masking interference |
+| **Regular vCR** | `false` | Independent sequences per hand | Increases spatial randomization for synaptic decoupling |
 
 **Implementation**:
 
-```python
-class EventBus:
-    """Publish-subscribe event bus"""
+```cpp
+// src/therapy_engine.cpp
 
-    def __init__(self):
-        self._subscribers = {}  # {event_type: [handlers]}
+void TherapyEngine::generatePattern() {
+    // Generate left hand sequence using Fisher-Yates shuffle
+    for (uint8_t i = 0; i < 4; i++) {
+        _leftSequence[i] = i;
+    }
+    for (uint8_t i = 3; i > 0; i--) {
+        uint8_t j = random(0, i + 1);
+        uint8_t temp = _leftSequence[i];
+        _leftSequence[i] = _leftSequence[j];
+        _leftSequence[j] = temp;
+    }
 
-    def subscribe(self, event_type, handler):
-        """Register event handler.
-
-        Args:
-            event_type: Event class to subscribe to
-            handler: Callback function
-        """
-        if event_type not in self._subscribers:
-            self._subscribers[event_type] = []
-        self._subscribers[event_type].append(handler)
-
-    def publish(self, event):
-        """Publish event to all subscribers.
-
-        Args:
-            event: Event instance to publish
-        """
-        event_type = type(event)
-        if event_type in self._subscribers:
-            for handler in self._subscribers[event_type]:
-                handler(event)
+    // Generate right hand sequence based on mirror setting
+    if (_config.mirrorPattern) {
+        // Mirrored: same finger on both hands (noisy vCR)
+        memcpy(_rightSequence, _leftSequence, sizeof(_leftSequence));
+    } else {
+        // Non-mirrored: independent random sequence (regular vCR)
+        for (uint8_t i = 0; i < 4; i++) {
+            _rightSequence[i] = i;
+        }
+        for (uint8_t i = 3; i > 0; i--) {
+            uint8_t j = random(0, i + 1);
+            uint8_t temp = _rightSequence[i];
+            _rightSequence[i] = _rightSequence[j];
+            _rightSequence[j] = temp;
+        }
+    }
+}
 ```
 
-**Usage**:
-
-```python
-# In application layer
-event_bus.subscribe(SessionStartedEvent, self._on_session_started)
-event_bus.subscribe(BatteryLowEvent, self._on_battery_low)
-
-# In domain layer
-event_bus.publish(SessionStartedEvent(session_info))
-
-# Handler
-def _on_session_started(self, event):
-    print("Session {} started".format(event.session_id))
-    self.led_controller.indicate_therapy_running()
-```
+**Hardware Note**: Both gloves use identical channel-to-finger mapping (channel 0 = pinky on both gloves). The `mirrorPattern` setting controls whether the same channel number is sent to both devices (mirrored) or different channels (non-mirrored).
 
 ### Configuration System
 
 **Layered Configuration**:
 
 1. **Device Configuration** (`settings.json`): Device role
-2. **Base Configuration** (`config/base.py`): System defaults
-3. **Therapy Configuration** (`config/therapy.py`): Profile settings
-4. **Runtime Configuration**: Dynamic adjustments
+2. **Therapy Configuration** (profiles): Profile settings
+3. **Runtime Configuration**: Dynamic adjustments
 
 **Loading Hierarchy**:
 
-```python
-def load_configuration() -> Config:
-    # 1. Load device role from settings.json
-    device_config = DeviceConfig.from_settings_file("/settings.json")
+```cpp
+// src/main.cpp
 
-    # 2. Load base configuration with role-specific defaults
-    base_config = BaseConfig(device_role=device_config.role)
+DeviceConfig loadDeviceConfig() {
+    DeviceConfig config;
 
-    # 3. Load therapy configuration (profile-specific)
-    therapy_config = TherapyConfig.load_profile("noisy_vcr")
+    if (!LittleFS.begin()) {
+        config.role = DeviceRole::PRIMARY;
+        config.bleName = "BlueBuzzah";
+        config.deviceTag = "[PRIMARY]";
+        return config;
+    }
 
-    # 4. Combine into complete configuration
-    return Config(
-        device=device_config,
-        base=base_config,
-        therapy=therapy_config
-    )
+    File file = LittleFS.open("/settings.json", "r");
+    if (!file) {
+        config.role = DeviceRole::PRIMARY;
+        config.bleName = "BlueBuzzah";
+        config.deviceTag = "[PRIMARY]";
+        return config;
+    }
+
+    JsonDocument doc;
+    deserializeJson(doc, file);
+    file.close();
+
+    const char* roleStr = doc["deviceRole"] | "Primary";
+    config.role = (strcmp(roleStr, "Primary") == 0)
+        ? DeviceRole::PRIMARY
+        : DeviceRole::SECONDARY;
+    config.bleName = "BlueBuzzah";
+    config.deviceTag = (config.role == DeviceRole::PRIMARY)
+        ? "[PRIMARY]" : "[SECONDARY]";
+
+    return config;
+}
 ```
 
 ### Synchronization Protocol
@@ -597,38 +575,19 @@ sequenceDiagram
 
 **Time Synchronization**:
 
-```python
-class SyncProtocol:
-    """Bilateral time synchronization"""
+```cpp
+// src/sync_protocol.cpp
 
-    def calculate_offset(self, primary_time, secondary_time):
-        """Calculate time offset between devices.
+int32_t SyncProtocol::calculateOffset(uint32_t primaryTime, uint32_t secondaryTime) {
+    // Offset = (T_primary - T_secondary) / 2
+    // This compensates for message transmission time and ensures
+    // sub-10ms synchronization accuracy.
+    return (int32_t)(primaryTime - secondaryTime) / 2;
+}
 
-        Offset = (T_primary - T_secondary) / 2
-
-        This compensates for message transmission time and ensures
-        sub-10ms synchronization accuracy.
-
-        Args:
-            primary_time: Timestamp from PRIMARY device
-            secondary_time: Timestamp from SECONDARY device
-
-        Returns:
-            Calculated offset in milliseconds
-        """
-        return (primary_time - secondary_time) // 2
-
-    def apply_compensation(self, timestamp, offset):
-        """Apply offset to timestamp for synchronized execution.
-
-        Args:
-            timestamp: Original timestamp
-            offset: Calculated offset
-
-        Returns:
-            Compensated timestamp
-        """
-        return timestamp + offset
+uint32_t SyncProtocol::applyCompensation(uint32_t timestamp, int32_t offset) {
+    return timestamp + offset;
+}
 ```
 
 ### Heartbeat Protocol
@@ -658,19 +617,40 @@ stateDiagram-v2
 
 **Implementation**:
 
-```python
-HEARTBEAT_INTERVAL_SEC = 2
-HEARTBEAT_TIMEOUT_SEC = 6
-RECONNECT_ATTEMPTS = 3
-RECONNECT_DELAY_SEC = 2
+```cpp
+// src/main.cpp
 
-def check_heartbeat(self):
-    """Check heartbeat status and handle timeout."""
-    elapsed = time.monotonic() - self._last_heartbeat
-    if elapsed > HEARTBEAT_TIMEOUT_SEC:
-        self._handle_connection_lost()
-    elif elapsed > HEARTBEAT_INTERVAL_SEC:
-        self._send_heartbeat()
+#define HEARTBEAT_INTERVAL_MS 2000
+#define HEARTBEAT_TIMEOUT_MS 6000
+#define RECONNECT_ATTEMPTS 3
+#define RECONNECT_DELAY_MS 2000
+
+void checkHeartbeat() {
+    uint32_t elapsed = millis() - lastHeartbeatReceived;
+
+    if (elapsed > HEARTBEAT_TIMEOUT_MS) {
+        handleConnectionLost();
+    }
+}
+
+void handleConnectionLost() {
+    hardware.stopAllMotors();
+    stateMachine.forceState(TherapyState::CONNECTION_LOST);
+    ledController.indicateConnectionLost();
+
+    // Attempt recovery
+    for (uint8_t attempt = 0; attempt < RECONNECT_ATTEMPTS; attempt++) {
+        delay(RECONNECT_DELAY_MS);
+        if (bleManager.reconnectToPrimary()) {
+            stateMachine.forceState(TherapyState::READY);
+            lastHeartbeatReceived = millis();
+            return;
+        }
+    }
+
+    // Recovery failed
+    stateMachine.forceState(TherapyState::IDLE);
+}
 ```
 
 ### SYNC Message Format
@@ -693,18 +673,18 @@ SYNC:<command>:<key1>|<value1>|<key2>|<value2>...<EOT>
 
 | Command | Direction | Description |
 |---------|-----------|-------------|
-| `CONNECTED` | P→S | Connection established |
-| `START_SESSION` | P→S | Begin therapy session |
-| `PAUSE_SESSION` | P→S | Pause current session |
-| `RESUME_SESSION` | P→S | Resume paused session |
-| `STOP_SESSION` | P→S | Stop and end session |
-| `STOPPED` | S→P | Session stopped confirmation |
-| `EXECUTE_BUZZ` | P→S | Trigger buzz on SECONDARY |
-| `HEARTBEAT` | P↔S | Connection keepalive |
-| `EMERGENCY_STOP` | P↔S | Immediate motor shutoff |
-| `PHONE_DISCONNECTED` | P→S | Phone app disconnected |
-| `ACK` | S→P | Acknowledgment |
-| `ERROR` | P↔S | Error notification |
+| `CONNECTED` | P->S | Connection established |
+| `START_SESSION` | P->S | Begin therapy session |
+| `PAUSE_SESSION` | P->S | Pause current session |
+| `RESUME_SESSION` | P->S | Resume paused session |
+| `STOP_SESSION` | P->S | Stop and end session |
+| `STOPPED` | S->P | Session stopped confirmation |
+| `EXECUTE_BUZZ` | P->S | Trigger buzz on SECONDARY |
+| `HEARTBEAT` | P<->S | Connection keepalive |
+| `EMERGENCY_STOP` | P<->S | Immediate motor shutoff |
+| `PHONE_DISCONNECTED` | P->S | Phone app disconnected |
+| `ACK` | S->P | Acknowledgment |
+| `ERROR` | P<->S | Error notification |
 
 **Example Messages**:
 ```
@@ -720,194 +700,178 @@ SYNC:ACK:command|START_SESSION<EOT>
 
 **Purpose**: Pluggable algorithms for pattern generation
 
-```python
-class PatternGenerator:
-    """Strategy interface - extend via subclassing.
+```cpp
+// include/pattern_generator.h
 
-    Expected interface:
-        generate(config) - Returns Pattern object
-    """
-    def generate(self, config):
-        raise NotImplementedError("Subclasses must implement generate()")
+class PatternGenerator {
+public:
+    virtual ~PatternGenerator() = default;
+    virtual Pattern generate(const PatternConfig& config) = 0;
+};
 
-class RandomPermutationGenerator(PatternGenerator):
-    """Concrete strategy: Random permutation"""
-    def generate(self, config):
-        sequence = self._generate_random_permutation([0, 1, 2, 3])  # 4 fingers
-        return Pattern(left_sequence=sequence, right_sequence=sequence, ...)
+class RandomPermutationGenerator : public PatternGenerator {
+public:
+    Pattern generate(const PatternConfig& config) override {
+        // Generate random permutation
+        uint8_t sequence[4] = {0, 1, 2, 3};
+        shuffleArray(sequence, 4);
+        return Pattern(sequence, sequence, config);
+    }
+};
 
-class SequentialGenerator(PatternGenerator):
-    """Concrete strategy: Sequential pattern"""
-    def generate(self, config):
-        sequence = [0, 1, 2, 3]  # Fixed order, 4 fingers (no thumb)
-        return Pattern(left_sequence=sequence, right_sequence=sequence, ...)
+class SequentialGenerator : public PatternGenerator {
+public:
+    Pattern generate(const PatternConfig& config) override {
+        uint8_t sequence[4] = {0, 1, 2, 3};  // Fixed order
+        return Pattern(sequence, sequence, config);
+    }
+};
 
-# Usage - strategy is interchangeable
-generator = RandomPermutationGenerator()
-pattern = generator.generate(config)
+// Usage - strategy is interchangeable
+PatternGenerator* generator = new RandomPermutationGenerator();
+Pattern pattern = generator->generate(config);
 ```
 
 ### 2. Repository Pattern (Hardware Abstraction)
 
 **Purpose**: Abstract data/hardware access
 
-```python
-class HapticController:
-    """Repository interface for haptic control.
+```cpp
+// include/haptic_interface.h
 
-    Expected interface:
-        activate(finger, amplitude) - Activate motor
-        deactivate(finger) - Deactivate motor
-    """
-    def activate(self, finger, amplitude):
-        raise NotImplementedError()
+class HapticInterface {
+public:
+    virtual ~HapticInterface() = default;
+    virtual void activate(uint8_t finger, uint8_t amplitude) = 0;
+    virtual void deactivate(uint8_t finger) = 0;
+    virtual void stopAll() = 0;
+};
 
-    def deactivate(self, finger):
-        raise NotImplementedError()
+// Concrete implementation: Real hardware
+class DRV2605Controller : public HapticInterface {
+    // ... implementation
+};
 
-class DRV2605Controller(HapticController):
-    """Concrete repository: Real hardware"""
+// Concrete implementation: Mock for testing
+class MockHapticController : public HapticInterface {
+    // ... test implementation
+};
 
-class MockHapticController(HapticController):
-    """Concrete repository: Mock for testing"""
-
-# Application code doesn't know which implementation
-def execute_therapy(haptic):
-    haptic.activate(finger=0, amplitude=75)
+// Application code doesn't know which implementation
+void executeTherapy(HapticInterface& haptic) {
+    haptic.activate(0, 75);
+}
 ```
 
 ### 3. Dependency Injection
 
 **Purpose**: Invert dependencies for testability
 
-```python
-class TherapyEngine:
-    """Dependencies injected through constructor"""
+```cpp
+class TherapyEngine {
+public:
+    // Dependencies injected through constructor
+    TherapyEngine(HardwareController& hardware,
+                  StateMachine& stateMachine)
+        : _hardware(hardware)
+        , _stateMachine(stateMachine)
+    {}
 
-    def __init__(self, pattern_generator, haptic_controller, battery_monitor, state_machine):
-        """
-        Args:
-            pattern_generator: Object with generate() method
-            haptic_controller: Object with activate()/deactivate() methods
-            battery_monitor: Object with get_level() method
-            state_machine: TherapyStateMachine instance
-        """
-        # All dependencies are interfaces (duck typing), not concrete classes
-        self.pattern_generator = pattern_generator
-        self.haptic_controller = haptic_controller
-        self.battery_monitor = battery_monitor
-        self.state_machine = state_machine
+private:
+    HardwareController& _hardware;
+    StateMachine& _stateMachine;
+};
 
-# Production setup
-engine = TherapyEngine(
-    pattern_generator=RandomPermutationGenerator(),
-    haptic_controller=DRV2605Controller(...),
-    battery_monitor=BatteryMonitor(...),
-    state_machine=TherapyStateMachine()
-)
+// Production setup
+HardwareController hardware;
+StateMachine stateMachine;
+TherapyEngine engine(hardware, stateMachine);
 
-# Test setup
-engine = TherapyEngine(
-    pattern_generator=MockPatternGenerator(),
-    haptic_controller=MockHapticController(),
-    battery_monitor=MockBatteryMonitor(),
-    state_machine=TherapyStateMachine()
-)
+// Test setup
+MockHardwareController mockHardware;
+StateMachine stateMachine;
+TherapyEngine engine(mockHardware, stateMachine);
 ```
 
-### 4. Observer Pattern (Event System)
+### 4. Observer Pattern (State Changes)
 
 **Purpose**: Notify interested parties of state changes
 
-```python
-class TherapyStateMachine:
-    """Observable - notifies observers of state changes"""
+```cpp
+// include/state_machine.h
 
-    def __init__(self):
-        self._observers = []  # List of callback functions
+class StateMachine {
+public:
+    typedef void (*StateChangeCallback)(TherapyState from, TherapyState to);
 
-    def add_observer(self, callback):
-        """Register observer callback.
+    void setCallback(StateChangeCallback callback) {
+        _callback = callback;
+    }
 
-        Args:
-            callback: Function that accepts StateTransition
-        """
-        self._observers.append(callback)
+    bool transition(StateTrigger trigger) {
+        TherapyState oldState = _currentState;
+        // ... perform transition logic ...
 
-    def transition(self, trigger):
-        """Transition and notify observers.
+        if (_callback) {
+            _callback(oldState, _currentState);
+        }
+        return true;
+    }
 
-        Args:
-            trigger: StateTrigger value
+private:
+    TherapyState _currentState = TherapyState::IDLE;
+    StateChangeCallback _callback = nullptr;
+};
 
-        Returns:
-            True if transition succeeded, False if invalid
-        """
-        # ... perform transition ...
-        self._notify_observers(transition)
+// Usage
+void onStateChange(TherapyState from, TherapyState to) {
+    Serial.printf("State: %d -> %d\n", (int)from, (int)to);
+    ledController.setTherapyState(to);
+}
 
-    def _notify_observers(self, transition):
-        """Notify all observers of state change."""
-        for observer in self._observers:
-            observer(transition)
-
-# Usage
-def on_state_change(transition):
-    print("State: {} -> {}".format(transition.from_state, transition.to_state))
-
-state_machine.add_observer(on_state_change)
+stateMachine.setCallback(onStateChange);
 ```
 
 ### 5. Factory Pattern (Object Creation)
 
 **Purpose**: Encapsulate object creation logic
 
-```python
-class ProfileFactory:
-    """Create therapy profiles from configuration"""
+```cpp
+// include/profile_factory.h
 
-    @staticmethod
-    def create_profile(profile_type):
-        """Factory method for profile creation.
+class ProfileFactory {
+public:
+    static TherapyConfig createProfile(const char* profileType) {
+        TherapyConfig config;
 
-        Args:
-            profile_type: One of "regular_vcr", "noisy_vcr", "hybrid_vcr"
+        if (strcmp(profileType, "regular_vcr") == 0) {
+            strncpy(config.profileName, "Regular vCR", sizeof(config.profileName));
+            config.burstDurationMs = 100;
+            config.interBurstIntervalMs = 668;
+            strncpy(config.patternType, "sequential", sizeof(config.patternType));
+            config.mirrorPattern = false;
+        }
+        else if (strcmp(profileType, "noisy_vcr") == 0) {
+            strncpy(config.profileName, "Noisy vCR", sizeof(config.profileName));
+            config.burstDurationMs = 100;
+            config.interBurstIntervalMs = 668;
+            strncpy(config.patternType, "random", sizeof(config.patternType));
+            config.mirrorPattern = true;
+        }
+        else if (strcmp(profileType, "hybrid_vcr") == 0) {
+            strncpy(config.profileName, "Hybrid vCR", sizeof(config.profileName));
+            config.burstDurationMs = 100;
+            config.interBurstIntervalMs = 668;
+            strncpy(config.patternType, "mirrored", sizeof(config.patternType));
+            config.mirrorPattern = false;
+        }
 
-        Returns:
-            TherapyConfig instance
-        """
-        if profile_type == "regular_vcr":
-            return TherapyConfig(
-                profile_name="Regular vCR",
-                burst_duration_ms=100,
-                inter_burst_interval_ms=668,
-                pattern_type="sequential",
-                mirror_pattern=False
-            )
+        return config;
+    }
+};
 
-        elif profile_type == "noisy_vcr":
-            return TherapyConfig(
-                profile_name="Noisy vCR",
-                burst_duration_ms=100,
-                inter_burst_interval_ms=668,
-                pattern_type="random",
-                mirror_pattern=True
-            )
-
-        elif profile_type == "hybrid_vcr":
-            return TherapyConfig(
-                profile_name="Hybrid vCR",
-                burst_duration_ms=100,
-                inter_burst_interval_ms=668,
-                pattern_type="mirrored",
-                mirror_pattern=False
-            )
-
-        else:
-            raise ValueError("Unknown profile type: {}".format(profile_type))
-
-# Usage
-profile = ProfileFactory.create_profile("noisy_vcr")
+// Usage
+TherapyConfig profile = ProfileFactory::createProfile("noisy_vcr");
 ```
 
 ## Data Flow
@@ -923,19 +887,19 @@ sequenceDiagram
     participant H as Haptic Controller
 
     U->>P: START_SESSION(profile, duration)
-    P->>SM: start_session(profile, duration)
+    P->>SM: startSession(profile, duration)
     SM->>SM: Load profile configuration
-    SM->>TE: execute_session(config, duration)
+    SM->>TE: startSession(config, duration)
 
     loop Until Session Complete
         TE->>TE: Generate pattern
         loop For each finger pair
-            TE->>H: activate(finger, amplitude)
+            TE->>H: buzzFinger(finger, amplitude)
             TE->>TE: Wait burst_duration
-            TE->>H: deactivate(finger)
+            TE->>H: stopFinger(finger)
             TE->>TE: Wait inter_burst_interval
         end
-        TE->>SM: Cycle complete event
+        TE->>SM: Cycle complete
     end
 
     TE->>SM: Session complete
@@ -971,188 +935,133 @@ sequenceDiagram
 
 ### BLE Protocol Integration
 
-**Command Structure**:
+**Command Structure** (string-based):
 
-```json
-{
-  "command": "START_SESSION",
-  "payload": {
-    "profile": "noisy_vcr",
-    "duration_sec": 7200
-  },
-  "timestamp": 1234567890,
-  "device_id": "primary"
-}
+```
+COMMAND_NAME:ARG1:ARG2:...\n
 ```
 
 **Response Structure**:
 
-```json
-{
-  "status": "success",
-  "data": {
-    "session_id": "session_001",
-    "profile": "noisy_vcr",
-    "duration_sec": 7200,
-    "start_time": 1234567890
-  },
-  "timestamp": 1234567891
-}
+```
+KEY1:VALUE1\n
+KEY2:VALUE2\n
+\x04
 ```
 
 ### Hardware Integration
 
 **I2C Communication**:
 
-```python
-class I2CMultiplexer:
-    """TCA9548A integration"""
+```cpp
+// src/hardware.cpp
 
-    def select_channel(self, channel):
-        """Select I2C channel for finger.
+void HardwareController::selectChannel(uint8_t channel) {
+    if (channel > 7) return;
 
-        Args:
-            channel: Channel number (0-7), corresponds to finger (0-3)
-        """
-        if not 0 <= channel < 8:
-            raise ValueError("Invalid channel: {}".format(channel))
+    // TCA9548A: Write channel bitmask to control register
+    uint8_t mask = 1 << channel;
+    Wire.beginTransmission(I2C_MULTIPLEXER_ADDR);
+    Wire.write(mask);
+    Wire.endTransmission();
+}
 
-        # TCA9548A: Write channel bitmask to control register
-        mask = 1 << channel
-        self.i2c.writeto(self.address, bytes([mask]))
+void HardwareController::buzzFinger(uint8_t finger, uint8_t amplitude) {
+    // Select multiplexer channel for this finger
+    selectChannel(finger);
 
-class DRV2605Controller:
-    """DRV2605 haptic driver integration"""
-
-    def activate(self, finger, amplitude):
-        """Activate motor via I2C.
-
-        Args:
-            finger: Finger index (0-3)
-            amplitude: Amplitude 0-100
-        """
-        # Select multiplexer channel for this finger
-        self.multiplexer.select_channel(finger)
-
-        # Write to DRV2605 RTP register
-        register_value = int((amplitude / 100.0) * 127)
-        self.i2c.writeto(
-            DRV2605_ADDR,
-            bytes([RTP_INPUT_REGISTER, register_value])
-        )
+    // Write to DRV2605 RTP register
+    uint8_t registerValue = (amplitude * 127) / 100;
+    _drv[finger].setRealtimeValue(registerValue);
+}
 ```
 
 ## Scalability and Extensibility
 
 ### Adding New Pattern Generators
 
-1. Create class that implements `generate(config)` method
-2. Register in factory
+1. Create class that inherits from `PatternGenerator`
+2. Implement `generate()` method
 
-```python
-class CustomPatternGenerator:
-    """New pattern algorithm"""
-
-    def generate(self, config):
-        """Generate custom pattern.
-
-        Args:
-            config: PatternConfig with timing settings
-
-        Returns:
-            Pattern object
-        """
-        # Implement custom logic
-        sequence = self._custom_algorithm(config)
-        return Pattern(left_sequence=sequence, right_sequence=sequence, ...)
-
-# Register
-PatternGeneratorFactory.register("custom", CustomPatternGenerator)
+```cpp
+class CustomPatternGenerator : public PatternGenerator {
+public:
+    Pattern generate(const PatternConfig& config) override {
+        // Implement custom algorithm
+        uint8_t sequence[4];
+        customAlgorithm(sequence);
+        return Pattern(sequence, sequence, config);
+    }
+};
 ```
 
 ### Adding New Therapy Profiles
 
-1. Create configuration in `therapy/profiles/`
-2. Define profile parameters
-3. Add to profile factory
+1. Define profile parameters
+2. Add to profile factory or LittleFS storage
 
-```python
-def create_custom_profile():
-    """Create custom research profile.
-
-    Returns:
-        TherapyConfig instance
-    """
-    return TherapyConfig(
-        profile_name="Custom Research Profile",
-        burst_duration_ms=150,
-        inter_burst_interval_ms=500,
-        bursts_per_cycle=4,
-        pattern_type="random",  # or "sequential", "mirrored"
-        mirror_pattern=True,
-        num_fingers=4,
-        actuator_type=ActuatorType.LRA,
-        frequency_hz=175,
-        amplitude_percent=80
-    )
+```cpp
+TherapyConfig createCustomProfile() {
+    TherapyConfig config;
+    strncpy(config.profileName, "Custom Research Profile", sizeof(config.profileName));
+    config.burstDurationMs = 150;
+    config.interBurstIntervalMs = 500;
+    config.burstsPerCycle = 4;
+    strncpy(config.patternType, "random", sizeof(config.patternType));
+    config.mirrorPattern = true;
+    config.frequencyHz = 175;
+    config.amplitudePercent = 80;
+    return config;
+}
 ```
 
 ### Adding New Hardware Platforms
 
-1. Create class with `activate(finger, amplitude)` and `deactivate(finger)` methods
-2. Create battery monitor with `get_level()` method
+1. Create class implementing `HapticInterface`
+2. Create battery monitor class
 3. Update board configuration
 
-```python
-class NewHapticDriver:
-    """New hardware driver - implements HapticController interface"""
+```cpp
+class NewHapticDriver : public HapticInterface {
+public:
+    void activate(uint8_t finger, uint8_t amplitude) override {
+        // Platform-specific implementation
+    }
 
-    def activate(self, finger, amplitude):
-        """Activate motor.
+    void deactivate(uint8_t finger) override {
+        // Platform-specific implementation
+    }
 
-        Args:
-            finger: Finger index (0-3)
-            amplitude: Amplitude 0-100
-        """
-        # Platform-specific implementation
-        pass
-
-    def deactivate(self, finger):
-        """Deactivate motor.
-
-        Args:
-            finger: Finger index (0-3)
-        """
-        # Platform-specific implementation
-        pass
+    void stopAll() override {
+        // Platform-specific implementation
+    }
+};
 ```
 
 ### Adding New BLE Commands
 
-1. Define command in `communication/protocol/commands.py`
-2. Add handler in `ProtocolHandler`
-3. Update application layer logic
+1. Add handler in `MenuController`
+2. Update application layer logic
 
-```python
-class NewCommand:
-    """New command definition"""
-    def __init__(self, parameter=""):
-        self.command_type = "NEW_FEATURE"
-        self.parameter = parameter
+```cpp
+void MenuController::processCommand(const char* command,
+                                     char* response,
+                                     size_t responseSize) {
+    char cmdType[32];
+    parseCommandType(command, cmdType, sizeof(cmdType));
 
-class ProtocolHandler:
-    def handle_command(self, command):
-        """Handle incoming command.
+    if (strcmp(cmdType, "NEW_FEATURE") == 0) {
+        handleNewFeature(command, response, responseSize);
+    }
+    // ... existing handlers
+}
 
-        Args:
-            command: Command instance
-
-        Returns:
-            Response object
-        """
-        if isinstance(command, NewCommand):
-            result = self._handle_new_feature(command)
-            return Response.success(result)
+void MenuController::handleNewFeature(const char* params,
+                                       char* response,
+                                       size_t size) {
+    // Implementation
+    snprintf(response, size, "OK:New feature executed\n\x04");
+}
 ```
 
 ## Summary
@@ -1167,3 +1076,8 @@ BlueBuzzah v2 architecture provides:
 6. **Portability** through hardware abstraction layer
 
 The architecture enables confident refactoring, easy testing, and straightforward feature additions while maintaining code quality and system reliability.
+
+---
+
+**Platform**: Arduino C++ with PlatformIO
+**Last Updated**: 2025-01-11

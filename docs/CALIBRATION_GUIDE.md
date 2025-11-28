@@ -1,7 +1,8 @@
 # BlueBuzzah Calibration Guide
-**Version:** 1.0.0
+**Version:** 2.0.0
 **Date:** 2025-01-23
-**Module**: CalibrationMode (src/modules/calibration_mode.py)
+**Platform:** Arduino C++ / PlatformIO
+**Module**: CalibrationMode (src/menu_controller.cpp)
 
 ---
 
@@ -50,63 +51,65 @@ Calibration mode allows individual finger motor testing for:
 
 ## Calibration Architecture
 
-### CalibrationMode Class
+### CalibrationMode Integration
 
-**File**: `src/modules/calibration_mode.py` (275 lines)
+**File**: `src/menu_controller.cpp`
 
-**Initialization** (lines 28-40):
+Calibration functionality is integrated into the MenuController class in the Arduino C++ implementation.
 
-```python
-class CalibrationMode:
-    def __init__(self, haptic_controller, ble_connection, role):
-        """
-        Initialize calibration mode.
+**State Variables** (menu_controller.h):
 
-        Args:
-            haptic_controller: HapticController instance for motor control
-            ble_connection: BLEConnection instance for VL↔VR communication
-            role: "PRIMARY" or "SECONDARY"
-        """
-        self.haptic = haptic_controller
-        self.ble = ble_connection
-        self.role = role
-        self.active = False  # Calibration mode state
+```cpp
+class MenuController {
+private:
+    Hardware& hardware_;
+    BLEManager& ble_;
+    DeviceRole role_;
+    bool calibrationMode_;  // Calibration state flag
+
+public:
+    MenuController(Hardware& hw, BLEManager& ble, DeviceRole role)
+        : hardware_(hw)
+        , ble_(ble)
+        , role_(role)
+        , calibrationMode_(false)
+    {}
+};
 ```
 
 ### State Management
 
-**Enter Calibration** (lines 42-54):
+**Enter Calibration** (menu_controller.cpp):
 
-```python
-def enter_calibration(self):
-    """
-    Enter calibration mode.
+```cpp
+void MenuController::cmdCalibrateStart() {
+    /**
+     * Enter calibration mode.
+     *
+     * Validates session state before enabling calibration.
+     */
+    if (stateMachine_ && stateMachine_->isSessionActive()) {
+        sendError("Cannot enter calibration during active session");
+        return;
+    }
 
-    Returns:
-        tuple: (success: bool, message: str)
-    """
-    if self.active:
-        return (False, "Already in calibration mode")
-
-    self.active = True
-    return (True, "Calibration mode active")
+    calibrationMode_ = true;
+    ble_.sendToPhone("MODE:CALIBRATION\n\x04");
+}
 ```
 
-**Exit Calibration** (lines 56-68):
+**Exit Calibration** (menu_controller.cpp):
 
-```python
-def exit_calibration(self):
-    """
-    Exit calibration mode.
-
-    Returns:
-        tuple: (success: bool, message: str)
-    """
-    if not self.active:
-        return (False, "Not in calibration mode")
-
-    self.active = False
-    return (True, "Calibration mode disabled")
+```cpp
+void MenuController::cmdCalibrateStop() {
+    /**
+     * Exit calibration mode.
+     *
+     * Disables calibration state and returns to normal operation.
+     */
+    calibrationMode_ = false;
+    ble_.sendToPhone("MODE:NORMAL\n\x04");
+}
 ```
 
 ---
@@ -139,12 +142,12 @@ LEFT GLOVE (VL - PRIMARY):     RIGHT GLOVE (VR - SECONDARY):
 | 7 | VR | Ring | 3 | Relay (VL → VR) |
 
 **Motor Channel Calculation**:
-```python
-# VL (fingers 0-3)
-motor_channel = finger_index  # 0→0, 1→1, 2→2, 3→3
+```cpp
+// VL (fingers 0-3)
+uint8_t motorChannel = fingerIndex;  // 0→0, 1→1, 2→2, 3→3
 
-# VR (fingers 4-7)
-motor_channel = finger_index - 4  # 4→0, 5→1, 6→2, 7→3
+// VR (fingers 4-7)
+uint8_t motorChannel = fingerIndex - 4;  // 4→0, 5→1, 6→2, 7→3
 ```
 
 ---
@@ -176,110 +179,135 @@ motor_channel = finger_index - 4  # 4→0, 5→1, 6→2, 7→3
 
 ### Main Buzz Method
 
-**Entry Point** (lines 74-105):
+**Entry Point** (menu_controller.cpp):
 
-```python
-def buzz_finger(self, finger_index, intensity, duration_ms):
-    """
-    Test individual finger motor.
+```cpp
+void MenuController::cmdCalibrateBuzz(uint8_t finger, uint8_t intensity, uint16_t durationMs) {
+    /**
+     * Test individual finger motor.
+     *
+     * Args:
+     *     finger: 0-7 (0-3=left VL, 4-7=right VR)
+     *     intensity: 0-100 (percentage)
+     *     durationMs: 50-2000 (milliseconds)
+     */
+    if (!calibrationMode_) {
+        sendError("Not in calibration mode");
+        return;
+    }
 
-    Args:
-        finger_index: 0-7 (0-3=left VL, 4-7=right VR)
-        intensity: 0-100 (percentage)
-        duration_ms: 50-2000 (milliseconds)
+    // Validate parameters
+    if (finger > 7) {
+        sendError("Invalid finger index (must be 0-7)");
+        return;
+    }
 
-    Returns:
-        tuple: (success: bool, message: str)
-    """
-    if not self.active:
-        return (False, "Not in calibration mode")
+    if (intensity > 100) {
+        sendError("Invalid intensity (must be 0-100)");
+        return;
+    }
 
-    # Determine if motor is local or remote
-    is_local = (finger_index < 4 and self.role == "PRIMARY") or \
-               (finger_index >= 4 and self.role == "SECONDARY")
+    if (durationMs < 50 || durationMs > 2000) {
+        sendError("Invalid duration (must be 50-2000ms)");
+        return;
+    }
 
-    if is_local:
-        # Test local motor directly
-        return self._buzz_local_finger(finger_index, intensity, duration_ms)
-    else:
-        # Relay to remote glove (PRIMARY only)
-        if self.role == "PRIMARY":
-            return self._buzz_remote_finger(finger_index, intensity, duration_ms)
-        else:
-            return (False, "SECONDARY cannot control PRIMARY fingers")
+    // Determine if motor is local or remote
+    bool isLocal = (finger < 4 && role_ == DeviceRole::PRIMARY) ||
+                   (finger >= 4 && role_ == DeviceRole::SECONDARY);
+
+    if (isLocal) {
+        // Test local motor directly
+        buzzLocalFinger(finger, intensity, durationMs);
+    } else if (role_ == DeviceRole::PRIMARY) {
+        // Relay to remote glove (PRIMARY only)
+        buzzRemoteFinger(finger, intensity, durationMs);
+    } else {
+        sendError("SECONDARY cannot control PRIMARY fingers");
+        return;
+    }
+
+    // Send success response
+    String response = "FINGER:";
+    response += String(finger);
+    response += "\nINTENSITY:";
+    response += String(intensity);
+    response += "\nDURATION:";
+    response += String(durationMs);
+    response += "\n\x04";
+    ble_.sendToPhone(response);
+}
 ```
 
 **Routing Logic**:
 
 | Role | Finger | Action |
 |------|--------|--------|
-| PRIMARY | 0-3 | `_buzz_local_finger()` - Direct motor control |
-| PRIMARY | 4-7 | `_buzz_remote_finger()` - BLE relay to VR |
+| PRIMARY | 0-3 | `buzzLocalFinger()` - Direct motor control |
+| PRIMARY | 4-7 | `buzzRemoteFinger()` - BLE relay to VR |
 | SECONDARY | 0-3 | Error (VR can't control VL) |
-| SECONDARY | 4-7 | `_buzz_local_finger()` - Direct motor control |
+| SECONDARY | 4-7 | `buzzLocalFinger()` - Direct motor control |
 
 ---
 
 ### Local Motor Control
 
-**Implementation** (lines 107-168):
+**Implementation** (hardware.cpp):
 
-```python
-def _buzz_local_finger(self, finger_index, intensity, duration_ms):
-    """
-    Test local motor.
+```cpp
+void MenuController::buzzLocalFinger(uint8_t finger, uint8_t intensity, uint16_t durationMs) {
+    /**
+     * Test local motor.
+     *
+     * Args:
+     *     finger: 0-3 for VL, 4-7 for VR
+     *     intensity: 0-100%
+     *     durationMs: Duration in milliseconds
+     */
+    // 1. Convert finger index to motor channel (0-3)
+    uint8_t motorChannel;
+    if (role_ == DeviceRole::PRIMARY) {
+        motorChannel = finger;  // 0-3 directly
+    } else {
+        motorChannel = finger - 4;  // 4-7 → 0-3
+    }
 
-    Args:
-        finger_index: 0-3 for VL, 4-7 for VR
-        intensity: 0-100%
-        duration_ms: Duration in milliseconds
+    if (motorChannel > 3) {
+        Serial.printf("[CalibrationMode] Invalid motor channel: %d\n", motorChannel);
+        return;
+    }
 
-    Returns:
-        tuple: (success: bool, message: str)
-    """
-    # 1. Convert finger index to motor channel (0-3)
-    if self.role == "PRIMARY":
-        motor_channel = finger_index  # 0-3 directly
-    else:
-        motor_channel = finger_index - 4  # 4-7 → 0-3
+    // 2. Convert intensity percentage to DRV2605 value (0-127)
+    uint8_t drvIntensity = (intensity * 127) / 100;
+    drvIntensity = constrain(drvIntensity, 0, 127);
 
-    if motor_channel < 0 or motor_channel > 3:
-        return (False, f"Invalid motor channel: {motor_channel}")
+    Serial.printf("[CalibrationMode] Buzzing finger %d (motor %d) at %d%% for %dms\n",
+                  finger, motorChannel, intensity, durationMs);
 
-    try:
-        # 2. Convert intensity percentage to DRV2605 value (0-127)
-        drv_intensity = int((intensity / 100.0) * 127)
-        drv_intensity = max(0, min(127, drv_intensity))
+    // 3. Use Hardware class to buzz the finger
+    hardware_.buzzFinger(motorChannel, drvIntensity, durationMs);
+}
 
-        print(f"[CalibrationMode] Buzzing finger {finger_index} (motor {motor_channel}) at {intensity}% for {duration_ms}ms")
+// Hardware class implementation (hardware.cpp)
+void Hardware::buzzFinger(uint8_t channel, uint8_t amplitude, uint16_t durationMs) {
+    // 1. Select motor via I2C multiplexer
+    mux_.selectChannel(channel);
 
-        # 3. Select motor via I2C multiplexer
-        self.haptic.mux.select_channel(motor_channel)
+    // 2. Configure DRV2605 for Real-Time Playback mode
+    const uint8_t MODE_RTP = 0x05;
+    drv_.setMode(MODE_RTP);
 
-        # 4. Set waveform (use Strong Click for testing)
-        STRONG_CLICK_100 = 1  # DRV2605 waveform library constant
-        self.haptic.drivers[motor_channel].sequence[0] = STRONG_CLICK_100
+    // 3. Set amplitude and trigger
+    drv_.setRealtimeValue(amplitude);
+    drv_.go();
 
-        # 5. Set intensity
-        self.haptic.drivers[motor_channel].realtime_value = drv_intensity
+    // 4. Wait for duration
+    delay(durationMs);
 
-        # 6. Trigger motor (Real-Time Playback mode)
-        MODE_REAL_TIME_PLAYBACK = 0x05
-        self.haptic.drivers[motor_channel].mode = MODE_REAL_TIME_PLAYBACK
-        self.haptic.drivers[motor_channel].go = True
-
-        # 7. Wait for duration
-        time.sleep(duration_ms / 1000.0)
-
-        # 8. Stop motor
-        self.haptic.drivers[motor_channel].realtime_value = 0
-        self.haptic.drivers[motor_channel].go = False
-
-        return (True, f"Buzzed finger {finger_index}")
-
-    except Exception as e:
-        print(f"[CalibrationMode] Error buzzing finger {finger_index}: {e}")
-        return (False, f"Motor control error: {e}")
+    // 5. Stop motor
+    drv_.setRealtimeValue(0);
+    drv_.stop();
+}
 ```
 
 **DRV2605 Configuration**:
@@ -294,47 +322,46 @@ def _buzz_local_finger(self, finger_index, intensity, duration_ms):
 
 ### Remote Motor Control
 
-**PRIMARY Relay** (lines 170-207):
+**PRIMARY Relay** (menu_controller.cpp):
 
-```python
-def _buzz_remote_finger(self, finger_index, intensity, duration_ms):
-    """
-    Relay buzz command to remote glove (VL → VR only).
+```cpp
+void MenuController::buzzRemoteFinger(uint8_t finger, uint8_t intensity, uint16_t durationMs) {
+    /**
+     * Relay buzz command to remote glove (VL → VR only).
+     *
+     * Args:
+     *     finger: 4-7 (VR fingers)
+     *     intensity: 0-100%
+     *     durationMs: Duration in milliseconds
+     */
+    if (role_ != DeviceRole::PRIMARY) {
+        Serial.println("[CalibrationMode] Only PRIMARY can relay to SECONDARY");
+        return;
+    }
 
-    Args:
-        finger_index: 4-7 (VR fingers)
-        intensity: 0-100%
-        duration_ms: Duration in milliseconds
+    if (!ble_.isSecondaryConnected()) {
+        Serial.println("[CalibrationMode] VR not connected");
+        return;
+    }
 
-    Returns:
-        tuple: (success: bool, message: str)
-    """
-    if self.role != "PRIMARY":
-        return (False, "Only PRIMARY can relay to SECONDARY")
+    // 1. Send calibration command to VR
+    String cmd = "CALIBRATE_BUZZ:";
+    cmd += String(finger);
+    cmd += ":";
+    cmd += String(intensity);
+    cmd += ":";
+    cmd += String(durationMs);
+    cmd += "\n";
 
-    # Use vr_uart for VR communication, fallback to uart
-    vr_uart = self.ble.vr_uart if self.ble.vr_uart else self.ble.uart
+    ble_.sendToSecondary(cmd);
+    Serial.printf("[CalibrationMode] Sent buzz command to VR: %s", cmd.c_str());
 
-    if not vr_uart:
-        return (False, "VR UART not available")
+    // 2. Wait for duration + overhead
+    delay(durationMs + 100);
 
-    try:
-        # 1. Send calibration command to VR
-        cmd = f"CALIBRATE_BUZZ:{finger_index}:{intensity}:{duration_ms}\n"
-        vr_uart.write(cmd.encode())
-        print(f"[CalibrationMode] Sent buzz command to VR: {cmd.strip()}")
-
-        # 2. Wait for duration + overhead
-        time.sleep((duration_ms + 100) / 1000.0)
-
-        # 3. TODO: Wait for acknowledgment from VR
-        # For now, assume success
-
-        return (True, f"Relayed buzz to VR finger {finger_index}")
-
-    except Exception as e:
-        print(f"[CalibrationMode] Error relaying to VR: {e}")
-        return (False, f"BLE relay error: {e}")
+    // 3. VR will acknowledge completion
+    Serial.printf("[CalibrationMode] Relayed buzz to VR finger %d\n", finger);
+}
 ```
 
 **Message Flow**:
@@ -360,33 +387,34 @@ sequenceDiagram
 
 ### SECONDARY Handler
 
-**VR Receives Remote Request** (lines 209-232):
+**VR Receives Remote Request** (menu_controller.cpp):
 
-```python
-def handle_remote_buzz_request(self, finger_index, intensity, duration_ms):
-    """
-    Handle buzz request from VL (SECONDARY only).
+```cpp
+void MenuController::handleRemoteBuzzRequest(uint8_t finger, uint8_t intensity, uint16_t durationMs) {
+    /**
+     * Handle buzz request from VL (SECONDARY only).
+     *
+     * This is called when VR receives CALIBRATE_BUZZ from VL.
+     *
+     * Args:
+     *     finger: 4-7 (should be for this glove)
+     *     intensity: 0-100%
+     *     durationMs: Duration in milliseconds
+     */
+    if (role_ != DeviceRole::SECONDARY) {
+        Serial.println("[CalibrationMode] Only SECONDARY can handle remote requests");
+        return;
+    }
 
-    This is called by menu_controller when VR receives CALIBRATE_BUZZ from VL.
+    if (!calibrationMode_) {
+        // Auto-enter calibration mode for remote requests
+        calibrationMode_ = true;
+        Serial.println("[CalibrationMode] Auto-entered calibration mode for remote request");
+    }
 
-    Args:
-        finger_index: 4-7 (should be for this glove)
-        intensity: 0-100%
-        duration_ms: Duration in milliseconds
-
-    Returns:
-        tuple: (success: bool, message: str)
-    """
-    if self.role != "SECONDARY":
-        return (False, "Only SECONDARY can handle remote requests")
-
-    if not self.active:
-        # Auto-enter calibration mode for remote requests
-        self.active = True
-        print("[CalibrationMode] Auto-entered calibration mode for remote request")
-
-    # Execute local buzz
-    return self._buzz_local_finger(finger_index, intensity, duration_ms)
+    // Execute local buzz
+    buzzLocalFinger(finger, intensity, durationMs);
+}
 ```
 
 **Key Feature**: VR **automatically enters** calibration mode when receiving remote requests.
@@ -401,10 +429,10 @@ def handle_remote_buzz_request(self, finger_index, intensity, duration_ms):
 
 **Conversion Formula**:
 
-```python
-# User intensity (0-100%) → DRV2605 amplitude (0-127)
-drv_amplitude = int((user_intensity / 100.0) * 127)
-drv_amplitude = max(0, min(127, drv_amplitude))  # Clamp to 0-127
+```cpp
+// User intensity (0-100%) → DRV2605 amplitude (0-127)
+uint8_t drvAmplitude = (userIntensity * 127) / 100;
+drvAmplitude = constrain(drvAmplitude, 0, 127);  // Clamp to 0-127
 ```
 
 **Lookup Table**:
@@ -441,22 +469,22 @@ Above comfort          | 90-100%         | 114-127
 ### Amplitude Scaling Factors
 
 **Voltage Impact**:
-```python
-# Peak voltage affects maximum intensity
-ACTUATOR_VOLTAGE = 2.50  # Default
+```cpp
+// Peak voltage affects maximum intensity
+const float ACTUATOR_VOLTAGE = 2.50f;  // Default
 
-# Effective intensity = drv_amplitude * (voltage / 2.50)
-# Lower voltage → weaker sensation at same drv_amplitude
+// Effective intensity = drvAmplitude * (voltage / 2.50)
+// Lower voltage → weaker sensation at same drvAmplitude
 ```
 
 **Frequency Impact**:
-```python
-# LRAs are resonant devices
-ACTUATOR_FREQUENCY = 250  # Hz (resonance frequency)
+```cpp
+// LRAs are resonant devices
+const uint16_t ACTUATOR_FREQUENCY = 250;  // Hz (resonance frequency)
 
-# On-resonance (250 Hz): Maximum efficiency
-# Off-resonance (±50 Hz): ~50% reduced intensity
-# Far off-resonance (±100 Hz): ~80% reduced intensity
+// On-resonance (250 Hz): Maximum efficiency
+// Off-resonance (±50 Hz): ~50% reduced intensity
+// Far off-resonance (±100 Hz): ~80% reduced intensity
 ```
 
 **Recommendation**: Always calibrate at therapy frequency (250 Hz) for accurate intensity tuning.
@@ -513,14 +541,17 @@ For each finger (0-7):
 ```
 
 **Record in Patient Profile**:
-```python
-PATIENT_PROFILE = {
-    "AMPLITUDE_MIN": 45,  # Therapeutic intensity
-    "AMPLITUDE_MAX": 45,  # Fixed intensity (no variation)
-    # Or allow ±10% variation:
-    # "AMPLITUDE_MIN": 40,
-    # "AMPLITUDE_MAX": 50
-}
+```cpp
+// Via BLE command:
+// PROFILE_CUSTOM:AMPMIN:45:AMPMAX:45\n
+
+// Or in TherapyParams struct:
+TherapyParams profile;
+profile.amplitudeMin = 45;  // Therapeutic intensity
+profile.amplitudeMax = 45;  // Fixed intensity (no variation)
+// Or allow ±10% variation:
+// profile.amplitudeMin = 40;
+// profile.amplitudeMax = 50;
 ```
 
 ### Inter-Finger Balancing
@@ -577,30 +608,30 @@ Result: All fingers above detection, Finger 1 has optimal intensity
 **Diagnostic Steps**:
 
 1. **Check voltage setting**:
-   ```python
-   # In profile
-   ACTUATOR_VOLTAGE = 2.50  # Should be 2.0-3.0V
+   ```cpp
+   // In TherapyParams or profile
+   const float ACTUATOR_VOLTAGE = 2.50f;  // Should be 2.0-3.0V
    ```
    **Fix**: Increase voltage if <2.0V
 
 2. **Check frequency**:
-   ```python
-   # In profile
-   ACTUATOR_FREQUENCY = 250  # Should match LRA resonance
+   ```cpp
+   // In TherapyParams or profile
+   const uint16_t ACTUATOR_FREQUENCY = 250;  // Should match LRA resonance
    ```
    **Fix**: Verify LRA specification (typically 200-300 Hz)
 
 3. **Check intensity**:
-   ```python
-   # Test at maximum intensity first
+   ```
+   // Test at maximum intensity first via BLE command:
    CALIBRATE_BUZZ:0:100:1000
    ```
    **Fix**: If still no sensation, hardware issue
 
 4. **Check I2C connection**:
-   ```python
-   # Serial console should show:
-   "[VL] Secondary i2c Channel 0: ['0x5a']"
+   ```
+   // Serial console should show:
+   [VL] Secondary i2c Channel 0: 0x5A
    ```
    **Fix**: If empty, check wiring to multiplexer
 
@@ -618,35 +649,35 @@ Result: All fingers above detection, Finger 1 has optimal intensity
 **Diagnostic Steps**:
 
 1. **Check VR connection**:
-   ```python
-   # Send INFO command
-   INFO
-   # Response should include:
-   # BAT_RIGHT:3.68  ← VR is connected
    ```
-   **Fix**: If BAT_RIGHT:N/A, reconnect VR glove
+   // Send INFO command via BLE
+   INFO
+   // Response should include:
+   // BATS:3.68  ← VR is connected
+   ```
+   **Fix**: If BATS:N/A, reconnect VR glove
 
 2. **Check VR UART**:
-   ```python
-   # In VL serial console:
-   "[VL] [SYNC] Broadcast X parameter(s) to VR"
    ```
-   **Fix**: If no sync messages, vr_uart not initialized
+   // In VL serial console:
+   [VL] [SYNC] Broadcast X parameter(s) to VR
+   ```
+   **Fix**: If no sync messages, secondary UART not initialized
 
 3. **Check VR calibration mode**:
-   ```python
-   # VR serial console should show:
-   "[VR] [CalibrationMode] Auto-entered calibration mode"
+   ```
+   // VR serial console should show:
+   [VR] [CalibrationMode] Auto-entered calibration mode
    ```
    **Fix**: If not shown, VR not receiving CALIBRATE_BUZZ
 
 4. **Manual VR testing**:
-   ```python
-   # Connect terminal to VR glove directly
-   # Send: CALIBRATE_START
-   # Send: CALIBRATE_BUZZ:4:80:500
-   # If works: BLE relay issue
-   # If fails: VR hardware issue
+   ```
+   // Connect terminal to VR glove directly
+   // Send: CALIBRATE_START
+   // Send: CALIBRATE_BUZZ:4:80:500
+   // If works: BLE relay issue
+   // If fails: VR hardware issue
    ```
 
 ---
@@ -658,18 +689,18 @@ Result: All fingers above detection, Finger 1 has optimal intensity
 **Possible Causes**:
 
 1. **Battery voltage drop**:
-   ```python
-   # Check battery
+   ```
+   // Check battery via BLE command
    BATTERY
-   # If <3.6V, sensation will be weaker
+   // If <3.6V, sensation will be weaker
    ```
    **Fix**: Charge gloves to >3.7V before calibration
 
 2. **Frequency mismatch**:
-   ```python
-   # Verify frequency hasn't changed
+   ```
+   // Verify frequency hasn't changed
    PROFILE_GET
-   # ACTUATOR_FREQUENCY should be 250
+   // FREQ should be 250
    ```
    **Fix**: Reload profile if changed
 
@@ -687,64 +718,66 @@ Result: All fingers above detection, Finger 1 has optimal intensity
 
 ### Helper Methods
 
-**Test All Fingers** (lines 249-269):
+**Test All Fingers** (menu_controller.cpp):
 
-```python
-def test_all_fingers(self, intensity=50, duration_ms=200):
-    """
-    Test all 8 fingers in sequence (quick verification).
+```cpp
+void MenuController::testAllFingers(uint8_t intensity, uint16_t durationMs) {
+    /**
+     * Test all 8 fingers in sequence (quick verification).
+     *
+     * Args:
+     *     intensity: Default 50%
+     *     durationMs: Default 200ms
+     */
+    if (!calibrationMode_) {
+        Serial.println("[CalibrationMode] Not in calibration mode");
+        return;
+    }
 
-    Args:
-        intensity: Default 50%
-        duration_ms: Default 200ms
-
-    Returns:
-        list: List of (finger_index, success, message) tuples
-    """
-    if not self.active:
-        return [(0, False, "Not in calibration mode")]
-
-    results = []
-    for finger in range(8):
-        success, message = self.buzz_finger(finger, intensity, duration_ms)
-        results.append((finger, success, message))
-        time.sleep(0.1)  # Small gap between fingers
-
-    return results
+    for (uint8_t finger = 0; finger < 8; finger++) {
+        cmdCalibrateBuzz(finger, intensity, durationMs);
+        delay(100);  // Small gap between fingers
+    }
+}
 ```
 
 **Usage via BLE**:
-```python
-# Phone can automate full calibration:
-for finger in range(8):
-    send_command(f"CALIBRATE_BUZZ:{finger}:50:200")
-    wait_for_response()
-    time.sleep(0.1)
+```cpp
+// Phone can automate full calibration:
+// for (int finger = 0; finger < 8; finger++) {
+//     sendCommand("CALIBRATE_BUZZ:" + String(finger) + ":50:200");
+//     waitForResponse();
+//     delay(100);
+// }
 ```
 
-**Get Finger Name** (lines 234-247):
+**Get Finger Name** (menu_controller.cpp):
 
-```python
-def get_finger_name(self, finger_index):
-    """
-    Get human-readable finger name.
+```cpp
+const char* MenuController::getFingerName(uint8_t fingerIndex) {
+    /**
+     * Get human-readable finger name.
+     *
+     * Args:
+     *     fingerIndex: 0-7
+     *
+     * Returns:
+     *     const char*: Finger name (e.g., "VL Thumb", "VR Index")
+     */
+    static const char* fingerNames[] = {
+        "VL Thumb", "VL Index", "VL Middle", "VL Ring",
+        "VR Thumb", "VR Index", "VR Middle", "VR Ring"
+    };
 
-    Args:
-        finger_index: 0-7
-
-    Returns:
-        str: Finger name (e.g., "VL Thumb", "VR Index")
-    """
-    glove = "VL" if finger_index < 4 else "VR"
-    finger_names = ["Thumb", "Index", "Middle", "Ring"]
-    finger = finger_names[finger_index % 4]
-    return f"{glove} {finger}"
+    if (fingerIndex > 7) return "Unknown";
+    return fingerNames[fingerIndex];
+}
 ```
 
 **Example**:
-```python
-get_finger_name(0)  # "VL Thumb"
-get_finger_name(5)  # "VR Index"
+```cpp
+getFingerName(0);  // "VL Thumb"
+getFingerName(5);  // "VR Index"
 ```
 
 ---
@@ -756,88 +789,101 @@ get_finger_name(5)  # "VR Index"
 **Current Limitation**: Single intensity for all fingers
 
 **Proposed Enhancement**:
-```python
-# In profile
-AMPLITUDE_FINGER_MAP = {
-    0: 45,  # VL Thumb
-    1: 55,  # VL Index (less sensitive, needs higher)
-    2: 40,  # VL Middle
-    3: 50,  # VL Ring
-    4: 42,  # VR Thumb
-    5: 52,  # VR Index
-    6: 38,  # VR Middle
-    7: 48   # VR Ring
-}
+```cpp
+// In TherapyParams struct
+struct TherapyParams {
+    // ... existing fields ...
+    uint8_t amplitudeFingerMap[8];  // Per-finger intensity (0-100%)
+};
 
-# In haptic controller
-def fingers_on(self, fingers):
-    for finger in fingers:
-        amplitude = AMPLITUDE_FINGER_MAP.get(finger, 50)
-        self.drivers[finger].realtime_value = amplitude
+// Initialize per-finger map
+uint8_t fingerMap[8] = {
+    45,  // VL Thumb
+    55,  // VL Index (less sensitive, needs higher)
+    40,  // VL Middle
+    50,  // VL Ring
+    42,  // VR Thumb
+    52,  // VR Index
+    38,  // VR Middle
+    48   // VR Ring
+};
+
+// In therapy engine
+void TherapyEngine::fingersOn(uint8_t* fingers, uint8_t count) {
+    for (uint8_t i = 0; i < count; i++) {
+        uint8_t finger = fingers[i];
+        uint8_t amplitude = params_.amplitudeFingerMap[finger];
+        hardware_.setMotorAmplitude(finger % 4, amplitude);
+    }
+}
 ```
 
 ### Automated Calibration Algorithm
 
 **Proposed**: Adaptive staircase method
 
-```python
-def auto_calibrate_finger(uart, finger_index):
-    """
-    Automated detection threshold using adaptive staircase.
+```cpp
+uint8_t autoCalibrateFinger(uint8_t fingerIndex) {
+    /**
+     * Automated detection threshold using adaptive staircase.
+     *
+     * Algorithm:
+     *     1. Start at 50% (mid-point)
+     *     2. Patient presses button when sensation detected
+     *     3. Adjust intensity:
+     *         - Detected: Decrease by 10%
+     *         - Not detected: Increase by 10%
+     *     4. Repeat until convergence (±5%)
+     *     5. Return threshold
+     */
+    uint8_t intensity = 50;
+    uint8_t step = 10;
+    uint8_t detectedCount = 0;
+    uint8_t notDetectedCount = 0;
 
-    Algorithm:
-        1. Start at 50% (mid-point)
-        2. Patient presses button when sensation detected
-        3. Adjust intensity:
-            - Detected: Decrease by 10%
-            - Not detected: Increase by 10%
-        4. Repeat until convergence (±5%)
-        5. Return threshold
-    """
-    intensity = 50
-    step = 10
-    detected_count = 0
-    not_detected_count = 0
+    while (step > 5) {
+        buzzFinger(fingerIndex, intensity, 500);
+        bool detected = waitForButtonPress(3000);  // 3 second timeout
 
-    while step > 5:
-        buzz_finger(uart, finger_index, intensity, 500)
-        response = wait_for_button_press(timeout=3.0)
+        if (detected) {
+            intensity -= step;
+            detectedCount++;
+        } else {
+            intensity += step;
+            notDetectedCount++;
+        }
 
-        if response == "DETECTED":
-            intensity -= step
-            detected_count += 1
-        else:
-            intensity += step
-            not_detected_count += 1
+        // Reduce step size after reversals
+        if (detectedCount > 1 && notDetectedCount > 1) {
+            step = step / 2;
+        }
+    }
 
-        # Reduce step size after 3 reversals
-        if detected_count > 1 and not_detected_count > 1:
-            step = step / 2
-
-    return intensity
+    return intensity;
+}
 ```
 
 ### Calibration Session Logging
 
-**Proposed**: Record calibration data for analysis
+**Proposed**: Record calibration data for analysis (stored in LittleFS)
 
-```python
-# Save to flash storage
-CALIBRATION_LOG = {
-    "date": "2025-01-23T10:30:00",
-    "patient_id": "P12345",
-    "session_number": 5,
-    "thresholds": {
-        0: 15, 1: 20, 2: 12, 3: 18,
-        4: 14, 5: 16, 6: 11, 7: 19
-    },
-    "comfort_max": {
-        0: 75, 1: 80, 2: 70, 3: 78,
-        4: 72, 5: 77, 6: 68, 7: 76
-    },
-    "therapeutic": {
-        0: 45, 1: 50, 2: 41, 3: 48,
-        4: 43, 5: 47, 6: 39, 7: 47
+```cpp
+// Calibration log structure
+struct CalibrationLog {
+    uint32_t timestamp;           // Unix timestamp
+    char patientId[16];           // Patient identifier
+    uint8_t sessionNumber;        // Session count
+    uint8_t thresholds[8];        // Detection thresholds per finger
+    uint8_t comfortMax[8];        // Comfort maximum per finger
+    uint8_t therapeutic[8];       // Final therapeutic intensity per finger
+};
+
+// Save to LittleFS
+void saveCalibrationLog(const CalibrationLog& log) {
+    File file = LittleFS.open("/calibration.log", "a");
+    if (file) {
+        file.write((uint8_t*)&log, sizeof(log));
+        file.close();
     }
 }
 ```

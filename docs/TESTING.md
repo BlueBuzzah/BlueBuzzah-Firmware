@@ -28,9 +28,9 @@ Last Updated: 2025-11-23
 
 BlueBuzzah v2 uses **manual hardware integration tests** to validate firmware functionality on actual Feather nRF52840 devices. The testing approach emphasizes:
 
-- **Real hardware validation** - Tests run on actual CircuitPython devices
+- **Real hardware validation** - Tests run on actual Arduino/PlatformIO devices
 - **BLE protocol verification** - Validates command/response behavior
-- **Memory monitoring** - Ensures CircuitPython memory stability
+- **Memory monitoring** - Ensures firmware memory stability
 - **Synchronization accuracy** - Measures multi-device timing
 - **Manual execution** - Requires human setup and intervention
 
@@ -66,18 +66,18 @@ BlueBuzzah v2 uses **manual hardware integration tests** to validate firmware fu
 ### Testing Architecture
 
 ```
-Host Computer (Python)
+Host Computer (Python/PlatformIO)
     │
-    ├─ BLE Connection
+    ├─ BLE Connection (bleak/adafruit-blinka-bleio)
     │
-    └─ BlueBuzzah Device (CircuitPython)
-        ├─ BLE UART Service
-        ├─ Command Handler
-        ├─ Hardware Controllers
-        └─ Therapy Engine
+    └─ BlueBuzzah Device (Arduino C++)
+        ├─ Bluefruit BLE UART Service
+        ├─ MenuController (command handler)
+        ├─ HardwareController
+        └─ TherapyEngine
 ```
 
-Tests send BLE commands and validate responses - no mock infrastructure exists.
+Tests send BLE commands and validate responses. PlatformIO test framework can also be used for unit testing.
 
 ---
 
@@ -340,9 +340,9 @@ SUMMARY: 8/8 tests PASSED
 **Purpose:** Detect memory leaks during extended operation
 
 **Test Sequence:**
-1. Establish baseline memory reading
+1. Establish baseline memory reading via `dbgMemInfo()`
 2. Start therapy session
-3. Monitor `gc.mem_free()` every 60 seconds
+3. Monitor free heap memory every 60 seconds
 4. Run for 2+ hours (configurable)
 5. Log memory trends and minimum free memory
 
@@ -449,12 +449,12 @@ Per BLE_PROTOCOL.md specification:
 
 ## Memory Testing
 
-### CircuitPython Memory Constraints
+### Arduino/nRF52840 Memory Budget
 
 - **Total RAM:** 256 KB
-- **Available to CircuitPython:** ~130 KB
-- **With BLE active:** ~90 KB
-- **Safe minimum:** 10 KB free
+- **Available after BLE stack:** ~200 KB
+- **Typical firmware usage:** ~50-80 KB
+- **Safe headroom:** >100 KB free
 
 ### Memory Monitoring
 
@@ -462,26 +462,26 @@ The memory stress test checks for:
 
 1. **Baseline stability** - Memory should stabilize after initialization
 2. **Leak detection** - No continuous downward trend
-3. **Minimum threshold** - Never drop below 10 KB
-4. **GC effectiveness** - Memory should recover after `gc.collect()`
+3. **Stack overflow** - Monitor stack usage with `dbgMemInfo()`
+4. **Heap fragmentation** - Check for allocation failures
 
 ### Memory Failure Indicators
 
-⚠️ **Warning signs:**
+Warning signs:
 - Continuous downward trend over hours
-- Free memory approaching 10 KB
-- `MemoryError` exceptions during test
-- Increasing GC frequency without memory recovery
+- Hard faults or crashes during extended operation
+- Allocation failures in serial output
+- Watchdog resets
 
 ### Memory Optimization
 
-If memory issues detected, see CLAUDE.md for CircuitPython memory optimization guidelines:
+Best practices for Arduino C++ firmware:
 
-- Use `const()` for numeric constants
+- Use `static` allocation where possible
 - Pre-allocate buffers at startup
-- Avoid string concatenation in loops
-- Import only needed items from modules
-- Call `gc.collect()` after large operations
+- Avoid `String` concatenation in loops (use `snprintf`)
+- Use `F()` macro for string literals to keep them in flash
+- Prefer stack allocation for small temporary buffers
 
 ---
 
@@ -574,10 +574,10 @@ The sync test measures jitter (latency variation):
 **Action Plan:**
 1. Stop test immediately
 2. Review recent firmware changes
-3. Use CircuitPython memory profiling skill
+3. Use `dbgMemInfo()` for heap/stack analysis
 4. Check for loop allocations
-5. Verify `gc.collect()` placement
-6. Review string operations
+5. Review `String` usage and avoid concatenation in loops
+6. Use `F()` macro for flash-based string literals
 
 **Problem:** MemoryError during test
 
@@ -702,7 +702,7 @@ To achieve comprehensive automated testing, the project would need:
 - Test error recovery scenarios
 
 ### Medium-Term (Test Infrastructure)
-- Develop CircuitPython unit test framework
+- Develop PlatformIO native unit test framework
 - Create hardware mock library
 - Implement automated BLE connection handling
 - Add test result logging and analysis
@@ -723,7 +723,7 @@ To achieve comprehensive automated testing, the project would need:
 - **docs/BLE_PROTOCOL.md** - BLE protocol specification
 - **docs/SYNCHRONIZATION_PROTOCOL.md** - Sync protocol details
 - **docs/API_REFERENCE.md** - Complete API documentation
-- **CLAUDE.md** - CircuitPython development guidelines
+- **CLAUDE.md** - Arduino C++/PlatformIO development guidelines
 
 ---
 

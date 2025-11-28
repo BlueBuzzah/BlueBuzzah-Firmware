@@ -1,6 +1,7 @@
 # BlueBuzzah Synchronization Protocol
 **Version:** 2.0.0 (Command-Driven Architecture)
 **Date:** 2025-01-23
+**Platform:** Arduino C++ / PlatformIO
 
 ---
 
@@ -33,7 +34,7 @@ Code examples may show `"VL"` as the BLE advertisement name for backward compati
 ### Core Principles
 
 1. **PRIMARY commands, SECONDARY obeys**: PRIMARY sends explicit commands before every action
-2. **Blocking waits**: SECONDARY blocks on `receive_execute_buzz()` until PRIMARY commands
+2. **Blocking waits**: SECONDARY blocks on `receiveExecuteBuzz()` until PRIMARY commands
 3. **Acknowledgments**: SECONDARY confirms completion with `BUZZ_COMPLETE`
 4. **Safety timeout**: SECONDARY halts therapy if PRIMARY disconnects (10s timeout)
 
@@ -57,85 +58,210 @@ Code examples may show `"VL"` as the BLE advertisement name for backward compati
 
 ### Phase 1: Initial Connection (Legacy Single Connection)
 
-**PRIMARY Sequence** (`ble_connection.py:291-405`):
+**PRIMARY Sequence** (`src/ble_manager.cpp`):
 
-```python
-# 1. Create UART service and advertise
-uart = UARTService()
-advertisement = ProvideServicesAdvertisement(uart)
-advertisement.complete_name = "VL"
-ble.start_advertising(advertisement, interval=0.5)
+```cpp
+bool BLEManager::initPrimary() {
+    // 1. Initialize Bluefruit stack
+    Bluefruit.begin(2, 1);  // 2 peripheral connections, 1 central
+    Bluefruit.setName("VL");
+    Bluefruit.setTxPower(4);
 
-# 2. Wait for connection (15 second timeout)
-while time.monotonic() - start < CONNECTION_TIMEOUT:
-    if len(ble.connections) > 0:
-        connection = ble.connections[-1]  # Most recent
-        break
+    // 2. Setup UART service
+    bleuart_.begin();
 
-# 3. Optimize BLE parameters
-connection.connection_interval = 7.5  # ms
+    // 3. Setup connection callbacks
+    Bluefruit.Periph.setConnectCallback(connectCallback);
+    Bluefruit.Periph.setDisconnectCallback(disconnectCallback);
 
-# 4. Wait for READY signal (8 second timeout)
-while time.monotonic() - start < 8:
-    if uart.in_waiting:
-        message = uart.readline().decode().strip()
-        if message == "READY":
-            ready_received = True
-            break
+    // 4. Start advertising
+    startAdvertising();
 
-# 5. Send FIRST_SYNC with retry (3 attempts)
-timestamp = int(time.monotonic() * 1000)
-uart.write(f"FIRST_SYNC:{timestamp}\n")
+    return true;
+}
 
-# 6. Wait for ACK (0.5s timeout per attempt)
-if uart.in_waiting:
-    message = uart.readline().decode().strip()
-    if message == "ACK":
-        ack_received = True
+void BLEManager::startAdvertising() {
+    Bluefruit.Advertising.addFlags(BLE_GAP_ADV_FLAGS_LE_ONLY_GENERAL_DISC_MODE);
+    Bluefruit.Advertising.addTxPower();
+    Bluefruit.Advertising.addService(bleuart_);
+    Bluefruit.Advertising.addName();
 
-# 7. Send VCR_START command
-uart.write("VCR_START\n")
+    // Set advertising parameters
+    Bluefruit.Advertising.setInterval(80, 80);  // 50ms intervals
+    Bluefruit.Advertising.setFastTimeout(30);
+    Bluefruit.Advertising.start(0);  // Advertise forever
+}
+
+bool BLEManager::waitForConnection(uint32_t timeoutMs) {
+    uint32_t startTime = millis();
+
+    while (millis() - startTime < timeoutMs) {
+        if (Bluefruit.connected()) {
+            // Optimize connection parameters
+            Bluefruit.Connection(0)->requestConnectionParameter(6);  // 7.5ms interval
+            return true;
+        }
+        delay(10);
+    }
+
+    Serial.println(F("[PRIMARY] Connection timeout"));
+    return false;
+}
+
+bool BLEManager::waitForReady(uint32_t timeoutMs) {
+    uint32_t startTime = millis();
+
+    while (millis() - startTime < timeoutMs) {
+        if (bleuart_.available()) {
+            String message = readLine();
+            if (message == "READY") {
+                readyReceived_ = true;
+                return true;
+            }
+        }
+        delay(10);
+    }
+
+    return false;
+}
+
+bool BLEManager::sendFirstSync() {
+    // Send FIRST_SYNC with retry (3 attempts)
+    for (int attempt = 0; attempt < 3; attempt++) {
+        uint32_t timestamp = millis();
+        char syncMsg[32];
+        snprintf(syncMsg, sizeof(syncMsg), "FIRST_SYNC:%lu\n", timestamp);
+        bleuart_.print(syncMsg);
+
+        // Wait for ACK (500ms timeout per attempt)
+        uint32_t ackStart = millis();
+        while (millis() - ackStart < 500) {
+            if (bleuart_.available()) {
+                String response = readLine();
+                if (response == "ACK") {
+                    return true;
+                }
+            }
+            delay(10);
+        }
+    }
+
+    return false;
+}
+
+void BLEManager::sendVcrStart() {
+    bleuart_.print("VCR_START\n");
+}
 ```
 
-**SECONDARY Sequence** (`ble_connection.py:407-514`):
+**SECONDARY Sequence** (`src/ble_manager.cpp`):
 
-```python
-# 1. Scan for "VL" advertisement (15 second timeout)
-while time.monotonic() - start < CONNECTION_TIMEOUT:
-    for adv in ble.start_scan(timeout=0.1, interval=0.0075, window=0.0075):
-        if adv.complete_name == "VL":
-            connection = ble.connect(adv)
-            break
+```cpp
+bool BLEManager::initSecondary() {
+    // 1. Initialize Bluefruit stack as Central
+    Bluefruit.begin(0, 1);  // 0 peripheral, 1 central connection
+    Bluefruit.setName("VR");
 
-# 2. Get UART service
-uart = connection[UARTService]
+    // 2. Setup client UART service
+    clientUart_.begin();
+    clientUart_.setRxCallback(rxCallback);
 
-# 3. Send READY signal
-uart.write("READY\n")
+    // 3. Setup Central callbacks
+    Bluefruit.Central.setConnectCallback(centralConnectCallback);
+    Bluefruit.Central.setDisconnectCallback(centralDisconnectCallback);
 
-# 4. Wait for FIRST_SYNC
-while True:
-    message = uart.readline().decode().strip()
-    if message.startswith("FIRST_SYNC:"):
-        received_timestamp = int(message.split(":")[1])
-        current_time = int(time.monotonic() * 1000)
+    // 4. Start scanning for PRIMARY
+    Bluefruit.Scanner.setRxCallback(scanCallback);
+    Bluefruit.Scanner.restartOnDisconnect(true);
+    Bluefruit.Scanner.setInterval(160, 80);  // 100ms interval, 50ms window
+    Bluefruit.Scanner.useActiveScan(false);
+    Bluefruit.Scanner.start(0);  // Scan forever
 
-        # Apply BLE latency compensation (+21ms)
-        adjusted_sync_time = received_timestamp + 21
-        applied_time_shift = adjusted_sync_time - current_time
-        initial_time_offset = current_time + applied_time_shift
+    return true;
+}
 
-        # Store for future sync corrections
-        self.initial_time_offset = initial_time_offset
+void BLEManager::scanCallback(ble_gap_evt_adv_report_t* report) {
+    // Check if this is "VL" (PRIMARY)
+    if (Bluefruit.Scanner.checkReportForService(report, clientUart_)) {
+        char name[32];
+        memset(name, 0, sizeof(name));
+        Bluefruit.Scanner.parseReportByType(report, BLE_GAP_AD_TYPE_COMPLETE_LOCAL_NAME,
+                                             (uint8_t*)name, sizeof(name));
 
-        uart.write("ACK\n")
-        break
+        if (strcmp(name, "VL") == 0) {
+            // Found PRIMARY - connect
+            Bluefruit.Central.connect(report);
+            Bluefruit.Scanner.stop();
+        }
+    }
+}
 
-# 5. Wait for VCR_START
-while True:
-    message = uart.readline().decode().strip()
-    if message == "VCR_START":
-        return True  # Ready for therapy
+bool BLEManager::waitForPrimary(uint32_t timeoutMs) {
+    uint32_t startTime = millis();
+
+    while (millis() - startTime < timeoutMs) {
+        if (Bluefruit.Central.connected()) {
+            // Request optimal connection parameters
+            Bluefruit.Connection(0)->requestConnectionParameter(6);  // 7.5ms
+            return true;
+        }
+        delay(10);
+    }
+
+    return false;
+}
+
+void BLEManager::sendReady() {
+    clientUart_.print("READY\n");
+}
+
+bool BLEManager::waitForFirstSync(uint32_t timeoutMs) {
+    uint32_t startTime = millis();
+
+    while (millis() - startTime < timeoutMs) {
+        if (clientUart_.available()) {
+            String message = readLine();
+
+            if (message.startsWith("FIRST_SYNC:")) {
+                // Extract PRIMARY timestamp
+                uint32_t receivedTimestamp = message.substring(11).toInt();
+
+                // Get local timestamp
+                uint32_t currentTime = millis();
+
+                // Apply BLE latency compensation (+21ms)
+                uint32_t adjustedSyncTime = receivedTimestamp + 21;
+                int32_t timeShift = adjustedSyncTime - currentTime;
+
+                // Store offset for future sync corrections
+                initialTimeOffset_ = currentTime + timeShift;
+
+                // Send acknowledgment
+                clientUart_.print("ACK\n");
+                return true;
+            }
+        }
+        delay(10);
+    }
+
+    return false;
+}
+
+bool BLEManager::waitForVcrStart(uint32_t timeoutMs) {
+    uint32_t startTime = millis();
+
+    while (millis() - startTime < timeoutMs) {
+        if (clientUart_.available()) {
+            String message = readLine();
+            if (message == "VCR_START") {
+                return true;  // Ready for therapy
+            }
+        }
+        delay(10);
+    }
+
+    return false;
+}
 ```
 
 **Message Flow Diagram:**
@@ -146,10 +272,10 @@ sequenceDiagram
     participant VR as VR (SECONDARY)
 
     Note over VL: Power on
-    VL->>VL: Advertise as "VL"<br/>interval=500ms
+    VL->>VL: Advertise as "VL"<br/>interval=50ms
 
     Note over VR: Power on (within 15s)
-    VR->>VR: Scan for "VL"<br/>interval=7.5ms
+    VR->>VR: Scan for "VL"<br/>interval=100ms
 
     VR->>VL: Connect
     Note over VL,VR: BLE Connection Established<br/>interval=7.5ms, latency=0, timeout=100ms
@@ -179,119 +305,134 @@ sequenceDiagram
 
 ### Phase 2: Multi-Connection Detection (PRIMARY Only)
 
-**New Feature** (code.py:90-132):
+**New Feature** (`src/ble_manager.cpp`):
 
 PRIMARY supports **simultaneous connections** to phone + VR. Connection detection identifies device types by analyzing first message received.
 
-**Detection Logic** (`ble_connection.py:92-150`):
+**Detection Logic** (`src/ble_manager.cpp`):
 
-```python
-def _detect_connection_type(connection, timeout=3.0):
-    """
-    Identify connection as PHONE or VR by first message received.
+```cpp
+ConnectionType BLEManager::detectConnectionType(uint16_t connHandle, uint32_t timeoutMs) {
+    /**
+     * Identify connection as PHONE or VR by first message received.
+     *
+     * Phone sends: INFO, PING, BATTERY, PROFILE, SESSION commands
+     * VR sends: READY (immediately after connecting)
+     *
+     * Returns: PHONE, VR, or UNKNOWN
+     */
+    uint32_t timeoutEnd = millis() + timeoutMs;
 
-    Phone sends: INFO, PING, BATTERY, PROFILE, SESSION commands
-    VR sends: READY (immediately after connecting)
+    while (millis() < timeoutEnd) {
+        if (bleuart_.available()) {
+            String message = readLine();
 
-    Returns: "PHONE", "VR", or None
-    """
-    if UARTService not in connection:
-        return None
+            if (message == "READY") {
+                return ConnectionType::VR;
+            }
 
-    uart = connection[UARTService]
-    timeout_end = time.monotonic() + timeout
+            // Check for phone commands
+            static const char* phoneCommands[] = {
+                "INFO", "PING", "BATTERY", "PROFILE", "SESSION", "HELP", "PARAM"
+            };
 
-    while time.monotonic() < timeout_end:
-        if uart.in_waiting:
-            message = uart.readline().decode().strip()
+            for (int i = 0; i < 7; i++) {
+                if (message.indexOf(phoneCommands[i]) >= 0) {
+                    // Re-process this message since it's a valid command
+                    pendingMessage_ = message;
+                    return ConnectionType::PHONE;
+                }
+            }
+        }
+        delay(100);
+    }
 
-            if message == "READY":
-                return "VR"
-
-            phone_commands = ["INFO", "PING", "BATTERY", "PROFILE", "SESSION", "HELP", "PARAM"]
-            if any(cmd in message for cmd in phone_commands):
-                return "PHONE"
-
-        time.sleep(0.1)
-
-    return None  # Timeout - unknown device
+    return ConnectionType::UNKNOWN;  // Timeout - unknown device
+}
 ```
 
-**Connection Assignment** (`ble_connection.py:152-196`):
+**Connection Assignment** (`src/ble_manager.cpp`):
 
-```python
-def _assign_connections_by_type(typed_connections):
-    """
-    Assign connections to phone_uart/vr_uart based on detected types.
+```cpp
+void BLEManager::assignConnectionByType(uint16_t connHandle, ConnectionType type) {
+    /**
+     * Assign connections to phone/vr based on detected types.
+     */
+    switch (type) {
+        case ConnectionType::PHONE:
+            phoneConnHandle_ = connHandle;
+            hasPhoneConnection_ = true;
+            // Request optimal parameters
+            Bluefruit.Connection(connHandle)->requestConnectionParameter(6);
+            Serial.println(F("[PRIMARY] Phone connected"));
+            break;
 
-    Args:
-        typed_connections: [(connection, "PHONE"), (connection, "VR"), ...]
+        case ConnectionType::VR:
+            vrConnHandle_ = connHandle;
+            hasVrConnection_ = true;
+            Bluefruit.Connection(connHandle)->requestConnectionParameter(6);
+            Serial.println(F("[PRIMARY] VR connected"));
+            break;
 
-    Returns:
-        {"phone": bool, "vr": bool}
-    """
-    for conn, conn_type in typed_connections:
-        if conn_type == "PHONE":
-            self.phone_connection = conn
-            self.phone_uart = conn[UARTService]
-            conn.connection_interval = 7.5
-
-        elif conn_type == "VR":
-            self.vr_connection = conn
-            self.vr_uart = conn[UARTService]
-            conn.connection_interval = 7.5
+        default:
+            // Unknown device - disconnect
+            Bluefruit.Connection(connHandle)->disconnect();
+            break;
+    }
+}
 ```
 
-**Multi-Connection Scenarios** (code.py:110-131):
+**Multi-Connection Scenarios** (`src/main.cpp`):
 
-```python
-# Scenario 1: Both phone and VR connected during startup
-if has_phone and has_vr:
-    connection_success = ble._complete_vr_handshake()
+```cpp
+void handleMultipleConnections() {
+    bool hasPhone = bleManager.hasPhoneConnection();
+    bool hasVr = bleManager.hasVrConnection();
 
-# Scenario 2: Phone only - wait for VR
-elif has_phone and not has_vr:
-    connection_success = ble._scan_for_vr_while_advertising()
-    if connection_success:
-        connection_success = ble._complete_vr_handshake()
-
-# Scenario 3: VR only - proceed without phone
-elif has_vr and not has_phone:
-    connection_success = ble._complete_vr_handshake()
-
-# Scenario 4: Unknown devices - cannot proceed
-else:
-    connection_success = False
+    // Scenario 1: Both phone and VR connected during startup
+    if (hasPhone && hasVr) {
+        connectionSuccess = bleManager.completeVrHandshake();
+    }
+    // Scenario 2: Phone only - wait for VR
+    else if (hasPhone && !hasVr) {
+        connectionSuccess = bleManager.scanForVrWhileAdvertising();
+        if (connectionSuccess) {
+            connectionSuccess = bleManager.completeVrHandshake();
+        }
+    }
+    // Scenario 3: VR only - proceed without phone
+    else if (hasVr && !hasPhone) {
+        connectionSuccess = bleManager.completeVrHandshake();
+    }
+    // Scenario 4: Unknown devices - cannot proceed
+    else {
+        connectionSuccess = false;
+    }
+}
 ```
 
-**VR Handshake** (`ble_connection.py:644-724`):
+**VR Handshake** (`src/ble_manager.cpp`):
 
-```python
-def _complete_vr_handshake():
-    """Complete READY → SYNC → ACK → VCR_START handshake"""
+```cpp
+bool BLEManager::completeVrHandshake() {
+    // 1. Wait for READY (8s timeout)
+    if (!waitForReady(8000)) {
+        Serial.println(F("[PRIMARY] No READY received"));
+        return false;
+    }
 
-    # 1. Wait for READY (8s timeout)
-    while time.monotonic() - start < 8:
-        if vr_uart.in_waiting:
-            message = vr_uart.readline().decode().strip()
-            if message == "READY":
-                ready_received = True
-                break
+    // 2. Send FIRST_SYNC (3 retry attempts)
+    if (!sendFirstSync()) {
+        Serial.println(F("[PRIMARY] No ACK received"));
+        return false;
+    }
 
-    # 2. Send FIRST_SYNC (3 retry attempts)
-    timestamp = int(time.monotonic() * 1000)
-    vr_uart.write(f"FIRST_SYNC:{timestamp}\n")
+    // 3. Send VCR_START
+    sendVcrStart();
 
-    # 3. Wait for ACK (0.5s timeout per attempt)
-    if vr_uart.in_waiting:
-        message = vr_uart.readline().decode().strip()
-        if message == "ACK":
-            ack_received = True
-
-    # 4. Send VCR_START
-    vr_uart.write("VCR_START\n")
-
-    return True
+    Serial.println(F("[PRIMARY] VR handshake complete"));
+    return true;
+}
 ```
 
 ---
@@ -302,34 +443,41 @@ def _complete_vr_handshake():
 
 **Purpose**: Establish common time reference between gloves
 
-**PRIMARY Sends** (ble_connection.py:375-405):
-```python
-timestamp = int(time.monotonic() * 1000)  # Milliseconds
-sync_message = f"FIRST_SYNC:{timestamp}\n"
-uart.write(sync_message.encode())
+**PRIMARY Sends** (`src/sync_protocol.cpp`):
+```cpp
+void SyncProtocol::sendFirstSync(BLEManager& ble) {
+    uint32_t timestamp = millis();  // Milliseconds
+    char syncMessage[32];
+    snprintf(syncMessage, sizeof(syncMessage), "FIRST_SYNC:%lu\n", timestamp);
+    ble.sendToSecondary(syncMessage);
+}
 ```
 
-**SECONDARY Receives** (ble_connection.py:475-502):
-```python
-# 1. Extract PRIMARY timestamp
-received_timestamp = int(message.split(":")[1])  # e.g., 12345
+**SECONDARY Receives** (`src/sync_protocol.cpp`):
+```cpp
+bool SyncProtocol::handleFirstSync(const String& message) {
+    // 1. Extract PRIMARY timestamp
+    uint32_t receivedTimestamp = message.substring(11).toInt();  // e.g., 12345
 
-# 2. Get local timestamp
-current_secondary_time = int(time.monotonic() * 1000)  # e.g., 12320
+    // 2. Get local timestamp
+    uint32_t currentSecondaryTime = millis();  // e.g., 12320
 
-# 3. Apply BLE latency compensation (+21ms)
-adjusted_sync_time = received_timestamp + 21  # 12345 + 21 = 12366
+    // 3. Apply BLE latency compensation (+21ms)
+    uint32_t adjustedSyncTime = receivedTimestamp + 21;  // 12345 + 21 = 12366
 
-# 4. Calculate time shift
-applied_time_shift = adjusted_sync_time - current_secondary_time
-# 12366 - 12320 = +46ms
+    // 4. Calculate time shift
+    int32_t appliedTimeShift = adjustedSyncTime - currentSecondaryTime;
+    // 12366 - 12320 = +46ms
 
-# 5. Store offset for future corrections
-initial_time_offset = current_secondary_time + applied_time_shift
-# 12320 + 46 = 12366
+    // 5. Store offset for future corrections
+    initialTimeOffset_ = currentSecondaryTime + appliedTimeShift;
+    // 12320 + 46 = 12366
 
-# 6. Send acknowledgment
-uart.write("ACK\n")
+    // 6. Send acknowledgment
+    ble_.sendToPrimary("ACK\n");
+
+    return true;
+}
 ```
 
 **Why +21ms compensation?**
@@ -350,42 +498,51 @@ Applied offset:       +46ms
 
 **Status**: Still implemented but **optional** for diagnostics
 
-**PRIMARY Sends** (sync_protocol.py:43-88):
-```python
-# Every 10th buzz cycle (optional timing check)
-if buzz_cycle_count % 10 == 0:
-    sync_adj_timestamp = int(time.monotonic() * 1000)
-    uart.write(f"SYNC_ADJ:{sync_adj_timestamp}\n")
+**PRIMARY Sends** (`src/sync_protocol.cpp`):
+```cpp
+void SyncProtocol::sendSyncAdj(BLEManager& ble, uint32_t buzzCycleCount) {
+    // Every 10th buzz cycle (optional timing check)
+    if (buzzCycleCount % 10 != 0) return;
 
-    # Wait for ACK (2 second timeout)
-    while time.monotonic() - start < 2:
-        if uart.in_waiting:
-            response = uart.readline().decode().strip()
-            if response == "ACK_SYNC_ADJ":
-                ack_received = True
-                break
+    uint32_t syncAdjTimestamp = millis();
+    char message[32];
+    snprintf(message, sizeof(message), "SYNC_ADJ:%lu\n", syncAdjTimestamp);
+    ble.sendToSecondary(message);
 
-    # Send start signal
-    uart.write("SYNC_ADJ_START\n")
+    // Wait for ACK (2 second timeout)
+    uint32_t startWait = millis();
+    while (millis() - startWait < 2000) {
+        if (ble.hasSecondaryMessage()) {
+            String response = ble.readSecondaryMessage();
+            if (response == "ACK_SYNC_ADJ") {
+                ble.sendToSecondary("SYNC_ADJ_START\n");
+                return;
+            }
+        }
+        delay(1);
+    }
+}
 ```
 
-**SECONDARY Receives** (sync_protocol.py:91-138):
-```python
-if message.startswith("SYNC_ADJ:"):
-    received_timestamp = int(message.split(":")[1])
+**SECONDARY Receives** (`src/sync_protocol.cpp`):
+```cpp
+void SyncProtocol::handleSyncAdj(const String& message) {
+    if (message.startsWith("SYNC_ADJ:")) {
+        uint32_t receivedTimestamp = message.substring(9).toInt();
 
-    # Calculate adjusted time using initial offset
-    current_secondary_time = int(time.monotonic() * 1000)
-    adjusted_secondary_time = received_timestamp + \
-        (current_secondary_time - initial_time_offset)
-    offset = adjusted_secondary_time - received_timestamp
+        // Calculate adjusted time using initial offset
+        uint32_t currentSecondaryTime = millis();
+        uint32_t adjustedSecondaryTime = receivedTimestamp +
+            (currentSecondaryTime - initialTimeOffset_);
+        int32_t offset = adjustedSecondaryTime - receivedTimestamp;
 
-    # Send ACK
-    uart.write("ACK_SYNC_ADJ\n")
-
-elif message == "SYNC_ADJ_START":
-    # Ready signal received
-    pass
+        // Send ACK
+        ble_.sendToPrimary("ACK_SYNC_ADJ\n");
+    }
+    else if (message == "SYNC_ADJ_START") {
+        // Ready signal received - continue therapy
+    }
+}
 ```
 
 **Note**: SYNC_ADJ is **not required** for command-driven synchronization. It's kept for:
@@ -401,182 +558,206 @@ elif message == "SYNC_ADJ_START":
 
 **Core Synchronization Mechanism** - Introduced 2025-01-09
 
-**PRIMARY Sends** (sync_protocol.py:171-194):
-```python
-def send_execute_buzz(uart_service, sequence_index):
-    """
-    Command SECONDARY to execute buzz sequence.
+**PRIMARY Sends** (`src/sync_protocol.cpp`):
+```cpp
+bool SyncProtocol::sendExecuteBuzz(BLEManager& ble, uint8_t sequenceIndex) {
+    /**
+     * Command SECONDARY to execute buzz sequence.
+     *
+     * @param sequenceIndex: 0, 1, or 2 (three buzzes per macrocycle)
+     * @return true if sent successfully
+     */
+    char command[32];
+    snprintf(command, sizeof(command), "EXECUTE_BUZZ:%d\n", sequenceIndex);
+    ble.sendToSecondary(command);
 
-    Args:
-        sequence_index: 0, 1, or 2 (three buzzes per macrocycle)
+    Serial.print(F("[PRIMARY] Sent EXECUTE_BUZZ:"));
+    Serial.println(sequenceIndex);
 
-    Returns:
-        bool: True if sent successfully
-    """
-    command = f"EXECUTE_BUZZ:{sequence_index}\n"
-    uart_service.write(command)
-    print(f"[VL] Sent EXECUTE_BUZZ:{sequence_index}")
-    return True
+    return true;
+}
 ```
 
-**SECONDARY Receives (BLOCKING)** (sync_protocol.py:197-244):
-```python
-def receive_execute_buzz(uart_service, timeout_sec=10.0):
-    """
-    Wait for EXECUTE_BUZZ command from PRIMARY.
+**SECONDARY Receives (BLOCKING)** (`src/sync_protocol.cpp`):
+```cpp
+int8_t SyncProtocol::receiveExecuteBuzz(BLEManager& ble, uint32_t timeoutMs) {
+    /**
+     * Wait for EXECUTE_BUZZ command from PRIMARY.
+     *
+     * THIS IS A BLOCKING CALL - SECONDARY will not proceed until command received.
+     *
+     * @param timeoutMs: Maximum wait time (default 10000ms)
+     * @return Sequence index (0-2) or -1 on timeout
+     */
+    uint32_t startWait = millis();
 
-    THIS IS A BLOCKING CALL - VR will not proceed until command received.
+    while (millis() - startWait < timeoutMs) {
+        if (ble.hasPrimaryMessage()) {
+            String message = ble.readPrimaryMessage();
 
-    Args:
-        timeout_sec: Maximum wait time (default 10s)
+            if (message.startsWith("EXECUTE_BUZZ:")) {
+                int8_t sequenceIndex = message.substring(13).toInt();
+                return sequenceIndex;
+            }
 
-    Returns:
-        int: Sequence index (0-2) or None on timeout
-    """
-    start_wait = time.monotonic()
+            // Special case: Handle battery queries during therapy
+            if (message == "GET_BATTERY") {
+                handleBatteryQueryInline(ble);
+                // Continue waiting for EXECUTE_BUZZ
+            }
+        }
+        delay(1);  // 1ms polling interval
+    }
 
-    while (time.monotonic() - start_wait) < timeout_sec:
-        if uart_service.in_waiting:
-            message = uart_service.readline().decode().strip()
-
-            if message.startswith("EXECUTE_BUZZ:"):
-                sequence_index = int(message.split(":")[1])
-                return sequence_index
-
-            # Special case: Handle battery queries during therapy
-            elif message == "GET_BATTERY":
-                _handle_battery_query_inline(uart_service)
-                # Continue waiting for EXECUTE_BUZZ
-
-        time.sleep(0.001)  # 1ms polling interval
-
-    # TIMEOUT - PRIMARY likely disconnected
-    return None
+    // TIMEOUT - PRIMARY likely disconnected
+    return -1;
+}
 ```
 
-**VR Safety Timeout** (vcr_engine.py:202-218):
-```python
-received_idx = receive_execute_buzz(uart_service, timeout_sec=10.0)
+**SECONDARY Safety Timeout** (`src/therapy_engine.cpp`):
+```cpp
+int8_t receivedIdx = syncProtocol_.receiveExecuteBuzz(ble_, 10000);
 
-if received_idx is None:
-    # PRIMARY disconnected - HALT THERAPY
-    print(f"[VR] [ERROR] EXECUTE_BUZZ timeout! PRIMARY disconnected.")
-    print(f"[VR] Stopping all motors for safety...")
+if (receivedIdx < 0) {
+    // PRIMARY disconnected - HALT THERAPY
+    Serial.println(F("[SECONDARY] ERROR: EXECUTE_BUZZ timeout! PRIMARY disconnected."));
+    Serial.println(F("[SECONDARY] Stopping all motors for safety..."));
 
-    haptic.all_off()  # Immediate motor shutoff
-    pixels.fill((255, 0, 0))  # Red error indicator
+    hardware_.allMotorsOff();  // Immediate motor shutoff
+    hardware_.setLED(COLOR_RED);  // Red error indicator
 
-    # Infinite loop to prevent restart
-    while True:
-        pixels.fill((255, 0, 0))
-        time.sleep(0.5)
-        pixels.fill((0, 0, 0))
-        time.sleep(0.5)
+    // Infinite loop to prevent restart
+    while (true) {
+        hardware_.setLED(COLOR_RED);
+        delay(500);
+        hardware_.setLED(COLOR_OFF);
+        delay(500);
+    }
+}
 ```
 
 ### BUZZ_COMPLETE Acknowledgment
 
-**SECONDARY Sends** (sync_protocol.py:269-291):
-```python
-def send_buzz_complete(uart_service, sequence_index):
-    """
-    Confirm buzz sequence completed.
+**SECONDARY Sends** (`src/sync_protocol.cpp`):
+```cpp
+bool SyncProtocol::sendBuzzComplete(BLEManager& ble, uint8_t sequenceIndex) {
+    /**
+     * Confirm buzz sequence completed.
+     *
+     * @param sequenceIndex: Index just completed (0-2)
+     * @return true if sent successfully
+     */
+    char command[32];
+    snprintf(command, sizeof(command), "BUZZ_COMPLETE:%d\n", sequenceIndex);
+    ble.sendToPrimary(command);
 
-    Args:
-        sequence_index: Index just completed (0-2)
+    Serial.print(F("[SECONDARY] Sent BUZZ_COMPLETE:"));
+    Serial.println(sequenceIndex);
 
-    Returns:
-        bool: True if sent successfully
-    """
-    command = f"BUZZ_COMPLETE:{sequence_index}\n"
-    uart_service.write(command)
-    print(f"[VR] Sent BUZZ_COMPLETE:{sequence_index}")
-    return True
+    return true;
+}
 ```
 
-**PRIMARY Receives** (sync_protocol.py:294-337):
-```python
-def receive_buzz_complete(uart_service, expected_index, timeout_sec=3.0):
-    """
-    Wait for BUZZ_COMPLETE acknowledgment from SECONDARY.
+**PRIMARY Receives** (`src/sync_protocol.cpp`):
+```cpp
+bool SyncProtocol::receiveBuzzComplete(BLEManager& ble, uint8_t expectedIndex, uint32_t timeoutMs) {
+    /**
+     * Wait for BUZZ_COMPLETE acknowledgment from SECONDARY.
+     *
+     * @param expectedIndex: Expected sequence index for validation
+     * @param timeoutMs: Maximum wait time (default 3000ms)
+     * @return true if ACK received with correct index
+     */
+    uint32_t startWait = millis();
 
-    Args:
-        expected_index: Expected sequence index for validation
-        timeout_sec: Maximum wait time (default 3s)
+    while (millis() - startWait < timeoutMs) {
+        if (ble.hasSecondaryMessage()) {
+            String message = ble.readSecondaryMessage();
 
-    Returns:
-        bool: True if ACK received with correct index
-    """
-    start_wait = time.monotonic()
+            if (message.startsWith("BUZZ_COMPLETE:")) {
+                uint8_t sequenceIndex = message.substring(14).toInt();
 
-    while (time.monotonic() - start_wait) < timeout_sec:
-        if uart_service.in_waiting:
-            message = uart_service.readline().decode().strip()
+                if (sequenceIndex == expectedIndex) {
+                    return true;  // Success
+                } else {
+                    Serial.print(F("[PRIMARY] WARNING: Index mismatch: expected "));
+                    Serial.print(expectedIndex);
+                    Serial.print(F(", got "));
+                    Serial.println(sequenceIndex);
+                }
+            }
+        }
+        delay(1);  // 1ms polling interval
+    }
 
-            if message.startswith("BUZZ_COMPLETE:"):
-                sequence_index = int(message.split(":")[1])
-
-                if sequence_index == expected_index:
-                    return True  # Success
-                else:
-                    print(f"[VL] [WARNING] Index mismatch: expected {expected_index}, got {sequence_index}")
-
-        time.sleep(0.001)  # 1ms polling interval
-
-    # TIMEOUT - Log warning but continue
-    print(f"[VL] [WARNING] BUZZ_COMPLETE timeout for sequence {expected_index}")
-    return False
+    // TIMEOUT - Log warning but continue
+    Serial.print(F("[PRIMARY] WARNING: BUZZ_COMPLETE timeout for sequence "));
+    Serial.println(expectedIndex);
+    return false;
+}
 ```
 
 ### Therapy Loop Integration
 
-**PRIMARY Execution** (vcr_engine.py:185-200):
-```python
-for sequence_idx in range(3):  # Three buzzes per macrocycle
-    # 1. Send command to VR
-    send_execute_buzz(uart_service, sequence_idx)
+**PRIMARY Execution** (`src/therapy_engine.cpp`):
+```cpp
+for (uint8_t seqIdx = 0; seqIdx < 3; seqIdx++) {  // Three buzzes per macrocycle
+    // 1. Send command to SECONDARY
+    syncProtocol_.sendExecuteBuzz(ble_, seqIdx);
 
-    # 2. Execute local buzz immediately
-    haptic.buzz_sequence(rndp_sequence())
+    // 2. Execute local buzz immediately
+    generatePattern(config_.mirror);
+    executeBuzzSequence(leftPattern_);
 
-    # 3. Wait for VR acknowledgment (non-blocking)
-    ack_received = receive_buzz_complete(uart_service, sequence_idx, timeout_sec=3.0)
-    if not ack_received:
-        print(f"[VL] [WARNING] No BUZZ_COMPLETE from VR for sequence {sequence_idx}")
-        # Continue anyway - PRIMARY maintains its own operation
+    // 3. Wait for SECONDARY acknowledgment (non-blocking timeout)
+    bool ackReceived = syncProtocol_.receiveBuzzComplete(ble_, seqIdx, 3000);
+    if (!ackReceived) {
+        Serial.print(F("[PRIMARY] WARNING: No BUZZ_COMPLETE for sequence "));
+        Serial.println(seqIdx);
+        // Continue anyway - PRIMARY maintains its own operation
+    }
+}
 ```
 
-**SECONDARY Execution** (vcr_engine.py:202-227):
-```python
-for sequence_idx in range(3):
-    # 1. Wait for command from VL (BLOCKING)
-    received_idx = receive_execute_buzz(uart_service, timeout_sec=10.0)
+**SECONDARY Execution** (`src/therapy_engine.cpp`):
+```cpp
+for (uint8_t seqIdx = 0; seqIdx < 3; seqIdx++) {
+    // 1. Wait for command from PRIMARY (BLOCKING)
+    int8_t receivedIdx = syncProtocol_.receiveExecuteBuzz(ble_, 10000);
 
-    if received_idx is None:
-        # TIMEOUT - VL disconnected, halt therapy
-        print(f"[VR] [ERROR] EXECUTE_BUZZ timeout! VL disconnected.")
-        haptic.all_off()
-        pixels.fill((255, 0, 0))
-        # Enter infinite error loop
-        while True:
-            pass
+    if (receivedIdx < 0) {
+        // TIMEOUT - PRIMARY disconnected, halt therapy
+        Serial.println(F("[SECONDARY] ERROR: EXECUTE_BUZZ timeout! PRIMARY disconnected."));
+        hardware_.allMotorsOff();
+        hardware_.setLED(COLOR_RED);
+        // Enter infinite error loop
+        while (true) {
+            delay(500);
+        }
+    }
 
-    if received_idx != sequence_idx:
-        print(f"[VR] [WARNING] Sequence mismatch: expected {sequence_idx}, got {received_idx}")
+    if (receivedIdx != seqIdx) {
+        Serial.print(F("[SECONDARY] WARNING: Sequence mismatch: expected "));
+        Serial.print(seqIdx);
+        Serial.print(F(", got "));
+        Serial.println(receivedIdx);
+    }
 
-    # 2. Execute buzz sequence
-    haptic.buzz_sequence(rndp_sequence())
+    // 2. Execute buzz sequence
+    generatePattern(config_.mirror);
+    executeBuzzSequence(leftPattern_);
 
-    # 3. Send acknowledgment
-    send_buzz_complete(uart_service, sequence_idx)
+    // 3. Send acknowledgment
+    syncProtocol_.sendBuzzComplete(ble_, seqIdx);
+}
 ```
 
 **Synchronization Guarantee:**
-- VR **blocks** until VL commands
-- VL executes **immediately** after sending command
+- SECONDARY **blocks** until PRIMARY commands
+- PRIMARY executes **immediately** after sending command
 - BLE latency: 7.5ms (connection interval)
 - Processing overhead: ~5-10ms
-- **Total lag**: VR buzzes 7.5-20ms after VL
+- **Total lag**: SECONDARY buzzes 7.5-20ms after PRIMARY
 - **Acceptable**: Well within human temporal resolution (20-40ms)
 
 ---
@@ -586,142 +767,171 @@ for sequence_idx in range(3):
 ### Protocol: PARAM_UPDATE
 
 **When Triggered:**
-1. **PROFILE_LOAD**: Broadcast ALL parameters (menu_controller.py:638)
-2. **PROFILE_CUSTOM**: Broadcast changed parameters only (menu_controller.py:690)
-3. **PARAM_SET**: Broadcast single parameter (menu_controller.py:964)
+1. **PROFILE_LOAD**: Broadcast ALL parameters
+2. **PROFILE_CUSTOM**: Broadcast changed parameters only
+3. **PARAM_SET**: Broadcast single parameter
 
-**PRIMARY Sends** (menu_controller.py:894-931):
-```python
-def _broadcast_param_update(params_dict):
-    """
-    Broadcast parameter update to VR.
+**PRIMARY Sends** (`src/menu_controller.cpp`):
+```cpp
+void MenuController::broadcastParamUpdate(const TherapyConfig& config) {
+    /**
+     * Broadcast parameter update to SECONDARY.
+     *
+     * Protocol: PARAM_UPDATE:KEY1:VALUE1:KEY2:VALUE2:...\n
+     *
+     * Example:
+     *     config with timeOnMs=150, timeOffMs=80, jitter=10
+     *     -> PARAM_UPDATE:TIME_ON:150:TIME_OFF:80:JITTER:10\n
+     */
+    String cmdString = "PARAM_UPDATE";
 
-    Protocol: PARAM_UPDATE:KEY1:VALUE1:KEY2:VALUE2:...\n
+    // Add all parameters to the message
+    cmdString += ":TIME_ON:" + String(config.timeOnMs);
+    cmdString += ":TIME_OFF:" + String(config.timeOffMs);
+    cmdString += ":JITTER:" + String(config.jitter);
+    cmdString += ":MIRROR:" + String(config.mirror ? 1 : 0);
+    cmdString += ":SYNC_LED:" + String(config.syncLed ? 1 : 0);
+    cmdString += ":SESSION:" + String(config.sessionMinutes);
+    cmdString += ":FREQ:" + String(config.actuatorFrequency);
+    cmdString += ":VOLTAGE:" + String(config.actuatorVoltage, 2);
+    cmdString += "\n";
 
-    Example:
-        params_dict = {"TIME_ON": 0.150, "TIME_OFF": 0.080, "JITTER": 10}
-        → PARAM_UPDATE:TIME_ON:0.150:TIME_OFF:0.080:JITTER:10\n
-    """
-    cmd_parts = ["PARAM_UPDATE"]
-
-    for key, value in params_dict.items():
-        cmd_parts.append(str(key))
-        if isinstance(value, float):
-            cmd_parts.append(f"{value:.3f}")
-        else:
-            cmd_parts.append(str(value))
-
-    cmd_string = ":".join(cmd_parts) + "\n"
-    vr_uart.write(cmd_string.encode())
-    print(f"[VL] [SYNC] Broadcast {len(params_dict)} parameter(s) to VR")
+    ble_.sendToSecondary(cmdString.c_str());
+    Serial.println(F("[PRIMARY] Broadcast parameters to SECONDARY"));
+}
 ```
 
-**SECONDARY Receives** (menu_controller.py:844-892):
-```python
-def _handle_param_update(args):
-    """
-    Apply parameter update from VL.
+**SECONDARY Receives** (`src/menu_controller.cpp`):
+```cpp
+void MenuController::handleParamUpdate(const String& message) {
+    /**
+     * Apply parameter update from PRIMARY.
+     *
+     * Args:
+     *     message: "PARAM_UPDATE:KEY1:VALUE1:KEY2:VALUE2:..."
+     */
+    // Skip "PARAM_UPDATE:" prefix
+    String params = message.substring(13);
 
-    Args:
-        args: ["KEY1", "VALUE1", "KEY2", "VALUE2", ...]
+    // Parse key:value pairs
+    int pos = 0;
+    while (pos < params.length()) {
+        int colonPos = params.indexOf(':', pos);
+        if (colonPos < 0) break;
 
-    Example:
-        PARAM_UPDATE:TIME_ON:0.150:TIME_OFF:0.080:JITTER:10
-        args = ["TIME_ON", "0.150", "TIME_OFF", "0.080", "JITTER", "10"]
-    """
-    # 1. Parse args into key:value dict
-    params_dict = parse_kvp_params(args)
+        String key = params.substring(pos, colonPos);
+        pos = colonPos + 1;
 
-    # 2. Validate and apply via ProfileManager
-    success, message, applied_params = profile_manager.apply_custom_params(params_dict)
+        int nextColon = params.indexOf(':', pos);
+        String value = (nextColon < 0) ?
+            params.substring(pos) :
+            params.substring(pos, nextColon);
 
-    if success:
-        print(f"[VR] [SYNC] Applied {len(applied_params)} parameter(s) from VL:")
-        for key, value in applied_params.items():
-            print(f"[VR]   {key} = {value}")
+        // Apply parameter
+        applyParameter(key, value);
 
-        # 3. Send acknowledgment (optional, for debugging)
-        ble.uart.write("ACK_PARAM_UPDATE\n")
-    else:
-        print(f"[VR] [ERROR] Failed to apply parameters: {message}")
+        pos = (nextColon < 0) ? params.length() : nextColon + 1;
+    }
+
+    Serial.println(F("[SECONDARY] Applied parameters from PRIMARY"));
+
+    // Send acknowledgment (optional, for debugging)
+    ble_.sendToPrimary("ACK_PARAM_UPDATE\n");
+}
+
+void MenuController::applyParameter(const String& key, const String& value) {
+    if (key == "TIME_ON") {
+        currentConfig_.timeOnMs = value.toInt();
+    } else if (key == "TIME_OFF") {
+        currentConfig_.timeOffMs = value.toInt();
+    } else if (key == "JITTER") {
+        currentConfig_.jitter = value.toInt();
+    } else if (key == "MIRROR") {
+        currentConfig_.mirror = (value == "1");
+    } else if (key == "SYNC_LED") {
+        currentConfig_.syncLed = (value == "1");
+    } else if (key == "SESSION") {
+        currentConfig_.sessionMinutes = value.toInt();
+    } else if (key == "FREQ") {
+        currentConfig_.actuatorFrequency = value.toInt();
+    } else if (key == "VOLTAGE") {
+        currentConfig_.actuatorVoltage = value.toFloat();
+    }
+}
 ```
 
 ### Synchronization Scenarios
 
 **Scenario 1: PROFILE_LOAD** (ALL parameters)
 ```
-Phone → VL: PROFILE_LOAD:2\n
-VL: <loads Noisy VCR profile>
-VL → Phone: STATUS:LOADED\nPROFILE:Noisy VCR\n\x04
-VL → VR: PARAM_UPDATE:ACTUATOR_TYPE:LRA:ACTUATOR_FREQUENCY:250:...\n
-VR: <applies all 11 parameters>
-VR → VL: ACK_PARAM_UPDATE\n (optional)
+Phone -> PRIMARY: PROFILE_LOAD:2\n
+PRIMARY: <loads Noisy VCR profile>
+PRIMARY -> Phone: STATUS:LOADED\nPROFILE:Noisy VCR\n\x04
+PRIMARY -> SECONDARY: PARAM_UPDATE:TIME_ON:100:TIME_OFF:67:...\n
+SECONDARY: <applies all parameters>
+SECONDARY -> PRIMARY: ACK_PARAM_UPDATE\n (optional)
 ```
 
 **Scenario 2: PROFILE_CUSTOM** (changed parameters only)
 ```
-Phone → VL: PROFILE_CUSTOM:TIME_ON:0.150:JITTER:10\n
-VL: <updates 2 parameters>
-VL → Phone: STATUS:CUSTOM_LOADED\nTIME_ON:0.150\nJITTER:10\n\x04
-VL → VR: PARAM_UPDATE:TIME_ON:0.150:JITTER:10\n
-VR: <applies 2 parameters>
-VR → VL: ACK_PARAM_UPDATE\n (optional)
+Phone -> PRIMARY: PROFILE_CUSTOM:TIME_ON:150:JITTER:10\n
+PRIMARY: <updates 2 parameters>
+PRIMARY -> Phone: STATUS:CUSTOM_LOADED\nTIME_ON:150\nJITTER:10\n\x04
+PRIMARY -> SECONDARY: PARAM_UPDATE:TIME_ON:150:JITTER:10\n
+SECONDARY: <applies 2 parameters>
+SECONDARY -> PRIMARY: ACK_PARAM_UPDATE\n (optional)
 ```
 
 **Scenario 3: PARAM_SET** (single parameter)
 ```
-Phone → VL: PARAM_SET:TIME_ON:0.150\n
-VL: <updates 1 parameter>
-VL → Phone: PARAM:TIME_ON\nVALUE:0.150\n\x04
-VL → VR: PARAM_UPDATE:TIME_ON:0.150\n
-VR: <applies 1 parameter>
-VR → VL: ACK_PARAM_UPDATE\n (optional)
+Phone -> PRIMARY: PARAM_SET:TIME_ON:150\n
+PRIMARY: <updates 1 parameter>
+PRIMARY -> Phone: PARAM:TIME_ON\nVALUE:150\n\x04
+PRIMARY -> SECONDARY: PARAM_UPDATE:TIME_ON:150\n
+SECONDARY: <applies 1 parameter>
+SECONDARY -> PRIMARY: ACK_PARAM_UPDATE\n (optional)
 ```
 
 ### Validation and Error Handling
 
-**PRIMARY Validation** (profile_manager.py:176-207):
-```python
-# 1. Validate parameters before sending
-is_valid, error, validated_params = validate_multiple_parameters(params_dict)
+**PRIMARY Validation** (`src/profile_manager.cpp`):
+```cpp
+bool ProfileManager::validateAndBroadcast(const TherapyConfig& config, BLEManager& ble) {
+    // 1. Validate parameters before sending
+    if (!validateConfig(config)) {
+        ble.sendError("Invalid configuration");
+        return false;
+    }
 
-if not is_valid:
-    # Return error to phone, do NOT send to VR
-    send_error(phone_uart, error)
-    return
+    // 2. Apply to local profile
+    currentConfig_ = config;
 
-# 2. Apply to local profile
-self.params.update(validated_params)
+    // 3. Broadcast to SECONDARY
+    broadcastParamUpdate(config);
 
-# 3. Broadcast to VR
-_broadcast_param_update(validated_params)
-```
+    return true;
+}
 
-**SECONDARY Validation** (profile_manager.py:176-207):
-```python
-# 1. Validate received parameters
-is_valid, error, validated_params = validate_multiple_parameters(params_dict)
+bool ProfileManager::validateConfig(const TherapyConfig& config) {
+    // TIME_ON: 50-500ms
+    if (config.timeOnMs < 50 || config.timeOnMs > 500) return false;
 
-if not is_valid:
-    # Log error, do NOT apply
-    print(f"[VR] [ERROR] Invalid parameters from VL: {error}")
-    return
+    // TIME_OFF: 20-200ms
+    if (config.timeOffMs < 20 || config.timeOffMs > 200) return false;
 
-# 2. Apply to local profile
-self.params.update(validated_params)
-```
+    // ACTUATOR_FREQUENCY: 150-300Hz
+    if (config.actuatorFrequency < 150 || config.actuatorFrequency > 300) return false;
 
-**Validation Rules** (validators.py):
-```python
-PARAM_RANGES = {
-    "TIME_ON": (0.050, 0.500),        # 50-500ms
-    "TIME_OFF": (0.020, 0.200),       # 20-200ms
-    "ACTUATOR_FREQUENCY": (150, 300), # 150-300Hz
-    "ACTUATOR_VOLTAGE": (1.0, 3.3),   # 1.0-3.3V
-    "AMPLITUDE_MIN": (0, 100),        # 0-100%
-    "AMPLITUDE_MAX": (0, 100),        # 0-100%
-    "JITTER": (0, 50),                # 0-50%
-    "TIME_SESSION": (1, 180),         # 1-180 minutes
+    // ACTUATOR_VOLTAGE: 1.0-3.3V
+    if (config.actuatorVoltage < 1.0f || config.actuatorVoltage > 3.3f) return false;
+
+    // JITTER: 0-50%
+    if (config.jitter > 50) return false;
+
+    // SESSION: 1-180 minutes
+    if (config.sessionMinutes < 1 || config.sessionMinutes > 180) return false;
+
+    return true;
 }
 ```
 
@@ -735,7 +945,7 @@ PARAM_RANGES = {
 - Both gloves validate independently via same validation rules
 - Parameter changes rare (only during configuration, not therapy)
 
-**Risk**: If VR rejects parameters (e.g., out of range), VL doesn't know
+**Risk**: If SECONDARY rejects parameters (e.g., out of range), PRIMARY doesn't know
 **Mitigation**: Identical validation logic on both sides ensures consistency
 
 ---
@@ -751,116 +961,127 @@ PARAM_RANGES = {
 
 ### Connection Detection
 
-**Identification Strategy** (ble_connection.py:92-150):
+**Identification Strategy** (`src/ble_manager.cpp`):
 
-```python
-# Phone detection: Commands within 3 seconds
-phone_commands = ["INFO", "PING", "BATTERY", "PROFILE", "SESSION", "HELP", "PARAM"]
-if any(cmd in first_message for cmd in phone_commands):
-    return "PHONE"
+```cpp
+// Phone detection: Commands within 3 seconds
+static const char* phoneCommands[] = {
+    "INFO", "PING", "BATTERY", "PROFILE", "SESSION", "HELP", "PARAM"
+};
 
-# VR detection: READY message within 3 seconds
-if first_message == "READY":
-    return "VR"
+if (messageContainsAny(firstMessage, phoneCommands, 7)) {
+    return ConnectionType::PHONE;
+}
 
-# Unknown: Timeout or unrecognized message
-return None
+// SECONDARY detection: READY message within 3 seconds
+if (firstMessage == "READY") {
+    return ConnectionType::VR;
+}
+
+// Unknown: Timeout or unrecognized message
+return ConnectionType::UNKNOWN;
 ```
 
 **Why 3-second timeout?**
 - Phone app should send command immediately after connecting
-- VR sends READY within 100ms of connection
+- SECONDARY sends READY within 100ms of connection
 - 3s provides margin for slower devices
 
 ### UART Routing
 
-**PRIMARY has three UART references:**
-```python
-self.phone_uart = None    # Smartphone communication
-self.vr_uart = None       # VR glove communication
-self.uart = None          # Legacy single connection (fallback)
+**PRIMARY has separate connection handles:**
+```cpp
+class BLEManager {
+    uint16_t phoneConnHandle_;   // Smartphone communication
+    uint16_t vrConnHandle_;      // SECONDARY glove communication
+    bool hasPhoneConnection_;
+    bool hasVrConnection_;
+};
 ```
 
 **Routing Logic:**
-```python
-# Menu commands: Use phone_uart (or uart fallback)
-uart_to_check = self.phone_uart if self.phone_uart else self.uart
+```cpp
+void BLEManager::sendToPhone(const char* message) {
+    if (hasPhoneConnection_) {
+        bleuart_.write(phoneConnHandle_, message, strlen(message));
+    }
+}
 
-# VR commands: Use vr_uart (or uart fallback)
-vr_uart_for_therapy = self.vr_uart if self.vr_uart else self.uart
-
-# Parameter broadcast: Use vr_uart only
-if self.vr_uart:
-    self.vr_uart.write(param_update_message)
+void BLEManager::sendToSecondary(const char* message) {
+    if (hasVrConnection_) {
+        bleuart_.write(vrConnHandle_, message, strlen(message));
+    }
+}
 ```
 
 ### Connection Scenarios
 
-**Scenario 1: Phone Only** (No VR)
+**Scenario 1: Phone Only** (No SECONDARY)
 ```
-1. Phone connects → Detected as PHONE
-2. phone_uart assigned
-3. VR not connected → Therapy unavailable
-4. Phone can: Check battery (VL only), modify profiles, calibrate VL fingers
-5. SESSION_START → ERROR:VR not connected
+1. Phone connects -> Detected as PHONE
+2. phoneConnHandle_ assigned
+3. SECONDARY not connected -> Therapy unavailable
+4. Phone can: Check battery (PRIMARY only), modify profiles, calibrate PRIMARY fingers
+5. SESSION_START -> ERROR: SECONDARY not connected
 ```
 
-**Scenario 2: VR Only** (No Phone)
+**Scenario 2: SECONDARY Only** (No Phone)
 ```
-1. VR connects → Detected as VR
-2. vr_uart assigned
-3. Complete handshake: READY → SYNC → ACK → VCR_START
+1. SECONDARY connects -> Detected as VR
+2. vrConnHandle_ assigned
+3. Complete handshake: READY -> SYNC -> ACK -> VCR_START
 4. Auto-start therapy after startup window
 5. No smartphone monitoring/control
 ```
 
-**Scenario 3: Phone + VR** (Full Featured)
+**Scenario 3: Phone + SECONDARY** (Full Featured)
 ```
 1. Both connect during startup window
-2. Identify types: phone_uart + vr_uart assigned
-3. Complete VR handshake
+2. Identify types: phoneConnHandle_ + vrConnHandle_ assigned
+3. Complete SECONDARY handshake
 4. Phone can: Monitor battery (both gloves), control session, modify profiles
-5. VR synchronized for bilateral therapy
-6. Phone sees interleaved VL↔VR messages (EXECUTE_BUZZ, PARAM_UPDATE, etc.)
+5. SECONDARY synchronized for bilateral therapy
+6. Phone sees interleaved PRIMARY<->SECONDARY messages (EXECUTE_BUZZ, PARAM_UPDATE, etc.)
 ```
 
-**Scenario 4: Phone First, VR Later**
+**Scenario 4: Phone First, SECONDARY Later**
 ```
-1. Phone connects → phone_uart assigned
-2. VR not connected → vr_uart = None
-3. Wait for VR: _scan_for_vr_while_advertising()
-4. VR connects → vr_uart assigned
-5. Complete VR handshake
+1. Phone connects -> phoneConnHandle_ assigned
+2. SECONDARY not connected -> vrConnHandle_ = invalid
+3. Wait for SECONDARY: scanForVrWhileAdvertising()
+4. SECONDARY connects -> vrConnHandle_ assigned
+5. Complete SECONDARY handshake
 6. Proceed with therapy
 ```
 
 ### Message Interleaving (Phone Perspective)
 
-**Problem**: Phone may receive internal VL↔VR messages
+**Problem**: Phone may receive internal PRIMARY<->SECONDARY messages
 
 **Example RX stream at phone:**
 ```
-PONG\n\x04                           ← Response to PING
-EXECUTE_BUZZ:0\n                     ← VL→VR internal message (NO EOT)
-BATP:3.72\nBATS:3.68\n\x04           ← Response to BATTERY
-BUZZ_COMPLETE:0\n                    ← VR→VL internal message (NO EOT)
-EXECUTE_BUZZ:1\n                     ← VL→VR internal message (NO EOT)
-SESSION_STATUS:RUNNING\n...\n\x04    ← Response to SESSION_STATUS
+PONG\n\x04                           <- Response to PING
+EXECUTE_BUZZ:0\n                     <- PRIMARY->SECONDARY internal message (NO EOT)
+BATP:3.72\nBATS:3.68\n\x04           <- Response to BATTERY
+BUZZ_COMPLETE:0\n                    <- SECONDARY->PRIMARY internal message (NO EOT)
+EXECUTE_BUZZ:1\n                     <- PRIMARY->SECONDARY internal message (NO EOT)
+SESSION_STATUS:RUNNING\n...\n\x04    <- Response to SESSION_STATUS
 ```
 
 **Filtering Strategy** (recommended for phone app):
-```csharp
-void OnBleNotification(byte[] data) {
-    string message = Encoding.UTF8.GetString(data);
+```cpp
+// C++ example for phone app filtering
+void onBleNotification(const uint8_t* data, size_t length) {
+    String message((char*)data, length);
 
-    // Filter internal VL↔VR messages (no EOT terminator)
-    if (!message.Contains("\x04")) {
+    // Filter internal PRIMARY<->SECONDARY messages (no EOT terminator)
+    if (message.indexOf('\x04') < 0) {
         // Ignore: EXECUTE_BUZZ, BUZZ_COMPLETE, PARAM_UPDATE, etc.
         return;
     }
 
     // Process app-directed response (has EOT)
-    ProcessResponse(message);
+    processResponse(message);
 }
 ```
 
@@ -869,8 +1090,8 @@ void OnBleNotification(byte[] data) {
 - `BUZZ_COMPLETE:N` (every ~200ms during therapy)
 - `PARAM_UPDATE:KEY:VAL:...` (during profile changes)
 - `GET_BATTERY` (when phone queries battery)
-- `BAT_RESPONSE:V` (VR response to VL)
-- `ACK_PARAM_UPDATE` (VR acknowledgment)
+- `BAT_RESPONSE:V` (SECONDARY response to PRIMARY)
+- `ACK_PARAM_UPDATE` (SECONDARY acknowledgment)
 - `SEED:N` / `SEED_ACK` (random seed sync)
 
 ---
@@ -879,70 +1100,82 @@ void OnBleNotification(byte[] data) {
 
 ### Connection Failures
 
-**PRIMARY Timeout** (ble_connection.py:347-350):
-```python
-if not secondary_found:
-    print(f"[VL] [ERROR] No Secondary found in {CONNECTION_TIMEOUT}s! Restart required.")
-    pixels.fill((255, 0, 0))  # Red indicator
-    return False
+**PRIMARY Timeout** (`src/ble_manager.cpp`):
+```cpp
+if (!secondaryFound) {
+    Serial.print(F("[PRIMARY] ERROR: No SECONDARY found in "));
+    Serial.print(CONNECTION_TIMEOUT_MS / 1000);
+    Serial.println(F("s! Restart required."));
+    hardware_.setLED(COLOR_RED);  // Red indicator
+    return false;
+}
 ```
 
-**SECONDARY Timeout** (ble_connection.py:461-464):
-```python
-if not primary_found:
-    print(f"[VR] [ERROR] No Primary found in {CONNECTION_TIMEOUT}s! Restart required.")
-    pixels.fill((255, 0, 0))
-    return False
+**SECONDARY Timeout** (`src/ble_manager.cpp`):
+```cpp
+if (!primaryFound) {
+    Serial.print(F("[SECONDARY] ERROR: No PRIMARY found in "));
+    Serial.print(CONNECTION_TIMEOUT_MS / 1000);
+    Serial.println(F("s! Restart required."));
+    hardware_.setLED(COLOR_RED);
+    return false;
+}
 ```
 
 **Recovery**: Manual power cycle required (no auto-retry)
 
 ### Handshake Failures
 
-**READY Timeout** (ble_connection.py:369-372):
-```python
-if not ready_received:
-    print(f"[VL] [ERROR] No READY received! Restart required.")
-    pixels.fill((255, 0, 0))
-    return False
+**READY Timeout** (`src/ble_manager.cpp`):
+```cpp
+if (!readyReceived) {
+    Serial.println(F("[PRIMARY] ERROR: No READY received! Restart required."));
+    hardware_.setLED(COLOR_RED);
+    return false;
+}
 ```
 
-**ACK Timeout** (ble_connection.py:396-399):
-```python
-if not ack_received:
-    print(f"[VL] [ERROR] No ACK received! Restart required.")
-    pixels.fill((255, 0, 0))
-    return False
+**ACK Timeout** (`src/ble_manager.cpp`):
+```cpp
+if (!ackReceived) {
+    Serial.println(F("[PRIMARY] ERROR: No ACK received! Restart required."));
+    hardware_.setLED(COLOR_RED);
+    return false;
+}
 ```
 
 **Recovery**: Manual power cycle (no retry after handshake failure)
 
 ### Therapy Execution Errors
 
-**VR EXECUTE_BUZZ Timeout** (vcr_engine.py:206-218):
-```python
-if received_idx is None:
-    print(f"[VR] [ERROR] EXECUTE_BUZZ timeout! PRIMARY disconnected.")
-    print(f"[VR] Stopping all motors for safety...")
-    haptic.all_off()
-    pixels.fill((255, 0, 0))
+**SECONDARY EXECUTE_BUZZ Timeout** (`src/therapy_engine.cpp`):
+```cpp
+if (receivedIdx < 0) {
+    Serial.println(F("[SECONDARY] ERROR: EXECUTE_BUZZ timeout! PRIMARY disconnected."));
+    Serial.println(F("[SECONDARY] Stopping all motors for safety..."));
+    hardware_.allMotorsOff();
+    hardware_.setLED(COLOR_RED);
 
-    # Enter infinite error loop
-    while True:
-        pixels.fill((255, 0, 0))
-        time.sleep(0.5)
-        pixels.fill((0, 0, 0))
-        time.sleep(0.5)
+    // Enter infinite error loop
+    while (true) {
+        hardware_.setLED(COLOR_RED);
+        delay(500);
+        hardware_.setLED(COLOR_OFF);
+        delay(500);
+    }
+}
 ```
 
 **Recovery**: None - device halts, requires manual restart
 
-**VL BUZZ_COMPLETE Timeout** (vcr_engine.py:198-199):
-```python
-ack_received = receive_buzz_complete(uart_service, sequence_idx, timeout_sec=3.0)
-if not ack_received:
-    print(f"[VL] [WARNING] No BUZZ_COMPLETE from VR for sequence {sequence_idx}")
-    # Continue anyway - PRIMARY maintains operation
+**PRIMARY BUZZ_COMPLETE Timeout** (`src/therapy_engine.cpp`):
+```cpp
+bool ackReceived = receiveBuzzComplete(ble_, seqIdx, 3000);
+if (!ackReceived) {
+    Serial.print(F("[PRIMARY] WARNING: No BUZZ_COMPLETE for sequence "));
+    Serial.println(seqIdx);
+    // Continue anyway - PRIMARY maintains operation
+}
 ```
 
 **Recovery**: Log warning, continue therapy (non-fatal)
@@ -953,33 +1186,41 @@ if not ack_received:
 
 During active therapy sessions, PRIMARY sends periodic heartbeat messages to SECONDARY to detect connection loss early.
 
-**Heartbeat Parameters** (app.py:227-234):
+**Heartbeat Parameters** (`include/config.h`):
 
 | Parameter | Value | Description |
 |-----------|-------|-------------|
-| `HEARTBEAT_INTERVAL_SEC` | 2.0 | PRIMARY sends heartbeat every 2 seconds |
-| `HEARTBEAT_TIMEOUT_SEC` | 6.0 | SECONDARY timeout (3 missed heartbeats) |
+| `HEARTBEAT_INTERVAL_MS` | 2000 | PRIMARY sends heartbeat every 2 seconds |
+| `HEARTBEAT_TIMEOUT_MS` | 6000 | SECONDARY timeout (3 missed heartbeats) |
 
 **Heartbeat Message Format**:
 ```
 SYNC:HEARTBEAT:ts|<timestamp_microseconds>
 ```
 
-**PRIMARY Heartbeat Sender**:
-```python
-# During therapy, PRIMARY sends heartbeat every 2 seconds
-if time.monotonic() - last_heartbeat_time >= HEARTBEAT_INTERVAL_SEC:
-    timestamp_us = int(time.monotonic_ns() // 1000)
-    ble.send("secondary", f"SYNC:HEARTBEAT:ts|{timestamp_us}")
-    last_heartbeat_time = time.monotonic()
+**PRIMARY Heartbeat Sender** (`src/sync_protocol.cpp`):
+```cpp
+void SyncProtocol::sendHeartbeat(BLEManager& ble) {
+    // During therapy, PRIMARY sends heartbeat every 2 seconds
+    if (millis() - lastHeartbeatTime_ >= HEARTBEAT_INTERVAL_MS) {
+        uint32_t timestampUs = micros();
+        char message[48];
+        snprintf(message, sizeof(message), "SYNC:HEARTBEAT:ts|%lu\n", timestampUs);
+        ble.sendToSecondary(message);
+        lastHeartbeatTime_ = millis();
+    }
+}
 ```
 
-**SECONDARY Heartbeat Receiver**:
-```python
-# SECONDARY monitors for heartbeat timeout
-if time.monotonic() - last_heartbeat_received > HEARTBEAT_TIMEOUT_SEC:
-    print("[SECONDARY] Heartbeat timeout - PRIMARY connection lost")
-    transition_to_state(TherapyState.CONNECTION_LOST)
+**SECONDARY Heartbeat Receiver** (`src/sync_protocol.cpp`):
+```cpp
+void SyncProtocol::checkHeartbeat() {
+    // SECONDARY monitors for heartbeat timeout
+    if (millis() - lastHeartbeatReceived_ > HEARTBEAT_TIMEOUT_MS) {
+        Serial.println(F("[SECONDARY] Heartbeat timeout - PRIMARY connection lost"));
+        stateMachine_.transitionTo(TherapyState::CONNECTION_LOST);
+    }
+}
 ```
 
 **Recovery Behavior**:
@@ -990,28 +1231,39 @@ if time.monotonic() - last_heartbeat_received > HEARTBEAT_TIMEOUT_SEC:
 
 #### Periodic Health Check
 
-**Connection Status Check** (ble_connection.py:734-777):
-```python
-def check_connection_health():
-    result = {"phone": False, "vr": False, "phone_lost": False, "vr_lost": False}
+**Connection Status Check** (`src/ble_manager.cpp`):
+```cpp
+ConnectionHealth BLEManager::checkConnectionHealth() {
+    ConnectionHealth result = {false, false, false, false};
 
-    # Check phone connection
-    if phone_connection and not phone_connection.connected:
-        result["phone_lost"] = True
-        phone_connection = None  # Clear stale reference
+    // Check phone connection
+    if (hasPhoneConnection_) {
+        if (!Bluefruit.Connection(phoneConnHandle_)->connected()) {
+            result.phoneLost = true;
+            hasPhoneConnection_ = false;  // Clear stale reference
+        } else {
+            result.phoneConnected = true;
+        }
+    }
 
-    # Check VR connection (CRITICAL)
-    if vr_connection and not vr_connection.connected:
-        result["vr_lost"] = True
-        vr_connection = None  # Clear stale reference
+    // Check SECONDARY connection (CRITICAL)
+    if (hasVrConnection_) {
+        if (!Bluefruit.Connection(vrConnHandle_)->connected()) {
+            result.vrLost = true;
+            hasVrConnection_ = false;  // Clear stale reference
+        } else {
+            result.vrConnected = true;
+        }
+    }
 
-    return result
+    return result;
+}
 ```
 
 **Usage**:
 - Called periodically during therapy (~every 10 seconds)
 - Phone disconnect: Non-fatal (therapy continues)
-- VR disconnect: Detected via EXECUTE_BUZZ timeout (10s), then halt
+- SECONDARY disconnect: Detected via EXECUTE_BUZZ timeout (10s), then halt
 
 ---
 
@@ -1023,22 +1275,22 @@ def check_connection_health():
 
 | Event | Time (ms) | Cumulative |
 |-------|-----------|------------|
-| VL: Generate pattern | 0-5 | 0-5 |
-| VL: Send EXECUTE_BUZZ | 5-10 | 5-15 |
+| PRIMARY: Generate pattern | 0-5 | 0-5 |
+| PRIMARY: Send EXECUTE_BUZZ | 5-10 | 5-15 |
 | BLE transmission | 7.5 | 12.5-22.5 |
-| VR: Receive command | 0-2 | 12.5-24.5 |
-| VR: Generate pattern | 0-5 | 12.5-29.5 |
-| **VL: Start buzz** | **0** | **15-20** |
-| **VR: Start buzz** | **0** | **12.5-29.5** |
-| VL: TIME_ON duration | 100 | 115-120 |
-| VR: TIME_ON duration | 100 | 112.5-129.5 |
-| VL: TIME_OFF + jitter | 67-90 | 182-210 |
-| VR: TIME_OFF + jitter | 67-90 | 179.5-219.5 |
-| VR: Send BUZZ_COMPLETE | 0-5 | 179.5-224.5 |
+| SECONDARY: Receive command | 0-2 | 12.5-24.5 |
+| SECONDARY: Generate pattern | 0-5 | 12.5-29.5 |
+| **PRIMARY: Start buzz** | **0** | **15-20** |
+| **SECONDARY: Start buzz** | **0** | **12.5-29.5** |
+| PRIMARY: TIME_ON duration | 100 | 115-120 |
+| SECONDARY: TIME_ON duration | 100 | 112.5-129.5 |
+| PRIMARY: TIME_OFF + jitter | 67-90 | 182-210 |
+| SECONDARY: TIME_OFF + jitter | 67-90 | 179.5-219.5 |
+| SECONDARY: Send BUZZ_COMPLETE | 0-5 | 179.5-224.5 |
 | BLE transmission | 7.5 | 187-232 |
-| VL: Receive ACK | 0-2 | 187-234 |
+| PRIMARY: Receive ACK | 0-2 | 187-234 |
 
-**Key Observation**: VR buzzes 12.5-29.5ms after VL (dominated by BLE latency)
+**Key Observation**: SECONDARY buzzes 12.5-29.5ms after PRIMARY (dominated by BLE latency)
 
 **Acceptable?** YES - Human temporal resolution ~20-40ms
 
@@ -1058,7 +1310,7 @@ Total: 1837ms (~1.8 seconds per macrocycle)
 
 **Per Session** (120 minutes):
 ```
-Total macrocycles: (120 * 60) / 1.837 ≈ 3,920 macrocycles
+Total macrocycles: (120 * 60) / 1.837 = 3,920 macrocycles
 Total buzzes: 3,920 * 3 = 11,760 buzzes per glove
 Total EXECUTE_BUZZ messages: 11,760 messages over 2 hours
 ```
@@ -1094,46 +1346,46 @@ Data: ~20 bytes/message * 24,720 = 494KB over 2 hours
 
 ## Message Catalog
 
-### Handshake Messages (VL ↔ VR)
+### Handshake Messages (PRIMARY <-> SECONDARY)
 
 | Message | Direction | Purpose | Timeout | Response |
 |---------|-----------|---------|---------|----------|
-| `READY\n` | VR → VL | Signal connection ready | - | `FIRST_SYNC` |
-| `FIRST_SYNC:12345\n` | VL → VR | Initial time sync | 8s | `ACK` |
-| `ACK\n` | VR → VL | Acknowledge sync | 0.5s | `VCR_START` |
-| `VCR_START\n` | VL → VR | Begin therapy | - | (none) |
+| `READY\n` | SECONDARY -> PRIMARY | Signal connection ready | - | `FIRST_SYNC` |
+| `FIRST_SYNC:12345\n` | PRIMARY -> SECONDARY | Initial time sync | 8s | `ACK` |
+| `ACK\n` | SECONDARY -> PRIMARY | Acknowledge sync | 0.5s | `VCR_START` |
+| `VCR_START\n` | PRIMARY -> SECONDARY | Begin therapy | - | (none) |
 
-### Therapy Execution Messages (VL ↔ VR)
+### Therapy Execution Messages (PRIMARY <-> SECONDARY)
 
 | Message | Direction | Purpose | Timeout | Response |
 |---------|-----------|---------|---------|----------|
-| `EXECUTE_BUZZ:0\n` | VL → VR | Command buzz execution | - | (VR executes) |
-| `EXECUTE_BUZZ:1\n` | VL → VR | Command buzz execution | - | (VR executes) |
-| `EXECUTE_BUZZ:2\n` | VL → VR | Command buzz execution | - | (VR executes) |
-| `BUZZ_COMPLETE:0\n` | VR → VL | Confirm completion | 3s | (none) |
-| `BUZZ_COMPLETE:1\n` | VR → VL | Confirm completion | 3s | (none) |
-| `BUZZ_COMPLETE:2\n` | VR → VL | Confirm completion | 3s | (none) |
-| `SYNC_ADJ:12345\n` | VL → VR | Optional time check | - | `ACK_SYNC_ADJ` |
-| `ACK_SYNC_ADJ\n` | VR → VL | Acknowledge sync | 2s | `SYNC_ADJ_START` |
-| `SYNC_ADJ_START\n` | VL → VR | Resume therapy | - | (none) |
+| `EXECUTE_BUZZ:0\n` | PRIMARY -> SECONDARY | Command buzz execution | - | (SECONDARY executes) |
+| `EXECUTE_BUZZ:1\n` | PRIMARY -> SECONDARY | Command buzz execution | - | (SECONDARY executes) |
+| `EXECUTE_BUZZ:2\n` | PRIMARY -> SECONDARY | Command buzz execution | - | (SECONDARY executes) |
+| `BUZZ_COMPLETE:0\n` | SECONDARY -> PRIMARY | Confirm completion | 3s | (none) |
+| `BUZZ_COMPLETE:1\n` | SECONDARY -> PRIMARY | Confirm completion | 3s | (none) |
+| `BUZZ_COMPLETE:2\n` | SECONDARY -> PRIMARY | Confirm completion | 3s | (none) |
+| `SYNC_ADJ:12345\n` | PRIMARY -> SECONDARY | Optional time check | - | `ACK_SYNC_ADJ` |
+| `ACK_SYNC_ADJ\n` | SECONDARY -> PRIMARY | Acknowledge sync | 2s | `SYNC_ADJ_START` |
+| `SYNC_ADJ_START\n` | PRIMARY -> SECONDARY | Resume therapy | - | (none) |
 
-### Parameter Synchronization (VL → VR)
+### Parameter Synchronization (PRIMARY -> SECONDARY)
 
 | Message | Direction | Purpose | Response |
 |---------|-----------|---------|----------|
-| `PARAM_UPDATE:KEY:VAL:...\n` | VL → VR | Broadcast parameter changes | `ACK_PARAM_UPDATE` (optional) |
-| `ACK_PARAM_UPDATE\n` | VR → VL | Acknowledge update | (none) |
-| `SEED:123456\n` | VL → VR | Random seed for jitter sync | `SEED_ACK` |
-| `SEED_ACK\n` | VR → VL | Acknowledge seed | (none) |
+| `PARAM_UPDATE:KEY:VAL:...\n` | PRIMARY -> SECONDARY | Broadcast parameter changes | `ACK_PARAM_UPDATE` (optional) |
+| `ACK_PARAM_UPDATE\n` | SECONDARY -> PRIMARY | Acknowledge update | (none) |
+| `SEED:123456\n` | PRIMARY -> SECONDARY | Random seed for jitter sync | `SEED_ACK` |
+| `SEED_ACK\n` | SECONDARY -> PRIMARY | Acknowledge seed | (none) |
 
-### Battery Query (VL ↔ VR)
+### Battery Query (PRIMARY <-> SECONDARY)
 
 | Message | Direction | Purpose | Timeout | Response |
 |---------|-----------|---------|---------|----------|
-| `GET_BATTERY\n` | VL → VR | Query VR battery voltage | - | `BAT_RESPONSE` |
-| `BAT_RESPONSE:3.68\n` | VR → VL | Report voltage | 1s | (none) |
+| `GET_BATTERY\n` | PRIMARY -> SECONDARY | Query SECONDARY battery voltage | - | `BAT_RESPONSE` |
+| `BAT_RESPONSE:3.68\n` | SECONDARY -> PRIMARY | Report voltage | 1s | (none) |
 
-### BLE Protocol Commands (Phone → VL)
+### BLE Protocol Commands (Phone -> PRIMARY)
 
 See **COMMAND_REFERENCE.md** for complete BLE Protocol v2.0.0 specification.
 
@@ -1159,4 +1411,4 @@ Update this document when:
 
 **Last Updated:** 2025-01-23
 **Protocol Version:** 2.0.0
-**Reviewed By:** Firmware Engineering Team
+**Platform:** Arduino C++ / PlatformIO

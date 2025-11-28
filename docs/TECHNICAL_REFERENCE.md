@@ -1,6 +1,6 @@
 # BlueBuzzah Technical Reference
-**Version:** 1.0.0
-**Hardware Platform:** nRF52840 + CircuitPython 9.x
+**Version:** 2.0.0
+**Hardware Platform:** nRF52840 + Arduino C++ (PlatformIO)
 
 ---
 
@@ -39,7 +39,7 @@ Hardware specifications apply equally to both gloves.
 |---------------|-------|-------|
 | **CPU** | ARM Cortex-M4F @ 64 MHz | 32-bit with FPU |
 | **Flash** | 1 MB | ~800 KB available after bootloader |
-| **RAM** | 256 KB | ~200 KB available to CircuitPython |
+| **RAM** | 256 KB | ~240 KB available to application |
 | **Bluetooth** | BLE 5.0 (5.3 compatible) | 2.4 GHz radio |
 | **I2C** | 2x hardware I2C | Using primary I2C bus |
 | **ADC** | 12-bit, 8 channels | For battery monitoring |
@@ -63,7 +63,7 @@ Hardware specifications apply equally to both gloves.
 | **Quantity** | 8 total (4 per glove) | One per finger |
 | **Supply Voltage** | 2.5-5.2V | Operating from LiPo |
 | **I2C Address** | 0x5A (fixed) | Requires multiplexer |
-| **I2C Speed** | 100 kHz (standard) | Up to 400 kHz supported |
+| **I2C Speed** | 400 kHz | Fast mode |
 | **Output Voltage** | 0-5.6V peak | Programmable via OD_CLAMP |
 | **Output Current** | 250 mA max | Per driver |
 | **Waveform Library** | 123 effects | Using RTP mode instead |
@@ -80,14 +80,14 @@ Hardware specifications apply equally to both gloves.
 | **I2C Address** | 0x70 (default) | Configurable via pins |
 | **Channels** | 4 | One per finger |
 | **Supply Voltage** | 2.3-5.5V | Compatible with nRF52840 |
-| **I2C Speed** | 100 kHz nominal | Up to 400 kHz |
+| **I2C Speed** | 400 kHz | Fast mode |
 | **Channel ON Resistance** | 5Ω typical | Minimal signal loss |
 
 #### LRA Actuators
 
 | Specification | Value | Notes |
 |---------------|-------|-------|
-| **Quantity** | 8 total (4 per glove) | Linear Resonant Actuators (firmware supports up to 5 per device) |
+| **Quantity** | 8 total (4 per glove) | Linear Resonant Actuators |
 | **Resonance Frequency** | 250 Hz nominal | 200-300 Hz typical |
 | **Operating Voltage** | 2.0-3.0V RMS | 2.5V default |
 | **Peak Voltage** | 3.0-4.0V | During resonance |
@@ -125,57 +125,52 @@ Full therapy (100%):      ~2 hours
 |-----------|-------|-------|
 | **Divider R1** | 100kΩ | Upper resistor |
 | **Divider R2** | 100kΩ | Lower resistor (to GND) |
-| **ADC Pin** | board.VOLTAGE_MONITOR | nRF52840 ADC input |
+| **ADC Pin** | A6 | nRF52840 ADC input |
 | **ADC Reference** | 3.3V | Internal reference |
 | **Scaling Factor** | 2.0 | Voltage divider ratio |
 | **Resolution** | 12-bit (4096 levels) | 0.8 mV per step |
 
 **Voltage Calculation**:
-```python
-adc_value = analogio.AnalogIn(board.VOLTAGE_MONITOR).value  # 0-65535
-voltage = (adc_value / 65535) * 3.3 * 2.0  # Scale to battery voltage
+```cpp
+uint16_t adcValue = analogRead(BATTERY_PIN);  // 0-1023 (10-bit)
+float voltage = (adcValue / 1023.0f) * 3.3f * 2.0f;  // Scale to battery voltage
 ```
 
 ---
 
 ## Software Configuration
 
-### CircuitPython
+### Arduino/PlatformIO
 
 | Specification | Value | Notes |
 |---------------|-------|-------|
-| **Version** | 9.x.x | Latest stable release |
-| **Platform** | nRF52840 | Adafruit CircuitPython build |
-| **Filesystem** | FAT32 | CIRCUITPY drive |
-| **Available Storage** | ~2 MB | For code and libraries |
-| **Module Support** | Limited subset | No asyncio, threading |
-| **Garbage Collection** | Manual `gc.collect()` | No auto-compaction |
+| **Framework** | Arduino | Via PlatformIO |
+| **Platform** | nordicnrf52 | Adafruit nRF52 BSP |
+| **Board** | adafruit_feather_nrf52840 | Feather nRF52840 Express |
+| **Filesystem** | LittleFS | Internal flash storage |
+| **Available Storage** | ~1 MB | For code and data |
+| **Module Support** | Full C++ | Standard library available |
+| **Memory Management** | Manual/RAII | No garbage collection |
 
 ### Required Libraries
 
-| Library | Version | Size | Purpose |
-|---------|---------|------|---------|
-| `adafruit_ble` | Latest | ~100 KB | Bluetooth stack |
-| `adafruit_bluefruit_connect` | Latest | ~20 KB | BLE utilities |
-| `adafruit_drv2605` | Latest | ~15 KB | Motor driver control |
-| `adafruit_tca9548a` | Latest | ~10 KB | I2C multiplexer |
-| `neopixel` | Built-in | - | LED control |
-| `adafruit_itertools` | Latest | ~5 KB | Permutations |
-| `adafruit_datetime` | Latest | ~10 KB | Time utilities |
-| `adafruit_ticks` | Latest | ~5 KB | Timing functions |
-
-**Total Library Size**: ~165 KB
+| Library | Version | Purpose |
+|---------|---------|---------|
+| `Bluefruit` | Built-in | BLE stack (Adafruit nRF52) |
+| `Adafruit_DRV2605` | Latest | Motor driver control |
+| `TCA9548A` | Latest | I2C multiplexer |
+| `Adafruit_NeoPixel` | Latest | LED control |
+| `Adafruit_LittleFS` | Built-in | Filesystem |
+| `ArduinoJson` | 7.x | JSON parsing |
+| `Wire` | Built-in | I2C communication |
 
 ### Configuration Files
 
-| File | Size | Purpose |
-|------|------|---------|
-| `config.py` | 1 KB | Device role and BLE name |
-| `auth_token.py` | 0.5 KB | Security validation |
-| `profiles/defaults.py` | 1 KB | Active therapy profile |
-| `profiles/reg_vcr.py` | 1 KB | Regular VCR preset |
-| `profiles/noisy_vcr.py` | 1 KB | Noisy VCR preset (DEFAULT) |
-| `profiles/hybrid_vcr.py` | 1 KB | Hybrid VCR preset |
+| File | Location | Purpose |
+|------|----------|---------|
+| `platformio.ini` | Project root | Build configuration |
+| `settings.json` | LittleFS `/` | Device role and settings |
+| `profiles/*.json` | LittleFS `/profiles/` | Therapy profiles |
 
 ---
 
@@ -187,111 +182,95 @@ voltage = (adc_value / 65535) * 3.3 * 2.0  # Scale to battery voltage
 
 | Parameter | Range | Default | Unit | Description |
 |-----------|-------|---------|------|-------------|
-| `ON` | 0.050-0.500 | 0.100 | seconds | Buzz duration per finger |
-| `OFF` | 0.020-0.200 | 0.067 | seconds | Pause between buzzes |
-| `SESSION` | 1-180 | 120 | minutes | Total session duration |
-| `TIME_RELAX` | calculated | 0.668 | seconds | 4 × (ON + OFF) |
-| `TIME_JITTER` | calculated | ±0.0196 | seconds | JITTER% of (ON+OFF)/2 |
-| `STARTUP_WINDOW` | 1-300 | 30 | seconds | BLE command window |
+| `burstDurationMs` | 50-500 | 100 | ms | Buzz duration per finger |
+| `interBurstIntervalMs` | 20-200 | 67 | ms | Pause between buzzes |
+| `durationSec` | 60-10800 | 7200 | seconds | Total session duration |
+| `jitterPercent` | 0-50 | 23.5 | % | Temporal randomization |
+| `STARTUP_WINDOW_SEC` | 1-300 | 30 | seconds | BLE command window |
 
 **Timing Formulas**:
-```python
-TIME_RELAX = 4 * (TIME_ON + TIME_OFF)  # Two relax periods per macrocycle
-TIME_JITTER = (TIME_ON + TIME_OFF) * (JITTER / 100) / 2  # ±Jitter range
-TIME_END = time.time() + 60 * TIME_SESSION  # Session end timestamp
+```cpp
+uint32_t timeRelaxMs = 4 * (burstDurationMs + interBurstIntervalMs);  // Two relax periods per macrocycle
+uint16_t timeJitterMs = ((burstDurationMs + interBurstIntervalMs) * jitterPercent) / 200;  // ±Jitter range
+uint32_t sessionEndMs = millis() + (durationSec * 1000UL);  // Session end timestamp
 ```
 
 #### Actuator Parameters
 
 | Parameter | Range | Default | Unit | Description |
 |-----------|-------|---------|------|-------------|
-| `TYPE` | "LRA", "ERM" | "LRA" | - | Motor type |
-| `VOLT` | 1.0-3.3 | 2.50 | volts | Peak voltage (RMS) |
-| `FREQ` | 150-300 | 250 | Hz | Driving frequency |
-| `ACTUATOR_FREQL` | 150-300 | 210 | Hz | Low freq (RANDOM_FREQ) |
-| `ACTUATOR_FREQH` | 150-300 | 260 | Hz | High freq (RANDOM_FREQ) |
-| `RANDOM_FREQ` | True, False | False | - | Randomize freq per cycle |
+| `actuatorType` | LRA, ERM | LRA | - | Motor type |
+| `voltage` | 1.0-3.3 | 2.50 | volts | Peak voltage (RMS) |
+| `frequencyHz` | 150-300 | 250 | Hz | Driving frequency |
+| `amplitudePercent` | 0-100 | 100 | % | Intensity level |
 
 **Voltage Formula** (DRV2605 register):
-```python
-register_value = int(ACTUATOR_VOLTAGE / 0.02122)  # 0-255
-# Example: 2.50V → 2.50 / 0.02122 ≈ 118
+```cpp
+uint8_t registerValue = (uint8_t)(voltage / 0.02122f);  // 0-255
+// Example: 2.50V → 2.50 / 0.02122 ≈ 118
 ```
 
 **Frequency Formula** (DRV2605 register):
-```python
-register_value = int(1 / (ACTUATOR_FREQUENCY * 0.00009849))  # LRA period
-# Example: 250 Hz → 1 / (250 * 0.00009849) ≈ 41
+```cpp
+uint8_t periodValue = (uint8_t)(1.0f / (frequencyHz * 0.00009849f));  // LRA period
+// Example: 250 Hz → 1 / (250 * 0.00009849) ≈ 41
 ```
 
 #### Amplitude Parameters
 
 | Parameter | Range | Default | Unit | Description |
 |-----------|-------|---------|------|-------------|
-| `AMPMIN` | 0-100 | 100 | % | Minimum intensity |
-| `AMPMAX` | 0-100 | 100 | % | Maximum intensity |
+| `amplitudePercent` | 0-100 | 100 | % | Motor intensity |
 
 **DRV2605 Conversion**:
-```python
-drv_amplitude = random.randint(AMPLITUDE_MIN, AMPLITUDE_MAX)  # 0-100
-drv_value = int((drv_amplitude / 100.0) * 127)  # 0-127 (7-bit)
-driver.realtime_value = drv_value
-```
-
-**Fixed vs Variable Intensity**:
-```python
-# Fixed intensity (default)
-AMPLITUDE_MIN = 100
-AMPLITUDE_MAX = 100  # Always 100%
-
-# Variable intensity (±10% randomization)
-AMPLITUDE_MIN = 90
-AMPLITUDE_MAX = 110  # Actually clamped to 100
+```cpp
+uint8_t amplitude = config.amplitudePercent;  // 0-100
+uint8_t drvValue = (amplitude * 127) / 100;   // 0-127 (7-bit)
+driver.setRealtimeValue(drvValue);
 ```
 
 #### Pattern Parameters
 
 | Parameter | Values | Default | Description |
 |-----------|--------|---------|-------------|
-| `PATTERN` | "RNDP" | "RNDP" | Always Random Permutation |
-| `MIRROR` | True, False | True | Symmetric L/R patterns |
-| `JITTER` | 0-50 | 23.5 | % temporal randomization |
-| `SYNC_LED` | True, False | True | Flash LED at end of cycle |
+| `patternType` | "random", "sequential" | "random" | Pattern algorithm |
+| `mirrorPattern` | true, false | true | Symmetric L/R patterns |
+| `jitterPercent` | 0-50 | 23.5 | % temporal randomization |
+| `burstsPerCycle` | 3-4 | 4 | Bursts per macrocycle |
 
 **Pattern Generation**:
-```python
-# Non-mirrored (independent L/R)
-MIRROR = False
-pattern = zip(random.choice(L_RNDP), random.choice(R_RNDP))
+```cpp
+// Non-mirrored (independent L/R)
+if (!config.mirrorPattern) {
+    shuffleArray(leftSequence, 4);
+    shuffleArray(rightSequence, 4);
+}
 
-# Mirrored (symmetric L/R)
-MIRROR = True
-L_pattern = random.choice(L_RNDP)
-R_pattern = [x + 4 for x in L_pattern]  # Mirror mapping
-pattern = zip(L_pattern, R_pattern)
+// Mirrored (symmetric L/R)
+if (config.mirrorPattern) {
+    shuffleArray(leftSequence, 4);
+    memcpy(rightSequence, leftSequence, sizeof(leftSequence));
+}
 ```
 
 ### Profile Presets
 
 #### Profile Comparison Table
 
-| Parameter | Regular VCR | Noisy VCR (DEFAULT) | Hybrid VCR |
+| Parameter | Regular vCR | Noisy vCR (DEFAULT) | Hybrid vCR |
 |-----------|-------------|---------------------|------------|
-| `ON` | 0.100s | 0.100s | 0.100s |
-| `OFF` | 0.067s | 0.067s | 0.067s |
-| `JITTER` | 0% | 23.5% | 0% |
-| `MIRROR` | False | True | False |
-| `RANDOM_FREQ` | No | No | Yes |
-| `VOLT` | 2.50V | 2.50V | 2.50V |
-| `FREQ` | 250 Hz | 250 Hz | 210-260 Hz |
-| `AMPMIN` | 100% | 100% | 100% |
-| `AMPMAX` | 100% | 100% | 100% |
-| `SESSION` | 120 min | 120 min | 120 min |
+| `burstDurationMs` | 100 | 100 | 100 |
+| `interBurstIntervalMs` | 67 | 67 | 67 |
+| `jitterPercent` | 0 | 23.5 | 0 |
+| `mirrorPattern` | false | true | false |
+| `frequencyHz` | 250 | 250 | 210-260 |
+| `amplitudePercent` | 100 | 100 | 100 |
+| `durationSec` | 7200 | 7200 | 7200 |
 
 **Clinical Use**:
-- **Regular VCR**: Standard protocol, published research baseline
-- **Noisy VCR**: Default, prevents habituation via temporal jitter
-- **Hybrid VCR**: Experimental, mixed-frequency stimulation
+- **Regular vCR**: Standard protocol, published research baseline
+- **Noisy vCR**: Default, prevents habituation via temporal jitter
+- **Hybrid vCR**: Experimental, mixed-frequency stimulation
 
 ---
 
@@ -305,57 +284,35 @@ pattern = zip(L_pattern, R_pattern)
 | 0x01 | MODE | Operating mode | R/W | 0x00 | 0x05 = RTP mode |
 | 0x02 | RTP_INPUT | RTP amplitude | W | 0x00 | 0-127 (7-bit) |
 | 0x03 | LIBRARY_SEL | Waveform library | R/W | 0x00 | Not used in RTP |
-| 0x04-0x0B | WAVESEQ[1-8] | Waveform sequence | R/W | 0x00 | Not used in RTP |
-| 0x0C | GO | Execute command | W | 0x00 | Trigger waveform |
-| 0x0D | OVERDRIVE_OFF | Overdrive time | R/W | 0x00 | Auto-braking |
-| 0x0E | SUSTAIN_POS_OFF | Sustain time | R/W | 0x00 | Positive drive |
-| 0x0F | SUSTAIN_NEG_OFF | Sustain time | R/W | 0x00 | Negative drive |
-| 0x10 | BRAKE_OFF | Brake time | R/W | 0x00 | Braking period |
-| 0x11 | AUDIO2VIBE_CTRL | Audio-to-vibe | R/W | 0x00 | Not used |
-| 0x12 | AUDIO2VIBE_MIN | Min input level | R/W | 0x00 | Not used |
-| 0x13 | AUDIO2VIBE_MAX | Max input level | R/W | 0xFF | Not used |
-| 0x14 | AUDIO2VIBE_PEAK | Peak time | R/W | 0x00 | Not used |
-| 0x15 | AUDIO2VIBE_FILTER | Filter select | R/W | 0x00 | Not used |
 | 0x16 | RATED_VOLTAGE | Rated voltage | R/W | 0x3E | For auto-cal |
 | 0x17 | OD_CLAMP | Overdrive clamp | R/W | 0x8C | **Peak voltage limit** |
-| 0x18 | AUTO_CAL_COMP | Compensation | R | 0x0C | Auto-cal result |
-| 0x19 | AUTO_CAL_BEMF | Back-EMF | R | 0x6C | Auto-cal result |
 | 0x1A | FEEDBACK_CTRL | Feedback control | R/W | 0x36 | **N_ERM/LRA select** |
-| 0x1B | CONTROL1 | Drive time | R/W | 0x93 | Not used |
-| 0x1C | CONTROL2 | Sample time | R/W | 0xF5 | Not used |
 | 0x1D | CONTROL3 | Advanced | R/W | 0xA0 | **Open-loop enable** |
-| 0x1E | CONTROL4 | Auto-cal | R/W | 0x20 | Not used |
-| 0x1F | VBAT | Battery voltage | R | varies | Read-only |
 | 0x20 | LRA_RESONANCE_PERIOD | **LRA period** | R/W | 0x33 | **Frequency setting** |
 
 ### Configuration Sequence
 
-```python
-# 1. Set actuator type (FEEDBACK_CTRL)
-driver._write_u8(0x1A, 0x00)  # ERM mode (bit 7 = 0)
-# OR
-driver._write_u8(0x1A, 0x80)  # LRA mode (bit 7 = 1)
+```cpp
+// 1. Set actuator type (FEEDBACK_CTRL)
+driver.writeRegister8(0x1A, 0x80);  // LRA mode (bit 7 = 1)
 
-# 2. Enable open-loop mode (CONTROL3)
-control3 = driver._read_u8(0x1D)
-driver._write_u8(0x1D, control3 | 0x21)  # Set bits 5 and 0
+// 2. Enable open-loop mode (CONTROL3)
+uint8_t control3 = driver.readRegister8(0x1D);
+driver.writeRegister8(0x1D, control3 | 0x21);  // Set bits 5 and 0
 
-# 3. Set peak voltage (OD_CLAMP)
-voltage_val = int(2.50 / 0.02122)  # 118 for 2.50V
-driver._write_u8(0x17, voltage_val)
+// 3. Set peak voltage (OD_CLAMP)
+uint8_t voltageVal = (uint8_t)(2.50f / 0.02122f);  // 118 for 2.50V
+driver.writeRegister8(0x17, voltageVal);
 
-# 4. Set LRA frequency (LRA_RESONANCE_PERIOD)
-period_val = int(1 / (250 * 0.00009849))  # 41 for 250 Hz
-driver._write_u8(0x20, period_val)
+// 4. Set LRA frequency (LRA_RESONANCE_PERIOD)
+uint8_t periodVal = (uint8_t)(1.0f / (250.0f * 0.00009849f));  // 41 for 250 Hz
+driver.writeRegister8(0x20, periodVal);
 
-# 5. Set RTP mode (MODE)
-driver._write_u8(0x01, 0x05)  # Real-time playback
+// 5. Set RTP mode (MODE)
+driver.setMode(DRV2605_MODE_REALTIME);
 
-# 6. Set amplitude (RTP_INPUT)
-driver._write_u8(0x02, 127)  # Max intensity
-
-# 7. Motor activates automatically in RTP mode
-# No need to write GO register
+// 6. Set amplitude (RTP_INPUT)
+driver.setRealtimeValue(127);  // Max intensity
 ```
 
 ### Mode Register (0x01) Values
@@ -385,7 +342,7 @@ driver._write_u8(0x02, 127)  # Max intensity
 | DRV2605 #2 (via mux) | 90 | 0x5A | 0b1011010 | Multiplexer port 2 |
 | DRV2605 #3 (via mux) | 90 | 0x5A | 0b1011010 | Multiplexer port 3 |
 
-**I2C Speed**: 100 kHz standard mode
+**I2C Speed**: 400 kHz Fast Mode
 
 **Pull-up Resistors**: 2.2kΩ - 10kΩ (typically 4.7kΩ)
 
@@ -393,37 +350,35 @@ driver._write_u8(0x02, 127)  # Max intensity
 
 **Expected Output**:
 ```
-[VL] I2C Primary addresses found: ['0x70']
-[VL] Secondary i2c Channel 0: ['0x5a']
-[VL] Secondary i2c Channel 1: ['0x5a']
-[VL] Secondary i2c Channel 2: ['0x5a']
-[VL] Secondary i2c Channel 3: ['0x5a']
+[PRIMARY] I2C scan - addresses found: 0x70
+[PRIMARY] Mux Channel 0: 0x5A (DRV2605)
+[PRIMARY] Mux Channel 1: 0x5A (DRV2605)
+[PRIMARY] Mux Channel 2: 0x5A (DRV2605)
+[PRIMARY] Mux Channel 3: 0x5A (DRV2605)
 ```
 
 **If Missing Addresses**:
 - `0x70` missing: Multiplexer not powered or disconnected
-- `0x5a` missing on one channel: DRV2605 not powered or disconnected
+- `0x5A` missing on one channel: DRV2605 not powered or disconnected
 
 ---
 
 ## Pin Assignments
 
-### nRF52840 Standard Pins (Adafruit Feather/ItsyBitsy)
+### nRF52840 Standard Pins (Adafruit Feather)
 
 | Function | Pin Name | Physical Pin | Notes |
 |----------|----------|--------------|-------|
-| **I2C SDA** | board.SDA | 26 (varies) | I2C data line |
-| **I2C SCL** | board.SCL | 27 (varies) | I2C clock line |
-| **Battery Monitor** | board.VOLTAGE_MONITOR | A6 (varies) | ADC input via divider |
-| **NeoPixel** | board.NEOPIXEL | Varies | Onboard RGB LED |
-| **USB D+** | board.USB_DP | USB | USB data + |
-| **USB D-** | board.USB_DM | USB | USB data - |
-| **Reset** | board.RESET | RST | Reset button |
-| **3.3V Out** | board.VOLTAGE_3V3 | 3V3 | Regulated 3.3V |
-| **Battery In** | board.VBAT | VBAT | LiPo input (~3.7V) |
-| **Ground** | board.GND | GND | Common ground |
-
-**Note**: Exact pin numbers vary by board manufacturer (Adafruit Feather vs ItsyBitsy nRF52840)
+| **I2C SDA** | SDA | 26 | I2C data line |
+| **I2C SCL** | SCL | 27 | I2C clock line |
+| **Battery Monitor** | A6 | A6 | ADC input via divider |
+| **NeoPixel** | D8 | 8 | Onboard RGB LED |
+| **USB D+** | USB_DP | USB | USB data + |
+| **USB D-** | USB_DM | USB | USB data - |
+| **Reset** | RESET | RST | Reset button |
+| **3.3V Out** | 3V3 | 3V3 | Regulated 3.3V |
+| **Battery In** | VBAT | VBAT | LiPo input (~3.7V) |
+| **Ground** | GND | GND | Common ground |
 
 ### I2C Wiring
 
@@ -435,10 +390,10 @@ nRF52840
                  └── TCA9548A SCL
 
 TCA9548A
-  Port 0 SDA/SCL ── DRV2605 #0 (Thumb)
-  Port 1 SDA/SCL ── DRV2605 #1 (Index)
+  Port 0 SDA/SCL ── DRV2605 #0 (Pinky)
+  Port 1 SDA/SCL ── DRV2605 #1 (Ring)
   Port 2 SDA/SCL ── DRV2605 #2 (Middle)
-  Port 3 SDA/SCL ── DRV2605 #3 (Ring)
+  Port 3 SDA/SCL ── DRV2605 #3 (Index)
 
 DRV2605 #X
   IN+ ── LRA motor +
@@ -465,13 +420,13 @@ DRV2605 #X
 
 ### Connection Parameters
 
-| Parameter | VL Value | VR Value | Unit | Notes |
-|-----------|----------|----------|------|-------|
+| Parameter | PRIMARY | SECONDARY | Unit | Notes |
+|-----------|---------|-----------|------|-------|
 | **Connection Interval** | 7.5 | 7.5 | ms | Min latency |
 | **Slave Latency** | 0 | 0 | intervals | No skipping |
 | **Supervision Timeout** | 100 | 100 | ms | Disconnect detection |
-| **MTU Size** | 20 | 20 | bytes | Default GATT MTU |
-| **Max Data Length** | 27 | 27 | bytes | BLE 4.2+ |
+| **MTU Size** | 247 | 247 | bytes | Extended MTU |
+| **Max Data Length** | 251 | 251 | bytes | BLE 5.0 |
 
 **Latency Calculation**:
 ```
@@ -485,18 +440,13 @@ Max latency (timeout) = 100 ms
 | Characteristic | UUID | Properties | Max Size | Notes |
 |----------------|------|------------|----------|-------|
 | **Service** | 6E400001-B5A3-F393-E0A9-E50E24DCCA9E | - | - | Nordic UART |
-| **TX (Write)** | 6E400002-B5A3-F393-E0A9-E50E24DCCA9E | Write, Write No Response | 20 bytes | Phone → VL |
-| **RX (Notify)** | 6E400003-B5A3-F393-E0A9-E50E24DCCA9E | Notify | 20 bytes | VL → Phone |
-
-**Message Fragmentation**:
-- Max 20 bytes per BLE packet
-- Long messages automatically fragmented by CircuitPython
-- Reassembled on receiver side
+| **TX (Write)** | 6E400002-B5A3-F393-E0A9-E50E24DCCA9E | Write, Write No Response | 247 bytes | Phone → PRIMARY |
+| **RX (Notify)** | 6E400003-B5A3-F393-E0A9-E50E24DCCA9E | Notify | 247 bytes | PRIMARY → Phone |
 
 **Throughput**:
 ```
-Max throughput = (20 bytes / 7.5 ms) = 2.67 KB/s
-Typical: ~1-2 KB/s (with protocol overhead)
+Max throughput = (247 bytes / 7.5 ms) = 32.9 KB/s
+Typical: ~10-20 KB/s (with protocol overhead)
 ```
 
 ---
@@ -507,31 +457,26 @@ Typical: ~1-2 KB/s (with protocol overhead)
 
 | Constant | Value | Location | Notes |
 |----------|-------|----------|-------|
-| `CONNECTION_TIMEOUT` | 15s | ble_connection.py:60 | Max time to find VL/VR |
-| `READY_TIMEOUT` | 8s | ble_connection.py:358 | Max time for READY signal |
-| `SYNC_TIMEOUT` | 2s | sync_protocol.py:76 | SYNC_ADJ ACK timeout |
-| `EXECUTE_BUZZ_TIMEOUT` | 10s | sync_protocol.py:219 | CRITICAL: VR safety timeout |
-| `BUZZ_COMPLETE_TIMEOUT` | 3s | sync_protocol.py:336 | VL waits for VR ACK |
-| `BATTERY_QUERY_TIMEOUT` | 1s | ble_connection.py:869 | VR battery query |
-| `CONNECTION_TYPE_TIMEOUT` | 3s | ble_connection.py:102 | Phone vs VR detection |
-| `BLE_LATENCY_COMPENSATION` | 21ms | ble_connection.py:492 | Time sync adjustment |
+| `CONNECTION_TIMEOUT_SEC` | 30s | config.h | Max time to find device |
+| `HEARTBEAT_INTERVAL_MS` | 2000ms | config.h | Heartbeat send interval |
+| `HEARTBEAT_TIMEOUT_MS` | 6000ms | config.h | 3 missed = connection lost |
+| `COMMAND_TIMEOUT_MS` | 5000ms | config.h | BLE command timeout |
 
 ### Therapy Timing
 
 | Constant | Value | Source | Notes |
 |----------|-------|--------|-------|
-| `TIME_ON` | 100ms | config (default) | Buzz duration |
-| `TIME_OFF` | 67ms | config (default) | Inter-buzz pause |
-| `TIME_JITTER` | ±19.6ms | config (23.5%) | Random variation |
-| `TIME_RELAX` | 668ms | calculated | 4 × (ON + OFF) |
-| `MACROCYCLE_DURATION` | ~3.3s | measured | 3 buzzes + 2 relax |
-| `SESSION_DURATION` | 7200s | config (120 min) | Total therapy time |
+| `burstDurationMs` | 100ms | config (default) | Buzz duration |
+| `interBurstIntervalMs` | 67ms | config (default) | Inter-buzz pause |
+| `jitterPercent` | 23.5% | config (default) | Random variation |
+| `timeRelaxMs` | 668ms | calculated | 4 × (ON + OFF) |
+| `durationSec` | 7200s | config (120 min) | Total therapy time |
 
 **Macrocycle Breakdown**:
 ```
-Buzz Sequence 1: (100 + 67 ± 19.6) × 4 fingers = 588-744ms
-Buzz Sequence 2: 588-744ms
-Buzz Sequence 3: 588-744ms
+Burst Sequence 1: (100 + 67 ± 19.6) × 4 fingers = 588-744ms
+Burst Sequence 2: 588-744ms
+Burst Sequence 3: 588-744ms
 Relax Period 1: 668ms
 Relax Period 2: 668ms
 --------------------------------------------------------------
@@ -542,117 +487,42 @@ Total: 3100-3568ms (average 3334ms)
 
 | Constant | Value | Location | Notes |
 |----------|-------|----------|-------|
-| `STARTUP_WINDOW` | 30s | config (default) | BLE command window |
-| `I2C_RETRY_DELAY` | 0.5s | haptic_controller.py:93 | Between I2C init attempts |
-| `GC_INTERVAL` | per macrocycle | vcr_engine.py:234 | Garbage collection |
-| `POLLING_INTERVAL` | 1-10ms | various | BLE message polling |
-
----
-
-## Synchronization Statistics
-
-### SyncStats Module (sync_stats.py)
-
-The `SyncStats` module tracks timing metrics for bilateral synchronization validation. It ensures the SimpleSyncProtocol meets the <10ms latency requirement for vCR therapy.
-
-**Metrics Tracked**:
-
-| Metric | Description | Unit |
-|--------|-------------|------|
-| `network_latency` | BLE transmission time (PRIMARY → SECONDARY) | µs |
-| `execution_time` | Motor activation processing on SECONDARY | µs |
-| `total_latency` | End-to-end synchronization accuracy | µs |
-
-**Usage** (SECONDARY device):
-```python
-from sync_stats import SyncStats
-
-# Initialize with circular buffer
-stats = SyncStats(max_samples=100)
-
-# During EXECUTE_BUZZ processing
-def handle_execute_buzz(primary_timestamp_us):
-    receive_time_us = time.monotonic_ns() // 1000
-    network_latency = receive_time_us - primary_timestamp_us
-
-    # Execute motor activation
-    activate_motors()
-
-    # Calculate execution time
-    execution_time = (time.monotonic_ns() // 1000) - receive_time_us
-    total_latency = network_latency + execution_time
-
-    # Record sample
-    stats.add_sample(network_latency, execution_time, total_latency)
-
-# Print report periodically
-stats.print_report()
-```
-
-**Statistics Output Example**:
-```
-============================================================
-SYNCHRONIZATION TIMING STATISTICS
-============================================================
-Total samples: 1234
-Buffer size: 100/100
-Last sample: 0.5s ago
-
-NETWORK LATENCY:
-  Mean:    2847.32 µs ( 2.847 ms)
-  Median:  2654.00 µs ( 2.654 ms)
-  P95:     4123.00 µs ( 4.123 ms)
-  P99:     5892.00 µs ( 5.892 ms)
-
-TOTAL LATENCY:
-  Mean:    4521.18 µs ( 4.521 ms)
-  Median:  4312.00 µs ( 4.312 ms)
-  P95:     6789.00 µs ( 6.789 ms)
-  P99:     8456.00 µs ( 8.456 ms)
-
-vCR THERAPY REQUIREMENTS (< 10ms total latency):
-  Mean:   ✅ PASS (4.521 ms)
-  P95:    ✅ PASS (6.789 ms)
-  P99:    ✅ PASS (8.456 ms)
-============================================================
-```
-
-**vCR Requirement**: Total latency must be <10ms for bilateral coordination.
+| `STARTUP_WINDOW_SEC` | 30s | config.h | BLE command window |
+| `I2C_FREQUENCY` | 400000 | config.h | I2C clock speed |
+| `BATTERY_CHECK_INTERVAL_MS` | 60000ms | config.h | Battery polling |
 
 ---
 
 ## Memory Budget
 
-### Flash Storage (~2 MB available)
+### Flash Storage (~1 MB available)
 
 | Category | Size | % | Files |
 |----------|------|---|-------|
-| **CircuitPython Core** | ~600 KB | 30% | CircuitPython interpreter |
-| **Libraries** | ~165 KB | 8% | Adafruit + dependencies |
-| **Firmware Code** | ~50 KB | 2.5% | src/*.py + modules/*.py |
-| **Profiles** | ~5 KB | 0.25% | profiles/*.py |
-| **Documentation** | ~10 KB | 0.5% | README, comments |
-| **Free Space** | ~1170 KB | 58.75% | Available |
+| **Bootloader** | ~200 KB | 20% | Adafruit nRF52 bootloader |
+| **Firmware Code** | ~150 KB | 15% | src/*.cpp + libraries |
+| **LittleFS** | ~100 KB | 10% | Settings, profiles |
+| **Free Space** | ~550 KB | 55% | Available |
 
-**Total Used**: ~830 KB / 2 MB (41.5%)
+**Total Used**: ~450 KB / 1 MB (45%)
 
-### RAM Usage (~200 KB available)
+### RAM Usage (~256 KB available)
 
 | Category | Size | % | Notes |
 |----------|------|---|-------|
-| **CircuitPython Runtime** | ~80 KB | 40% | Interpreter overhead |
-| **BLE Stack** | ~30 KB | 15% | Radio buffers |
-| **Firmware Heap** | ~50 KB | 25% | Global variables, objects |
-| **Pattern Lists** | ~0.4 KB | 0.2% | L_RNDP + R_RNDP |
-| **Driver Objects** | ~2 KB | 1% | Haptic controller |
-| **Free Heap** | ~37.6 KB | 18.8% | Dynamic allocation |
+| **Bluefruit Stack** | ~40 KB | 16% | BLE radio buffers |
+| **Application Heap** | ~80 KB | 31% | Global variables, objects |
+| **Stack** | ~32 KB | 12.5% | Function call stack |
+| **Pattern Buffers** | ~1 KB | 0.4% | Sequence arrays |
+| **Driver Objects** | ~5 KB | 2% | DRV2605 instances |
+| **Free Heap** | ~98 KB | 38% | Dynamic allocation |
 
-**Total Used**: ~162.4 KB / 200 KB (81.2%)
+**Total Used**: ~158 KB / 256 KB (62%)
 
 **Memory Safety**:
-- Periodic `gc.collect()` every macrocycle (~3s)
-- Avoid allocations in critical path
-- Pre-allocate pattern lists at session start
+- No garbage collection - use RAII patterns
+- Pre-allocate buffers at startup
+- Avoid heap fragmentation with static allocation
 
 ---
 
@@ -661,57 +531,59 @@ vCR THERAPY REQUIREMENTS (< 10ms total latency):
 ### Complete Source Tree
 
 ```
-BlueBuzzah/
-├── src/                           # Firmware source (deployed to CIRCUITPY)
-│   ├── code.py                    # Entry point (164 lines)
-│   ├── config.py                  # Device configuration
-│   ├── auth_token.py              # Security token
-│   │
-│   ├── modules/                   # Core functionality
-│   │   ├── __init__.py
-│   │   ├── ble_connection.py      # BLE radio (897 lines)
-│   │   ├── vcr_engine.py          # Therapy execution (491 lines)
-│   │   ├── haptic_controller.py   # Motor control (306 lines)
-│   │   ├── menu_controller.py     # Commands (1057 lines)
-│   │   ├── sync_protocol.py       # VL↔VR messaging (338 lines)
-│   │   ├── profile_manager.py     # Parameters (274 lines)
-│   │   ├── session_manager.py     # Session state (329 lines)
-│   │   ├── calibration_mode.py    # Motor testing (275 lines)
-│   │   ├── response_formatter.py  # BLE responses
-│   │   ├── validators.py          # Parameter validation
-│   │   └── utils.py               # Utilities
-│   │
-│   └── profiles/                  # Therapy profiles
-│       ├── __init__.py
-│       ├── defaults.py            # Active profile (loaded at boot)
-│       ├── reg_vcr.py             # Regular VCR
-│       ├── noisy_vcr.py           # Noisy VCR (DEFAULT)
-│       ├── hybrid_vcr.py          # Hybrid VCR
-│       └── custom_vcr.py          # User-defined
-│
-├── docs/                          # Documentation
-│   ├── FIRMWARE_ARCHITECTURE.md  # System overview
-│   ├── SYNCHRONIZATION_PROTOCOL.md # BLE protocol
-│   ├── THERAPY_ENGINE.md          # VCR implementation
-│   ├── COMMAND_REFERENCE.md       # BLE commands
-│   ├── CALIBRATION_GUIDE.md       # Motor testing
-│   ├── TECHNICAL_REFERENCE.md     # This document
-│   └── BLE_PROTOCOL.md            # Protocol v2.0.0 spec
-│
-├── utils/                         # Development tools
-│   ├── deploy.py                  # Automated deployment
-│   ├── test_desktop.py            # Desktop simulation
-│   └── [other utilities]
-│
+BlueBuzzah-Firmware/
+├── platformio.ini                 # Build configuration
+├── CLAUDE.md                      # Development guide
 ├── README.md                      # Project overview
-├── LICENSE                        # MIT license
-└── ATTRIBUTION.md                 # Third-party credits
+│
+├── include/                       # Header files
+│   ├── config.h                   # Pin definitions, constants
+│   ├── types.h                    # Enums, structs, device roles
+│   ├── hardware.h                 # Motor, battery, I2C mux
+│   ├── ble_manager.h              # BLE stack, connections
+│   ├── therapy_engine.h           # Pattern generation
+│   ├── sync_protocol.h            # PRIMARY-SECONDARY messaging
+│   ├── state_machine.h            # Therapy FSM
+│   ├── menu_controller.h          # Command routing
+│   ├── profile_manager.h          # Profile loading/saving
+│   └── led_controller.h           # NeoPixel control
+│
+├── src/                           # C++ source files
+│   ├── main.cpp                   # setup() / loop() entry point
+│   ├── hardware.cpp               # DRV2605, NeoPixel, battery, I2C mux
+│   ├── ble_manager.cpp            # BLE advertising, connections, UART
+│   ├── therapy_engine.cpp         # Pattern algorithms, motor scheduling
+│   ├── sync_protocol.cpp          # Serialize/deserialize sync commands
+│   ├── state_machine.cpp          # 11-state therapy FSM
+│   ├── menu_controller.cpp        # Phone command parsing/routing
+│   └── profile_manager.cpp        # Therapy profile management
+│
+├── test/                          # PlatformIO tests
+│   ├── test_state_machine/
+│   ├── test_sync_protocol/
+│   ├── test_therapy_engine/
+│   └── test_types/
+│
+└── docs/                          # Documentation
+    ├── ARDUINO_FIRMWARE_ARCHITECTURE.md
+    ├── ARDUINO_MIGRATION.md
+    ├── API_REFERENCE.md
+    ├── ARCHITECTURE.md
+    ├── BLE_PROTOCOL.md
+    ├── BOOT_SEQUENCE.md
+    ├── CALIBRATION_GUIDE.md
+    ├── COMMAND_REFERENCE.md
+    ├── STATE_DIAGRAM.md
+    ├── SYNCHRONIZATION_PROTOCOL.md
+    ├── TECHNICAL_REFERENCE.md      # This document
+    ├── TESTING.md
+    └── THERAPY_ENGINE.md
 ```
 
 **Total Lines of Code**:
-- Firmware: ~4,500 lines (src/)
-- Documentation: ~20,000 lines (docs/)
-- Tests: ~500 lines (utils/)
+- Firmware: ~3,000 lines (src/ + include/)
+- Documentation: ~15,000 lines (docs/)
+- Tests: ~500 lines (test/)
 
 ---
 
@@ -721,112 +593,97 @@ BlueBuzzah/
 
 | Command | Args | Response Time | Use Case |
 |---------|------|---------------|----------|
-| INFO | none | 100-1100ms | Device status |
-| BATTERY | none | 100-1100ms | Battery check |
+| INFO | none | 100-500ms | Device status |
+| BATTERY | none | 100-500ms | Battery check |
 | PING | none | <50ms | Latency test |
 | PROFILE_LIST | none | <50ms | List profiles |
-| PROFILE_LOAD | id (1-3) | 50-250ms | Load preset |
+| PROFILE_LOAD | name | 50-250ms | Load preset |
 | PROFILE_GET | none | <50ms | View settings |
-| PROFILE_CUSTOM | key:val... | 50-250ms | Custom profile |
-| SESSION_START | none | 100-500ms | Start therapy |
+| PROFILE_CUSTOM | json | 50-250ms | Custom profile |
+| SESSION_START | profile:duration | 100-500ms | Start therapy |
 | SESSION_PAUSE | none | <50ms | Pause therapy |
 | SESSION_RESUME | none | <50ms | Resume therapy |
 | SESSION_STOP | none | <50ms | Stop therapy |
 | SESSION_STATUS | none | <50ms | Progress check |
-| PARAM_SET | key, value | 50-250ms | Single parameter |
 | CALIBRATE_START | none | <50ms | Enter calibration |
-| CALIBRATE_BUZZ | finger, intensity, duration | 50-2050ms | Test motor |
+| CALIBRATE_BUZZ | finger:amplitude:duration | 50-2050ms | Test motor |
 | CALIBRATE_STOP | none | <50ms | Exit calibration |
 | HELP | none | <50ms | List commands |
 | RESTART | none | 500ms + reboot | Reboot device |
+| SET_ROLE | PRIMARY\|SECONDARY | 100ms | Set device role |
 
 ### Error Code Reference
 
 | Error | Typical Cause | Fix |
 |-------|--------------|-----|
 | Unknown command | Typo or unsupported command | Check HELP |
-| Invalid profile ID | ID not 1-3 | Use PROFILE_LIST |
-| VR not connected | VR glove offline | Connect VR first |
+| Invalid profile | Profile not found | Use PROFILE_LIST |
+| SECONDARY not connected | SECONDARY glove offline | Connect SECONDARY first |
 | Battery too low | Voltage <3.3V | Charge battery |
 | No active session | Session not started | Send SESSION_START |
-| Cannot modify during active session | Profile change blocked | Stop session first |
-| Invalid parameter name | Unknown key | Check PROFILE_GET |
-| Value out of range | Parameter exceeds limits | See parameter ranges |
+| Cannot modify during session | Profile change blocked | Stop session first |
+| Invalid parameter | Unknown key or out of range | Check documentation |
 | Not in calibration mode | Calibration not active | Send CALIBRATE_START |
-| Invalid finger index | Finger not 0-7 | Valid range: 0-7 |
+| Invalid finger index | Finger not 0-3 | Valid range: 0-3 |
 
 ### Voltage Thresholds
 
 | Voltage | Status | LED Color | Action |
 |---------|--------|-----------|--------|
 | >3.6V | Good | Green | Full operation |
-| 3.3-3.6V | Medium | Orange | Warning |
-| <3.3V | Critical | Red | Therapy blocked |
+| 3.4-3.6V | Low | Orange | Warning |
+| <3.4V | Critical | Red | Therapy blocked |
 | <3.0V | Dead | Off | Charge immediately |
 
 ### Finger Index Map
 
 | Index | Glove | Finger | Motor Channel |
 |-------|-------|--------|---------------|
-| 0 | VL | Thumb | 0 |
-| 1 | VL | Index | 1 |
-| 2 | VL | Middle | 2 |
-| 3 | VL | Ring | 3 |
-| 4 | VR | Thumb | 0 |
-| 5 | VR | Index | 1 |
-| 6 | VR | Middle | 2 |
-| 7 | VR | Ring | 3 |
+| 0 | PRIMARY | Pinky | 0 |
+| 1 | PRIMARY | Ring | 1 |
+| 2 | PRIMARY | Middle | 2 |
+| 3 | PRIMARY | Index | 3 |
+| 0 | SECONDARY | Pinky | 0 |
+| 1 | SECONDARY | Ring | 1 |
+| 2 | SECONDARY | Middle | 2 |
+| 3 | SECONDARY | Index | 3 |
 
 ---
 
 ## Testing & Validation
 
-### Hardware Integration Testing
+### PlatformIO Test Framework
 
-BlueBuzzah v2 firmware is validated using **manual hardware integration tests** on actual Feather nRF52840 devices.
+BlueBuzzah v2 uses **PlatformIO's native test framework** for unit and integration testing.
 
-**Test Infrastructure:**
-- Manual BLE connection setup required
-- Tests run on physical hardware (no mocks/simulators)
-- Python-based test scripts send BLE commands
-- Response validation via UART service
+**Test Commands:**
+```bash
+pio test                        # Run all tests
+pio test -e native              # Run native tests (no hardware)
+pio test -e adafruit_feather_nrf52840  # Run on-device tests
+```
+
+**Test Categories:**
+
+| Category | Location | Purpose |
+|----------|----------|---------|
+| State Machine | `test/test_state_machine/` | FSM transitions |
+| Sync Protocol | `test/test_sync_protocol/` | Message parsing |
+| Therapy Engine | `test/test_therapy_engine/` | Pattern generation |
+| Types | `test/test_types/` | Struct/enum validation |
 
 **Test Coverage:**
-
-| Category | Tested | Total | Coverage |
-|----------|--------|-------|----------|
-| BLE Commands | 8 | 18 | 44% |
-| Functional | ~15-20% | 100% | ~15-20% |
-
-**Available Tests:**
-
-1. **calibrate_commands_test.py**
-   - Tests: CALIBRATE_START, CALIBRATE_BUZZ, CALIBRATE_STOP
-   - Validates: 8 motors at multiple intensity levels
-   - Duration: 5-10 minutes
-
-2. **session_commands_test.py**
-   - Tests: SESSION_START, SESSION_PAUSE, SESSION_RESUME, SESSION_STOP, SESSION_STATUS
-   - Validates: State transitions and session management
-   - Duration: 3-5 minutes
-
-3. **memory_stress_test.py**
-   - Tests: Extended operation memory stability
-   - Validates: No memory leaks, >10KB free minimum
-   - Duration: 2+ hours
-
-4. **sync_accuracy_test.py**
-   - Tests: EXECUTE_BUZZ/BUZZ_COMPLETE latency
-   - Validates: 7.5-20ms target latency
-   - Duration: 2-5 minutes
+- State machine transitions
+- Pattern generation algorithms
+- SYNC protocol parsing
+- BLE command handling
+- Battery status calculation
 
 **Testing Requirements:**
-- Feather nRF52840 with BlueBuzzah v2 firmware
-- BLE 4.0+ capable host computer
-- Python with BLE libraries (adafruit_ble or bleak)
-- Charged battery or USB power
+- PlatformIO Core CLI or IDE
+- For hardware tests: Feather nRF52840 connected via USB
 
-**See:** [Testing Guide](TESTING.md) for complete test procedures and execution instructions.
+**See:** [Testing Guide](TESTING.md) for complete test procedures.
 
 ---
 
@@ -838,3 +695,8 @@ Update this document when:
 - Updating pin assignments
 - Changing memory budget
 - Updating test coverage statistics
+
+---
+
+**Platform**: Arduino C++ with PlatformIO
+**Last Updated**: 2025-01-11

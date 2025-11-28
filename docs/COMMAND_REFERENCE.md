@@ -1,6 +1,7 @@
 # BlueBuzzah Command Reference
 **BLE Protocol Version:** 2.0.0
-**Implementation:** MenuController (src/modules/menu_controller.py)
+**Platform:** Arduino C++ / PlatformIO
+**Implementation:** MenuController (src/menu_controller.cpp)
 
 ---
 
@@ -149,37 +150,42 @@ STATUS:IDLE\n
 - `BATS`: Secondary glove voltage (queried from VR via GET_BATTERY)
 - `STATUS`: IDLE | RUNNING | PAUSED
 
-**Implementation** (menu_controller.py:426-462):
+**Implementation** (menu_controller.cpp):
 
-```python
-def _cmd_info(self):
-    # Query local battery
-    vl_voltage, _, _ = check_battery_voltage()
+```cpp
+void MenuController::cmdInfo() {
+    // Query local battery
+    float vlVoltage = hardware_.getBatteryVoltage();
 
-    # Query VR battery (PRIMARY only)
-    if self.role == "PRIMARY":
-        vr_voltage = self.ble.query_vr_battery(timeout=1.0)
-    else:
-        vr_voltage = None
-
-    # Get session status
-    if self.session_manager:
-        status = self.session_manager.get_status()
-        session_state = status["status"]
-    else:
-        session_state = "IDLE"
-
-    # Format response
-    response = {
-        "ROLE": self.role,
-        "NAME": BLE_NAME,
-        "FW": "1.0.0",
-        "BATP": f"{vl_voltage:.2f}" if vl_voltage else "N/A",
-        "BATS": f"{vr_voltage:.2f}" if vr_voltage else "N/A",
-        "STATUS": session_state
+    // Query VR battery (PRIMARY only)
+    float vrVoltage = 0.0f;
+    if (role_ == DeviceRole::PRIMARY && ble_.isSecondaryConnected()) {
+        vrVoltage = ble_.querySecondaryBattery(1000);  // 1 second timeout
     }
 
-    send_response(self.phone_uart, response)
+    // Get session status
+    const char* sessionState = "IDLE";
+    if (stateMachine_) {
+        TherapyState state = stateMachine_->getCurrentState();
+        sessionState = stateMachine_->stateToString(state);
+    }
+
+    // Format and send response
+    String response = "ROLE:";
+    response += (role_ == DeviceRole::PRIMARY) ? "PRIMARY" : "SECONDARY";
+    response += "\nNAME:";
+    response += BLE_NAME;
+    response += "\nFW:2.0.0";
+    response += "\nBATP:";
+    response += String(vlVoltage, 2);
+    response += "\nBATS:";
+    response += (vrVoltage > 0) ? String(vrVoltage, 2) : "N/A";
+    response += "\nSTATUS:";
+    response += sessionState;
+    response += "\n\x04";
+
+    ble_.sendToPhone(response);
+}
 ```
 
 **Timing**: 100-1100ms (includes VR battery query with 1s timeout)
@@ -207,59 +213,67 @@ BATS:3.68\n
 - **Medium**: 3.3-3.6V (orange LED)
 - **Critical**: <3.3V (red LED, therapy blocked)
 
-**Implementation** (menu_controller.py:464-484):
+**Implementation** (menu_controller.cpp):
 
-```python
-def _cmd_battery(self):
-    # Query local VL battery
-    vl_voltage, _, _ = check_battery_voltage()
+```cpp
+void MenuController::cmdBattery() {
+    // Query local VL battery
+    float vlVoltage = hardware_.getBatteryVoltage();
 
-    # Query VR battery (if PRIMARY and VR connected)
-    vr_voltage = None
-    if self.role == "PRIMARY" and self.ble.vr_uart:
-        vr_voltage = self.ble.query_vr_battery(timeout=1.0)
-
-    # Format response
-    response = {
-        "BATP": f"{vl_voltage:.2f}" if vl_voltage else "N/A",
-        "BATS": f"{vr_voltage:.2f}" if vr_voltage else "N/A"
+    // Query VR battery (if PRIMARY and VR connected)
+    float vrVoltage = 0.0f;
+    if (role_ == DeviceRole::PRIMARY && ble_.isSecondaryConnected()) {
+        vrVoltage = ble_.querySecondaryBattery(1000);  // 1 second timeout
     }
 
-    send_response(self.phone_uart, response)
+    // Format response
+    String response = "BATP:";
+    response += (vlVoltage > 0) ? String(vlVoltage, 2) : "N/A";
+    response += "\nBATS:";
+    response += (vrVoltage > 0) ? String(vrVoltage, 2) : "N/A";
+    response += "\n\x04";
+
+    ble_.sendToPhone(response);
+}
 ```
 
-**VR Query Process** (ble_connection.py:854-891):
+**VR Query Process** (ble_manager.cpp):
 
-```python
-def query_vr_battery(self, timeout=1.0):
-    """
-    Query VR battery voltage (PRIMARY only).
+```cpp
+float BLEManager::querySecondaryBattery(uint32_t timeoutMs) {
+    /**
+     * Query VR battery voltage (PRIMARY only).
+     *
+     * Protocol:
+     *     VL → VR: GET_BATTERY\n
+     *     VR → VL: BAT_RESPONSE:3.68\n
+     *
+     * Returns:
+     *     float: Voltage or 0.0 on timeout
+     */
+    if (!isSecondaryConnected()) {
+        return 0.0f;
+    }
 
-    Protocol:
-        VL → VR: GET_BATTERY\n
-        VR → VL: BAT_RESPONSE:3.68\n
+    // Send query
+    sendToSecondary("GET_BATTERY\n");
 
-    Returns:
-        float: Voltage or None on timeout
-    """
-    if not self.vr_uart:
-        return None
+    // Wait for response
+    uint32_t startTime = millis();
+    while ((millis() - startTime) < timeoutMs) {
+        if (hasSecondaryMessage()) {
+            String message = readSecondaryMessage();
+            if (message.startsWith("BAT_RESPONSE:")) {
+                String voltageStr = message.substring(13);
+                return voltageStr.toFloat();
+            }
+        }
+        delay(10);
+    }
 
-    # Send query
-    self.vr_uart.write("GET_BATTERY\n")
-
-    # Wait for response
-    start = time.monotonic()
-    while (time.monotonic() - start) < timeout:
-        if self.vr_uart.in_waiting:
-            message = self.vr_uart.readline().decode().strip()
-            if message.startswith("BAT_RESPONSE:"):
-                voltage_str = message.split(":")[1]
-                return float(voltage_str)
-        time.sleep(0.01)
-
-    # Timeout
-    return None
+    // Timeout
+    return 0.0f;
+}
 ```
 
 **Timing**: 100-1100ms
@@ -281,12 +295,12 @@ PONG\n
 \x04
 ```
 
-**Implementation** (menu_controller.py:486-491):
+**Implementation** (menu_controller.cpp):
 
-```python
-def _cmd_ping(self):
-    response = {"PONG": ""}
-    send_response(self.phone_uart, response)
+```cpp
+void MenuController::cmdPing() {
+    ble_.sendToPhone("PONG\n\x04");
+}
 ```
 
 **Use Case**: Measure BLE round-trip latency
@@ -314,23 +328,31 @@ PROFILE:3:Hybrid VCR\n
 \x04
 ```
 
-**Implementation** (menu_controller.py:493-507):
+**Implementation** (menu_controller.cpp):
 
-```python
-def _cmd_profile_list(self):
-    if not self.profile_manager:
-        send_error(self.phone_uart, "Profile manager not initialized")
-        return
+```cpp
+void MenuController::cmdProfileList() {
+    if (!profileManager_) {
+        sendError("Profile manager not initialized");
+        return;
+    }
 
-    # Get list of (id, name) tuples
-    profiles = self.profile_manager.list_profiles()
+    // Get list of profiles and format response
+    String response = "";
+    const ProfileInfo* profiles = profileManager_->getProfileList();
+    uint8_t count = profileManager_->getProfileCount();
 
-    # Format as PROFILE:ID:NAME lines
-    response = {}
-    for idx, (pid, name) in enumerate(profiles):
-        response[f"PROFILE_{idx}"] = f"{pid}:{name}"
+    for (uint8_t i = 0; i < count; i++) {
+        response += "PROFILE:";
+        response += String(profiles[i].id);
+        response += ":";
+        response += profiles[i].name;
+        response += "\n";
+    }
+    response += "\x04";
 
-    send_response(self.phone_uart, response)
+    ble_.sendToPhone(response);
+}
 ```
 
 **Timing**: <50ms
@@ -370,64 +392,71 @@ ERROR:Cannot modify parameters during active session\n
 \x04
 ```
 
-**Implementation** (menu_controller.py:509-650):
+**Implementation** (menu_controller.cpp):
 
-```python
-def _cmd_profile_load(self, profile_id):
-    # 1. Check if session is active
-    if self.session_manager and self.session_manager.is_active():
-        send_error(self.phone_uart, "Cannot modify parameters during active session")
-        return
+```cpp
+void MenuController::cmdProfileLoad(uint8_t profileId) {
+    // 1. Check if session is active
+    if (stateMachine_ && stateMachine_->isSessionActive()) {
+        sendError("Cannot modify parameters during active session");
+        return;
+    }
 
-    # 2. Validate profile ID (1-3)
-    is_valid, error, pid = validate_profile_id(profile_id)
-    if not is_valid:
-        send_error(self.phone_uart, error)
-        return
+    // 2. Validate profile ID (1-3)
+    if (profileId < 1 || profileId > 3) {
+        sendError("Invalid profile ID");
+        return;
+    }
 
-    # 3. Load profile
-    success, message, params = self.profile_manager.load_profile(pid)
+    // 3. Load profile
+    if (!profileManager_->loadProfile(profileId)) {
+        sendError("Failed to load profile");
+        return;
+    }
 
-    if success:
-        # 4. Send success response
-        response = {
-            "STATUS": "LOADED",
-            "PROFILE": self.profile_manager.current_profile_name
-        }
-        send_response(self.phone_uart, response)
+    // 4. Send success response
+    String response = "STATUS:LOADED\nPROFILE:";
+    response += profileManager_->getCurrentProfileName();
+    response += "\n\x04";
+    ble_.sendToPhone(response);
 
-        # 5. Broadcast ALL parameters to VR
-        if self.role == "PRIMARY":
-            all_params = self.profile_manager.get_current_profile()
-            self._broadcast_param_update(all_params)
-    else:
-        send_error(self.phone_uart, message)
+    // 5. Broadcast ALL parameters to VR
+    if (role_ == DeviceRole::PRIMARY) {
+        broadcastParamUpdate(profileManager_->getCurrentParams());
+    }
+}
 ```
 
-**Parameter Broadcast** (menu_controller.py:894-931):
+**Parameter Broadcast** (menu_controller.cpp):
 
-```python
-def _broadcast_param_update(self, params_dict):
-    """
-    Broadcast parameters to VR.
+```cpp
+void MenuController::broadcastParamUpdate(const TherapyParams& params) {
+    /**
+     * Broadcast parameters to VR.
+     *
+     * Protocol: PARAM_UPDATE:KEY1:VALUE1:KEY2:VALUE2:...\n
+     *
+     * Example:
+     *     {ON: 0.150, JITTER: 10}
+     *     → PARAM_UPDATE:ON:0.150:JITTER:10\n
+     */
+    String cmd = "PARAM_UPDATE";
+    cmd += ":ON:";
+    cmd += String(params.timeOnMs / 1000.0f, 3);
+    cmd += ":OFF:";
+    cmd += String(params.timeOffMs / 1000.0f, 3);
+    cmd += ":FREQ:";
+    cmd += String(params.frequency);
+    cmd += ":VOLT:";
+    cmd += String(params.voltage, 3);
+    cmd += ":JITTER:";
+    cmd += String(params.jitter, 1);
+    cmd += ":MIRROR:";
+    cmd += params.mirror ? "1" : "0";
+    cmd += "\n";
 
-    Protocol: PARAM_UPDATE:KEY1:VALUE1:KEY2:VALUE2:...\n
-
-    Example:
-        {"ON": 0.150, "JITTER": 10}
-        → PARAM_UPDATE:ON:0.150:JITTER:10\n
-    """
-    cmd_parts = ["PARAM_UPDATE"]
-
-    for key, value in params_dict.items():
-        cmd_parts.append(str(key))
-        if isinstance(value, float):
-            cmd_parts.append(f"{value:.3f}")
-        else:
-            cmd_parts.append(str(value))
-
-    cmd_string = ":".join(cmd_parts) + "\n"
-    self.vr_uart.write(cmd_string.encode())
+    ble_.sendToSecondary(cmd);
+}
 ```
 
 **Timing**: 50-250ms (includes VR sync)
@@ -463,18 +492,43 @@ JITTER:23.5\n
 \x04
 ```
 
-**Implementation** (menu_controller.py:652-667):
+**Implementation** (menu_controller.cpp):
 
-```python
-def _cmd_profile_get(self):
-    if not self.profile_manager:
-        send_error(self.phone_uart, "Profile manager not initialized")
-        return
+```cpp
+void MenuController::cmdProfileGet() {
+    if (!profileManager_) {
+        sendError("Profile manager not initialized");
+        return;
+    }
 
-    # Get all parameters as dict with string values
-    params = self.profile_manager.export_to_dict()
+    // Get all parameters and format response
+    const TherapyParams& params = profileManager_->getCurrentParams();
 
-    send_response(self.phone_uart, params)
+    String response = "TYPE:LRA\n";
+    response += "FREQ:";
+    response += String(params.frequency);
+    response += "\nVOLT:";
+    response += String(params.voltage, 3);
+    response += "\nON:";
+    response += String(params.timeOnMs / 1000.0f, 3);
+    response += "\nOFF:";
+    response += String(params.timeOffMs / 1000.0f, 3);
+    response += "\nSESSION:";
+    response += String(params.sessionDurationMin);
+    response += "\nAMPMIN:";
+    response += String(params.amplitudeMin);
+    response += "\nAMPMAX:";
+    response += String(params.amplitudeMax);
+    response += "\nPATTERN:";
+    response += patternToString(params.pattern);
+    response += "\nMIRROR:";
+    response += params.mirror ? "True" : "False";
+    response += "\nJITTER:";
+    response += String(params.jitter, 1);
+    response += "\n\x04";
+
+    ble_.sendToPhone(response);
+}
 ```
 
 **Timing**: <50ms
@@ -517,38 +571,57 @@ ERROR:Invalid parameter name: FOO\n
 \x04
 ```
 
-**Implementation** (menu_controller.py:669-702):
+**Implementation** (menu_controller.cpp):
 
-```python
-def _cmd_profile_custom(self, args):
-    # 1. Check if session is active
-    if self.session_manager and self.session_manager.is_active():
-        send_error(self.phone_uart, "Cannot modify parameters during active session")
-        return
+```cpp
+void MenuController::cmdProfileCustom(const String& args) {
+    // 1. Check if session is active
+    if (stateMachine_ && stateMachine_->isSessionActive()) {
+        sendError("Cannot modify parameters during active session");
+        return;
+    }
 
-    # 2. Parse key:value pairs
-    try:
-        params_dict = parse_kvp_params(args)
-    except ValueError as e:
-        send_error(self.phone_uart, str(e))
-        return
+    // 2. Parse key:value pairs from colon-delimited string
+    // args format: "ON:0.150:OFF:0.080:JITTER:10"
+    TherapyParams params = profileManager_->getCurrentParams();
+    String appliedParams = "";
 
-    # 3. Apply parameters (validates and converts types)
-    success, message, applied_params = \
-        self.profile_manager.apply_custom_params(params_dict)
+    int startIdx = 0;
+    while (startIdx < args.length()) {
+        int keyEnd = args.indexOf(':', startIdx);
+        if (keyEnd < 0) break;
 
-    if success:
-        # 4. Build response with applied parameters
-        response = {"STATUS": "CUSTOM_LOADED"}
-        response.update(applied_params)
+        int valueEnd = args.indexOf(':', keyEnd + 1);
+        if (valueEnd < 0) valueEnd = args.length();
 
-        send_response(self.phone_uart, response)
+        String key = args.substring(startIdx, keyEnd);
+        String value = args.substring(keyEnd + 1, valueEnd);
 
-        # 5. Broadcast only changed parameters to VR
-        if self.role == "PRIMARY":
-            self._broadcast_param_update(applied_params)
-    else:
-        send_error(self.phone_uart, message)
+        // Apply parameter and track what was changed
+        if (applyParameter(params, key, value)) {
+            appliedParams += key + ":" + value + "\n";
+        } else {
+            sendError("Invalid parameter: " + key);
+            return;
+        }
+
+        startIdx = valueEnd + 1;
+    }
+
+    // 3. Save updated parameters
+    profileManager_->setCurrentParams(params);
+
+    // 4. Send success response
+    String response = "STATUS:CUSTOM_LOADED\n";
+    response += appliedParams;
+    response += "\x04";
+    ble_.sendToPhone(response);
+
+    // 5. Broadcast changed parameters to VR
+    if (role_ == DeviceRole::PRIMARY) {
+        broadcastParamUpdate(params);
+    }
+}
 ```
 
 **Key Feature**: Only include parameters you want to change. Omitted parameters use current values.
@@ -586,42 +659,46 @@ ERROR:Battery too low\n
 \x04
 ```
 
-**Implementation** (menu_controller.py:704-742):
+**Implementation** (menu_controller.cpp):
 
-```python
-def _cmd_session_start(self):
-    if not self.session_manager:
-        send_error(self.phone_uart, "Session manager not initialized")
-        return
+```cpp
+void MenuController::cmdSessionStart() {
+    if (!stateMachine_) {
+        sendError("State machine not initialized");
+        return;
+    }
 
-    # 1. Check prerequisites
-    if self.role == "PRIMARY" and not self.ble.vr_uart:
-        send_error(self.phone_uart, "VR not connected")
-        return
+    // 1. Check prerequisites
+    if (role_ == DeviceRole::PRIMARY && !ble_.isSecondaryConnected()) {
+        sendError("VR not connected");
+        return;
+    }
 
-    # Check battery (both gloves)
-    vl_voltage, _, _ = check_battery_voltage()
-    if vl_voltage and vl_voltage < 3.3:
-        send_error(self.phone_uart, "Battery too low (VL)")
-        return
+    // Check battery (both gloves)
+    float vlVoltage = hardware_.getBatteryVoltage();
+    if (vlVoltage < 3.3f) {
+        sendError("Battery too low (VL)");
+        return;
+    }
 
-    if self.role == "PRIMARY":
-        vr_voltage = self.ble.query_vr_battery(timeout=1.0)
-        if vr_voltage and vr_voltage < 3.3:
-            send_error(self.phone_uart, "Battery too low (VR)")
-            return
+    if (role_ == DeviceRole::PRIMARY) {
+        float vrVoltage = ble_.querySecondaryBattery(1000);
+        if (vrVoltage > 0 && vrVoltage < 3.3f) {
+            sendError("Battery too low (VR)");
+            return;
+        }
+    }
 
-    # 2. Start session
-    config = self.profile_manager.get_current_profile()
-    success, message = self.session_manager.start_session(config)
+    // 2. Start session via state machine
+    const TherapyParams& params = profileManager_->getCurrentParams();
+    if (!stateMachine_->startSession(params)) {
+        sendError("Failed to start session");
+        return;
+    }
 
-    if success:
-        # 3. Launch VCR engine in background (non-blocking)
-        # Note: Actual implementation may vary
-        response = {"SESSION_STATUS": "RUNNING"}
-        send_response(self.phone_uart, response)
-    else:
-        send_error(self.phone_uart, message)
+    // 3. Send success response
+    ble_.sendToPhone("SESSION_STATUS:RUNNING\n\x04");
+}
 ```
 
 **Timing**: 100-500ms (includes battery checks + VR handshake)
@@ -654,21 +731,22 @@ ERROR:No active session\n
 \x04
 ```
 
-**Implementation** (menu_controller.py:744-762):
+**Implementation** (menu_controller.cpp):
 
-```python
-def _cmd_session_pause(self):
-    if not self.session_manager:
-        send_error(self.phone_uart, "Session manager not initialized")
-        return
+```cpp
+void MenuController::cmdSessionPause() {
+    if (!stateMachine_) {
+        sendError("State machine not initialized");
+        return;
+    }
 
-    success, message = self.session_manager.pause_session()
+    if (!stateMachine_->pauseSession()) {
+        sendError("No active session");
+        return;
+    }
 
-    if success:
-        response = {"SESSION_STATUS": "PAUSED"}
-        send_response(self.phone_uart, response)
-    else:
-        send_error(self.phone_uart, message)
+    ble_.sendToPhone("SESSION_STATUS:PAUSED\n\x04");
+}
 ```
 
 **Timing**: <50ms
@@ -702,21 +780,22 @@ ERROR:No paused session\n
 \x04
 ```
 
-**Implementation** (menu_controller.py:764-782):
+**Implementation** (menu_controller.cpp):
 
-```python
-def _cmd_session_resume(self):
-    if not self.session_manager:
-        send_error(self.phone_uart, "Session manager not initialized")
-        return
+```cpp
+void MenuController::cmdSessionResume() {
+    if (!stateMachine_) {
+        sendError("State machine not initialized");
+        return;
+    }
 
-    success, message = self.session_manager.resume_session()
+    if (!stateMachine_->resumeSession()) {
+        sendError("No paused session");
+        return;
+    }
 
-    if success:
-        response = {"SESSION_STATUS": "RUNNING"}
-        send_response(self.phone_uart, response)
-    else:
-        send_error(self.phone_uart, message)
+    ble_.sendToPhone("SESSION_STATUS:RUNNING\n\x04");
+}
 ```
 
 **Timing**: <50ms
@@ -743,21 +822,18 @@ SESSION_STATUS:IDLE\n
 \x04
 ```
 
-**Implementation** (menu_controller.py:784-801):
+**Implementation** (menu_controller.cpp):
 
-```python
-def _cmd_session_stop(self):
-    if not self.session_manager:
-        send_error(self.phone_uart, "Session manager not initialized")
-        return
+```cpp
+void MenuController::cmdSessionStop() {
+    if (!stateMachine_) {
+        sendError("State machine not initialized");
+        return;
+    }
 
-    success, message = self.session_manager.stop_session()
-
-    if success:
-        response = {"SESSION_STATUS": "IDLE"}
-        send_response(self.phone_uart, response)
-    else:
-        send_error(self.phone_uart, message)
+    stateMachine_->stopSession();
+    ble_.sendToPhone("SESSION_STATUS:IDLE\n\x04");
+}
 ```
 
 **Timing**: <50ms
@@ -812,24 +888,29 @@ PROGRESS:21\n
 - `TOTAL`: Total session duration in seconds
 - `PROGRESS`: Percentage (0-100)
 
-**Implementation** (menu_controller.py:803-821):
+**Implementation** (menu_controller.cpp):
 
-```python
-def _cmd_session_status(self):
-    if not self.session_manager:
-        send_error(self.phone_uart, "Session manager not initialized")
-        return
-
-    status = self.session_manager.get_status()
-
-    response = {
-        "SESSION_STATUS": status["status"],
-        "ELAPSED": str(status["elapsed_time"]),
-        "TOTAL": str(status["total_time"]),
-        "PROGRESS": str(status["progress"])
+```cpp
+void MenuController::cmdSessionStatus() {
+    if (!stateMachine_) {
+        sendError("State machine not initialized");
+        return;
     }
 
-    send_response(self.phone_uart, response)
+    SessionStatus status = stateMachine_->getSessionStatus();
+
+    String response = "SESSION_STATUS:";
+    response += stateMachine_->stateToString(status.state);
+    response += "\nELAPSED:";
+    response += String(status.elapsedSeconds);
+    response += "\nTOTAL:";
+    response += String(status.totalSeconds);
+    response += "\nPROGRESS:";
+    response += String(status.progressPercent);
+    response += "\n\x04";
+
+    ble_.sendToPhone(response);
+}
 ```
 
 **Timing**: <50ms
@@ -862,36 +943,40 @@ ERROR:Value out of range\n
 \x04
 ```
 
-**Implementation** (menu_controller.py:933-977):
+**Implementation** (menu_controller.cpp):
 
-```python
-def _cmd_param_set(self, key, value):
-    # 1. Check if session is active
-    if self.session_manager and self.session_manager.is_active():
-        send_error(self.phone_uart, "Cannot modify parameters during active session")
-        return
+```cpp
+void MenuController::cmdParamSet(const String& key, const String& value) {
+    // 1. Check if session is active
+    if (stateMachine_ && stateMachine_->isSessionActive()) {
+        sendError("Cannot modify parameters during active session");
+        return;
+    }
 
-    # 2. Set parameter (validates and converts)
-    success, message, converted_value = \
-        self.profile_manager.set_parameter(key, value)
+    // 2. Get current params and apply single parameter
+    TherapyParams params = profileManager_->getCurrentParams();
 
-    if success:
-        # 3. Get full parameter name (handles short aliases)
-        from modules.validators import get_full_param_name
-        full_key = get_full_param_name(key)
+    if (!applyParameter(params, key, value)) {
+        sendError("Invalid parameter or value");
+        return;
+    }
 
-        response = {
-            "PARAM": full_key,
-            "VALUE": str(converted_value)
-        }
+    // 3. Save updated parameters
+    profileManager_->setCurrentParams(params);
 
-        send_response(self.phone_uart, response)
+    // 4. Send success response
+    String response = "PARAM:";
+    response += key;
+    response += "\nVALUE:";
+    response += value;
+    response += "\n\x04";
+    ble_.sendToPhone(response);
 
-        # 4. Broadcast single parameter to VR
-        if self.role == "PRIMARY":
-            self._broadcast_param_update({full_key: converted_value})
-    else:
-        send_error(self.phone_uart, message)
+    // 5. Broadcast single parameter to VR
+    if (role_ == DeviceRole::PRIMARY) {
+        broadcastParamUpdate(params);
+    }
+}
 ```
 
 **Timing**: 50-250ms (includes VR sync)
@@ -917,21 +1002,18 @@ MODE:CALIBRATION\n
 \x04
 ```
 
-**Implementation** (menu_controller.py:979-993):
+**Implementation** (menu_controller.cpp):
 
-```python
-def _cmd_calibrate_start(self):
-    if not self.calibration_mode:
-        send_error(self.phone_uart, "Calibration mode not initialized")
-        return
+```cpp
+void MenuController::cmdCalibrateStart() {
+    if (stateMachine_ && stateMachine_->isSessionActive()) {
+        sendError("Cannot enter calibration during active session");
+        return;
+    }
 
-    success, message = self.calibration_mode.enter_calibration()
-
-    if success:
-        response = {"MODE": "CALIBRATION"}
-        send_response(self.phone_uart, response)
-    else:
-        send_error(self.phone_uart, message)
+    calibrationMode_ = true;
+    ble_.sendToPhone("MODE:CALIBRATION\n\x04");
+}
 ```
 
 **Timing**: <50ms
@@ -976,61 +1058,73 @@ ERROR:Invalid finger index (must be 0-7)\n
 \x04
 ```
 
-**Implementation** (menu_controller.py:995-1033):
+**Implementation** (menu_controller.cpp):
 
-```python
-def _cmd_calibrate_buzz(self, finger, intensity, duration):
-    if not self.calibration_mode:
-        send_error(self.phone_uart, "Calibration mode not initialized")
-        return
+```cpp
+void MenuController::cmdCalibrateBuzz(uint8_t finger, uint8_t intensity, uint16_t durationMs) {
+    if (!calibrationMode_) {
+        sendError("Not in calibration mode");
+        return;
+    }
 
-    # 1. Validate parameters
-    try:
-        finger_idx = int(finger)
-        intensity_val = int(intensity)
-        duration_ms = int(duration)
-    except ValueError:
-        send_error(self.phone_uart, "Invalid parameter format")
-        return
+    // 1. Validate parameters
+    if (finger > 7) {
+        sendError("Invalid finger index (must be 0-7)");
+        return;
+    }
 
-    if finger_idx < 0 or finger_idx > 7:
-        send_error(self.phone_uart, "Invalid finger index (must be 0-7)")
-        return
+    if (intensity > 100) {
+        sendError("Invalid intensity (must be 0-100)");
+        return;
+    }
 
-    if intensity_val < 0 or intensity_val > 100:
-        send_error(self.phone_uart, "Invalid intensity (must be 0-100)")
-        return
+    if (durationMs < 50 || durationMs > 2000) {
+        sendError("Invalid duration (must be 50-2000ms)");
+        return;
+    }
 
-    if duration_ms < 50 or duration_ms > 2000:
-        send_error(self.phone_uart, "Invalid duration (must be 50-2000ms)")
-        return
+    // 2. Execute buzz (relay to VR if finger 4-7)
+    if (finger >= 4 && role_ == DeviceRole::PRIMARY) {
+        // Relay to SECONDARY for fingers 4-7
+        String cmd = "CALIBRATE_BUZZ:";
+        cmd += String(finger);
+        cmd += ":";
+        cmd += String(intensity);
+        cmd += ":";
+        cmd += String(durationMs);
+        cmd += "\n";
+        ble_.sendToSecondary(cmd);
+    } else {
+        // Execute locally for fingers 0-3
+        uint8_t localFinger = finger % 4;
+        hardware_.buzzFinger(localFinger, intensity, durationMs);
+    }
 
-    # 2. Execute buzz (may relay to VR if finger 4-7)
-    success, message = self.calibration_mode.buzz_finger(
-        finger_idx, intensity_val, duration_ms
-    )
+    // 3. Send success response
+    String response = "FINGER:";
+    response += String(finger);
+    response += "\nINTENSITY:";
+    response += String(intensity);
+    response += "\nDURATION:";
+    response += String(durationMs);
+    response += "\n\x04";
 
-    if success:
-        response = {
-            "FINGER": str(finger_idx),
-            "INTENSITY": str(intensity_val),
-            "DURATION": str(duration_ms)
-        }
-        send_response(self.phone_uart, response)
-    else:
-        send_error(self.phone_uart, message)
+    ble_.sendToPhone(response);
+}
 ```
 
 **Timing**: 50-2050ms (depends on duration parameter)
 
 **VL→VR Relay** (for fingers 4-7):
 
-```python
-# PRIMARY automatically relays to VR
-if finger_idx >= 4:
-    cmd = f"CALIBRATE_BUZZ:{finger_idx}:{intensity}:{duration}\n"
-    vr_uart.write(cmd)
-    # VR executes and responds
+```cpp
+// PRIMARY automatically relays to VR
+if (finger >= 4) {
+    String cmd = "CALIBRATE_BUZZ:" + String(finger) + ":" +
+                 String(intensity) + ":" + String(durationMs) + "\n";
+    ble_.sendToSecondary(cmd);
+    // VR executes and responds
+}
 ```
 
 ---
@@ -1050,21 +1144,13 @@ MODE:NORMAL\n
 \x04
 ```
 
-**Implementation** (menu_controller.py:1035-1049):
+**Implementation** (menu_controller.cpp):
 
-```python
-def _cmd_calibrate_stop(self):
-    if not self.calibration_mode:
-        send_error(self.phone_uart, "Calibration mode not initialized")
-        return
-
-    success, message = self.calibration_mode.exit_calibration()
-
-    if success:
-        response = {"MODE": "NORMAL"}
-        send_response(self.phone_uart, response)
-    else:
-        send_error(self.phone_uart, message)
+```cpp
+void MenuController::cmdCalibrateStop() {
+    calibrationMode_ = false;
+    ble_.sendToPhone("MODE:NORMAL\n\x04");
+}
 ```
 
 **Timing**: <50ms
@@ -1105,25 +1191,30 @@ COMMAND:HELP\n
 \x04
 ```
 
-**Implementation** (menu_controller.py:1051-1067):
+**Implementation** (menu_controller.cpp):
 
-```python
-def _cmd_help(self):
-    # List all available commands
-    commands = [
+```cpp
+void MenuController::cmdHelp() {
+    // List all available commands
+    static const char* commands[] = {
         "INFO", "BATTERY", "PING",
         "PROFILE_LIST", "PROFILE_LOAD", "PROFILE_GET", "PROFILE_CUSTOM",
         "SESSION_START", "SESSION_PAUSE", "SESSION_RESUME", "SESSION_STOP", "SESSION_STATUS",
         "PARAM_SET",
         "CALIBRATE_START", "CALIBRATE_BUZZ", "CALIBRATE_STOP",
         "RESTART", "HELP"
-    ]
+    };
 
-    response = {}
-    for idx, cmd in enumerate(commands):
-        response[f"COMMAND_{idx}"] = cmd
+    String response = "";
+    for (uint8_t i = 0; i < sizeof(commands) / sizeof(commands[0]); i++) {
+        response += "COMMAND:";
+        response += commands[i];
+        response += "\n";
+    }
+    response += "\x04";
 
-    send_response(self.phone_uart, response)
+    ble_.sendToPhone(response);
+}
 ```
 
 **Timing**: <50ms
@@ -1145,19 +1236,18 @@ STATUS:REBOOTING\n
 \x04
 ```
 
-**Implementation** (menu_controller.py:1069-1078):
+**Implementation** (menu_controller.cpp):
 
-```python
-def _cmd_restart(self):
-    response = {"STATUS": "REBOOTING"}
-    send_response(self.phone_uart, response)
+```cpp
+void MenuController::cmdRestart() {
+    ble_.sendToPhone("STATUS:REBOOTING\n\x04");
 
-    # Give time for response to send
-    time.sleep(0.5)
+    // Give time for response to send
+    delay(500);
 
-    # Reboot via supervisor
-    import supervisor
-    supervisor.reload()
+    // Reboot via NVIC system reset
+    NVIC_SystemReset();
+}
 ```
 
 **Timing**: 500ms + reboot time (~2-5 seconds)
@@ -1184,24 +1274,35 @@ PARAM_UPDATE:KEY1:VALUE1:KEY2:VALUE2:...\n
 PARAM_UPDATE:ON:0.150:OFF:0.080:JITTER:10\n
 ```
 
-**VR Handler** (menu_controller.py:844-892):
+**VR Handler** (menu_controller.cpp):
 
-```python
-def _handle_param_update(self, args):
-    # 1. Parse args into key:value dict
-    params_dict = parse_kvp_params(args)
-    # args = ["ON", "0.150", "OFF", "0.080", "JITTER", "10"]
-    # params_dict = {"ON": "0.150", "OFF": "0.080", "JITTER": "10"}
+```cpp
+void MenuController::handleParamUpdate(const String& args) {
+    // 1. Parse args into key:value pairs
+    // args = "ON:0.150:OFF:0.080:JITTER:10"
+    TherapyParams params = profileManager_->getCurrentParams();
 
-    # 2. Apply parameters
-    success, message, applied_params = \
-        self.profile_manager.apply_custom_params(params_dict)
+    int startIdx = 0;
+    while (startIdx < args.length()) {
+        int keyEnd = args.indexOf(':', startIdx);
+        if (keyEnd < 0) break;
 
-    if success:
-        # 3. Send acknowledgment (optional)
-        self.ble.uart.write("ACK_PARAM_UPDATE\n")
-    else:
-        print(f"[VR] [ERROR] Failed to apply parameters: {message}")
+        int valueEnd = args.indexOf(':', keyEnd + 1);
+        if (valueEnd < 0) valueEnd = args.length();
+
+        String key = args.substring(startIdx, keyEnd);
+        String value = args.substring(keyEnd + 1, valueEnd);
+
+        applyParameter(params, key, value);
+        startIdx = valueEnd + 1;
+    }
+
+    // 2. Apply parameters
+    profileManager_->setCurrentParams(params);
+
+    // 3. Send acknowledgment
+    ble_.sendToPrimary("ACK_PARAM_UPDATE\n");
+}
 ```
 
 **Timing**: 50-100ms
@@ -1226,16 +1327,19 @@ GET_BATTERY\n
 BAT_RESPONSE:3.68\n
 ```
 
-**VR Handler** (menu_controller.py:823-842):
+**VR Handler** (menu_controller.cpp):
 
-```python
-def _handle_battery_query(self):
-    # Query local battery
-    voltage, _, _ = check_battery_voltage()
+```cpp
+void MenuController::handleBatteryQuery() {
+    // Query local battery
+    float voltage = hardware_.getBatteryVoltage();
 
-    # Send response
-    response = f"BAT_RESPONSE:{voltage:.2f}\n"
-    self.ble.uart.write(response.encode())
+    // Send response
+    String response = "BAT_RESPONSE:";
+    response += String(voltage, 2);
+    response += "\n";
+    ble_.sendToPrimary(response);
+}
 ```
 
 **Timing**: 10-50ms
@@ -1258,22 +1362,34 @@ For backward compatibility with BLE terminal apps.
 | `c` | `CALIBRATE_START` | Enter calibration |
 | `r` | `RESTART` | Restart glove |
 
-**Implementation** (menu_controller.py:104-121):
+**Implementation** (menu_controller.cpp):
 
-```python
-LEGACY_COMMAND_MAP = {
-    "g": "BATTERY",
-    "v": "PROFILE_GET",
-    "1": "PROFILE_LOAD:1",
-    "2": "PROFILE_LOAD:2",
-    "3": "PROFILE_LOAD:3",
-    "c": "CALIBRATE_START",
-    "r": "RESTART"
+```cpp
+// Legacy command map for single-character shortcuts
+const char* MenuController::mapLegacyCommand(const String& cmd) {
+    if (cmd.length() != 1) return nullptr;
+
+    switch (cmd.charAt(0)) {
+        case 'g': return "BATTERY";
+        case 'v': return "PROFILE_GET";
+        case '1': return "PROFILE_LOAD:1";
+        case '2': return "PROFILE_LOAD:2";
+        case '3': return "PROFILE_LOAD:3";
+        case 'c': return "CALIBRATE_START";
+        case 'r': return "RESTART";
+        default:  return nullptr;
+    }
 }
 
-# Command processing
-if len(cmd) == 1 and cmd in LEGACY_COMMAND_MAP:
-    cmd = LEGACY_COMMAND_MAP[cmd]
+// Command processing
+void MenuController::processCommand(const String& rawCmd) {
+    String cmd = rawCmd;
+    const char* mapped = mapLegacyCommand(cmd);
+    if (mapped) {
+        cmd = mapped;
+    }
+    // Continue with normal command processing...
+}
 ```
 
 **Note**: All legacy commands work with modern response format (KEY:VALUE with `\x04`)
@@ -1293,44 +1409,40 @@ KEY2:VALUE2\n
 ```
 
 **Example**:
-```python
-# Python
-response = {
-    "STATUS": "LOADED",
-    "PROFILE": "Noisy VCR"
-}
-send_response(uart, response)
+```cpp
+// C++
+String response = "STATUS:LOADED\nPROFILE:Noisy VCR\n\x04";
+ble_.sendToPhone(response);
 
-# BLE transmission
-b'STATUS:LOADED\nPROFILE:Noisy VCR\n\x04'
+// BLE transmission
+// "STATUS:LOADED\nPROFILE:Noisy VCR\n\x04"
 ```
 
-**Response Formatter** (response_formatter.py:16-46):
+**Response Formatter** (menu_controller.cpp):
 
-```python
-def send_response(uart, data_dict):
-    """
-    Format and send KEY:VALUE response with EOT terminator.
+```cpp
+void MenuController::sendResponse(const String& key, const String& value) {
+    /**
+     * Format and send KEY:VALUE response with EOT terminator.
+     */
+    String response = key + ":" + value + "\n\x04";
+    ble_.sendToPhone(response);
+}
 
-    Args:
-        uart: BLE UART service
-        data_dict: Dictionary of key-value pairs
-    """
-    if not uart:
-        return
-
-    # Build response string
-    lines = []
-    for key, value in data_dict.items():
-        # Skip internal keys like "COMMAND_0"
-        if not key.startswith("_"):
-            lines.append(f"{key}:{value}")
-
-    # Add EOT terminator
-    response = "\n".join(lines) + "\n\x04"
-
-    # Send via BLE
-    uart.write(response.encode())
+void MenuController::sendMultiResponse(const char* keys[], const String values[], uint8_t count) {
+    /**
+     * Format and send multiple KEY:VALUE pairs with EOT terminator.
+     */
+    String response = "";
+    for (uint8_t i = 0; i < count; i++) {
+        response += keys[i];
+        response += ":";
+        response += values[i];
+        response += "\n";
+    }
+    response += "\x04";
+    ble_.sendToPhone(response);
+}
 ```
 
 ---
@@ -1344,29 +1456,35 @@ ERROR:description\n
 ```
 
 **Example**:
-```python
-send_error(uart, "Invalid profile ID")
+```cpp
+sendError("Invalid profile ID");
 
-# BLE transmission
-b'ERROR:Invalid profile ID\n\x04'
+// BLE transmission
+// "ERROR:Invalid profile ID\n\x04"
 ```
 
-**Error Formatter** (response_formatter.py:49-62):
+**Error Formatter** (menu_controller.cpp):
 
-```python
-def send_error(uart, error_message):
-    """
-    Format and send error response.
+```cpp
+void MenuController::sendError(const char* errorMessage) {
+    /**
+     * Format and send error response.
+     *
+     * Args:
+     *     errorMessage: Error description string
+     */
+    String response = "ERROR:";
+    response += errorMessage;
+    response += "\n\x04";
+    ble_.sendToPhone(response);
+}
 
-    Args:
-        uart: BLE UART service
-        error_message: Error description string
-    """
-    if not uart:
-        return
-
-    response = f"ERROR:{error_message}\n\x04"
-    uart.write(response.encode())
+void MenuController::sendError(const String& errorMessage) {
+    /**
+     * Overload for String error messages.
+     */
+    sendError(errorMessage.c_str());
+}
 ```
 
 ---

@@ -1,7 +1,8 @@
 # BlueBuzzah Therapy Engine
-**Version:** 1.0.0
+**Version:** 2.0.0
 **Date:** 2025-01-23
 **Therapy Protocol:** Vibrotactile Coordinated Reset (vCR)
+**Platform:** Arduino C++ / PlatformIO
 
 ---
 
@@ -24,7 +25,7 @@ This document uses the following device role terminology:
 - **PRIMARY** (also known as VL, left glove): Generates patterns, controls therapy timing
 - **SECONDARY** (also known as VR, right glove): Receives synchronization commands
 
-Code examples use `role = "PRIMARY"` or `"SECONDARY"` for device role parameters.
+Code examples use `DeviceRole::PRIMARY` or `DeviceRole::SECONDARY` for device role parameters.
 
 ---
 
@@ -52,43 +53,54 @@ Code examples use `role = "PRIMARY"` or `"SECONDARY"` for device role parameters
 
 ### Module Structure
 
-**File**: `src/modules/vcr_engine.py` (491 lines)
+**Files**:
+- `src/therapy_engine.cpp` - Core therapy execution
+- `include/therapy_engine.h` - Class declarations
 
-**Two Main Functions**:
+**Key Class**: `TherapyEngine`
 
-1. **`run_vcr(uart, role, config)`** - Legacy standalone therapy execution
-2. **`run_vcr_session(uart, role, config, session_manager, callback)`** - Session-aware with command polling
+### Class Interface
 
-### Function Signatures
+```cpp
+// include/therapy_engine.h
 
-```python
-def run_vcr(uart_service, role, config):
-    """
-    Execute VCR therapy session (legacy standalone mode).
+class TherapyEngine {
+public:
+    TherapyEngine(HardwareController& hardware, BLEManager& ble, DeviceRole role);
 
-    Args:
-        uart_service: BLE UART for VL↔VR synchronization
-        role: "PRIMARY" or "SECONDARY"
-        config: Therapy configuration module (e.g., profiles.defaults)
+    // Session control
+    SessionResult runSession(const TherapyConfig& config);
+    void pause();
+    void resume();
+    void stop();
 
-    Returns:
-        None (runs until TIME_END reached)
-    """
+    // State queries
+    bool isRunning() const;
+    bool isPaused() const;
+    uint32_t getElapsedTime() const;
+    uint32_t getMacrocycleCount() const;
 
-def run_vcr_session(uart_service, role, config, session_manager, command_handler_callback=None):
-    """
-    Execute VCR therapy with session state management.
+private:
+    HardwareController& hardware_;
+    BLEManager& ble_;
+    DeviceRole role_;
 
-    Args:
-        uart_service: BLE UART for synchronization
-        role: "PRIMARY" or "SECONDARY"
-        config: Therapy configuration (dict or module)
-        session_manager: SessionManager instance
-        command_handler_callback: Optional callback for BLE command processing
+    // Session state
+    bool running_;
+    bool paused_;
+    uint32_t sessionStartTime_;
+    uint32_t macrocycleCount_;
 
-    Returns:
-        str: "COMPLETED" | "STOPPED" | "ERROR"
-    """
+    // Pattern generation
+    uint8_t patternBuffer_[4];
+    uint32_t randomSeed_;
+
+    // Internal methods
+    void generatePattern(bool mirror);
+    void executeBuzzSequence(const uint8_t* pattern);
+    bool synchronizeWithSecondary(uint8_t sequenceIndex);
+    void waitForPrimaryCommand();
+};
 ```
 
 ### Execution Flow
@@ -96,13 +108,13 @@ def run_vcr_session(uart_service, role, config, session_manager, command_handler
 ```mermaid
 flowchart TD
     A[Start] --> B[Display Battery Status]
-    B --> C[Initialize Pattern Lists]
+    B --> C[Initialize Pattern Generator]
     C --> D{Jitter Enabled?}
     D -->|Yes| E[PRIMARY: Generate Seed]
     D -->|No| F[Use Default Seed]
-    E --> G[Broadcast Seed to VR]
-    G --> H[VR: Wait for Seed]
-    H --> I[Both: random.seed(SHARED_SEED)]
+    E --> G[Broadcast Seed to SECONDARY]
+    G --> H[SECONDARY: Wait for Seed]
+    H --> I[Both: randomSeed(SHARED_SEED)]
     F --> I
     I --> J[Initialize Haptic Controller]
     J --> K[Flash Blue LED 5x]
@@ -116,15 +128,14 @@ flowchart TD
     Q -->|No| S[Execute 3 Buzz Sequences]
     R --> S
     S --> T[Relax Breaks x2]
-    T --> U[Garbage Collection]
-    U --> V{Sync LED?}
-    V -->|Yes| W[Flash Dark Blue]
-    V -->|No| L
-    W --> L
+    T --> U{Sync LED?}
+    U -->|Yes| V[Flash Dark Blue]
+    U -->|No| L
+    V --> L
     P --> M
-    N --> X[Display Final Battery]
-    X --> Y[All Motors Off]
-    Y --> Z[End]
+    N --> W[Display Final Battery]
+    W --> X[All Motors Off]
+    X --> Y[End]
 ```
 
 ---
@@ -133,35 +144,34 @@ flowchart TD
 
 ### Permutation Strategy (RNDP)
 
-**Algorithm** (vcr_engine.py:78-131):
+**Algorithm** (`src/therapy_engine.cpp`):
 
-```python
-# 1. Pre-generate all permutations (one-time allocation)
-from adafruit_itertools import permutations
+```cpp
+// Pre-allocated permutation tables (compile-time constant)
+// All 24 permutations of 4 elements (4! = 24)
+static const uint8_t PERMUTATIONS[24][4] = {
+    {0, 1, 2, 3}, {0, 1, 3, 2}, {0, 2, 1, 3}, {0, 2, 3, 1},
+    {0, 3, 1, 2}, {0, 3, 2, 1}, {1, 0, 2, 3}, {1, 0, 3, 2},
+    {1, 2, 0, 3}, {1, 2, 3, 0}, {1, 3, 0, 2}, {1, 3, 2, 0},
+    {2, 0, 1, 3}, {2, 0, 3, 1}, {2, 1, 0, 3}, {2, 1, 3, 0},
+    {2, 3, 0, 1}, {2, 3, 1, 0}, {3, 0, 1, 2}, {3, 0, 2, 1},
+    {3, 1, 0, 2}, {3, 1, 2, 0}, {3, 2, 0, 1}, {3, 2, 1, 0}
+};
 
-L_RNDP = list(permutations(range(0, 4)))  # 24 patterns for LEFT (fingers 0-3)
-R_RNDP = list(permutations(range(4, 8)))  # 24 patterns for RIGHT (fingers 4-7)
+void TherapyEngine::generatePattern(bool mirror) {
+    // Select random permutation for left hand
+    uint8_t leftIndex = random(24);
+    memcpy(leftPattern_, PERMUTATIONS[leftIndex], 4);
 
-# 2. Seed random number generator (synchronized VL↔VR)
-SHARED_SEED = int(time.monotonic() * 1000) % 1000000  # PRIMARY generates
-random.seed(SHARED_SEED)  # Both gloves apply same seed
-
-# 3. Generate buzz sequence for each macrocycle
-def rndp_sequence():
-    """Generate random permutation sequence"""
-    pattern_left_rndp = random.choice(L_RNDP)   # e.g., (2, 0, 3, 1)
-
-    if config.MIRROR:
-        # Symmetric bilateral pattern: RIGHT mirrors LEFT (same indices 0-4)
-        pattern_right_rndp = pattern_left_rndp.copy()
-        # LEFT: (2, 0, 3, 1) → RIGHT: (2, 0, 3, 1) - identical sequence
-    else:
-        # Independent bilateral pattern: RIGHT randomly chosen
-        pattern_right_rndp = random.choice(R_RNDP)  # e.g., (5, 7, 4, 6)
-
-    # 4. Zip left and right patterns for simultaneous execution
-    return zip(pattern_left_rndp, pattern_right_rndp)
-    # Returns: [(2, 5), (0, 7), (3, 4), (1, 6)] for 4 fingers
+    if (mirror) {
+        // Mirrored: same finger sequence on both hands
+        memcpy(rightPattern_, leftPattern_, 4);
+    } else {
+        // Independent: different random permutation for right hand
+        uint8_t rightIndex = random(24);
+        memcpy(rightPattern_, PERMUTATIONS[rightIndex], 4);
+    }
+}
 ```
 
 **Pattern Space**:
@@ -170,28 +180,53 @@ def rndp_sequence():
 - Total combinations (mirrored): 24 patterns (L determines R)
 - Total combinations (non-mirrored): 24 × 24 = 576 unique patterns
 
-**Bilateral Mirroring** (src/therapy.py:160-169):
+**Bilateral Mirroring** (`src/therapy_engine.cpp`):
 
-Mirroring is controlled by the `mirror_pattern` parameter based on vCR type:
+Mirroring is controlled by the `mirrorPattern` parameter based on vCR type:
 
-| vCR Type | `mirror_pattern` | Behavior | Rationale |
-|----------|------------------|----------|-----------|
-| Noisy vCR | `True` | Same finger on both hands | Avoids bilateral masking interference |
-| Regular vCR | `False` | Independent sequences per hand | Increases spatial randomization for synaptic decoupling |
+| vCR Type | `mirrorPattern` | Behavior | Rationale |
+|----------|-----------------|----------|-----------|
+| Noisy vCR | `true` | Same finger on both hands | Avoids bilateral masking interference |
+| Regular vCR | `false` | Independent sequences per hand | Increases spatial randomization for synaptic decoupling |
 
-```python
-# Generate left hand sequence (random permutation)
-left_sequence = list(range(num_fingers))
-_shuffle_in_place(left_sequence)
+```cpp
+void TherapyEngine::generateBuzzSequence(uint8_t* sequence, bool mirrorPattern) {
+    // Generate left hand sequence using Fisher-Yates shuffle
+    uint8_t leftSequence[NUM_FINGERS];
+    for (uint8_t i = 0; i < NUM_FINGERS; i++) {
+        leftSequence[i] = i;
+    }
+    shuffleArray(leftSequence, NUM_FINGERS);
 
-# Generate right hand sequence based on mirror setting
-if mirror_pattern:
-    # Mirrored: same finger on both hands (for noisy vCR)
-    right_sequence = left_sequence.copy()
-else:
-    # Non-mirrored: independent random sequence (for regular vCR)
-    right_sequence = list(range(num_fingers))
-    _shuffle_in_place(right_sequence)
+    // Generate right hand sequence based on mirror setting
+    uint8_t rightSequence[NUM_FINGERS];
+    if (mirrorPattern) {
+        // Mirrored: same finger on both hands (for noisy vCR)
+        memcpy(rightSequence, leftSequence, NUM_FINGERS);
+    } else {
+        // Non-mirrored: independent random sequence (for regular vCR)
+        for (uint8_t i = 0; i < NUM_FINGERS; i++) {
+            rightSequence[i] = i;
+        }
+        shuffleArray(rightSequence, NUM_FINGERS);
+    }
+
+    // Combine into sequence buffer
+    for (uint8_t i = 0; i < NUM_FINGERS; i++) {
+        sequence[i * 2] = leftSequence[i];
+        sequence[i * 2 + 1] = rightSequence[i];
+    }
+}
+
+// Fisher-Yates shuffle
+void TherapyEngine::shuffleArray(uint8_t* array, uint8_t size) {
+    for (uint8_t i = size - 1; i > 0; i--) {
+        uint8_t j = random(i + 1);
+        uint8_t temp = array[i];
+        array[i] = array[j];
+        array[j] = temp;
+    }
+}
 ```
 
 Both hands use finger indices 0-3, with the hardware wiring ensuring each channel maps to the same anatomical finger on both gloves (channel 0 = pinky on both, etc.).
@@ -200,56 +235,73 @@ Both hands use finger indices 0-3, with the hardware wiring ensuring each channe
 
 **Why Needed?** Both gloves must generate identical random patterns for bilateral symmetry.
 
-**PRIMARY Sequence** (vcr_engine.py:82-102):
+**PRIMARY Sequence** (`src/therapy_engine.cpp`):
 
-```python
-if config.JITTER != 0 and role == "PRIMARY":
-    # 1. Generate seed from current time
-    SHARED_SEED = int(time.monotonic() * 1000) % 1000000  # 0-999999
+```cpp
+bool TherapyEngine::synchronizeSeed() {
+    if (config_.jitter == 0 || role_ != DeviceRole::PRIMARY) {
+        return true;  // No sync needed
+    }
 
-    # 2. Apply locally
-    random.seed(SHARED_SEED)
+    // 1. Generate seed from current time
+    uint32_t sharedSeed = millis() % 1000000;
 
-    # 3. Broadcast to VR
-    uart_service.write(f"SEED:{SHARED_SEED}\n")
+    // 2. Apply locally
+    randomSeed(sharedSeed);
 
-    # 4. Wait for acknowledgment (2 second timeout)
-    seed_ack_received = False
-    ack_start = time.monotonic()
-    while not seed_ack_received and (time.monotonic() - ack_start) < 2.0:
-        if uart_service.in_waiting:
-            response = uart_service.readline().decode().strip()
-            if response == "SEED_ACK":
-                seed_ack_received = True
-        time.sleep(0.01)
+    // 3. Broadcast to SECONDARY
+    char seedMsg[32];
+    snprintf(seedMsg, sizeof(seedMsg), "SEED:%lu", sharedSeed);
+    ble_.sendToSecondary(seedMsg);
 
-    if not seed_ack_received:
-        print(f"[VL] [WARNING] No SEED_ACK - patterns may desync!")
+    // 4. Wait for acknowledgment (2 second timeout)
+    uint32_t ackStart = millis();
+    while (millis() - ackStart < 2000) {
+        if (ble_.hasSecondaryMessage()) {
+            String response = ble_.readSecondaryMessage();
+            if (response == "SEED_ACK") {
+                return true;
+            }
+        }
+        delay(10);
+    }
+
+    Serial.println(F("[PRIMARY] WARNING: No SEED_ACK - patterns may desync!"));
+    return false;
+}
 ```
 
-**SECONDARY Sequence** (vcr_engine.py:103-122):
+**SECONDARY Sequence** (`src/therapy_engine.cpp`):
 
-```python
-elif config.JITTER != 0 and role == "SECONDARY":
-    # 1. Wait for seed from PRIMARY (5 second timeout)
-    seed_received = False
-    seed_start = time.monotonic()
-    while not seed_received and (time.monotonic() - seed_start) < 5.0:
-        if uart_service.in_waiting:
-            message = uart_service.readline().decode().strip()
-            if message.startswith("SEED:"):
-                # 2. Extract and apply seed
-                SHARED_SEED = int(message.split(":")[1])
-                random.seed(SHARED_SEED)
+```cpp
+bool TherapyEngine::waitForSeed() {
+    if (config_.jitter == 0 || role_ != DeviceRole::SECONDARY) {
+        return true;  // No sync needed
+    }
 
-                # 3. Send acknowledgment
-                uart_service.write("SEED_ACK\n")
-                seed_received = True
-        time.sleep(0.01)
+    // 1. Wait for seed from PRIMARY (5 second timeout)
+    uint32_t seedStart = millis();
+    while (millis() - seedStart < 5000) {
+        if (ble_.hasPrimaryMessage()) {
+            String message = ble_.readPrimaryMessage();
 
-    if not seed_received:
-        print(f"[VR] [WARNING] No seed received! Using default {SHARED_SEED}")
-        random.seed(123456)  # Fallback to default
+            if (message.startsWith("SEED:")) {
+                // 2. Extract and apply seed
+                uint32_t sharedSeed = message.substring(5).toInt();
+                randomSeed(sharedSeed);
+
+                // 3. Send acknowledgment
+                ble_.sendToPrimary("SEED_ACK");
+                return true;
+            }
+        }
+        delay(10);
+    }
+
+    Serial.println(F("[SECONDARY] WARNING: No seed received! Using default"));
+    randomSeed(123456);  // Fallback to default
+    return false;
+}
 ```
 
 **Why Only When JITTER != 0?**
@@ -260,223 +312,225 @@ elif config.JITTER != 0 and role == "SECONDARY":
 
 **Physical Layout**:
 ```
-LEFT GLOVE (VL):          RIGHT GLOVE (VR):
-0: Thumb                  4: Thumb
-1: Index                  5: Index
-2: Middle                 6: Middle
-3: Ring                   7: Ring
+LEFT GLOVE (PRIMARY):        RIGHT GLOVE (SECONDARY):
+0: Thumb                     0: Thumb
+1: Index                     1: Index
+2: Middle                    2: Middle
+3: Ring                      3: Ring
 ```
 
 **Pattern Example** (non-mirrored):
-```python
-# Macrocycle 1
-pattern = [(2, 5), (0, 7), (3, 4), (1, 6)]
+```cpp
+// Macrocycle 1: Generated sequence
+uint8_t sequence[8] = {2, 1, 0, 3, 3, 0, 1, 2};
+// Pairs: (L2,R1), (L0,R3), (L3,R0), (L1,R2)
 
-# Execution sequence:
-# Buzz 1: LEFT Middle  (2) + RIGHT Index  (5)
-# Buzz 2: LEFT Thumb   (0) + RIGHT Ring   (7)
-# Buzz 3: LEFT Ring    (3) + RIGHT Thumb  (4)
-# Buzz 4: LEFT Index   (1) + RIGHT Middle (6)
+// Execution sequence:
+// Buzz 1: LEFT Middle (2) + RIGHT Index  (1)
+// Buzz 2: LEFT Thumb  (0) + RIGHT Ring   (3)
+// Buzz 3: LEFT Ring   (3) + RIGHT Thumb  (0)
+// Buzz 4: LEFT Index  (1) + RIGHT Middle (2)
 ```
 
 ---
 
 ## Haptic Control
 
-### HapticController Class
+### HardwareController Class
 
-**File**: `src/modules/haptic_controller.py` (306 lines)
+**Files**:
+- `src/hardware.cpp` - Hardware implementation
+- `include/hardware.h` - Class declarations
 
-**Initialization** (lines 54-182):
+**Initialization** (`src/hardware.cpp`):
 
-```python
-class HapticController:
-    def __init__(self, config):
-        self.config = config
-        self.drivers = []  # List of 4 DRV2605 instances
-        self.i2c = None
-        self.mux = None
+```cpp
+class HardwareController {
+public:
+    HardwareController();
 
-        # Initialize I2C with aggressive retry logic
-        self._setup_i2c_and_drivers()
+    bool begin();
+
+    // Motor control
+    void setMotorAmplitude(uint8_t channel, uint8_t amplitude);
+    void allMotorsOff();
+    void buzzFinger(uint8_t channel, uint16_t durationMs);
+
+    // LED control
+    void setLED(uint32_t color);
+    void flashLED(uint32_t color, uint16_t durationMs, uint8_t count);
+
+    // Battery
+    float getBatteryVoltage();
+    uint8_t getBatteryPercent();
+
+private:
+    Adafruit_DRV2605 drivers_[NUM_FINGERS];
+    TCA9548A mux_;
+    Adafruit_NeoPixel pixel_;
+
+    bool initI2C();
+    bool initMotors();
+    void selectMuxChannel(uint8_t channel);
+    void configureDriver(uint8_t channel, const TherapyConfig& config);
+};
 ```
 
-**I2C Hardware Setup** (lines 69-181):
+**I2C Hardware Setup** (`src/hardware.cpp`):
 
-```python
-def _setup_i2c_and_drivers(self):
-    # 1. Initialize I2C bus (3 retries at 100kHz)
-    for attempt in range(3):
-        try:
-            self.i2c = board.I2C()
-            break
-        except RuntimeError:
-            time.sleep(0.5)
+```cpp
+bool HardwareController::begin() {
+    // 1. Initialize I2C bus at 400kHz
+    Wire.begin();
+    Wire.setClock(400000);
 
-    # 2. Fallback: Manual init with frequency stepping (100kHz → 50kHz → 10kHz)
-    if not initialized:
-        frequencies = [100000, 50000, 10000]
-        for freq in frequencies:
-            try:
-                self.i2c = busio.I2C(board.SCL, board.SDA, frequency=freq)
-                if self.i2c.try_lock():
-                    self.i2c.unlock()
-                    break
-            except RuntimeError:
-                continue
+    // 2. Initialize TCA9548A multiplexer
+    if (!mux_.begin(MUX_I2C_ADDR, Wire)) {
+        Serial.println(F("ERROR: TCA9548A not found"));
+        return false;
+    }
 
-    # 3. Initialize TCA9548A multiplexer
-    self.mux = adafruit_tca9548a.PCA9546A(self.i2c)
+    // 3. Initialize DRV2605 drivers on each mux channel
+    for (uint8_t ch = 0; ch < NUM_FINGERS; ch++) {
+        selectMuxChannel(ch);
 
-    # 4. Scan I2C buses (diagnostic)
-    addresses = self.i2c.scan()
-    for channel in range(4):
-        addresses = self.mux[channel].scan()
+        if (!drivers_[ch].begin()) {
+            Serial.print(F("WARNING: DRV2605 not found on channel "));
+            Serial.println(ch);
+            continue;
+        }
 
-    # 5. Initialize DRV2605 drivers on each mux port
-    for port in self.mux:
-        try:
-            driver = adafruit_drv2605.DRV2605(port)
-            self.drivers.append(driver)
-        except ValueError:
-            self.drivers.append(False)  # No driver on this port
+        // Configure for RTP mode
+        configureDriver(ch, defaultConfig_);
+    }
 
-    # 6. Configure each driver
-    for driver in self.drivers:
-        if driver:
-            self._configure_driver(driver, self.config)
+    // 4. Initialize NeoPixel LED
+    pixel_.begin();
+    pixel_.clear();
+    pixel_.show();
+
+    Serial.println(F("Hardware initialization complete"));
+    return true;
+}
 ```
 
 ### Motor Control Methods
 
-**Activate Fingers** (lines 257-271):
+**Activate Fingers** (`src/hardware.cpp`):
 
-```python
-def fingers_on(self, fingers):
-    """
-    Activate specified fingers with random amplitude.
+```cpp
+void HardwareController::fingersOn(const uint8_t* fingers, uint8_t count,
+                                    uint8_t amplitudeMin, uint8_t amplitudeMax) {
+    for (uint8_t i = 0; i < count; i++) {
+        uint8_t channel = fingers[i];
 
-    Args:
-        fingers: Iterable of finger indices or (finger, ...) tuples
-    """
-    for finger in fingers:
-        actual_finger = finger[0] if isinstance(finger, tuple) else finger
+        if (channel < NUM_FINGERS) {
+            selectMuxChannel(channel);
 
-        if 0 <= actual_finger < len(self.drivers) and self.drivers[actual_finger]:
-            # Random amplitude within configured range
-            amplitude = random.randint(
-                self.config.AMPLITUDE_MIN,
-                self.config.AMPLITUDE_MAX
-            )
-            self.drivers[actual_finger].realtime_value = amplitude
+            // Random amplitude within configured range
+            uint8_t amplitude = random(amplitudeMin, amplitudeMax + 1);
+            drivers_[channel].setRealtimeValue(amplitude);
+        }
+    }
+}
 ```
 
-**Deactivate Fingers** (lines 273-283):
+**Deactivate Fingers** (`src/hardware.cpp`):
 
-```python
-def fingers_off(self, fingers):
-    """Deactivate specified fingers."""
-    for finger in fingers:
-        actual_finger = finger[0] if isinstance(finger, tuple) else finger
+```cpp
+void HardwareController::fingersOff(const uint8_t* fingers, uint8_t count) {
+    for (uint8_t i = 0; i < count; i++) {
+        uint8_t channel = fingers[i];
 
-        if 0 <= actual_finger < len(self.drivers) and self.drivers[actual_finger]:
-            self.drivers[actual_finger].realtime_value = 0
+        if (channel < NUM_FINGERS) {
+            selectMuxChannel(channel);
+            drivers_[channel].setRealtimeValue(0);
+        }
+    }
+}
 ```
 
-**Buzz Sequence** (lines 285-299):
+**Buzz Sequence** (`src/therapy_engine.cpp`):
 
-```python
-def buzz_sequence(self, sequence):
-    """
-    Execute a buzz sequence (pattern of finger activations).
+```cpp
+void TherapyEngine::executeBuzzSequence(const uint8_t* sequence) {
+    // Each sequence has 4 finger activations
+    for (uint8_t i = 0; i < NUM_FINGERS; i++) {
+        uint8_t fingerIndex = sequence[i];
 
-    Args:
-        sequence: Iterable of finger combinations
-                  e.g., [(2, 5), (0, 7), (3, 4), (1, 6)]
-    """
-    for fingers in sequence:
-        # 1. Activate fingers
-        self.fingers_on(fingers)
+        // 1. Activate finger
+        hardware_.setMotorAmplitude(fingerIndex, config_.amplitude);
 
-        # 2. Hold for TIME_ON
-        time.sleep(self.config.TIME_ON)
+        // 2. Hold for TIME_ON
+        delay(config_.timeOnMs);
 
-        # 3. Deactivate fingers
-        self.fingers_off(fingers)
+        // 3. Deactivate finger
+        hardware_.setMotorAmplitude(fingerIndex, 0);
 
-        # 4. Wait TIME_OFF + jitter
-        time.sleep(
-            self.config.TIME_OFF +
-            random.uniform(-self.config.TIME_JITTER, self.config.TIME_JITTER)
-        )
+        // 4. Wait TIME_OFF + jitter
+        int16_t jitterMs = 0;
+        if (config_.jitter > 0) {
+            int16_t maxJitter = (config_.timeOnMs + config_.timeOffMs) *
+                               config_.jitter / 200;
+            jitterMs = random(-maxJitter, maxJitter + 1);
+        }
+        delay(config_.timeOffMs + jitterMs);
+    }
+}
 ```
 
-**Emergency Stop** (lines 301-305):
+**Emergency Stop** (`src/hardware.cpp`):
 
-```python
-def all_off(self):
-    """Turn off all haptic motors"""
-    for driver in self.drivers:
-        if driver:
-            driver.realtime_value = 0
+```cpp
+void HardwareController::allMotorsOff() {
+    for (uint8_t ch = 0; ch < NUM_FINGERS; ch++) {
+        selectMuxChannel(ch);
+        drivers_[ch].setRealtimeValue(0);
+    }
+}
 ```
 
 ### Random Frequency Reconfiguration
 
 **Feature**: Optionally randomize actuator frequency each macrocycle
 
-**Method** (lines 211-255):
+**Method** (`src/hardware.cpp`):
 
-```python
-def reconfigure_for_random_frequency(self, config):
-    """
-    Reconfigure drivers with randomized frequency (if enabled).
-    """
-    if not config.RANDOM_FREQ:
-        return
+```cpp
+void HardwareController::reconfigureForRandomFrequency(const TherapyConfig& config) {
+    if (!config.randomFreq) {
+        return;
+    }
 
-    # Reinitialize drivers
-    self.drivers = []
-    for port in self.mux:
-        try:
-            self.drivers.append(adafruit_drv2605.DRV2605(port))
-        except ValueError:
-            self.drivers.append(False)
+    for (uint8_t ch = 0; ch < NUM_FINGERS; ch++) {
+        selectMuxChannel(ch);
 
-    # Configure each driver with random frequency
-    for driver in self.drivers:
-        if driver:
-            # Set actuator type
-            if config.ACTUATOR_TYPE == "LRA":
-                driver.use_LRA()
-            else:
-                driver.use_ERM()
+        // Set actuator type
+        if (config.actuatorType == ActuatorType::LRA) {
+            drivers_[ch].useLRA();
+        } else {
+            drivers_[ch].useERM();
+        }
 
-            # Set open-loop mode
-            control3 = driver._read_u8(0x1D)
-            driver._write_u8(0x1D, control3 | 0x21)
+        // Enable open-loop mode
+        uint8_t control3 = drivers_[ch].readRegister8(DRV2605_REG_CONTROL3);
+        drivers_[ch].writeRegister8(DRV2605_REG_CONTROL3, control3 | 0x21);
 
-            # Set peak voltage
-            driver._write_u8(0x17, int(config.ACTUATOR_VOLTAGE / 0.02122))
+        // Set peak voltage
+        uint8_t voltageReg = (uint8_t)(config.actuatorVoltage / 0.02122f);
+        drivers_[ch].writeRegister8(DRV2605_REG_OVERDRIVE, voltageReg);
 
-            # Set driving frequency (randomized)
-            freq = random.randrange(
-                config.ACTUATOR_FREQL,   # Low bound (e.g., 210 Hz)
-                config.ACTUATOR_FREQH,   # High bound (e.g., 260 Hz)
-                5                         # Step size
-            )
-            driver._write_u8(0x20, int(1 / (freq * 0.00009849)))
+        // Set driving frequency (randomized)
+        uint16_t freq = random(config.freqLow, config.freqHigh + 1);
+        freq = (freq / 5) * 5;  // Round to nearest 5 Hz
+        uint8_t periodReg = (uint8_t)(1.0f / (freq * 0.00009849f));
+        drivers_[ch].writeRegister8(DRV2605_REG_LRA_PERIOD, periodReg);
 
-            # Activate RTP mode
-            driver.realtime_value = 0
-            driver.mode = adafruit_drv2605.MODE_REALTIME
-```
-
-**Usage** (vcr_engine.py:167-168):
-
-```python
-if config.RANDOM_FREQ:
-    haptic.reconfigure_for_random_frequency(config)
+        // Activate RTP mode
+        drivers_[ch].setRealtimeValue(0);
+        drivers_[ch].setMode(DRV2605_MODE_REALTIME);
+    }
+}
 ```
 
 **Performance Note**: Reinitializing drivers is expensive (~100-200ms). Only use when therapeutic benefit outweighs timing cost.
@@ -487,144 +541,124 @@ if config.RANDOM_FREQ:
 
 ### Main Therapy Loop
 
-**Legacy Mode** (vcr_engine.py:164-251):
+**Session Execution** (`src/therapy_engine.cpp`):
 
-```python
-# Main therapy loop - COMMAND-BASED SYNCHRONIZATION
-while time.time() < session_end_time:
+```cpp
+SessionResult TherapyEngine::runSession(const TherapyConfig& config) {
+    config_ = config;
+    running_ = true;
+    paused_ = false;
+    macrocycleCount_ = 0;
+    sessionStartTime_ = millis();
 
-    # Reconfigure for random frequency if enabled
-    if config.RANDOM_FREQ:
-        haptic.reconfigure_for_random_frequency(config)
+    uint32_t sessionDurationMs = config_.sessionMinutes * 60UL * 1000UL;
+    uint32_t sessionEndTime = sessionStartTime_ + sessionDurationMs;
 
-    buzz_cycle_count += 1
+    // Synchronize random seed if jitter enabled
+    if (role_ == DeviceRole::PRIMARY) {
+        synchronizeSeed();
+    } else {
+        waitForSeed();
+    }
 
-    if buzz_cycle_count == 1:
-        # Indicate start of FIRST buzz cycle with white LED
-        pixels.fill((255, 255, 255))
-        time.sleep(0.1)
-        pixels.fill((0, 0, 0))
+    // Indicate session start
+    hardware_.flashLED(COLOR_BLUE, 100, 5);
 
-    # Optional: Periodic sync for monitoring (every 10 cycles)
-    if role == "PRIMARY" and buzz_cycle_count % 10 == 0:
-        send_periodic_sync(uart_service, buzz_cycle_count)
+    // Main therapy loop - COMMAND-BASED SYNCHRONIZATION
+    while (millis() < sessionEndTime && running_) {
 
-    # Execute 3 buzz sequences with COMMAND-BASED SYNCHRONIZATION
-    for sequence_idx in range(3):
+        // Handle pause state
+        if (paused_) {
+            hardware_.allMotorsOff();
+            hardware_.flashLED(COLOR_YELLOW, 100, 1);
+            delay(100);
+            continue;
+        }
 
-        if role == "PRIMARY":
-            # PRIMARY: Send EXECUTE_BUZZ command
-            send_execute_buzz(uart_service, sequence_idx)
+        // Reconfigure for random frequency if enabled
+        if (config_.randomFreq) {
+            hardware_.reconfigureForRandomFrequency(config_);
+        }
 
-            # PRIMARY executes its own buzz sequence
-            haptic.buzz_sequence(rndp_sequence())
+        macrocycleCount_++;
 
-            # PRIMARY: Wait for SECONDARY's BUZZ_COMPLETE acknowledgment
-            ack_received = receive_buzz_complete(uart_service, sequence_idx, timeout_sec=3.0)
-            if not ack_received:
-                print(f"[VL] [WARNING] No BUZZ_COMPLETE from VR for sequence {sequence_idx}")
+        if (macrocycleCount_ == 1) {
+            // Indicate start of FIRST buzz cycle with white LED
+            hardware_.flashLED(COLOR_WHITE, 100, 1);
+        }
 
-        else:  # SECONDARY
-            # SECONDARY: Wait for EXECUTE_BUZZ command (BLOCKING)
-            received_idx = receive_execute_buzz(uart_service, timeout_sec=10.0)
+        // Execute 3 buzz sequences with COMMAND-BASED SYNCHRONIZATION
+        for (uint8_t seqIdx = 0; seqIdx < 3; seqIdx++) {
 
-            if received_idx is None:
-                # Timeout - PRIMARY disconnected
-                print(f"[VR] [ERROR] EXECUTE_BUZZ timeout! PRIMARY disconnected.")
-                haptic.all_off()
-                pixels.fill((255, 0, 0))
-                # Infinite loop to prevent restart
-                while True:
-                    pixels.fill((255, 0, 0))
-                    time.sleep(0.5)
-                    pixels.fill((0, 0, 0))
-                    time.sleep(0.5)
+            if (role_ == DeviceRole::PRIMARY) {
+                // PRIMARY: Send EXECUTE_BUZZ command
+                sendExecuteBuzz(seqIdx);
 
-            if received_idx != sequence_idx:
-                print(f"[VR] [WARNING] Sequence mismatch: expected {sequence_idx}, got {received_idx}")
+                // PRIMARY executes its own buzz sequence
+                generatePattern(config_.mirror);
+                executeBuzzSequence(leftPattern_);
 
-            # SECONDARY executes buzz sequence
-            haptic.buzz_sequence(rndp_sequence())
+                // PRIMARY: Wait for SECONDARY's BUZZ_COMPLETE acknowledgment
+                if (!receiveBuzzComplete(seqIdx, 3000)) {
+                    Serial.print(F("[PRIMARY] WARNING: No BUZZ_COMPLETE for seq "));
+                    Serial.println(seqIdx);
+                }
 
-            # SECONDARY: Send BUZZ_COMPLETE acknowledgment
-            send_buzz_complete(uart_service, sequence_idx)
+            } else {  // SECONDARY
+                // SECONDARY: Wait for EXECUTE_BUZZ command (BLOCKING)
+                int8_t receivedIdx = receiveExecuteBuzz(10000);
 
-    # After all 3 sequences, take relax breaks
-    time.sleep(config.TIME_RELAX)
-    time.sleep(config.TIME_RELAX)
+                if (receivedIdx < 0) {
+                    // Timeout - PRIMARY disconnected
+                    Serial.println(F("[SECONDARY] ERROR: EXECUTE_BUZZ timeout!"));
+                    hardware_.allMotorsOff();
+                    indicateError();
+                    return SessionResult::ERROR_DISCONNECTED;
+                }
 
-    # Garbage collection
-    gc.collect()
+                if (receivedIdx != seqIdx) {
+                    Serial.print(F("[SECONDARY] WARNING: Sequence mismatch: expected "));
+                    Serial.print(seqIdx);
+                    Serial.print(F(", got "));
+                    Serial.println(receivedIdx);
+                }
 
-    # Optional SYNC_LED flash at end of buzz macrocycle
-    if config.SYNC_LED:
-        pixels.fill((0, 0, 128))  # Dark blue flash
-        time.sleep(0.0125)
-        pixels.fill((0, 0, 0))
-        time.sleep(0.0125)
+                // SECONDARY executes buzz sequence
+                generatePattern(config_.mirror);
+                executeBuzzSequence(leftPattern_);
 
-# Session complete
-display_battery_status(DEVICE_TAG)
-haptic.all_off()
-```
+                // SECONDARY: Send BUZZ_COMPLETE acknowledgment
+                sendBuzzComplete(seqIdx);
+            }
+        }
 
-### Session-Aware Mode
+        // After all 3 sequences, take relax breaks
+        delay(config_.relaxTimeMs);
+        delay(config_.relaxTimeMs);
 
-**Enhancements** (vcr_engine.py:254-490):
+        // Optional SYNC_LED flash at end of buzz macrocycle
+        if (config_.syncLed) {
+            hardware_.flashLED(COLOR_DARK_BLUE, 12, 1);
+        }
+    }
 
-1. **Interruptible Execution**: Check session state every cycle
-2. **Pause Support**: Motors off, flash yellow LED
-3. **Command Polling**: Process BLE commands during therapy
-4. **Progress Tracking**: SessionManager integration
-5. **Graceful Termination**: Return status code
+    // Session complete
+    hardware_.displayBatteryStatus();
+    hardware_.allMotorsOff();
 
-**Key Differences**:
-
-```python
-# 1. Loop condition: Session manager instead of time
-while session_manager.is_active():
-
-    # 2. Pause handling
-    if session_manager.is_paused():
-        haptic.all_off()
-        pixels.fill((255, 255, 0))  # Yellow
-        time.sleep(0.1)
-        pixels.fill((0, 0, 0))
-
-        # Poll for commands during pause
-        if command_handler_callback:
-            command = session_manager.check_for_commands(uart_service)
-            if command:
-                command_handler_callback(command)
-
-        time.sleep(0.1)
-        continue
-
-    # 3. Check session completion
-    if session_manager.is_session_complete():
-        break
-
-    # ... normal therapy execution ...
-
-    # 4. Poll for commands during execution
-    if command_handler_callback:
-        command = session_manager.check_for_commands(uart_service)
-        if command:
-            command_handler_callback(command)
-
-# 5. Return termination reason
-if session_manager.is_idle():
-    return "STOPPED"  # User stopped manually
-else:
-    return "COMPLETED"  # Duration reached
+    if (!running_) {
+        return SessionResult::STOPPED;
+    }
+    return SessionResult::COMPLETED;
+}
 ```
 
 ### Timing Breakdown Per Macrocycle
 
 **Configuration** (default Noisy VCR):
-- TIME_ON = 0.100s (100ms)
-- TIME_OFF = 0.067s (67ms)
-- JITTER = 23.5% = 0.235 * (100 + 67) / 2 = ±19.6ms
+- TIME_ON = 100ms
+- TIME_OFF = 67ms
+- JITTER = 23.5% = ±19.6ms
 - TIME_RELAX = 4 * (TIME_ON + TIME_OFF) = 668ms
 
 **One Macrocycle**:
@@ -643,13 +677,13 @@ Buzz Sequence 3: 588-744ms
 Relax Period 1: 668ms
 Relax Period 2: 668ms
 
-Total per macrocycle: 3100-3568ms (avg 3334ms ≈ 3.3 seconds)
+Total per macrocycle: 3100-3568ms (avg 3334ms = 3.3 seconds)
 ```
 
 **Per Session** (120 minutes):
 
 ```
-Macrocycles per session: (120 * 60) / 3.334 ≈ 2,160 macrocycles
+Macrocycles per session: (120 * 60) / 3.334 = 2,160 macrocycles
 Total buzzes per glove: 2,160 * 3 * 4 = 25,920 finger activations
 Total therapy time: ~108 minutes (12 minutes spent in relax periods)
 ```
@@ -660,52 +694,59 @@ Total therapy time: ~108 minutes (12 minutes spent in relax periods)
 
 ### Profile Structure
 
-**Location**: `src/profiles/*.py`
+**Files**:
+- `src/profile_manager.cpp` - Profile loading/saving
+- `include/profile_manager.h` - Profile definitions
+- LittleFS storage for persistent profiles
 
-**Available Profiles**:
+**TherapyConfig Structure** (`include/types.h`):
 
-1. **reg_vcr.py** - Regular VCR (no jitter)
-2. **noisy_vcr.py** - Noisy VCR (23.5% jitter, mirrored) - **DEFAULT**
-3. **hybrid_vcr.py** - Hybrid VCR (mixed frequency)
-4. **custom_vcr.py** - User-defined parameters
-5. **defaults.py** - Active profile (loaded at boot)
+```cpp
+struct TherapyConfig {
+    // Actuator Configuration
+    ActuatorType actuatorType;     // LRA or ERM
+    float actuatorVoltage;         // Peak voltage (1.0-3.3V)
+    uint16_t actuatorFrequency;    // Nominal frequency (150-300 Hz)
+    bool randomFreq;               // Randomize frequency per cycle
+    uint16_t freqLow;              // Low frequency bound (Hz)
+    uint16_t freqHigh;             // High frequency bound (Hz)
 
-### Parameter Reference
+    // Amplitude Control
+    uint8_t amplitudeMin;          // Minimum intensity (0-127)
+    uint8_t amplitudeMax;          // Maximum intensity (0-127)
 
-**Complete Parameter Set** (defaults.py):
+    // Timing Parameters
+    uint16_t sessionMinutes;       // Session duration (1-180 minutes)
+    uint16_t timeOnMs;             // Buzz duration (50-500 ms)
+    uint16_t timeOffMs;            // Pause duration (20-200 ms)
+    uint16_t relaxTimeMs;          // Relax between sequences
+    uint8_t jitter;                // Temporal jitter (0-50%)
 
-```python
-# Actuator Configuration
-ACTUATOR_TYPE = "LRA"              # "LRA" or "ERM"
-ACTUATOR_VOLTAGE = 2.50            # Peak voltage (1.0-3.3V)
-ACTUATOR_FREQUENCY = 250           # Nominal frequency (150-300 Hz)
-RANDOM_FREQ = False                # Randomize frequency per cycle
-ACTUATOR_FREQL = 210               # Low frequency bound (if RANDOM_FREQ)
-ACTUATOR_FREQNOM = 250             # Nominal frequency
-ACTUATOR_FREQH = 260               # High frequency bound (if RANDOM_FREQ)
+    // Pattern Configuration
+    bool mirror;                   // Symmetric L/R patterns
 
-# Amplitude Control
-AMPLITUDE_MIN = 100                # Minimum intensity (0-100%)
-AMPLITUDE_MAX = 100                # Maximum intensity (0-100%)
+    // Visual Feedback
+    bool syncLed;                  // Flash LED at end of macrocycle
+};
 
-# Timing Parameters
-TIME_SESSION = 120                 # Session duration (1-180 minutes)
-TIME_ON = 0.100                    # Buzz duration (0.050-0.500 seconds)
-TIME_OFF = 0.067                   # Pause duration (0.020-0.200 seconds)
-TIME_RELAX = 4 * (TIME_ON + TIME_OFF)  # Relax between sequences
-JITTER = 23.5                      # Temporal jitter (0-50%)
-TIME_JITTER = (TIME_ON + TIME_OFF) * (JITTER / 100) / 2  # Calculated
-
-# Pattern Configuration
-PATTERN_TYPE = "RNDP"              # Always "RNDP" (Random Permutation)
-MIRROR = True                      # Symmetric L/R patterns
-
-# Visual Feedback
-SYNC_LED = True                    # Flash LED at end of macrocycle
-
-# System Configuration
-STARTUP_WINDOW = 30                # BLE command window (seconds)
-TIME_END = time.time() + 60 * TIME_SESSION  # Session end timestamp
+// Default configuration (Noisy VCR)
+static const TherapyConfig DEFAULT_CONFIG = {
+    .actuatorType = ActuatorType::LRA,
+    .actuatorVoltage = 2.50f,
+    .actuatorFrequency = 250,
+    .randomFreq = false,
+    .freqLow = 210,
+    .freqHigh = 260,
+    .amplitudeMin = 100,
+    .amplitudeMax = 127,
+    .sessionMinutes = 120,
+    .timeOnMs = 100,
+    .timeOffMs = 67,
+    .relaxTimeMs = 668,
+    .jitter = 24,  // 23.5% rounded
+    .mirror = true,
+    .syncLed = true
+};
 ```
 
 ### Profile Comparison
@@ -719,37 +760,43 @@ TIME_END = time.time() + 60 * TIME_SESSION  # Session end timestamp
 
 ### Profile Switching
 
-**Runtime Switching** (menu_controller.py:608-641):
+**Runtime Switching** (`src/menu_controller.cpp`):
 
-```python
-def _cmd_profile_load(self, profile_id):
-    """Load therapy profile by ID (1-3)"""
+```cpp
+void MenuController::handleProfileLoad(uint8_t profileId) {
+    // 1. Check if session is active
+    if (stateMachine_.isRunning()) {
+        ble_.sendError("Cannot modify parameters during active session");
+        return;
+    }
 
-    # 1. Check if session is active
-    if self.session_manager.is_running():
-        send_error(self.phone_uart, "Cannot modify parameters during active session")
-        return
+    // 2. Validate profile ID
+    if (profileId < 1 || profileId > MAX_PROFILES) {
+        ble_.sendError("Invalid profile ID");
+        return;
+    }
 
-    # 2. Validate profile ID
-    is_valid, error, pid = validate_profile_id(profile_id)
-    if not is_valid:
-        send_error(self.phone_uart, error)
-        return
+    // 3. Load profile via ProfileManager
+    TherapyConfig config;
+    if (!profileManager_.loadProfile(profileId, config)) {
+        ble_.sendError("Failed to load profile");
+        return;
+    }
 
-    # 3. Load profile via ProfileManager
-    success, message, params = self.profile_manager.load_profile(pid)
+    currentConfig_ = config;
 
-    if success:
-        # 4. Respond to phone
-        send_response(self.phone_uart, {
-            "STATUS": "LOADED",
-            "PROFILE": self.profile_manager.current_profile_name
-        })
+    // 4. Respond to phone
+    char response[64];
+    snprintf(response, sizeof(response),
+             "{\"STATUS\":\"LOADED\",\"PROFILE\":\"%s\"}",
+             profileManager_.getProfileName(profileId));
+    ble_.sendToPhone(response);
 
-        # 5. Sync to VR if PRIMARY
-        if self.role == "PRIMARY":
-            all_params = self.profile_manager.get_current_profile()
-            self._broadcast_param_update(all_params)
+    // 5. Sync to SECONDARY if PRIMARY
+    if (role_ == DeviceRole::PRIMARY) {
+        broadcastConfigUpdate(config);
+    }
+}
 ```
 
 **Note**: Profile changes only affect **next session**. Active sessions cannot be modified.
@@ -774,39 +821,44 @@ def _cmd_profile_load(self, profile_id):
 
 ### Driver Configuration Sequence
 
-**Method** (haptic_controller.py:183-210):
+**Method** (`src/hardware.cpp`):
 
-```python
-def _configure_driver(driver, config):
-    # 1. Set actuator type (LRA vs ERM)
-    if config.ACTUATOR_TYPE == "LRA":
-        driver.use_LRA()  # Sets FEEDBACK_CTRL[7] = 1
-    else:
-        driver.use_ERM()  # Sets FEEDBACK_CTRL[7] = 0
+```cpp
+void HardwareController::configureDriver(uint8_t channel, const TherapyConfig& config) {
+    selectMuxChannel(channel);
+    Adafruit_DRV2605& drv = drivers_[channel];
 
-    # 2. Enable open-loop mode (disable auto-resonance)
-    control3 = driver._read_u8(0x1D)
-    driver._write_u8(0x1D, control3 | 0x21)  # Set bits 5 and 0
-    # Bit 5: N_PWM_ANALOG (open-loop)
-    # Bit 0: LRA_OPEN_LOOP
+    // 1. Set actuator type (LRA vs ERM)
+    if (config.actuatorType == ActuatorType::LRA) {
+        drv.useLRA();  // Sets FEEDBACK_CTRL[7] = 1
+    } else {
+        drv.useERM();  // Sets FEEDBACK_CTRL[7] = 0
+    }
 
-    # 3. Set peak voltage (overdrive clamp)
-    # Formula: Voltage = Register * 0.02122V
-    # Range: 0-255 (0-5.6V)
-    voltage_value = int(config.ACTUATOR_VOLTAGE / 0.02122)
-    driver._write_u8(0x17, voltage_value)
-    # Example: 2.50V → 2.50 / 0.02122 ≈ 118
+    // 2. Enable open-loop mode (disable auto-resonance)
+    uint8_t control3 = drv.readRegister8(DRV2605_REG_CONTROL3);
+    drv.writeRegister8(DRV2605_REG_CONTROL3, control3 | 0x21);
+    // Bit 5: N_PWM_ANALOG (open-loop)
+    // Bit 0: LRA_OPEN_LOOP
 
-    # 4. Set driving frequency (LRA resonance period)
-    # Formula: Period = 1 / (Frequency * 0.00009849)
-    # Range: 150-300 Hz typical for LRAs
-    period_value = int(1 / (config.ACTUATOR_FREQUENCY * 0.00009849))
-    driver._write_u8(0x20, period_value)
-    # Example: 250 Hz → 1 / (250 * 0.00009849) ≈ 41
+    // 3. Set peak voltage (overdrive clamp)
+    // Formula: Voltage = Register * 0.02122V
+    // Range: 0-255 (0-5.6V)
+    uint8_t voltageValue = (uint8_t)(config.actuatorVoltage / 0.02122f);
+    drv.writeRegister8(DRV2605_REG_OVERDRIVE, voltageValue);
+    // Example: 2.50V -> 2.50 / 0.02122 = 118
 
-    # 5. Set initial amplitude and activate RTP mode
-    driver.realtime_value = 0  # Start silent
-    driver.mode = adafruit_drv2605.MODE_REALTIME  # 0x05
+    // 4. Set driving frequency (LRA resonance period)
+    // Formula: Period = 1 / (Frequency * 0.00009849)
+    // Range: 150-300 Hz typical for LRAs
+    uint8_t periodValue = (uint8_t)(1.0f / (config.actuatorFrequency * 0.00009849f));
+    drv.writeRegister8(DRV2605_REG_LRA_PERIOD, periodValue);
+    // Example: 250 Hz -> 1 / (250 * 0.00009849) = 41
+
+    // 5. Set initial amplitude and activate RTP mode
+    drv.setRealtimeValue(0);  // Start silent
+    drv.setMode(DRV2605_MODE_REALTIME);  // 0x05
+}
 ```
 
 ### Real-Time Playback (RTP) Mode
@@ -819,29 +871,29 @@ def _configure_driver(driver, config):
 
 **Amplitude Mapping**:
 
-```python
-# User intensity (0-100%) → DRV2605 value (0-127)
-drv_intensity = int((intensity / 100.0) * 127)
+```cpp
+// User intensity (0-100%) -> DRV2605 value (0-127)
+uint8_t drvIntensity = (uint8_t)((intensity / 100.0f) * 127);
 
-# Examples:
-# 0%   → 0   (motor off)
-# 50%  → 63  (half power)
-# 100% → 127 (full power)
+// Examples:
+// 0%   -> 0   (motor off)
+// 50%  -> 63  (half power)
+// 100% -> 127 (full power)
 ```
 
 **RTP Update Sequence**:
 
-```python
-# 1. Set amplitude
-driver.realtime_value = 63  # 50% intensity
+```cpp
+// 1. Select motor channel via multiplexer
+selectMuxChannel(fingerIndex);
 
-# 2. Trigger playback (automatically done by library)
-# driver.go = True  (handled internally)
+// 2. Set amplitude
+drivers_[fingerIndex].setRealtimeValue(63);  // 50% intensity
 
-# 3. Motor responds within ~1ms
+// 3. Motor responds within ~1ms
 
-# 4. Stop motor
-driver.realtime_value = 0
+// 4. Stop motor
+drivers_[fingerIndex].setRealtimeValue(0);
 ```
 
 ### I2C Multiplexer Routing
@@ -851,26 +903,28 @@ driver.realtime_value = 0
 ```
 nRF52840 I2C Bus (SCL/SDA)
   |
-  └── TCA9548A Multiplexer (0x70)
-        ├── Port 0: DRV2605 #1 (Thumb)   @ 0x5A
-        ├── Port 1: DRV2605 #2 (Index)   @ 0x5A
-        ├── Port 2: DRV2605 #3 (Middle)  @ 0x5A
-        └── Port 3: DRV2605 #4 (Ring)    @ 0x5A
+  +-- TCA9548A Multiplexer (0x70)
+        |-- Port 0: DRV2605 #1 (Thumb)   @ 0x5A
+        |-- Port 1: DRV2605 #2 (Index)   @ 0x5A
+        |-- Port 2: DRV2605 #3 (Middle)  @ 0x5A
+        +-- Port 3: DRV2605 #4 (Ring)    @ 0x5A
 ```
 
 **Why Multiplexer?** All DRV2605 chips have fixed address 0x5A. Multiplexer allows 4 chips on same bus.
 
-**Channel Selection**:
+**Channel Selection** (`src/hardware.cpp`):
 
-```python
-# Access motor #2 (Index finger)
-motor_channel = 1
-self.mux.select_channel(motor_channel)  # Route I2C to port 1
-self.drivers[motor_channel].realtime_value = 100  # Set amplitude
+```cpp
+void HardwareController::selectMuxChannel(uint8_t channel) {
+    if (channel >= NUM_FINGERS) return;
+    mux_.selectChannel(channel);
+}
 
-# Library handles this automatically via port iteration:
-for port in self.mux:
-    driver = adafruit_drv2605.DRV2605(port)
+// Usage example
+void HardwareController::setMotorAmplitude(uint8_t channel, uint8_t amplitude) {
+    selectMuxChannel(channel);
+    drivers_[channel].setRealtimeValue(amplitude);
+}
 ```
 
 ---
@@ -879,104 +933,98 @@ for port in self.mux:
 
 ### Memory Efficiency
 
-**Pre-allocation Strategy** (vcr_engine.py:78-79):
+**Static Allocation Strategy**:
 
-```python
-# ONE-TIME allocation at session start
-L_RNDP = list(permutations(range(0, 4)))  # 24 tuples
-R_RNDP = list(permutations(range(4, 8)))  # 24 tuples
+```cpp
+// Permutation table in flash (PROGMEM) - zero RAM usage
+static const uint8_t PERMUTATIONS[24][4] PROGMEM = {
+    {0, 1, 2, 3}, {0, 1, 3, 2}, {0, 2, 1, 3}, /* ... */
+};
 
-# Memory usage: 24 * 4 * 2 bytes * 2 lists ≈ 384 bytes
+// Pre-allocated pattern buffers
+class TherapyEngine {
+    uint8_t leftPattern_[NUM_FINGERS];   // 4 bytes
+    uint8_t rightPattern_[NUM_FINGERS];  // 4 bytes
+    // No heap allocation during therapy execution
+};
 ```
 
-**Bad Alternative** (creates garbage):
+**Memory Budget**:
 
-```python
-# DON'T DO THIS - allocates new lists every macrocycle
-def rndp_sequence():
-    L_RNDP = list(permutations(range(0, 4)))  # ❌ Allocates 384 bytes
-    R_RNDP = list(permutations(range(4, 8)))  # ❌ Allocates 384 bytes
-    # Over 2,000 macrocycles: 768KB allocated → OOM crash
 ```
+Static Allocations:
+  - Pattern tables (PROGMEM): 96 bytes flash
+  - Pattern buffers: 8 bytes RAM
+  - Driver objects: ~400 bytes RAM
+  - BLE buffers: ~1KB RAM
+  - Config structure: ~64 bytes RAM
 
-### Garbage Collection Strategy
-
-**Periodic Collection** (vcr_engine.py:234):
-
-```python
-# After each macrocycle (~3.3 seconds)
-gc.collect()
-```
-
-**Why After Macrocycles?**
-- Pattern generation creates temporary tuples
-- BLE message parsing allocates strings
-- ~20-30 collections per minute (minimal overhead)
-
-**Memory Pressure**:
-
-```python
-# Typical memory usage:
-# - Pattern lists: 384 bytes (persistent)
-# - Driver objects: ~2KB (persistent)
-# - BLE buffers: ~512 bytes (recycled)
-# - Temporary strings: ~200 bytes/macrocycle (garbage collected)
-#
-# Total footprint: ~5KB stable, ~200 bytes/cycle transient
-# Available RAM: ~256KB → Plenty of headroom
+Total firmware footprint: ~150KB flash, ~50KB RAM
+Available: 1MB flash, 256KB RAM -> Plenty of headroom
 ```
 
 ### Timing Optimization
 
 **Critical Path** (minimize jitter):
 
-```python
-# 1. Pattern generation: 0-5ms
-pattern = rndp_sequence()
+```cpp
+// 1. Pattern generation: <1ms (array copy, no allocation)
+generatePattern(config_.mirror);
 
-# 2. Motor activation: 1-2ms
-haptic.fingers_on(fingers)
+// 2. Motor activation: 1-2ms (I2C write)
+hardware_.setMotorAmplitude(fingerIndex, amplitude);
 
-# 3. Delay (non-critical): 100ms
-time.sleep(TIME_ON)
+// 3. Delay (non-critical): 100ms
+delay(config_.timeOnMs);
 
-# 4. Motor deactivation: 1-2ms
-haptic.fingers_off(fingers)
+// 4. Motor deactivation: 1-2ms
+hardware_.setMotorAmplitude(fingerIndex, 0);
 
-# Total critical time: 2-9ms (well within 100ms budget)
+// Total critical time: 2-4ms (well within 100ms budget)
 ```
 
-**Avoiding Blocking Operations**:
+**Non-Blocking BLE Handling**:
 
-```python
-# BAD: Blocking I2C read in critical path
-if uart.in_waiting:
-    msg = uart.readline()  # Blocks until \n received
-    haptic.buzz_sequence(pattern)  # Delayed
+```cpp
+// Good: Non-blocking message check
+void TherapyEngine::checkForCommands() {
+    if (ble_.hasMessage()) {
+        String msg = ble_.readMessage();
+        processCommand(msg);
+    }
+    // Continues immediately if no message
+}
 
-# GOOD: Non-blocking poll
-if uart.in_waiting:
-    msg = uart.readline()  # Only called if data ready
-haptic.buzz_sequence(pattern)  # No delay
+// Bad: Blocking read (avoid in therapy loop)
+// String msg = ble_.readMessageBlocking();  // DON'T DO THIS
 ```
 
 ### I2C Bus Optimization
 
-**Frequency Selection** (haptic_controller.py:80-134):
+**Frequency Selection**:
 
-```python
-# Try standard 100kHz first (most reliable)
-self.i2c = board.I2C()  # Default 100kHz
+```cpp
+// 400kHz Fast Mode - optimal for short wires
+Wire.setClock(400000);
 
-# Fallback to lower frequencies if needed
-# 100kHz → 50kHz → 10kHz
-# Lower frequency = more reliable, slightly slower
+// If signal integrity issues, fall back to:
+// 100kHz Standard Mode
+// Wire.setClock(100000);
 ```
 
-**Why Not 400kHz Fast Mode?**
-- Longer wires (glove to fingers) require slower speeds
-- 100kHz provides sufficient bandwidth (~12KB/s)
-- Lower frequency reduces electrical noise sensitivity
+**Batch Operations**:
+
+```cpp
+// Good: Minimize channel switches
+void HardwareController::allMotorsOff() {
+    for (uint8_t ch = 0; ch < NUM_FINGERS; ch++) {
+        selectMuxChannel(ch);  // 1 switch per motor
+        drivers_[ch].setRealtimeValue(0);
+    }
+}
+
+// Total I2C time: ~2ms for all 4 motors
+```
 
 ---
 
@@ -995,8 +1043,8 @@ self.i2c = board.I2C()  # Default 100kHz
 ### Safety Features
 
 1. **Battery monitoring**: Alert at <3.3V
-2. **Connection timeout**: Halt therapy if VL disconnects (10s)
-3. **Emergency stop**: `haptic.all_off()` immediately stops all motors
+2. **Connection timeout**: Halt therapy if PRIMARY disconnects (10s)
+3. **Emergency stop**: `allMotorsOff()` immediately stops all motors
 4. **Visual feedback**: LED indicators for errors
 5. **Authorization token**: Prevents unauthorized device use
 
@@ -1008,13 +1056,13 @@ self.i2c = board.I2C()  # Default 100kHz
 
 **Verification**:
 
-```python
-# Enable SYNC_LED in profile
-SYNC_LED = True  # Flash LED at end of each macrocycle
+```cpp
+// Enable SYNC_LED in profile
+config.syncLed = true;  // Flash LED at end of each macrocycle
 
-# Observe LED timing:
-# - Both gloves should flash within 20ms of each other
-# - If >50ms lag, check BLE connection quality
+// Observe LED timing:
+// - Both gloves should flash within 20ms of each other
+// - If >50ms lag, check BLE connection quality
 ```
 
 ---
@@ -1026,47 +1074,46 @@ SYNC_LED = True  # Flash LED at end of each macrocycle
 **Diagnostic Checklist**:
 
 1. **Check I2C connection**:
-   ```python
-   # Serial output should show:
-   # "I2C Primary addresses found: ['0x70']"
-   # "Secondary i2c Channel 0: ['0x5a']"
+   ```
+   Serial output should show:
+   "TCA9548A found at 0x70"
+   "DRV2605 found on channel 0"
    ```
 
 2. **Check driver initialization**:
-   ```python
-   # Serial output should show:
-   # "Begin haptic driver config..."
-   # "Haptic driver configuration complete!"
+   ```
+   Serial output should show:
+   "Hardware initialization complete"
    ```
 
 3. **Check voltage setting**:
-   ```python
-   # Ensure ACTUATOR_VOLTAGE >= 2.0V
-   # Too low = weak/no sensation
+   ```cpp
+   // Ensure actuatorVoltage >= 2.0V
+   // Too low = weak/no sensation
    ```
 
 4. **Check frequency**:
-   ```python
-   # Ensure ACTUATOR_FREQUENCY matches LRA resonance (~250 Hz)
-   # Off-resonance = weak sensation
+   ```cpp
+   // Ensure actuatorFrequency matches LRA resonance (~250 Hz)
+   // Off-resonance = weak sensation
    ```
 
 ### Synchronization Drift
 
-**Symptoms**: VL and VR buzz at noticeably different times
+**Symptoms**: PRIMARY and SECONDARY buzz at noticeably different times
 
 **Causes**:
-1. BLE connection interval >7.5ms (check `connection.connection_interval`)
-2. EXECUTE_BUZZ timeout (check VR serial logs for timeouts)
+1. BLE connection interval >7.5ms
+2. EXECUTE_BUZZ timeout (check SECONDARY serial logs)
 3. Pattern desync (check SEED_ACK received)
 
 **Fix**:
-```python
-# Restart both gloves
-# Monitor serial output for:
-# "[VL] Sent EXECUTE_BUZZ:0"
-# "[VR] Received EXECUTE_BUZZ:0"
-# Time delta should be <20ms
+```
+Restart both gloves
+Monitor serial output for:
+"[PRIMARY] Sent EXECUTE_BUZZ:0"
+"[SECONDARY] Received EXECUTE_BUZZ:0"
+Time delta should be <20ms
 ```
 
 ### Session Not Completing
@@ -1074,14 +1121,15 @@ SYNC_LED = True  # Flash LED at end of each macrocycle
 **Symptoms**: Therapy runs indefinitely
 
 **Causes**:
-1. `TIME_END` calculation error
-2. `session_manager` not initialized
-3. Clock rollover (after ~50 days uptime)
+1. Session duration calculation error
+2. `running_` flag not checked
+3. Clock overflow (after ~50 days uptime)
 
 **Fix**:
-```python
-# Check TIME_SESSION setting
-# Ensure session_manager.is_session_complete() called in loop
+```cpp
+// Verify session duration calculation
+uint32_t sessionDurationMs = config_.sessionMinutes * 60UL * 1000UL;
+// Use UL suffix for proper 32-bit math
 ```
 
 ---
@@ -1093,7 +1141,7 @@ SYNC_LED = True  # Flash LED at end of each macrocycle
 1. **Adaptive Jitter**: Adjust jitter based on therapy progress
 2. **Multi-Frequency Stimulation**: Simultaneously drive different fingers at different frequencies
 3. **Closed-Loop Control**: Adjust amplitude based on measured motor response
-4. **Session Logging**: Record buzz patterns to flash storage
+4. **Session Logging**: Record buzz patterns to LittleFS storage
 5. **Resume After Disconnect**: Save session state for recovery
 
 ### Research Extensions
@@ -1115,4 +1163,4 @@ Update this document when:
 
 **Last Updated:** 2025-01-23
 **Therapy Protocol Version:** vCR 1.0
-**Reviewed By:** Clinical Engineering Team
+**Platform:** Arduino C++ / PlatformIO
