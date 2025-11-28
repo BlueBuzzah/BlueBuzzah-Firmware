@@ -64,6 +64,9 @@ uint32_t heartbeatSequence = 0;
 // Connection state
 bool wasConnected = false;
 
+// Therapy state tracking (for detecting session end)
+bool wasTherapyRunning = false;
+
 // SECONDARY heartbeat monitoring
 uint32_t lastHeartbeatReceived = 0;  // Tracks last heartbeat from PRIMARY
 
@@ -107,6 +110,63 @@ void handleHeartbeatTimeout();
 // Serial-Only Commands (not available via BLE)
 void handleSerialCommand(const char* command);
 
+// Role Configuration Wait (blocks until role is set)
+void waitForRoleConfiguration();
+
+// =============================================================================
+// ROLE CONFIGURATION WAIT
+// =============================================================================
+
+/**
+ * @brief Block boot and wait for role configuration via Serial
+ *
+ * Called when device boots without a stored role. Blinks LED orange
+ * and waits for SET_ROLE:PRIMARY or SET_ROLE:SECONDARY command.
+ * Device auto-reboots after role is saved.
+ */
+void waitForRoleConfiguration() {
+    Serial.println(F("\n========================================"));
+    Serial.println(F(" DEVICE NOT CONFIGURED"));
+    Serial.println(F("========================================"));
+    Serial.println(F("Role not set. Send one of:"));
+    Serial.println(F("  SET_ROLE:PRIMARY"));
+    Serial.println(F("  SET_ROLE:SECONDARY"));
+    Serial.println(F("\nDevice will reboot after configuration."));
+    Serial.println(F("========================================\n"));
+
+    bool ledOn = false;
+    uint32_t lastBlink = 0;
+    const uint32_t BLINK_INTERVAL = 500;
+
+    while (true) {
+        // Blink LED orange
+        if (millis() - lastBlink >= BLINK_INTERVAL) {
+            lastBlink = millis();
+            ledOn = !ledOn;
+            if (ledOn) {
+                led.setColor(LED_COLOR_ORANGE);
+            } else {
+                led.off();
+            }
+        }
+
+        // Check for serial input
+        if (Serial.available()) {
+            String input = Serial.readStringUntil('\n');
+            input.trim();
+
+            // Only process SET_ROLE commands
+            if (input.startsWith("SET_ROLE:")) {
+                handleSerialCommand(input.c_str());
+                // handleSerialCommand will reboot after saving
+            } else if (input.length() > 0) {
+                Serial.println(F("[CONFIG] Only SET_ROLE command accepted."));
+                Serial.println(F("  Use: SET_ROLE:PRIMARY or SET_ROLE:SECONDARY"));
+            }
+        }
+    }
+}
+
 // =============================================================================
 // SETUP
 // =============================================================================
@@ -126,21 +186,28 @@ void setup() {
 
     printBanner();
 
-    // Initialize Profile Manager FIRST (needed for role determination)
-    Serial.println(F("\n--- Profile Manager Initialization ---"));
-    profiles.begin();
-    Serial.printf("[PROFILE] Initialized with %d profiles\n", profiles.getProfileCount());
-
-    // Determine device role (from settings.json or button override)
-    deviceRole = determineRole();
-    Serial.printf("\n[ROLE] Device configured as: %s\n", deviceRoleToString(deviceRole));
-
-    // Initialize LED
+    // Initialize LED FIRST (needed for configuration feedback)
     Serial.println(F("\n--- LED Initialization ---"));
     if (led.begin()) {
         led.setColor(Colors::BLUE);
         Serial.println(F("LED: OK"));
     }
+
+    // Initialize Profile Manager (needed for role determination)
+    Serial.println(F("\n--- Profile Manager Initialization ---"));
+    profiles.begin();
+    Serial.printf("[PROFILE] Initialized with %d profiles\n", profiles.getProfileCount());
+
+    // Check if device has a configured role
+    if (!profiles.hasStoredRole()) {
+        // Block and wait for role configuration via Serial
+        waitForRoleConfiguration();
+        // Note: waitForRoleConfiguration() never returns - it reboots after role is set
+    }
+
+    // Determine device role (from settings or button override)
+    deviceRole = determineRole();
+    Serial.printf("\n[ROLE] Device configured as: %s\n", deviceRoleToString(deviceRole));
 
     delay(500);
 
@@ -228,10 +295,30 @@ void loop() {
         }
     }
 
-    // Update therapy engine (PRIMARY only - generates patterns)
-    if (deviceRole == DeviceRole::PRIMARY) {
-        therapy.update();
+    // Update therapy engine (both roles - PRIMARY generates patterns for sync,
+    // SECONDARY needs this for standalone hardware tests)
+    therapy.update();
+
+    // Detect when therapy session ends (for resuming scanning on SECONDARY)
+    bool isTherapyRunning = therapy.isRunning();
+    if (wasTherapyRunning && !isTherapyRunning) {
+        // Therapy just stopped
+        Serial.println(F("\n+============================================================+"));
+        Serial.println(F("|  THERAPY TEST COMPLETE                                     |"));
+        Serial.println(F("+============================================================+\n"));
+
+        haptic.emergencyStop();
+        stateMachine.transition(StateTrigger::STOP_SESSION);
+        stateMachine.transition(StateTrigger::STOPPED);
+
+        // Resume scanning on SECONDARY after standalone test
+        if (deviceRole == DeviceRole::SECONDARY && !ble.isPrimaryConnected()) {
+            Serial.println(F("[TEST] Resuming scanning..."));
+            ble.setScannerAutoRestart(true);  // Re-enable health check
+            ble.startScanning(BLE_NAME);
+        }
     }
+    wasTherapyRunning = isTherapyRunning;
 
     // SECONDARY: Check for heartbeat timeout during active connection
     if (deviceRole == DeviceRole::SECONDARY && ble.isPrimaryConnected()) {
@@ -371,12 +458,14 @@ bool initializeBLE() {
 }
 
 bool initializeTherapy() {
-    // Set therapy engine callbacks (PRIMARY only)
+    // Set local motor callbacks (both roles need these for standalone tests)
+    therapy.setActivateCallback(onActivate);
+    therapy.setDeactivateCallback(onDeactivate);
+    therapy.setCycleCompleteCallback(onCycleComplete);
+
+    // Set BLE sync callback (PRIMARY only - sends commands to SECONDARY)
     if (deviceRole == DeviceRole::PRIMARY) {
         therapy.setSendCommandCallback(onSendCommand);
-        therapy.setActivateCallback(onActivate);
-        therapy.setDeactivateCallback(onDeactivate);
-        therapy.setCycleCompleteCallback(onCycleComplete);
     }
     return true;
 }
@@ -515,17 +604,14 @@ void onBLEMessage(uint16_t connHandle, const char* message) {
     Serial.printf("[RX] Handle: %d, Message: %s\n", connHandle, message);
 
     // Check for simple text commands first (for testing)
+    // Both PRIMARY and SECONDARY can run standalone tests for hardware verification
     if (strcmp(message, "TEST") == 0 || strcmp(message, "test") == 0) {
-        if (deviceRole == DeviceRole::PRIMARY) {
-            startTherapyTest();
-        }
+        startTherapyTest();
         return;
     }
 
     if (strcmp(message, "STOP") == 0 || strcmp(message, "stop") == 0) {
-        if (deviceRole == DeviceRole::PRIMARY) {
-            stopTherapyTest();
-        }
+        stopTherapyTest();
         return;
     }
 
@@ -662,23 +748,48 @@ void startTherapyTest() {
         return;
     }
 
+    // Get current profile
+    const TherapyProfile* profile = profiles.getCurrentProfile();
+    if (!profile) {
+        Serial.println(F("[TEST] No profile loaded!"));
+        return;
+    }
+
+    // Convert pattern type string to constant
+    uint8_t patternType = PATTERN_TYPE_RNDP;
+    if (strcmp(profile->patternType, "sequential") == 0) {
+        patternType = PATTERN_TYPE_SEQUENTIAL;
+    } else if (strcmp(profile->patternType, "mirrored") == 0) {
+        patternType = PATTERN_TYPE_MIRRORED;
+    }
+
+    // Stop scanning during standalone test (SECONDARY only)
+    if (deviceRole == DeviceRole::SECONDARY) {
+        ble.setScannerAutoRestart(false);  // Prevent health check from restarting
+        ble.stopScanning();
+        Serial.println(F("[TEST] Scanning paused for standalone test"));
+    }
+
     Serial.println(F("\n+============================================================+"));
-    Serial.println(F("|  STARTING 30-SECOND THERAPY TEST                          |"));
-    Serial.println(F("|  Pattern: RNDP | Jitter: 23.5% | Mirror: ON               |"));
+    Serial.println(F("|  STARTING 5-MINUTE THERAPY TEST  (send STOP to end)      |"));
+    Serial.printf("|  Profile: %-46s |\n", profile->name);
+    Serial.printf("|  Pattern: %-4s | Jitter: %5.1f%% | Mirror: %-3s             |\n",
+                  profile->patternType, profile->jitterPercent,
+                  profile->mirrorPattern ? "ON" : "OFF");
     Serial.println(F("+============================================================+\n"));
 
     // Update state machine
     stateMachine.transition(StateTrigger::START_SESSION);
 
-    // Start a 30-second test session
+    // Start 5-minute test using profile settings (send STOP to end early)
     therapy.startSession(
-        30,                     // 30 seconds
-        PATTERN_TYPE_RNDP,      // Random permutation
-        100.0f,                 // 100ms burst
-        67.0f,                  // 67ms off
-        23.5f,                  // 23.5% jitter
-        5,                      // 5 fingers
-        true                    // Mirrored
+        300,                        // 5 minutes (300 seconds)
+        patternType,
+        profile->timeOnMs,
+        profile->timeOffMs,
+        profile->jitterPercent,
+        profile->numFingers,
+        profile->mirrorPattern
     );
 }
 
@@ -698,6 +809,13 @@ void stopTherapyTest() {
     // Update state machine
     stateMachine.transition(StateTrigger::STOP_SESSION);
     stateMachine.transition(StateTrigger::STOPPED);
+
+    // Resume scanning after standalone test (SECONDARY only)
+    if (deviceRole == DeviceRole::SECONDARY) {
+        Serial.println(F("[TEST] Resuming scanning..."));
+        ble.setScannerAutoRestart(true);  // Re-enable health check
+        ble.startScanning(BLE_NAME);
+    }
 }
 
 // =============================================================================

@@ -20,6 +20,7 @@ BLEManager* g_bleManager = nullptr;
 BLEManager::BLEManager() :
     _role(DeviceRole::PRIMARY),
     _initialized(false),
+    _scannerAutoRestartEnabled(true),
     _connectCallback(nullptr),
     _disconnectCallback(nullptr),
     _messageCallback(nullptr)
@@ -132,7 +133,7 @@ void BLEManager::update() {
 
     // Periodic scanner health check for SECONDARY mode
     static uint32_t lastScanCheck = 0;
-    if (_role == DeviceRole::SECONDARY && (now - lastScanCheck >= 5000)) {
+    if (_role == DeviceRole::SECONDARY && _scannerAutoRestartEnabled && (now - lastScanCheck >= 5000)) {
         lastScanCheck = now;
         bool running = Bluefruit.Scanner.isRunning();
         Serial.printf("[BLE] Scanner health check: %s\n", running ? "RUNNING" : "STOPPED");
@@ -227,6 +228,10 @@ bool BLEManager::startScanning(const char* targetName) {
 void BLEManager::stopScanning() {
     Bluefruit.Scanner.stop();
     Serial.println(F("[BLE] Scanning stopped"));
+}
+
+void BLEManager::setScannerAutoRestart(bool enabled) {
+    _scannerAutoRestartEnabled = enabled;
 }
 
 bool BLEManager::isScanning() const {
@@ -699,7 +704,7 @@ void BLEManager::_onCentralDisconnect(uint16_t connHandle, uint8_t reason) {
 
 void BLEManager::_onScanCallback(ble_gap_evt_adv_report_t* report) {
     // Debug: confirm callback is being invoked with timestamp
-    Serial.printf("[SCAN-CB] Callback at %lums\n", millis());
+    // Serial.printf("[SCAN-CB] Callback at %lums\n", millis());
 
     if (!g_bleManager) {
         Serial.println(F("[SCAN-CB] ERROR: g_bleManager is NULL!"));
@@ -707,8 +712,8 @@ void BLEManager::_onScanCallback(ble_gap_evt_adv_report_t* report) {
     }
 
     // Check if we're actually supposed to be scanning
-    Serial.printf("[SCAN-CB] Scanner.isRunning(): %s\n",
-                  Bluefruit.Scanner.isRunning() ? "YES" : "NO");
+    // Serial.printf("[SCAN-CB] Scanner.isRunning(): %s\n",
+    //               Bluefruit.Scanner.isRunning() ? "YES" : "NO");
 
     static uint32_t scanCount = 0;
     scanCount++;
@@ -727,15 +732,15 @@ void BLEManager::_onScanCallback(ble_gap_evt_adv_report_t* report) {
     bool hasUartService = Bluefruit.Scanner.checkReportForService(report, g_bleManager->_clientUart);
 
     // Log all discovered devices (with or without names)
-    if (nameLen > 0) {
-        Serial.printf("[SCAN #%lu] '%s' RSSI:%d UART:%s\n",
-                      scanCount, name, report->rssi, hasUartService ? "YES" : "no");
-    } else {
-        // Log unnamed devices occasionally (every 10th)
-        if (scanCount % 10 == 0) {
-            Serial.printf("[SCAN #%lu] <unnamed> RSSI:%d\n", scanCount, report->rssi);
-        }
-    }
+    // if (nameLen > 0) {
+    //     Serial.printf("[SCAN #%lu] '%s' RSSI:%d UART:%s\n",
+    //                   scanCount, name, report->rssi, hasUartService ? "YES" : "no");
+    // } else {
+    //     // Log unnamed devices occasionally (every 10th)
+    //     if (scanCount % 10 == 0) {
+    //         Serial.printf("[SCAN #%lu] <unnamed> RSSI:%d\n", scanCount, report->rssi);
+    //     }
+    // }
 
     // Only connect to devices with UART service and matching name
     if (hasUartService && nameLen > 0) {

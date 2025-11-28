@@ -178,6 +178,15 @@ public:
     void stopScanning();
 
     /**
+     * @brief Enable/disable scanner auto-restart
+     * @param enabled If false, scanner won't auto-restart when stopped
+     *
+     * Use this during standalone therapy tests to prevent scanner from
+     * restarting while therapy is running.
+     */
+    void setScannerAutoRestart(bool enabled);
+
+    /**
      * @brief Check if currently scanning
      */
     bool isScanning() const;
@@ -323,6 +332,7 @@ public:
 private:
     DeviceRole _role;
     bool _initialized;
+    bool _scannerAutoRestartEnabled;  // Controls auto-restart during health check
     char _deviceName[32];
     char _targetName[32];  // For scanning (SECONDARY mode)
 
