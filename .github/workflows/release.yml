@@ -48,7 +48,7 @@ jobs:
         run: |
           # Sanitize version (replace whitespace with underscores)
           VERSION="${{ github.event.release.tag_name }}"
-          VERSION_SAFE=$(echo "$VERSION" | tr '[:space:]' '_')
+          VERSION_SAFE=$(echo "$VERSION" | xargs | tr '[:space:]' '_')
           SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
           ARCHIVE_NAME="BlueBuzzah-Firmware-${VERSION_SAFE}-${SHORT_SHA}"
 
