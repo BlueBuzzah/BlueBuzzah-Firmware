@@ -10,7 +10,7 @@
 | **Flash**      | 1 MB                              | ~800KB for user code           |
 | **Framework**  | Arduino                           | Via PlatformIO                 |
 | **Platform**   | nordicnrf52                       | Adafruit nRF52 BSP             |
-| **Filesystem** | LittleFS                          | Settings persistence           |
+| **Filesystem** | LittleFS                          | Internal settings persistence  |
 
 ---
 
@@ -38,7 +38,6 @@ Arduino C++ firmware for vibrotactile haptic feedback gloves with BLE connectivi
 │   ├── config.h                # Pin definitions, constants
 │   ├── types.h                 # Enums, structs, device roles
 │   └── [module].h              # Declarations for each .cpp
-├── data/                       # LittleFS filesystem (settings.json)
 └── BlueBuzzah-CircuitPython/   # Legacy reference (not active)
 ```
 
@@ -50,9 +49,11 @@ Arduino C++ firmware for vibrotactile haptic feedback gloves with BLE connectivi
 pio run                    # Compile
 pio run -t upload          # Flash firmware to device
 pio device monitor         # Open serial monitor (115200 baud)
-pio run -t uploadfs        # Upload LittleFS data/ folder
 pio run -t clean           # Clean build artifacts
 ```
+
+For PlatformIO functionality, refer to the official documentation:
+https://docs.platformio.org/en/latest/home/index.html
 
 ---
 
@@ -64,7 +65,7 @@ pio run -t clean           # Clean build artifacts
 | Adafruit DRV2605          | Haptic motor driver            | `<Adafruit_DRV2605.h>` |
 | Adafruit NeoPixel         | RGB status LED                 | `<Adafruit_NeoPixel.h>` |
 | TCA9548A                  | I2C multiplexer                | `<TCA9548A.h>`       |
-| Adafruit LittleFS         | Flash filesystem               | `<Adafruit_LittleFS.h>` |
+| Adafruit LittleFS         | Internal settings storage      | `<Adafruit_LittleFS.h>` |
 
 ---
 
@@ -128,7 +129,7 @@ nRF52840 MCU
 
 - Serial output at 115200 baud for debugging
 - BLE service uses Nordic UART Service (NUS)
-- Device role (PRIMARY/SECONDARY) stored in `settings.bin` (binary format)
+- Device role configured via serial: `SET_ROLE:PRIMARY` or `SET_ROLE:SECONDARY`
 - Build flags: `-DCFG_DEBUG=0 -DNRF52840_XXAA -w`
 
 ---
