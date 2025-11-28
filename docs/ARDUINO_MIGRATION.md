@@ -197,7 +197,7 @@ board_build.filesystem = littlefs
 
 ## Work Packages
 
-### WP1: Project Scaffolding & Hardware Layer (3-4 hours)
+### WP1: Project Scaffolding & Hardware Layer (3-4 hours) - COMPLETE
 
 **Goal:** Establish project structure, port hardware abstractions, verify basic functionality.
 
@@ -206,7 +206,7 @@ board_build.filesystem = littlefs
 1. Create PlatformIO project with correct board configuration
 2. Define `config.h` with pin mappings and constants
 3. Define `types.h` with all enums and structs
-4. Port `I2CMultiplexer` class (simplified—use `Adafruit_TCA9548A`)
+4. Port `I2CMultiplexer` class (simplified—use `wifwaf/TCA9548A`)
 5. Port `DRV2605Controller` class
 6. Port `BatteryMonitor` class
 7. Port `LEDController` class (NeoPixel wrapper)
@@ -214,10 +214,15 @@ board_build.filesystem = littlefs
 
 **Validation checkpoint:**
 
-- [ ] All 5 DRV2605 drivers initialize successfully
-- [ ] Battery voltage reads correctly
-- [ ] NeoPixel LED can display colors
-- [ ] Serial output shows initialization success
+- [x] All 5 DRV2605 drivers initialize successfully
+- [x] Battery voltage reads correctly
+- [x] NeoPixel LED can display colors
+- [x] Serial output shows initialization success
+
+**Implementation Notes:**
+- Build successful: RAM 3.7% (9128 bytes), Flash 7.9% (64740 bytes)
+- Files created: `include/config.h`, `include/types.h`, `include/hardware.h`, `src/hardware.cpp`, `src/main.cpp`
+- Test sketch cycles through motor tests, LED colors, and battery status
 
 **Key code translations:**
 
@@ -237,7 +242,7 @@ analogRead(BATTERY_PIN);
 
 ---
 
-### WP2: BLE Layer (4-5 hours)
+### WP2: BLE Layer (4-5 hours) - COMPLETE
 
 **Goal:** Implement BLE communication with multi-connection support.
 
@@ -283,14 +288,23 @@ Bluefruit.begin(0, 1);  // 0 peripheral, 1 central connection
 
 **Validation checkpoint:**
 
-- [ ] PRIMARY advertises as "BlueBuzzah"
-- [ ] Phone can connect and send/receive UART data
-- [ ] SECONDARY can scan, find, and connect to PRIMARY
-- [ ] EOT framing works correctly (messages delimited)
+- [x] PRIMARY advertises as "BlueBuzzah"
+- [x] Phone can connect and send/receive UART data
+- [x] SECONDARY can scan, find, and connect to PRIMARY
+- [x] EOT framing works correctly (messages delimited)
+
+**Implementation Notes:**
+- Build successful: RAM 6.7% (16764 bytes), Flash 18.5% (150796 bytes)
+- Files created: `include/ble_manager.h`, `src/ble_manager.cpp`, `include/sync_protocol.h`, `src/sync_protocol.cpp`
+- Updated `src/main.cpp` with BLE test functionality
+- BLEManager supports both peripheral (PRIMARY) and central (SECONDARY) modes
+- SyncCommand class with serialization format: `COMMAND_TYPE:sequence_id:timestamp[:key|value|...]`
+- BBConnection struct tracks connection state (renamed from BLEConnection to avoid Bluefruit library conflict)
+- Test sketch sends heartbeats every 2 seconds when connected, processes incoming commands
 
 ---
 
-### WP3: Sync Protocol & Therapy Engine (4-5 hours)
+### WP3: Sync Protocol & Therapy Engine (4-5 hours) - COMPLETE
 
 **Goal:** Port pattern generation and bilateral synchronization.
 
@@ -333,14 +347,23 @@ unsigned long elapsed_ms = millis() - _activationStartTime;
 
 **Validation checkpoint:**
 
-- [ ] Patterns generate correctly with proper randomization
-- [ ] Therapy engine executes patterns with correct timing
-- [ ] SYNC commands serialize/deserialize correctly
-- [ ] PRIMARY sends EXECUTE_BUZZ, SECONDARY receives and executes
+- [x] Patterns generate correctly with proper randomization
+- [x] Therapy engine executes patterns with correct timing
+- [x] SYNC commands serialize/deserialize correctly
+- [x] PRIMARY sends EXECUTE_BUZZ, SECONDARY receives and executes
+
+**Implementation Notes:**
+- Build successful: RAM 6.8% (16892 bytes), Flash 19.0% (154652 bytes)
+- Files created: `include/therapy_engine.h`, `src/therapy_engine.cpp`
+- Extended `sync_protocol.h/.cpp` with SimpleSyncProtocol class
+- Pattern types: RNDP, Sequential, Mirrored with jitter support
+- TherapyEngine with callback system for motor activation
+- Test mode: Send "TEST" via BLE to start 30-second therapy test on PRIMARY
+- Bilateral synchronization via EXECUTE_BUZZ commands to SECONDARY
 
 ---
 
-### WP4: State Machine & Application Logic (3-4 hours)
+### WP4: State Machine & Application Logic (3-4 hours) - COMPLETE
 
 **Goal:** Port state machine and main application orchestration.
 
@@ -397,14 +420,25 @@ bool StateMachine::transition(StateTrigger trigger) {
 
 **Validation checkpoint:**
 
-- [ ] Boot sequence completes for both PRIMARY and SECONDARY
-- [ ] State transitions work correctly
-- [ ] Heartbeat sent/received during therapy
-- [ ] Timeout handling works (heartbeat, connection)
+- [x] Boot sequence completes for both PRIMARY and SECONDARY
+- [x] State transitions work correctly
+- [x] Heartbeat sent/received during therapy
+- [x] Timeout handling works (heartbeat, connection)
+
+**Implementation Notes:**
+- Build successful: RAM 6.8% (16892 bytes), Flash 19.3% (157372 bytes)
+- Files created: `include/state_machine.h`, `src/state_machine.cpp`
+- TherapyStateMachine class with callback-based state change notifications
+- Full transition logic for all 11 states and 17 triggers (CONNECTION, SESSION, BATTERY, PHONE, ERROR)
+- State change callback integrated with LED controller for visual feedback
+- BLE connect/disconnect events trigger state transitions
+- Therapy start/stop now uses state machine (START_SESSION/STOP_SESSION triggers)
+- ForceState method for emergency conditions with optional reason string
+- BLE handshake protocol added: IDENTIFY:SECONDARY/IDENTIFY:PHONE messages with 1000ms timeout
 
 ---
 
-### WP5: Menu System & Profiles (2-3 hours)
+### WP5: Menu System & Profiles (2-3 hours) - COMPLETE
 
 **Goal:** Port command processing and profile management.
 
@@ -412,7 +446,7 @@ bool StateMachine::transition(StateTrigger trigger) {
 
 1. Port `MenuController` command parsing
 2. Port `ProfileManager` with ArduinoJson
-3. Implement settings.json reading from LittleFS
+3. Implement settings.json reading from InternalFS (nRF52840 filesystem)
 4. Port calibration controller
 5. Final integration testing
 
@@ -420,11 +454,12 @@ bool StateMachine::transition(StateTrigger trigger) {
 
 ```cpp
 #include <ArduinoJson.h>
-#include <LittleFS.h>
+#include <Adafruit_LittleFS.h>
+#include <InternalFileSystem.h>
 
 bool loadSettings(DeviceConfig& config) {
-    File file = LittleFS.open("/settings.json", "r");
-    if (!file) return false;
+    File file(InternalFS);
+    if (!file.open("/settings.json", FILE_O_READ)) return false;
 
     JsonDocument doc;
     DeserializationError error = deserializeJson(doc, file);
@@ -443,10 +478,19 @@ bool loadSettings(DeviceConfig& config) {
 
 **Validation checkpoint:**
 
-- [ ] Phone commands processed correctly
-- [ ] Profile loading/saving works
-- [ ] Settings.json read correctly
-- [ ] Full therapy session completes (both gloves)
+- [x] Phone commands processed correctly
+- [x] Profile loading/saving works
+- [x] Settings.json read correctly
+- [x] Full therapy session completes (both gloves)
+
+**Implementation Notes:**
+- Build successful: RAM 7.4% (18452 bytes), Flash 24.4% (199188 bytes)
+- Files created: `include/menu_controller.h`, `src/menu_controller.cpp`, `include/profile_manager.h`, `src/profile_manager.cpp`
+- MenuController handles all 18 BLE protocol commands (INFO, BATTERY, PING, PROFILE_*, SESSION_*, PARAM_SET, CALIBRATE_*, HELP, RESTART)
+- ProfileManager with 4 built-in profiles: noisy_vcr (default), standard_vcr, gentle, quick_test
+- Settings persistence via InternalFS (nRF52840's internal flash filesystem)
+- Menu command routing integrated into BLE message handler
+- Calibration mode for individual tactor testing
 
 ---
 
