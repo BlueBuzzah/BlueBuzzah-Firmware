@@ -1,3 +1,6 @@
+# Explicit temp directory
+temp/
+
 # Platform IO Cache
 .pio
 
