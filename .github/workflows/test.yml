@@ -2,17 +2,29 @@ name: Test Suite
 
 on:
   push:
-    branches: [main]
+    branches: [main, develop]
   pull_request:
-    branches: [main]
+    branches: [main, develop]
+  workflow_dispatch:
 
 jobs:
-  run-tests:
-    name: Firmware Tests
+  test:
+    name: Unit Tests + Coverage
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+
+      - name: Cache PlatformIO
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/pip
+            ~/.platformio
+          key: ${{ runner.os }}-pio-${{ hashFiles('**/platformio.ini') }}
+          restore-keys: |
+            ${{ runner.os }}-pio-
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -22,8 +34,34 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pytest pytest-asyncio
+          pip install platformio
+          sudo apt-get update
+          sudo apt-get install -y lcov
 
-      - name: Run tests
+      - name: Run tests with coverage
         run: |
-          python -m pytest tests/ -v
+          pio test -e native_coverage_gcc -v
+
+      - name: Generate lcov report
+        if: always()
+        run: |
+          lcov --directory .pio/build/native_coverage_gcc --capture --output-file coverage.info
+          lcov --remove coverage.info '*/test/*' '*/Unity/*' '*/mocks/*' '/usr/*' --output-file coverage.lcov
+          lcov --list coverage.lcov
+
+      - name: Generate summary
+        if: always()
+        run: |
+          echo "## Test Results + Coverage" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          lcov --list coverage.lcov >> $GITHUB_STEP_SUMMARY 2>/dev/null || echo "Coverage data not available"
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload coverage to Codecov
+        if: always()
+        uses: codecov/codecov-action@v4
+        with:
+          files: coverage.lcov
+          fail_ci_if_error: false
+          verbose: true
