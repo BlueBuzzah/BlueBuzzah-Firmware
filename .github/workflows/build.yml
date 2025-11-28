@@ -1,8 +1,11 @@
 name: Build
 
 on:
+  push:
+    branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
 
 jobs:
   build:
@@ -12,13 +15,22 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Cache pip and PlatformIO
+        uses: actions/cache@v4
         with:
-          submodules: true
+          path: |
+            ~/.cache/pip
+            ~/.platformio/.cache
+          key: ${{ runner.os }}-pio
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+
+      - name: Install PlatformIO Core
+        run: pip install --upgrade platformio
 
       - name: Display build info
         run: |
@@ -26,48 +38,8 @@ jobs:
           echo "============================"
           echo "Branch: ${{ github.ref_name }}"
           echo "Commit: ${{ github.sha }}"
+          echo "PlatformIO: $(pio --version)"
           echo ""
 
       - name: Build firmware
-        run: |
-          python build/build.py \
-            --clean \
-            --verbose
-
-      - name: List build artifacts
-        working-directory: dist
-        run: |
-          echo "Build artifacts:"
-          find . -type f -name "*.mpy" | sort
-          echo ""
-          echo "Total .mpy files: $(find . -type f -name '*.mpy' | wc -l)"
-          echo "Total size: $(du -sh . | cut -f1)"
-
-      - name: Create build archive
-        run: |
-          SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
-          ARCHIVE_NAME="bluebuzzah-firmware-${SHORT_SHA}"
-
-          cd dist
-          zip -r "../${ARCHIVE_NAME}.zip" .
-          cd ..
-
-          echo "Created archive: ${ARCHIVE_NAME}.zip"
-          ls -lh "${ARCHIVE_NAME}.zip"
-
-          echo "ARCHIVE_NAME=${ARCHIVE_NAME}" >> $GITHUB_ENV
-
-  validate:
-    name: Validate Build
-    runs-on: ubuntu-latest
-    needs: build
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Download build artifact
-        uses: actions/download-artifact@v4
-        with:
-          pattern: bluebuzzah-firmware-*
-          path: artifacts
+        run: pio run

@@ -15,13 +15,22 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Cache pip and PlatformIO
+        uses: actions/cache@v4
         with:
-          submodules: true
+          path: |
+            ~/.cache/pip
+            ~/.platformio/.cache
+          key: ${{ runner.os }}-pio
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+
+      - name: Install PlatformIO Core
+        run: pip install --upgrade platformio
 
       - name: Display build info
         run: |
@@ -29,37 +38,24 @@ jobs:
           echo "==========================="
           echo "Release: ${{ github.event.release.tag_name }}"
           echo "Commit: ${{ github.sha }}"
-          echo "Optimization Level: O2"
+          echo "PlatformIO: $(pio --version)"
           echo ""
 
       - name: Build firmware
-        run: |
-          python build/build.py \
-            --optimize 2 \
-            --clean \
-            --verbose
+        run: pio run
 
-      - name: List build artifacts
-        working-directory: dist
+      - name: Rename firmware archive
         run: |
-          echo "Build artifacts:"
-          find . -type f -name "*.mpy" | sort
-          echo ""
-          echo "Total .mpy files: $(find . -type f -name '*.mpy' | wc -l)"
-          echo "Total size: $(du -sh . | cut -f1)"
-
-      - name: Create release archive
-        run: |
-          # Create archive name with version tag
+          # Sanitize version (replace whitespace with underscores)
           VERSION="${{ github.event.release.tag_name }}"
-          ARCHIVE_NAME="bluebuzzah-firmware-${VERSION}"
+          VERSION_SAFE=$(echo "$VERSION" | tr '[:space:]' '_')
+          SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+          ARCHIVE_NAME="BlueBuzzah-Firmware-${VERSION_SAFE}-${SHORT_SHA}"
 
-          # Create archive from dist/ contents
-          cd dist
-          zip -r "../${ARCHIVE_NAME}.zip" .
-          cd ..
+          # Rename the firmware.zip from build output
+          mv .pio/build/adafruit_feather_nrf52840/firmware.zip "${ARCHIVE_NAME}.zip"
 
-          echo "Created release archive: ${ARCHIVE_NAME}.zip"
+          echo "Release archive: ${ARCHIVE_NAME}.zip"
           ls -lh "${ARCHIVE_NAME}.zip"
 
           # Save archive name for upload step
@@ -75,7 +71,7 @@ jobs:
           echo "## Release Build Complete" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "**Version:** ${{ github.event.release.tag_name }}" >> $GITHUB_STEP_SUMMARY
-          echo "**Optimization:** O2 (Production)" >> $GITHUB_STEP_SUMMARY
+          echo "**Commit:** ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
           echo "**Archive:** ${{ env.ARCHIVE_NAME }}.zip" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "✅ Release asset attached successfully" >> $GITHUB_STEP_SUMMARY
+          echo "Release asset attached successfully" >> $GITHUB_STEP_SUMMARY
