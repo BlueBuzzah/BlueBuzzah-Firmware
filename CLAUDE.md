@@ -38,7 +38,11 @@ Arduino C++ firmware for vibrotactile haptic feedback gloves with BLE connectivi
 │   ├── config.h                # Pin definitions, constants
 │   ├── types.h                 # Enums, structs, device roles
 │   └── [module].h              # Declarations for each .cpp
-└── BlueBuzzah-CircuitPython/   # Legacy reference (not active)
+├── test/                       # PlatformIO unit tests
+│   ├── mocks/                  # Hardware mocks for native testing
+│   └── test_*/                 # Unity test suites
+├── scripts/                    # Build and coverage scripts
+└── docs/                       # Technical documentation
 ```
 
 ---
@@ -50,6 +54,13 @@ pio run                    # Compile
 pio run -t upload          # Flash firmware to device
 pio device monitor         # Open serial monitor (115200 baud)
 pio run -t clean           # Clean build artifacts
+```
+
+### Test Commands
+
+```bash
+pio test -e native         # Run unit tests (native, no hardware)
+pio test -e native_coverage # Run tests with code coverage (LLVM)
 ```
 
 For PlatformIO functionality, refer to the official documentation:
@@ -117,7 +128,7 @@ nRF52840 MCU
 ### Memory
 - Pre-allocate buffers at startup (avoid heap fragmentation)
 - Use `static` or global for persistent data
-- 256KB RAM available - much more headroom than CircuitPython
+- 256KB RAM available (~200KB after BLE stack)
 
 ### I2C Multiplexer
 - Select channel before each DRV2605 operation
@@ -155,3 +166,18 @@ nRF52840 MCU
 - Feature descriptions without planning context
 - Technical TODO comments (e.g., `// TODO: optimize buffer allocation`)
 - References to GitHub issues (e.g., `// Fixes #123`)
+
+---
+
+## Documentation
+
+Key technical documentation in `docs/`:
+
+| Document | Purpose |
+|----------|---------|
+| `ARDUINO_FIRMWARE_ARCHITECTURE.md` | Architecture overview (source of truth) |
+| `BLE_PROTOCOL.md` | BLE command protocol for mobile apps |
+| `COMMAND_REFERENCE.md` | All 18 BLE commands with C++ implementations |
+| `SYNCHRONIZATION_PROTOCOL.md` | PRIMARY↔SECONDARY coordination |
+| `THERAPY_ENGINE.md` | Pattern generation and motor control |
+| `TESTING.md` | Hardware integration testing guide |
