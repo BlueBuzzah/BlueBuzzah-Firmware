@@ -228,9 +228,9 @@ private:
     void handlePing();
 
     void handleProfileList();
-    void handleProfileLoad(char params[][PARAM_BUFFER_SIZE], uint8_t paramCount);
+    void handleProfileLoad(const char params[][PARAM_BUFFER_SIZE], uint8_t paramCount);
     void handleProfileGet();
-    void handleProfileCustom(char params[][PARAM_BUFFER_SIZE], uint8_t paramCount);
+    void handleProfileCustom(const char params[][PARAM_BUFFER_SIZE], uint8_t paramCount);
 
     void handleSessionStart();
     void handleSessionPause();
@@ -238,10 +238,10 @@ private:
     void handleSessionStop();
     void handleSessionStatus();
 
-    void handleParamSet(char params[][PARAM_BUFFER_SIZE], uint8_t paramCount);
+    void handleParamSet(const char params[][PARAM_BUFFER_SIZE], uint8_t paramCount);
 
     void handleCalibrateStart();
-    void handleCalibrateBuzz(char params[][PARAM_BUFFER_SIZE], uint8_t paramCount);
+    void handleCalibrateBuzz(const char params[][PARAM_BUFFER_SIZE], uint8_t paramCount);
     void handleCalibrateStop();
 
     void handleHelp();

@@ -377,7 +377,7 @@ void MenuController::handleProfileList() {
     sendResponse();
 }
 
-void MenuController::handleProfileLoad(char params[][PARAM_BUFFER_SIZE], uint8_t paramCount) {
+void MenuController::handleProfileLoad(const char params[][PARAM_BUFFER_SIZE], uint8_t paramCount) {
     // Check if session is active
     if (_therapy && _therapy->isRunning()) {
         sendError("Cannot modify parameters during active session");
@@ -432,7 +432,7 @@ void MenuController::handleProfileGet() {
     sendResponse();
 }
 
-void MenuController::handleProfileCustom(char params[][PARAM_BUFFER_SIZE], uint8_t paramCount) {
+void MenuController::handleProfileCustom(const char params[][PARAM_BUFFER_SIZE], uint8_t paramCount) {
     // Check if session is active
     if (_therapy && _therapy->isRunning()) {
         sendError("Cannot modify parameters during active session");
@@ -615,7 +615,7 @@ void MenuController::handleSessionStatus() {
 // PARAMETER COMMANDS
 // =============================================================================
 
-void MenuController::handleParamSet(char params[][PARAM_BUFFER_SIZE], uint8_t paramCount) {
+void MenuController::handleParamSet(const char params[][PARAM_BUFFER_SIZE], uint8_t paramCount) {
     if (_therapy && _therapy->isRunning()) {
         sendError("Cannot modify parameters during active session");
         return;
@@ -631,18 +631,21 @@ void MenuController::handleParamSet(char params[][PARAM_BUFFER_SIZE], uint8_t pa
         return;
     }
 
-    // Convert param name to uppercase
-    for (char* c = params[0]; *c; c++) {
+    // Create local copy and convert param name to uppercase
+    char paramName[PARAM_BUFFER_SIZE];
+    strncpy(paramName, params[0], PARAM_BUFFER_SIZE - 1);
+    paramName[PARAM_BUFFER_SIZE - 1] = '\0';
+    for (char* c = paramName; *c; c++) {
         *c = toupper(*c);
     }
 
-    if (!_profiles->setParameter(params[0], params[1])) {
+    if (!_profiles->setParameter(paramName, params[1])) {
         sendError("Invalid parameter name or value out of range");
         return;
     }
 
     beginResponse();
-    addResponseLine("PARAM", params[0]);
+    addResponseLine("PARAM", paramName);
     addResponseLine("VALUE", params[1]);
     sendResponse();
 }
@@ -665,7 +668,7 @@ void MenuController::handleCalibrateStart() {
     sendResponse();
 }
 
-void MenuController::handleCalibrateBuzz(char params[][PARAM_BUFFER_SIZE], uint8_t paramCount) {
+void MenuController::handleCalibrateBuzz(const char params[][PARAM_BUFFER_SIZE], uint8_t paramCount) {
     if (!_isCalibrating) {
         sendError("Not in calibration mode");
         return;

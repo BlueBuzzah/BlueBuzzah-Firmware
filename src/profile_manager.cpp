@@ -305,8 +305,7 @@ bool ProfileManager::saveSettings() {
         return false;
     }
 
-    SettingsData data;
-    memset(&data, 0, sizeof(data));
+    SettingsData data{};
 
     // Header
     data.magic = SETTINGS_MAGIC;

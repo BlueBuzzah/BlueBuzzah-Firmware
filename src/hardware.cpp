@@ -310,7 +310,7 @@ bool BatteryMonitor::begin() {
     uint32_t testReading = analogRead(BATTERY_PIN);
 
     // Any non-zero reading indicates the ADC is working
-    _initialized = true;
+    _initialized = (testReading > 0);
 
     Serial.println(F("[INFO] Battery monitor initialized"));
 

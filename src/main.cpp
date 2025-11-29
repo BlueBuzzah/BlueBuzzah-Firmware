@@ -646,9 +646,9 @@ void onBLEMessage(uint16_t connHandle, const char* message) {
             case SyncCommandType::EXECUTE_BUZZ:
                 {
                     int32_t finger = cmd.getDataInt("finger", -1);
-                    int32_t amplitude = cmd.getDataInt("amplitude", 50);
 
                     if (finger >= 0 && finger < MAX_ACTUATORS) {
+                        int32_t amplitude = cmd.getDataInt("amplitude", 50);
                         Serial.printf("[BUZZ] Finger: %s, Amplitude: %d%%\n",
                                       FINGER_NAMES[finger], amplitude);
 

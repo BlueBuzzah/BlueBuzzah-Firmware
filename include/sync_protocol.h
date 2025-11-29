@@ -77,7 +77,7 @@ struct SyncDataPair {
 class SyncCommand {
 public:
     SyncCommand();
-    SyncCommand(SyncCommandType type, uint32_t sequenceId = 0);
+    explicit SyncCommand(SyncCommandType type, uint32_t sequenceId = 0);
 
     /**
      * @brief Serialize command to string
