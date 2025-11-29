@@ -134,21 +134,12 @@ void waitForRoleConfiguration() {
     Serial.println(F("\nDevice will reboot after configuration."));
     Serial.println(F("========================================\n"));
 
-    bool ledOn = false;
-    uint32_t lastBlink = 0;
-    const uint32_t BLINK_INTERVAL = 500;
+    // Use slow blink orange pattern for unconfigured state
+    led.setPattern(Colors::ORANGE, LEDPattern::BLINK_SLOW);
 
     while (true) {
-        // Blink LED orange
-        if (millis() - lastBlink >= BLINK_INTERVAL) {
-            lastBlink = millis();
-            ledOn = !ledOn;
-            if (ledOn) {
-                led.setColor(LED_COLOR_ORANGE);
-            } else {
-                led.off();
-            }
-        }
+        // Update LED pattern animation
+        led.update();
 
         // Check for serial input
         if (Serial.available()) {
@@ -164,6 +155,8 @@ void waitForRoleConfiguration() {
                 Serial.println(F("  Use: SET_ROLE:PRIMARY or SET_ROLE:SECONDARY"));
             }
         }
+
+        delay(10);  // Small delay to prevent busy-looping
     }
 }
 
@@ -189,7 +182,7 @@ void setup() {
     // Initialize LED FIRST (needed for configuration feedback)
     Serial.println(F("\n--- LED Initialization ---"));
     if (led.begin()) {
-        led.setColor(Colors::BLUE);
+        led.setPattern(Colors::BLUE, LEDPattern::BLINK_CONNECT);
         Serial.println(F("LED: OK"));
     }
 
@@ -216,10 +209,10 @@ void setup() {
     hardwareReady = initializeHardware();
 
     if (hardwareReady) {
-        led.setColor(Colors::CYAN);
+        led.setPattern(Colors::CYAN, LEDPattern::BLINK_CONNECT);
         Serial.println(F("[SUCCESS] Hardware initialization complete"));
     } else {
-        led.setColor(Colors::RED);
+        led.setPattern(Colors::RED, LEDPattern::BLINK_SLOW);
         Serial.println(F("[WARNING] Some hardware initialization failed"));
     }
 
@@ -228,10 +221,11 @@ void setup() {
     bleReady = initializeBLE();
 
     if (bleReady) {
-        led.setColor(Colors::GREEN);
+        // Start in IDLE state with breathing blue LED
+        led.setPattern(Colors::BLUE, LEDPattern::BREATHE_SLOW);
         Serial.println(F("[SUCCESS] BLE initialization complete"));
     } else {
-        led.setColor(Colors::RED);
+        led.setPattern(Colors::RED, LEDPattern::BLINK_SLOW);
         Serial.println(F("[FAILURE] BLE initialization failed"));
     }
 
@@ -281,6 +275,9 @@ void setup() {
 
 void loop() {
     uint32_t now = millis();
+
+    // Update LED pattern animation
+    led.update();
 
     // Process BLE events
     ble.update();
@@ -336,10 +333,10 @@ void loop() {
     if (isConnected != wasConnected) {
         wasConnected = isConnected;
         if (isConnected) {
-            led.setColor(Colors::GREEN);
+            led.setPattern(Colors::GREEN, LEDPattern::SOLID);
             Serial.println(F("[STATE] Connected!"));
         } else {
-            led.setColor(Colors::BLUE);
+            led.setPattern(Colors::BLUE, LEDPattern::BREATHE_SLOW);
             Serial.println(F("[STATE] Disconnected"));
         }
     }
@@ -633,10 +630,14 @@ void onBLEMessage(uint16_t connHandle, const char* message) {
         // Handle specific command types
         switch (cmd.getType()) {
             case SyncCommandType::HEARTBEAT:
-                // Flash LED briefly
-                led.setColor(Colors::CYAN);
-                delay(50);
-                led.setColor(Colors::GREEN);
+                // Brief cyan flash for heartbeat (temporary override, returns to current pattern)
+                {
+                    RGBColor savedColor = led.getColor();
+                    LEDPattern savedPattern = led.getPattern();
+                    led.setColor(Colors::CYAN);
+                    delay(50);
+                    led.setPattern(savedColor, savedPattern);
+                }
                 // Track heartbeat for SECONDARY timeout detection
                 if (deviceRole == DeviceRole::SECONDARY) {
                     lastHeartbeatReceived = millis();
@@ -672,23 +673,23 @@ void onBLEMessage(uint16_t connHandle, const char* message) {
 
             case SyncCommandType::START_SESSION:
                 Serial.println(F("[SESSION] Start requested"));
-                led.setColor(Colors::GREEN);
+                led.setPattern(Colors::GREEN, LEDPattern::PULSE_SLOW);
                 break;
 
             case SyncCommandType::PAUSE_SESSION:
                 Serial.println(F("[SESSION] Pause requested"));
-                led.setColor(Colors::YELLOW);
+                led.setPattern(Colors::YELLOW, LEDPattern::SOLID);
                 break;
 
             case SyncCommandType::RESUME_SESSION:
                 Serial.println(F("[SESSION] Resume requested"));
-                led.setColor(Colors::GREEN);
+                led.setPattern(Colors::GREEN, LEDPattern::PULSE_SLOW);
                 break;
 
             case SyncCommandType::STOP_SESSION:
                 Serial.println(F("[SESSION] Stop requested"));
                 haptic.emergencyStop();
-                led.setColor(Colors::BLUE);
+                led.setPattern(Colors::BLUE, LEDPattern::BREATHE_SLOW);
                 break;
 
             default:
@@ -732,10 +733,12 @@ void onDeactivate(uint8_t finger) {
 void onCycleComplete(uint32_t cycleCount) {
     Serial.printf("[THERAPY] Cycle %lu complete\n", cycleCount);
 
-    // Flash LED purple briefly
+    // Brief purple flash for cycle completion (temporary override, returns to current pattern)
+    RGBColor savedColor = led.getColor();
+    LEDPattern savedPattern = led.getPattern();
     led.setColor(Colors::PURPLE);
     delay(50);
-    led.setColor(Colors::GREEN);
+    led.setPattern(savedColor, savedPattern);
 }
 
 // =============================================================================
@@ -822,47 +825,71 @@ void stopTherapyTest() {
 // STATE MACHINE CALLBACK
 // =============================================================================
 
+/**
+ * @brief Update LED pattern based on therapy state
+ *
+ * LED Pattern Mapping:
+ * | State              | Color  | Pattern       | Description                    |
+ * |--------------------|--------|---------------|--------------------------------|
+ * | IDLE               | Blue   | Breathe slow  | Calm, system ready             |
+ * | CONNECTING         | Blue   | Fast blink    | Actively connecting            |
+ * | READY              | Green  | Solid         | Connected, stable              |
+ * | RUNNING            | Green  | Pulse slow    | Active therapy                 |
+ * | PAUSED             | Yellow | Solid         | Session paused                 |
+ * | STOPPING           | Yellow | Fast blink    | Winding down                   |
+ * | ERROR              | Red    | Slow blink    | Error condition                |
+ * | LOW_BATTERY        | Orange | Slow blink    | Battery warning                |
+ * | CRITICAL_BATTERY   | Red    | Urgent blink  | Critical - shutdown imminent   |
+ * | CONNECTION_LOST    | Purple | Fast blink    | BLE connection lost            |
+ * | PHONE_DISCONNECTED | —      | No change     | Informational only             |
+ */
 void onStateChange(const StateTransition& transition) {
-    // Update LED based on new state
+    // Update LED pattern based on new state
     switch (transition.toState) {
         case TherapyState::IDLE:
-            led.setColor(Colors::BLUE);
+            led.setPattern(Colors::BLUE, LEDPattern::BREATHE_SLOW);
             break;
 
         case TherapyState::CONNECTING:
-            led.setColor(Colors::CYAN);
+            led.setPattern(Colors::BLUE, LEDPattern::BLINK_CONNECT);
             break;
 
         case TherapyState::READY:
-            led.setColor(Colors::GREEN);
+            led.setPattern(Colors::GREEN, LEDPattern::SOLID);
             break;
 
         case TherapyState::RUNNING:
-            led.setColor(Colors::GREEN);
+            led.setPattern(Colors::GREEN, LEDPattern::PULSE_SLOW);
             break;
 
         case TherapyState::PAUSED:
-            led.setColor(Colors::YELLOW);
+            led.setPattern(Colors::YELLOW, LEDPattern::SOLID);
             break;
 
         case TherapyState::STOPPING:
-            led.setColor(Colors::ORANGE);
+            led.setPattern(Colors::YELLOW, LEDPattern::BLINK_FAST);
             break;
 
         case TherapyState::ERROR:
-        case TherapyState::CRITICAL_BATTERY:
-            led.setColor(Colors::RED);
+            led.setPattern(Colors::RED, LEDPattern::BLINK_SLOW);
             // Emergency stop on error
             haptic.emergencyStop();
             therapy.stop();
             break;
 
+        case TherapyState::CRITICAL_BATTERY:
+            led.setPattern(Colors::RED, LEDPattern::BLINK_URGENT);
+            // Emergency stop on critical battery
+            haptic.emergencyStop();
+            therapy.stop();
+            break;
+
         case TherapyState::LOW_BATTERY:
-            led.setColor(Colors::ORANGE);
+            led.setPattern(Colors::ORANGE, LEDPattern::BLINK_SLOW);
             break;
 
         case TherapyState::CONNECTION_LOST:
-            led.setColor(Colors::RED);
+            led.setPattern(Colors::PURPLE, LEDPattern::BLINK_CONNECT);
             // Stop therapy on connection loss
             if (therapy.isRunning()) {
                 therapy.stop();
@@ -871,7 +898,7 @@ void onStateChange(const StateTransition& transition) {
             break;
 
         case TherapyState::PHONE_DISCONNECTED:
-            // Informational only - keep current LED
+            // Informational only - keep current LED pattern
             break;
 
         default:
@@ -904,8 +931,8 @@ void handleHeartbeatTimeout() {
     // 2. Update state machine
     stateMachine.transition(StateTrigger::DISCONNECTED);
 
-    // 3. Visual indicator
-    led.setColor(Colors::RED);
+    // 3. Visual indicator - purple fast blink for connection lost
+    led.setPattern(Colors::PURPLE, LEDPattern::BLINK_CONNECT);
 
     // 4. Attempt reconnection (3 attempts, 2s apart)
     for (uint8_t attempt = 1; attempt <= 3; attempt++) {
@@ -915,7 +942,7 @@ void handleHeartbeatTimeout() {
         if (ble.isPrimaryConnected()) {
             Serial.println(F("[RECOVERY] PRIMARY reconnected"));
             stateMachine.transition(StateTrigger::RECONNECTED);
-            led.setColor(Colors::GREEN);
+            led.setPattern(Colors::GREEN, LEDPattern::SOLID);
             lastHeartbeatReceived = millis();  // Reset timeout
             return;
         }
@@ -924,7 +951,7 @@ void handleHeartbeatTimeout() {
     // 5. Recovery failed - return to IDLE
     Serial.println(F("[RECOVERY] Failed - returning to IDLE"));
     stateMachine.transition(StateTrigger::RECONNECT_FAILED);
-    led.setColor(Colors::BLUE);
+    led.setPattern(Colors::BLUE, LEDPattern::BREATHE_SLOW);
     lastHeartbeatReceived = 0;  // Reset for next session
 
     // 6. Restart scanning for PRIMARY

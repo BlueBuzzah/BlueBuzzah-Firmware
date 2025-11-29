@@ -6,6 +6,8 @@ on:
 
 permissions:
   contents: write
+  id-token: write
+  attestations: write
 
 jobs:
   build-and-release:
@@ -61,6 +63,12 @@ jobs:
           # Save archive name for upload step
           echo "ARCHIVE_NAME=${ARCHIVE_NAME}" >> $GITHUB_ENV
 
+      - name: Attest build provenance
+        id: attest
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: ${{ env.ARCHIVE_NAME }}.zip
+
       - name: Upload release asset
         uses: softprops/action-gh-release@v2
         with:
@@ -74,4 +82,7 @@ jobs:
           echo "**Commit:** ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
           echo "**Archive:** ${{ env.ARCHIVE_NAME }}.zip" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Release asset attached successfully" >> $GITHUB_STEP_SUMMARY
+          echo "### Build Provenance" >> $GITHUB_STEP_SUMMARY
+          echo "Attestation ID: \`${{ steps.attest.outputs.attestation-id }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Verify with: \`gh attestation verify ${ARCHIVE_NAME}.zip -o ${{ github.repository_owner }}\`" >> $GITHUB_STEP_SUMMARY

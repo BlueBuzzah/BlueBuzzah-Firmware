@@ -134,6 +134,24 @@
 #define LED_COLOR_CYAN      0, 255, 255
 
 // =============================================================================
+// LED PATTERN TIMING (milliseconds)
+// =============================================================================
+
+// Breathe/pulse patterns (smooth fade in/out)
+#define LED_BREATHE_SLOW_MS     2000    // IDLE: 2s full cycle (1s in, 1s out)
+#define LED_PULSE_SLOW_MS       1500    // RUNNING: 1.5s full cycle
+
+// Blink patterns (on/off)
+#define LED_BLINK_FAST_ON_MS    200     // Fast blink: 200ms on
+#define LED_BLINK_FAST_OFF_MS   200     // Fast blink: 200ms off
+#define LED_BLINK_SLOW_ON_MS    1000    // Slow blink: 1s on (ERROR, LOW_BATTERY)
+#define LED_BLINK_SLOW_OFF_MS   1000    // Slow blink: 1s off
+#define LED_BLINK_URGENT_ON_MS  150     // Urgent blink: 150ms (CRITICAL_BATTERY)
+#define LED_BLINK_URGENT_OFF_MS 150     // Urgent blink: 150ms
+#define LED_BLINK_CONNECT_ON_MS 250     // Connecting blink: 250ms
+#define LED_BLINK_CONNECT_OFF_MS 250    // Connecting blink: 250ms
+
+// =============================================================================
 // BLE PROTOCOL CONSTANTS
 // =============================================================================
 

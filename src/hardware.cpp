@@ -407,8 +407,13 @@ bool BatteryMonitor::isCritical(float voltage) {
 
 LEDController::LEDController()
     : _pixel(NEOPIXEL_COUNT, NEOPIXEL_PIN, NEO_GRB + NEO_KHZ800),
-      _currentColor(0, 0, 0),
-      _initialized(false) {
+      _baseColor(0, 0, 0),
+      _displayColor(0, 0, 0),
+      _pattern(LEDPattern::OFF),
+      _initialized(false),
+      _patternStartTime(0),
+      _blinkState(false),
+      _lastBlinkToggle(0) {
 }
 
 bool LEDController::begin() {
@@ -418,28 +423,144 @@ bool LEDController::begin() {
     _pixel.show();
 
     _initialized = true;
+    _patternStartTime = millis();
 
     Serial.println(F("[INFO] LED controller initialized"));
 
     return _initialized;
 }
 
-void LEDController::setColor(uint8_t r, uint8_t g, uint8_t b) {
+void LEDController::update() {
     if (!_initialized) {
         return;
     }
 
-    _currentColor = RGBColor(r, g, b);
-    _pixel.setPixelColor(0, _pixel.Color(r, g, b));
-    _pixel.show();
+    uint32_t now = millis();
+
+    switch (_pattern) {
+        case LEDPattern::SOLID:
+            // No animation needed - color already applied
+            break;
+
+        case LEDPattern::BREATHE_SLOW: {
+            float brightness = calculateBreatheBrightness(LED_BREATHE_SLOW_MS);
+            RGBColor modulated(
+                (uint8_t)(_baseColor.r * brightness),
+                (uint8_t)(_baseColor.g * brightness),
+                (uint8_t)(_baseColor.b * brightness)
+            );
+            if (modulated != _displayColor) {
+                applyColor(modulated);
+            }
+            break;
+        }
+
+        case LEDPattern::PULSE_SLOW: {
+            float brightness = calculateBreatheBrightness(LED_PULSE_SLOW_MS);
+            RGBColor modulated(
+                (uint8_t)(_baseColor.r * brightness),
+                (uint8_t)(_baseColor.g * brightness),
+                (uint8_t)(_baseColor.b * brightness)
+            );
+            if (modulated != _displayColor) {
+                applyColor(modulated);
+            }
+            break;
+        }
+
+        case LEDPattern::BLINK_FAST: {
+            uint32_t interval = _blinkState ? LED_BLINK_FAST_ON_MS : LED_BLINK_FAST_OFF_MS;
+            if (now - _lastBlinkToggle >= interval) {
+                _lastBlinkToggle = now;
+                _blinkState = !_blinkState;
+                applyColor(_blinkState ? _baseColor : Colors::OFF);
+            }
+            break;
+        }
+
+        case LEDPattern::BLINK_SLOW: {
+            uint32_t interval = _blinkState ? LED_BLINK_SLOW_ON_MS : LED_BLINK_SLOW_OFF_MS;
+            if (now - _lastBlinkToggle >= interval) {
+                _lastBlinkToggle = now;
+                _blinkState = !_blinkState;
+                applyColor(_blinkState ? _baseColor : Colors::OFF);
+            }
+            break;
+        }
+
+        case LEDPattern::BLINK_URGENT: {
+            uint32_t interval = _blinkState ? LED_BLINK_URGENT_ON_MS : LED_BLINK_URGENT_OFF_MS;
+            if (now - _lastBlinkToggle >= interval) {
+                _lastBlinkToggle = now;
+                _blinkState = !_blinkState;
+                applyColor(_blinkState ? _baseColor : Colors::OFF);
+            }
+            break;
+        }
+
+        case LEDPattern::BLINK_CONNECT: {
+            uint32_t interval = _blinkState ? LED_BLINK_CONNECT_ON_MS : LED_BLINK_CONNECT_OFF_MS;
+            if (now - _lastBlinkToggle >= interval) {
+                _lastBlinkToggle = now;
+                _blinkState = !_blinkState;
+                applyColor(_blinkState ? _baseColor : Colors::OFF);
+            }
+            break;
+        }
+
+        case LEDPattern::OFF:
+            // LED is off, nothing to update
+            break;
+    }
+}
+
+void LEDController::setPattern(const RGBColor& color, LEDPattern pattern) {
+    if (!_initialized) {
+        return;
+    }
+
+    _baseColor = color;
+    _pattern = pattern;
+    _patternStartTime = millis();
+    _lastBlinkToggle = millis();
+    _blinkState = true;  // Start blink patterns in ON state
+
+    // Immediately apply the initial state
+    switch (pattern) {
+        case LEDPattern::SOLID:
+            applyColor(color);
+            break;
+
+        case LEDPattern::BREATHE_SLOW:
+        case LEDPattern::PULSE_SLOW:
+            // Start at full brightness, update() will animate
+            applyColor(color);
+            break;
+
+        case LEDPattern::BLINK_FAST:
+        case LEDPattern::BLINK_SLOW:
+        case LEDPattern::BLINK_URGENT:
+        case LEDPattern::BLINK_CONNECT:
+            // Start in ON state
+            applyColor(color);
+            break;
+
+        case LEDPattern::OFF:
+            applyColor(Colors::OFF);
+            break;
+    }
+}
+
+void LEDController::setColor(uint8_t r, uint8_t g, uint8_t b) {
+    setPattern(RGBColor(r, g, b), LEDPattern::SOLID);
 }
 
 void LEDController::setColor(const RGBColor& color) {
-    setColor(color.r, color.g, color.b);
+    setPattern(color, LEDPattern::SOLID);
 }
 
 void LEDController::off() {
-    setColor(0, 0, 0);
+    setPattern(Colors::OFF, LEDPattern::OFF);
 }
 
 void LEDController::setBrightness(uint8_t brightness) {
@@ -452,5 +573,31 @@ void LEDController::setBrightness(uint8_t brightness) {
 }
 
 RGBColor LEDController::getColor() const {
-    return _currentColor;
+    return _baseColor;
+}
+
+LEDPattern LEDController::getPattern() const {
+    return _pattern;
+}
+
+void LEDController::applyColor(const RGBColor& color) {
+    _displayColor = color;
+    _pixel.setPixelColor(0, _pixel.Color(color.r, color.g, color.b));
+    _pixel.show();
+}
+
+float LEDController::calculateBreatheBrightness(uint32_t cycleMs) const {
+    // Calculate position in cycle (0.0 to 1.0)
+    uint32_t elapsed = millis() - _patternStartTime;
+    float position = (float)(elapsed % cycleMs) / (float)cycleMs;
+
+    // Use sine wave for smooth breathing effect
+    // sin goes from -1 to 1, we want 0 to 1
+    // Position 0 = brightness 0.5, position 0.25 = brightness 1.0
+    // position 0.5 = brightness 0.5, position 0.75 = brightness 0.0
+    float brightness = (sin(position * 2.0f * PI - PI / 2.0f) + 1.0f) / 2.0f;
+
+    // Clamp to ensure we don't go below a minimum visibility threshold
+    const float MIN_BRIGHTNESS = 0.1f;
+    return MIN_BRIGHTNESS + brightness * (1.0f - MIN_BRIGHTNESS);
 }

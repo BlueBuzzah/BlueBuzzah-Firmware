@@ -223,20 +223,42 @@ private:
 };
 
 // =============================================================================
+// LED PATTERN TYPES
+// =============================================================================
+
+/**
+ * @brief LED display patterns for status indication
+ */
+enum class LEDPattern : uint8_t {
+    SOLID = 0,          // Constant on
+    BREATHE_SLOW,       // Slow fade in/out (2s cycle) - IDLE
+    PULSE_SLOW,         // Slow pulse (1.5s cycle) - RUNNING
+    BLINK_FAST,         // Fast blink (200ms on/off) - STOPPING
+    BLINK_SLOW,         // Slow blink (1s on/off) - ERROR, LOW_BATTERY
+    BLINK_URGENT,       // Urgent blink (150ms on/off) - CRITICAL_BATTERY
+    BLINK_CONNECT,      // Connection blink (250ms on/off) - CONNECTING, CONNECTION_LOST
+    OFF                 // LED off
+};
+
+// =============================================================================
 // LED CONTROLLER
 // =============================================================================
 
 /**
  * @brief Controls the onboard NeoPixel LED for status indication
  *
- * Provides simple color control for the single NeoPixel LED on the
- * Adafruit Feather nRF52840 Express board.
+ * Provides color and pattern control for the single NeoPixel LED on the
+ * Adafruit Feather nRF52840 Express board. Supports various patterns
+ * including solid, breathing, pulsing, and blinking modes.
  *
  * Usage:
  *   LEDController led;
  *   led.begin();
- *   led.setColor(Colors::BLUE);  // BLE connecting
- *   led.setColor(Colors::GREEN); // Ready
+ *   led.setPattern(Colors::BLUE, LEDPattern::BREATHE_SLOW);  // Idle state
+ *   led.setPattern(Colors::GREEN, LEDPattern::PULSE_SLOW);   // Running
+ *   led.setPattern(Colors::RED, LEDPattern::BLINK_SLOW);     // Error
+ *
+ * IMPORTANT: Call update() in the main loop for patterns to animate!
  */
 class LEDController {
 public:
@@ -249,7 +271,22 @@ public:
     bool begin();
 
     /**
-     * @brief Set LED color using RGB values
+     * @brief Update LED pattern animation
+     *
+     * MUST be called regularly in the main loop for animated patterns
+     * (breathe, pulse, blink) to work. Safe to call even for SOLID pattern.
+     */
+    void update();
+
+    /**
+     * @brief Set LED color and pattern
+     * @param color RGBColor to display
+     * @param pattern Animation pattern to use
+     */
+    void setPattern(const RGBColor& color, LEDPattern pattern);
+
+    /**
+     * @brief Set LED color using RGB values (defaults to SOLID pattern)
      * @param r Red component (0-255)
      * @param g Green component (0-255)
      * @param b Blue component (0-255)
@@ -257,7 +294,7 @@ public:
     void setColor(uint8_t r, uint8_t g, uint8_t b);
 
     /**
-     * @brief Set LED color using RGBColor struct
+     * @brief Set LED color using RGBColor struct (defaults to SOLID pattern)
      * @param color RGBColor struct
      */
     void setColor(const RGBColor& color);
@@ -274,15 +311,41 @@ public:
     void setBrightness(uint8_t brightness);
 
     /**
-     * @brief Get current color
+     * @brief Get current base color (before pattern modulation)
      * @return Current RGBColor
      */
     RGBColor getColor() const;
 
+    /**
+     * @brief Get current pattern
+     * @return Current LEDPattern
+     */
+    LEDPattern getPattern() const;
+
 private:
     Adafruit_NeoPixel _pixel;
-    RGBColor _currentColor;
+    RGBColor _baseColor;        // Base color before pattern modulation
+    RGBColor _displayColor;     // Actual displayed color (after modulation)
+    LEDPattern _pattern;
     bool _initialized;
+
+    // Pattern animation state
+    uint32_t _patternStartTime;
+    bool _blinkState;           // For blink patterns: true=on, false=off
+    uint32_t _lastBlinkToggle;
+
+    /**
+     * @brief Apply color to LED hardware
+     * @param color Color to display
+     */
+    void applyColor(const RGBColor& color);
+
+    /**
+     * @brief Calculate brightness multiplier for breathe/pulse patterns
+     * @param cycleMs Full cycle duration in milliseconds
+     * @return Brightness multiplier (0.0 - 1.0)
+     */
+    float calculateBreatheBrightness(uint32_t cycleMs) const;
 };
 
 #endif // HARDWARE_H
