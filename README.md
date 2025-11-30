@@ -23,7 +23,10 @@ BlueBuzzah is a medical device research platform implementing vibrotactile Coord
 ### Prerequisites
 
 - BlueBuzzah hardware ([hardware specs](https://github.com/BlueBuzzah/BlueBuzzah-Hardware))
-- [PlatformIO](https://platformio.org/) (CLI or VS Code extension)
+- [VS Code](https://code.visualstudio.com/)
+- [PlatformIO IDE extension](https://marketplace.visualstudio.com/items?itemName=platformio.platformio-ide)
+
+> **Note:** The PlatformIO IDE extension is already configured as a recommended extension for this project. VS Code will prompt you to install it when you open the workspace.
 
 ### Installation
 
