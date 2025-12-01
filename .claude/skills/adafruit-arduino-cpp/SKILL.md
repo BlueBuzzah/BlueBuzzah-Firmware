@@ -1,7 +1,6 @@
 ---
-name: Adafruit Arduino C++
-description: This skill should be used when working on ".cpp" or ".h" files in a PlatformIO project, when the user mentions "Adafruit Feather", "nRF52840", "PlatformIO", "Bluefruit", "BLE firmware", "Arduino C++", "embedded C++", or asks about non-blocking timing, BLE callbacks, I2C multiplexing, memory management, Serial debugging, or embedded anti-patterns.
-version: 1.0.0
+name: adafruit-arduino-cpp
+description: This skill should be used when working on ".cpp" or ".h" files in a PlatformIO project, when the user mentions "Adafruit Feather", "nRF52840", "PlatformIO", "Bluefruit", "BLE firmware", "Arduino C++", "embedded C++", or asks about non-blocking timing, BLE callbacks, I2C multiplexing, memory management, Serial debugging, or embedded anti-patterns. (project)
 ---
 
 # Adafruit Arduino C++ Development
@@ -160,13 +159,24 @@ void processRxByte(char c) {
 ```
 
 ### Scanner Flood Prevention
-**Critical**: Filter scanner by service UUID to prevent callback overload.
+**Critical**: Filter scanner to prevent callback overload in busy BLE environments.
+
+**Important**: 128-bit service UUIDs (like Nordic UART) may NOT be in the advertising packet due to the 31-byte limit. The UUID is often only discoverable after connection via GATT service discovery. Use RSSI filtering + name matching in callback instead.
 
 ```cpp
-// REQUIRED: Filter to prevent callback flood in busy BLE environments
+// CORRECT: RSSI filter + name matching (works with 128-bit UUIDs)
 Bluefruit.Scanner.clearFilters();
-Bluefruit.Scanner.filterUuid(clientUart.uuid);
+Bluefruit.Scanner.filterRssi(-80);  // Only nearby devices
+Bluefruit.Scanner.useActiveScan(true);  // Get scan response for name
 Bluefruit.Scanner.start(0);
+
+// In callback, match by name:
+if (nameLen > 0 && strcmp(name, targetName) == 0) {
+    connectToPrimary(report);
+}
+
+// INCORRECT: UUID filter may never match if UUID not in advertising packet
+// Bluefruit.Scanner.filterUuid(clientUart.uuid);  // May silently fail!
 ```
 
 ### Scanner Health Checks
@@ -281,7 +291,9 @@ bool registerCallback(StateChangeCallback cb) {
 | Anti-Pattern | Problem | Solution |
 |--------------|---------|----------|
 | `delay()` in loop | Blocks BLE callbacks | millis()-based timing |
-| Unfiltered scanner | Callback flood in busy areas | Filter by service UUID |
+| Unfiltered scanner | Callback flood in busy areas | RSSI filter + name matching |
+| UUID filter for 128-bit | Filter never matches | Use RSSI + name in callback |
+| `%llu` in printf | ARM doesn't support it | Split into two `%lu` values |
 | No channel close | I2C bus conflicts | Always close after operations |
 | `new`/`malloc` in loop | Heap fragmentation | Pre-allocate at startup |
 | Exceptions | Runtime overhead | Result codes |
@@ -324,18 +336,6 @@ pio device monitor         # Serial monitor (115200)
 pio test -e native         # Run unit tests
 pio test -e native_coverage # Tests with coverage
 pio run -t clean           # Clean build
-```
-
-## Context7 Integration
-
-Use Context7 MCP to fetch up-to-date library documentation:
-
-```
-# Resolve library ID first
-mcp__context7__resolve-library-id("Adafruit DRV2605")
-
-# Then fetch docs
-mcp__context7__get-library-docs(context7CompatibleLibraryID, topic="RTP mode")
 ```
 
 ## Additional Resources

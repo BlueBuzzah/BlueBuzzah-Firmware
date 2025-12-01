@@ -145,6 +145,30 @@ nRF52840 MCU
 
 ---
 
+## Claude Code Skill
+
+This project includes a custom Claude Code skill for embedded development:
+
+**Skill:** `adafruit-arduino-cpp`
+**Location:** `.claude/skills/adafruit-arduino-cpp/`
+
+The skill provides:
+- Memory management patterns (pre-allocation, fixed-size arrays)
+- Non-blocking timing patterns (millis()-based state machines)
+- BLE stack patterns (callbacks, message framing, scanner management)
+- I2C multiplexer management
+- State machine best practices
+- Anti-patterns to avoid
+- Debugging techniques
+
+**Reference files** in `references/`:
+- `ble-patterns.md` - BLE callback patterns, connection handling
+- `timing-patterns.md` - Non-blocking timing templates
+- `debugging.md` - Serial debugging, LED codes, I2C diagnostics
+- `platformio-commands.md` - CLI reference, test environments
+
+---
+
 ## Code Standards
 
 ### Prohibited in Source Code
