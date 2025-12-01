@@ -218,11 +218,11 @@ public:
     static SyncCommand createStopSession(uint32_t sequenceId = 0);
 
     /**
-     * @brief Create EXECUTE_BUZZ command
+     * @brief Create BUZZ command
      * @param finger Finger index (0-4)
      * @param amplitude Amplitude percentage (0-100)
      */
-    static SyncCommand createExecuteBuzz(uint32_t sequenceId, uint8_t finger, uint8_t amplitude);
+    static SyncCommand createBuzz(uint32_t sequenceId, uint8_t finger, uint8_t amplitude);
 
     /**
      * @brief Create BUZZ_COMPLETE command

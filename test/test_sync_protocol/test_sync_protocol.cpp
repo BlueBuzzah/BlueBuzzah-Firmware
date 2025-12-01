@@ -36,8 +36,8 @@ void test_SyncCommand_default_constructor(void) {
 }
 
 void test_SyncCommand_parameterized_constructor(void) {
-    SyncCommand cmd(SyncCommandType::EXECUTE_BUZZ, 42);
-    TEST_ASSERT_EQUAL(SyncCommandType::EXECUTE_BUZZ, cmd.getType());
+    SyncCommand cmd(SyncCommandType::BUZZ, 42);
+    TEST_ASSERT_EQUAL(SyncCommandType::BUZZ, cmd.getType());
     TEST_ASSERT_EQUAL_UINT32(42, cmd.getSequenceId());
 }
 
@@ -75,9 +75,9 @@ void test_SyncCommand_getTypeString_heartbeat(void) {
     TEST_ASSERT_EQUAL_STRING("HEARTBEAT", cmd.getTypeString());
 }
 
-void test_SyncCommand_getTypeString_executeBuzz(void) {
-    SyncCommand cmd(SyncCommandType::EXECUTE_BUZZ, 0);
-    TEST_ASSERT_EQUAL_STRING("EXECUTE_BUZZ", cmd.getTypeString());
+void test_SyncCommand_getTypeString_buzz(void) {
+    SyncCommand cmd(SyncCommandType::BUZZ, 0);
+    TEST_ASSERT_EQUAL_STRING("BUZZ", cmd.getTypeString());
 }
 
 void test_SyncCommand_getTypeString_startSession(void) {
@@ -192,18 +192,17 @@ void test_SyncCommand_serialize_heartbeat(void) {
 }
 
 void test_SyncCommand_serialize_with_data(void) {
-    SyncCommand cmd(SyncCommandType::EXECUTE_BUZZ, 42);
+    SyncCommand cmd(SyncCommandType::BUZZ, 42);
     cmd.setTimestamp(1000000);
-    cmd.setData("finger", "0");
-    cmd.setData("amplitude", "50");
+    cmd.setData("0", "0");
+    cmd.setData("1", "50");
 
     char buffer[256];
     TEST_ASSERT_TRUE(cmd.serialize(buffer, sizeof(buffer)));
 
-    // Format: EXECUTE_BUZZ:42:1000000:finger|0|amplitude|50
-    TEST_ASSERT_TRUE(strstr(buffer, "EXECUTE_BUZZ:42:1000000:") != nullptr);
-    TEST_ASSERT_TRUE(strstr(buffer, "finger|0") != nullptr);
-    TEST_ASSERT_TRUE(strstr(buffer, "amplitude|50") != nullptr);
+    // Format: BUZZ:42:1000000:0|50 (positional values only)
+    TEST_ASSERT_TRUE(strstr(buffer, "BUZZ:42:1000000:") != nullptr);
+    TEST_ASSERT_TRUE(strstr(buffer, ":0|50") != nullptr);
 }
 
 void test_SyncCommand_serialize_buffer_too_small(void) {
@@ -231,22 +230,22 @@ void test_SyncCommand_deserialize_heartbeat(void) {
     TEST_ASSERT_EQUAL_UINT64(1000000, cmd.getTimestamp());
 }
 
-void test_SyncCommand_deserialize_execute_buzz(void) {
+void test_SyncCommand_deserialize_buzz(void) {
     SyncCommand cmd;
-    TEST_ASSERT_TRUE(cmd.deserialize("EXECUTE_BUZZ:42:5000000"));
+    TEST_ASSERT_TRUE(cmd.deserialize("BUZZ:42:5000000"));
 
-    TEST_ASSERT_EQUAL(SyncCommandType::EXECUTE_BUZZ, cmd.getType());
+    TEST_ASSERT_EQUAL(SyncCommandType::BUZZ, cmd.getType());
     TEST_ASSERT_EQUAL_UINT32(42, cmd.getSequenceId());
     TEST_ASSERT_EQUAL_UINT64(5000000, cmd.getTimestamp());
 }
 
 void test_SyncCommand_deserialize_with_data(void) {
     SyncCommand cmd;
-    TEST_ASSERT_TRUE(cmd.deserialize("EXECUTE_BUZZ:42:1000000:finger|0|amplitude|50"));
+    TEST_ASSERT_TRUE(cmd.deserialize("BUZZ:42:1000000:0|50"));
 
-    TEST_ASSERT_EQUAL(SyncCommandType::EXECUTE_BUZZ, cmd.getType());
-    TEST_ASSERT_EQUAL_INT32(0, cmd.getDataInt("finger", -1));
-    TEST_ASSERT_EQUAL_INT32(50, cmd.getDataInt("amplitude", -1));
+    TEST_ASSERT_EQUAL(SyncCommandType::BUZZ, cmd.getType());
+    TEST_ASSERT_EQUAL_INT32(0, cmd.getDataInt("0", -1));
+    TEST_ASSERT_EQUAL_INT32(50, cmd.getDataInt("1", -1));
 }
 
 void test_SyncCommand_deserialize_null_message(void) {
@@ -271,10 +270,10 @@ void test_SyncCommand_deserialize_unknown_command(void) {
 
 void test_SyncCommand_deserialize_roundtrip(void) {
     // Create and serialize a command
-    SyncCommand original(SyncCommandType::EXECUTE_BUZZ, 123);
+    SyncCommand original(SyncCommandType::BUZZ, 123);
     original.setTimestamp(9999999);
-    original.setData("finger", "3");
-    original.setData("amplitude", "80");
+    original.setData("0", "3");
+    original.setData("1", "80");
 
     char buffer[256];
     TEST_ASSERT_TRUE(original.serialize(buffer, sizeof(buffer)));
@@ -286,8 +285,8 @@ void test_SyncCommand_deserialize_roundtrip(void) {
     TEST_ASSERT_EQUAL(original.getType(), parsed.getType());
     TEST_ASSERT_EQUAL_UINT32(original.getSequenceId(), parsed.getSequenceId());
     TEST_ASSERT_EQUAL_UINT64(original.getTimestamp(), parsed.getTimestamp());
-    TEST_ASSERT_EQUAL_INT32(3, parsed.getDataInt("finger", -1));
-    TEST_ASSERT_EQUAL_INT32(80, parsed.getDataInt("amplitude", -1));
+    TEST_ASSERT_EQUAL_INT32(3, parsed.getDataInt("0", -1));
+    TEST_ASSERT_EQUAL_INT32(80, parsed.getDataInt("1", -1));
 }
 
 // =============================================================================
@@ -324,12 +323,12 @@ void test_SyncCommand_createStopSession(void) {
     TEST_ASSERT_EQUAL_UINT32(25, cmd.getSequenceId());
 }
 
-void test_SyncCommand_createExecuteBuzz(void) {
-    SyncCommand cmd = SyncCommand::createExecuteBuzz(30, 2, 75);
-    TEST_ASSERT_EQUAL(SyncCommandType::EXECUTE_BUZZ, cmd.getType());
+void test_SyncCommand_createBuzz(void) {
+    SyncCommand cmd = SyncCommand::createBuzz(30, 2, 75);
+    TEST_ASSERT_EQUAL(SyncCommandType::BUZZ, cmd.getType());
     TEST_ASSERT_EQUAL_UINT32(30, cmd.getSequenceId());
-    TEST_ASSERT_EQUAL_INT32(2, cmd.getDataInt("finger", -1));
-    TEST_ASSERT_EQUAL_INT32(75, cmd.getDataInt("amplitude", -1));
+    TEST_ASSERT_EQUAL_INT32(2, cmd.getDataInt("0", -1));
+    TEST_ASSERT_EQUAL_INT32(75, cmd.getDataInt("1", -1));
 }
 
 void test_SyncCommand_createBuzzComplete(void) {
@@ -494,7 +493,7 @@ int main(int argc, char **argv) {
 
     // SyncCommand Type String Tests
     RUN_TEST(test_SyncCommand_getTypeString_heartbeat);
-    RUN_TEST(test_SyncCommand_getTypeString_executeBuzz);
+    RUN_TEST(test_SyncCommand_getTypeString_buzz);
     RUN_TEST(test_SyncCommand_getTypeString_startSession);
     RUN_TEST(test_SyncCommand_getTypeString_stopSession);
 
@@ -519,7 +518,7 @@ int main(int argc, char **argv) {
 
     // SyncCommand Deserialization Tests
     RUN_TEST(test_SyncCommand_deserialize_heartbeat);
-    RUN_TEST(test_SyncCommand_deserialize_execute_buzz);
+    RUN_TEST(test_SyncCommand_deserialize_buzz);
     RUN_TEST(test_SyncCommand_deserialize_with_data);
     RUN_TEST(test_SyncCommand_deserialize_null_message);
     RUN_TEST(test_SyncCommand_deserialize_empty_message);
@@ -533,7 +532,7 @@ int main(int argc, char **argv) {
     RUN_TEST(test_SyncCommand_createPauseSession);
     RUN_TEST(test_SyncCommand_createResumeSession);
     RUN_TEST(test_SyncCommand_createStopSession);
-    RUN_TEST(test_SyncCommand_createExecuteBuzz);
+    RUN_TEST(test_SyncCommand_createBuzz);
     RUN_TEST(test_SyncCommand_createBuzzComplete);
     RUN_TEST(test_SyncCommand_createDeactivate);
 

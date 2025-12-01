@@ -29,7 +29,7 @@ static const CommandTypeMapping COMMAND_MAPPINGS[] = {
     { SyncCommandType::PAUSE_SESSION,  "PAUSE_SESSION" },
     { SyncCommandType::RESUME_SESSION, "RESUME_SESSION" },
     { SyncCommandType::STOP_SESSION,   "STOP_SESSION" },
-    { SyncCommandType::EXECUTE_BUZZ,   "EXECUTE_BUZZ" },
+    { SyncCommandType::BUZZ,   "BUZZ" },
     { SyncCommandType::DEACTIVATE,     "DEACTIVATE" },
     { SyncCommandType::HEARTBEAT,      "HEARTBEAT" },
     { SyncCommandType::SYNC_ADJ,       "SYNC_ADJ" },
@@ -79,10 +79,22 @@ bool SyncCommand::serialize(char* buffer, size_t bufferSize) const {
     }
 
     // Format: COMMAND_TYPE:sequence_id:timestamp
-    int written = snprintf(buffer, bufferSize, "%s:%lu:%llu",
+    // Note: %llu doesn't work on ARM Arduino, so we print timestamp as two 32-bit parts
+    uint32_t tsHigh = (uint32_t)(_timestamp >> 32);
+    uint32_t tsLow = (uint32_t)(_timestamp & 0xFFFFFFFF);
+    int written;
+    if (tsHigh > 0) {
+        written = snprintf(buffer, bufferSize, "%s:%lu:%lu%09lu",
                            typeStr,
                            (unsigned long)_sequenceId,
-                           (unsigned long long)_timestamp);
+                           (unsigned long)tsHigh,
+                           (unsigned long)tsLow);
+    } else {
+        written = snprintf(buffer, bufferSize, "%s:%lu:%lu",
+                           typeStr,
+                           (unsigned long)_sequenceId,
+                           (unsigned long)tsLow);
+    }
 
     if (written < 0 || (size_t)written >= bufferSize) {
         return false;
@@ -93,6 +105,9 @@ bool SyncCommand::serialize(char* buffer, size_t bufferSize) const {
         size_t remaining = bufferSize - written;
         serializeData(buffer + written, remaining);
     }
+
+    // Debug: show what was serialized
+    Serial.printf("[SYNC] Serialized: %s (data pairs: %d)\n", buffer, _dataCount);
 
     return true;
 }
@@ -106,24 +121,13 @@ void SyncCommand::serializeData(char* buffer, size_t bufferSize) const {
     size_t pos = 0;
     buffer[pos++] = SYNC_CMD_DELIMITER;
 
-    // Add key-value pairs
+    // Add values only (positional encoding - no keys)
     for (uint8_t i = 0; i < _dataCount && pos < bufferSize - 1; i++) {
         if (i > 0 && pos < bufferSize - 1) {
             buffer[pos++] = SYNC_DATA_DELIMITER;
         }
 
-        // Add key
-        const char* key = _data[i].key;
-        while (*key && pos < bufferSize - 1) {
-            buffer[pos++] = *key++;
-        }
-
-        // Add delimiter
-        if (pos < bufferSize - 1) {
-            buffer[pos++] = SYNC_DATA_DELIMITER;
-        }
-
-        // Add value
+        // Add value only
         const char* value = _data[i].value;
         while (*value && pos < bufferSize - 1) {
             buffer[pos++] = *value++;
@@ -145,10 +149,24 @@ bool SyncCommand::deserialize(const char* message) {
     // Clear current data
     clearData();
 
-    // Make a copy for parsing
+    // Make a copy for parsing header fields (type:seq:timestamp)
     char buffer[MESSAGE_BUFFER_SIZE];
     strncpy(buffer, message, sizeof(buffer) - 1);
     buffer[sizeof(buffer) - 1] = '\0';
+
+    // Find data payload position in original message (after 3rd colon)
+    // Format: COMMAND:seq:timestamp:data
+    const char* dataStart = nullptr;
+    int colonCount = 0;
+    for (const char* p = message; *p; p++) {
+        if (*p == ':') {
+            colonCount++;
+            if (colonCount == 3) {
+                dataStart = p + 1;  // Position after 3rd colon
+                break;
+            }
+        }
+    }
 
     // Parse command type (first token)
     char* token = strtok(buffer, ":");
@@ -170,10 +188,9 @@ bool SyncCommand::deserialize(const char* message) {
     }
     _timestamp = strtoull(token, nullptr, 10);
 
-    // Parse data payload if present (remaining content after third colon)
-    token = strtok(nullptr, "");
-    if (token && strlen(token) > 0) {
-        parseData(token);
+    // Parse data payload if present (found via colon counting above)
+    if (dataStart && strlen(dataStart) > 0) {
+        parseData(dataStart);
     }
 
     return true;
@@ -199,19 +216,15 @@ bool SyncCommand::parseData(const char* dataStr) {
     strncpy(buffer, dataStr, sizeof(buffer) - 1);
     buffer[sizeof(buffer) - 1] = '\0';
 
-    // Parse pipe-delimited key|value pairs
+    // Parse pipe-delimited positional values
     char* token = strtok(buffer, "|");
-    char* key = nullptr;
+    uint8_t index = 0;
+    char indexKey[4];
 
     while (token && _dataCount < SYNC_MAX_DATA_PAIRS) {
-        if (!key) {
-            // This is a key
-            key = token;
-        } else {
-            // This is a value - store the pair
-            setData(key, token);
-            key = nullptr;
-        }
+        snprintf(indexKey, sizeof(indexKey), "%d", index);
+        setData(indexKey, token);
+        index++;
         token = strtok(nullptr, "|");
     }
 
@@ -327,10 +340,10 @@ SyncCommand SyncCommand::createStopSession(uint32_t sequenceId) {
     return SyncCommand(SyncCommandType::STOP_SESSION, sequenceId);
 }
 
-SyncCommand SyncCommand::createExecuteBuzz(uint32_t sequenceId, uint8_t finger, uint8_t amplitude) {
-    SyncCommand cmd(SyncCommandType::EXECUTE_BUZZ, sequenceId);
-    cmd.setData("finger", (int32_t)finger);
-    cmd.setData("amplitude", (int32_t)amplitude);
+SyncCommand SyncCommand::createBuzz(uint32_t sequenceId, uint8_t finger, uint8_t amplitude) {
+    SyncCommand cmd(SyncCommandType::BUZZ, sequenceId);
+    cmd.setData("0", (int32_t)finger);
+    cmd.setData("1", (int32_t)amplitude);
     return cmd;
 }
 

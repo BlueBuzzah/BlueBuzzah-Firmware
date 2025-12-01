@@ -49,6 +49,41 @@ bool BLEManager::begin(DeviceRole role, const char* deviceName) {
 
     Serial.printf("[BLE] Initializing as %s...\n", deviceRoleToString(role));
 
+    // ==========================================================================
+    // CRITICAL: Configure BLE connection parameters BEFORE Bluefruit.begin()
+    // ==========================================================================
+    // Default values cause message loss:
+    //   - MTU: 23 bytes (only 20 payload) - our 28-byte messages get fragmented
+    //   - HVN Queue: 3 slots - queue overflows during message bursts
+    //
+    // With fragmented messages, rapid sends overflow the notification queue,
+    // causing silent data loss (missing EOT delimiters, truncated data).
+    //
+    // Fix: Larger MTU (messages fit in ONE notification) + larger queue
+    // ==========================================================================
+
+    // MTU 67 = 64 bytes payload (ATT header is 3 bytes)
+    // Our largest message is ~30 bytes, so 64 payload is plenty of headroom
+    // HVN queue of 8 allows bursting without overflow
+    // Event length 6 allows more data per connection event (in 1.25ms units)
+    const uint16_t BLE_MTU = 67;           // 64 byte payload + 3 byte ATT header
+    const uint16_t BLE_EVENT_LEN = 6;      // Connection event length (in 1.25ms units)
+    const uint8_t  BLE_HVN_QSIZE = 8;      // Handle Value Notification queue size
+    const uint8_t  BLE_WRCMD_QSIZE = 8;    // Write Command queue size
+
+    // API: configPrphConn(mtu_max, event_len, hvn_qsize, wrcmd_qsize)
+    if (role == DeviceRole::PRIMARY) {
+        // PRIMARY is peripheral - configure peripheral connection
+        Bluefruit.configPrphConn(BLE_MTU, BLE_EVENT_LEN, BLE_HVN_QSIZE, BLE_WRCMD_QSIZE);
+        Serial.printf("[BLE] Configured: MTU=%d, EVENT_LEN=%d, HVN_Q=%d\n",
+                      BLE_MTU, BLE_EVENT_LEN, BLE_HVN_QSIZE);
+    } else {
+        // SECONDARY is central - configure central connection
+        Bluefruit.configCentralConn(BLE_MTU, BLE_EVENT_LEN, BLE_HVN_QSIZE, BLE_WRCMD_QSIZE);
+        Serial.printf("[BLE] Configured: MTU=%d, EVENT_LEN=%d, HVN_Q=%d\n",
+                      BLE_MTU, BLE_EVENT_LEN, BLE_HVN_QSIZE);
+    }
+
     // Initialize Bluefruit with appropriate connection counts
     if (role == DeviceRole::PRIMARY) {
         // PRIMARY: 2 peripheral connections (phone + SECONDARY), 0 central
@@ -368,21 +403,73 @@ bool BLEManager::send(uint16_t connHandleParam, const char* message) {
     // Calculate message length
     size_t msgLen = strlen(message);
 
-    // For PRIMARY mode, use the peripheral UART service
-    if (_role == DeviceRole::PRIMARY) {
-        // Write message
-        _uartService.write(message, msgLen);
-        // Write EOT terminator
-        uint8_t eot = EOT_CHAR;
-        _uartService.write(&eot, 1);
+    // CRITICAL: Message + EOT must be in a SINGLE buffer/write to prevent
+    // BLE stack from batching/reordering them separately!
+    // Two separate writes can cause EOT to be batched with next message.
+    static char txBuffer[MESSAGE_BUFFER_SIZE];
+    if (msgLen >= MESSAGE_BUFFER_SIZE - 1) {
+        Serial.println(F("[BLE] ERROR: Message too large for TX buffer"));
+        return false;
     }
-    // For SECONDARY mode, use the client UART
-    else {
-        // Write message
-        _clientUart.write(message, msgLen);
-        // Write EOT terminator
-        uint8_t eot = EOT_CHAR;
-        _clientUart.write(&eot, 1);
+    memcpy(txBuffer, message, msgLen);
+    txBuffer[msgLen] = EOT_CHAR;
+    size_t totalLen = msgLen + 1;
+
+    // CRITICAL: BLE UART has limited TX buffer (~64-256 bytes depending on config).
+    // Rapid writes can overflow the buffer, causing data loss.
+    // We must write in chunks and wait for buffer space if needed.
+
+    size_t bytesSent = 0;
+    const uint8_t maxRetries = 10;
+    const uint8_t retryDelayMs = 5;
+
+    while (bytesSent < totalLen) {
+        size_t remaining = totalLen - bytesSent;
+        size_t written = 0;
+
+        // For PRIMARY mode, use the peripheral UART service
+        if (_role == DeviceRole::PRIMARY) {
+            written = _uartService.write((const uint8_t*)(txBuffer + bytesSent), remaining);
+        }
+        // For SECONDARY mode, use the client UART
+        else {
+            written = _clientUart.write((const uint8_t*)(txBuffer + bytesSent), remaining);
+        }
+
+        if (written > 0) {
+            bytesSent += written;
+        } else {
+            // Buffer full - wait for BLE stack to transmit, then retry
+            uint8_t retries = 0;
+            while (written == 0 && retries < maxRetries) {
+                delay(retryDelayMs);
+                retries++;
+                if (_role == DeviceRole::PRIMARY) {
+                    written = _uartService.write((const uint8_t*)(txBuffer + bytesSent), remaining);
+                } else {
+                    written = _clientUart.write((const uint8_t*)(txBuffer + bytesSent), remaining);
+                }
+                if (written > 0) {
+                    bytesSent += written;
+                    break;
+                }
+            }
+            if (written == 0) {
+                Serial.printf("[BLE] TX FAILED after %d retries! Sent %d/%d bytes\n",
+                              maxRetries, (int)bytesSent, (int)totalLen);
+                return false;
+            }
+        }
+    }
+
+    // CRITICAL: Flush TX buffer to ensure data is transmitted before returning.
+    // Without this, rapid successive sends can overflow the BLE FIFO, causing
+    // the last bytes of each message (including EOT delimiter) to be dropped.
+    // This was causing message concatenation and heartbeat timeout on SECONDARY.
+    if (_role == DeviceRole::PRIMARY) {
+        _uartService.flush();
+    } else {
+        _clientUart.flush();
     }
 
     return true;
@@ -524,13 +611,10 @@ void BLEManager::processIncomingData(uint16_t connHandleParam, const uint8_t* da
         }
     }
 
-    // If we have buffered data but no terminator was received, deliver it anyway
-    // This handles BLE apps that don't send newline/EOT terminators
-    if (!messageDelivered && conn->rxIndex > 0) {
-        conn->rxBuffer[conn->rxIndex] = '\0';
-        deliverMessage(conn, connHandleParam);
-        conn->rxIndex = 0;
-    }
+    // NOTE: Do NOT deliver partial messages here!
+    // Messages can be fragmented across BLE packets.
+    // Only deliver when EOT or newline terminator is received.
+    // Phone apps MUST send terminators for proper message framing.
 
     // Handle buffer overflow
     if (conn->rxIndex >= RX_BUFFER_SIZE - 1) {
@@ -725,14 +809,7 @@ void BLEManager::_onCentralDisconnect(uint16_t connHandle, uint8_t reason) {
 }
 
 void BLEManager::_onScanCallback(ble_gap_evt_adv_report_t* report) {
-    if (!g_bleManager) {
-        Serial.println(F("[SCAN-CB] ERROR: g_bleManager is NULL!"));
-        return;
-    }
-
-    // Count callbacks to show scanner is working
-    static uint32_t callbackCount = 0;
-    callbackCount++;
+    if (!g_bleManager) return;
 
     // Get device name from advertising/scan response data
     char name[32] = {0};
@@ -744,25 +821,11 @@ void BLEManager::_onScanCallback(ble_gap_evt_adv_report_t* report) {
                                                       (uint8_t*)name, sizeof(name) - 1);
     }
 
-    // DEBUG: Log every 10th callback to show scanner is working
-    if (callbackCount % 10 == 1) {
-        if (nameLen > 0) {
-            Serial.printf("[SCAN #%lu] '%s' RSSI:%d\n", callbackCount, name, report->rssi);
-        } else {
-            Serial.printf("[SCAN #%lu] <no name> RSSI:%d\n", callbackCount, report->rssi);
-        }
-    }
-
-    // Check for name match
-    if (nameLen > 0) {
-        // DEBUG: Log ALL named devices
-        Serial.printf("[SCAN] Named device: '%s' (looking for '%s')\n", name, g_bleManager->_targetName);
-
-        if (strcmp(name, g_bleManager->_targetName) == 0) {
-            Serial.printf("[SCAN] >>> MATCH! Found '%s' RSSI:%d, connecting...\n", name, report->rssi);
-            g_bleManager->connectToPrimary(report);
-            return;  // Don't resume scanner - we're connecting
-        }
+    // Check for name match and connect
+    if (nameLen > 0 && strcmp(name, g_bleManager->_targetName) == 0) {
+        Serial.printf("[SCAN] Found '%s' RSSI:%d, connecting...\n", name, report->rssi);
+        g_bleManager->connectToPrimary(report);
+        return;  // Don't resume scanner - we're connecting
     }
 
     // CRITICAL: Must resume scanner to receive more results!
@@ -777,13 +840,6 @@ void BLEManager::_onUartRx(uint16_t connHandle) {
     int len = g_bleManager->_uartService.read(buf, sizeof(buf));
 
     if (len > 0) {
-        // Debug: show raw bytes received
-        Serial.printf("[BLE-RX] %d bytes from handle %d: ", len, connHandle);
-        for (int i = 0; i < len && i < 32; i++) {
-            Serial.printf("%02X ", buf[i]);
-        }
-        Serial.println();
-
         g_bleManager->processIncomingData(connHandle, buf, len);
     }
 }

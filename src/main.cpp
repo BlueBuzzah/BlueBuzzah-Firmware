@@ -67,6 +67,12 @@ bool wasConnected = false;
 // Therapy state tracking (for detecting session end)
 bool wasTherapyRunning = false;
 
+// Boot window auto-start tracking (PRIMARY only)
+// When SECONDARY connects but phone doesn't within 30s, auto-start therapy
+uint32_t bootWindowStart = 0;      // When SECONDARY connected (starts countdown)
+bool bootWindowActive = false;      // Whether we're waiting for phone
+bool autoStartTriggered = false;    // Prevent repeated auto-starts
+
 // SECONDARY heartbeat monitoring
 uint32_t lastHeartbeatReceived = 0;  // Tracks last heartbeat from PRIMARY
 
@@ -86,6 +92,7 @@ void sendHeartbeat();
 void printStatus();
 void startTherapyTest();
 void stopTherapyTest();
+void autoStartTherapy();
 
 // BLE Callbacks
 void onBLEConnect(uint16_t connHandle, ConnectionType type);
@@ -333,6 +340,22 @@ void loop() {
         }
     }
 
+    // PRIMARY: Check boot window for auto-start therapy
+    if (deviceRole == DeviceRole::PRIMARY && bootWindowActive && !autoStartTriggered) {
+        if (now - bootWindowStart >= STARTUP_WINDOW_MS) {
+            // Boot window expired without phone connecting
+            if (ble.isSecondaryConnected() && !ble.isPhoneConnected()) {
+                Serial.println(F("[BOOT] 30s window expired without phone - auto-starting therapy"));
+                bootWindowActive = false;
+                autoStartTriggered = true;
+                autoStartTherapy();
+            } else {
+                // SECONDARY disconnected during window, cancel
+                bootWindowActive = false;
+            }
+        }
+    }
+
     // Check connection state changes
     bool isConnected = (deviceRole == DeviceRole::PRIMARY) ?
                        ble.isSecondaryConnected() :
@@ -565,6 +588,20 @@ void onBLEConnect(uint16_t connHandle, ConnectionType type) {
         stateMachine.transition(StateTrigger::CONNECTED);
     }
 
+    // PRIMARY: Boot window logic for auto-start
+    if (deviceRole == DeviceRole::PRIMARY) {
+        if (type == ConnectionType::SECONDARY && !autoStartTriggered) {
+            // SECONDARY connected - start 30-second boot window for phone
+            bootWindowStart = millis();
+            bootWindowActive = true;
+            Serial.println(F("[BOOT] SECONDARY connected - starting 30s boot window for phone"));
+        } else if (type == ConnectionType::PHONE && bootWindowActive) {
+            // Phone connected within boot window - cancel auto-start
+            bootWindowActive = false;
+            Serial.println(F("[BOOT] Phone connected - boot window cancelled"));
+        }
+    }
+
     // Quick haptic feedback on thumb
     if (haptic.isEnabled(FINGER_THUMB)) {
         haptic.activate(FINGER_THUMB, 30);
@@ -630,10 +667,10 @@ void onBLEMessage(uint16_t connHandle, const char* message) {
     // Parse sync/internal commands
     SyncCommand cmd;
     if (cmd.deserialize(message)) {
-        Serial.printf("[CMD] Type: %s, Seq: %lu, Time: %llu\n",
+        Serial.printf("[CMD] Type: %s, Seq: %lu, Time: %lu\n",
                       cmd.getTypeString(),
                       (unsigned long)cmd.getSequenceId(),
-                      (unsigned long long)cmd.getTimestamp());
+                      (unsigned long)(cmd.getTimestamp() & 0xFFFFFFFF));
 
         // Handle specific command types
         switch (cmd.getType()) {
@@ -652,13 +689,16 @@ void onBLEMessage(uint16_t connHandle, const char* message) {
                 }
                 break;
 
-            case SyncCommandType::EXECUTE_BUZZ:
+            case SyncCommandType::BUZZ:
                 {
-                    int32_t finger = cmd.getDataInt("finger", -1);
+                    int32_t finger = cmd.getDataInt("0", -1);
+                    int32_t amplitude = cmd.getDataInt("1", 50);
+
+                    Serial.printf("[BUZZ] Received: finger=%ld, amplitude=%ld\n",
+                                  (long)finger, (long)amplitude);
 
                     if (finger >= 0 && finger < MAX_ACTUATORS) {
-                        int32_t amplitude = cmd.getDataInt("amplitude", 50);
-                        Serial.printf("[BUZZ] Finger: %s, Amplitude: %d%%\n",
+                        Serial.printf("[BUZZ] Activating: %s, Amplitude: %d%%\n",
                                       FINGER_NAMES[finger], amplitude);
 
                         if (haptic.isEnabled(finger)) {
@@ -711,10 +751,9 @@ void onBLEMessage(uint16_t connHandle, const char* message) {
 // =============================================================================
 
 void onSendCommand(const char* commandType, uint8_t leftFinger, uint8_t rightFinger, uint8_t amplitude, uint32_t seq) {
-    // Create and send EXECUTE_BUZZ command to SECONDARY
-    SyncCommand cmd(SyncCommandType::EXECUTE_BUZZ, seq);
-    cmd.setData("finger", (int32_t)leftFinger);  // SECONDARY only needs one finger
-    cmd.setData("amplitude", (int32_t)amplitude);
+    SyncCommand cmd(SyncCommandType::BUZZ, seq);
+    cmd.setData("0", (int32_t)leftFinger);
+    cmd.setData("1", (int32_t)amplitude);
 
     char buffer[128];
     if (cmd.serialize(buffer, sizeof(buffer))) {
@@ -827,6 +866,77 @@ void stopTherapyTest() {
         ble.setScannerAutoRestart(true);  // Re-enable health check
         ble.startScanning(BLE_NAME);
     }
+}
+
+/**
+ * @brief Auto-start therapy after boot window expires without phone connection
+ *
+ * Called when PRIMARY+SECONDARY are connected but phone doesn't connect
+ * within 30 seconds. Starts therapy with current profile settings.
+ */
+void autoStartTherapy() {
+    if (deviceRole != DeviceRole::PRIMARY) {
+        Serial.println(F("[AUTO] Auto-start only available on PRIMARY"));
+        return;
+    }
+
+    if (therapy.isRunning()) {
+        Serial.println(F("[AUTO] Therapy already running"));
+        return;
+    }
+
+    // Get current profile
+    const TherapyProfile* profile = profiles.getCurrentProfile();
+    if (!profile) {
+        Serial.println(F("[AUTO] No profile loaded - using defaults"));
+
+        // Default settings if no profile
+        Serial.println(F("\n+============================================================+"));
+        Serial.println(F("|  AUTO-STARTING DEFAULT THERAPY (no phone connected)        |"));
+        Serial.println(F("|  Duration: 30 minutes | Pattern: RNDP | Jitter: 20%        |"));
+        Serial.println(F("+============================================================+\n"));
+
+        stateMachine.transition(StateTrigger::START_SESSION);
+        therapy.startSession(
+            1800,                       // 30 minutes (1800 seconds)
+            PATTERN_TYPE_RNDP,          // Random pattern
+            1500,                       // 1500ms on time
+            5000,                       // 5000ms off time
+            20.0f,                      // 20% jitter
+            5,                          // All 5 fingers
+            true                        // Mirror pattern
+        );
+        return;
+    }
+
+    // Convert pattern type string to constant
+    uint8_t patternType = PATTERN_TYPE_RNDP;
+    if (strcmp(profile->patternType, "sequential") == 0) {
+        patternType = PATTERN_TYPE_SEQUENTIAL;
+    } else if (strcmp(profile->patternType, "mirrored") == 0) {
+        patternType = PATTERN_TYPE_MIRRORED;
+    }
+
+    Serial.println(F("\n+============================================================+"));
+    Serial.println(F("|  AUTO-STARTING THERAPY (no phone connected)                |"));
+    Serial.printf("|  Profile: %-46s |\n", profile->name);
+    Serial.printf("|  Duration: 30 min | Pattern: %-4s | Jitter: %5.1f%%         |\n",
+                  profile->patternType, profile->jitterPercent);
+    Serial.println(F("+============================================================+\n"));
+
+    // Update state machine
+    stateMachine.transition(StateTrigger::START_SESSION);
+
+    // Start 30-minute session using profile settings
+    therapy.startSession(
+        1800,                       // 30 minutes (1800 seconds)
+        patternType,
+        profile->timeOnMs,
+        profile->timeOffMs,
+        profile->jitterPercent,
+        profile->numFingers,
+        profile->mirrorPattern
+    );
 }
 
 // =============================================================================

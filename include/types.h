@@ -225,7 +225,7 @@ enum class SyncCommandType : uint8_t {
     PAUSE_SESSION,
     RESUME_SESSION,
     STOP_SESSION,
-    EXECUTE_BUZZ,
+    BUZZ,           // Compact name (was EXECUTE_BUZZ)
     DEACTIVATE,
     HEARTBEAT,
     SYNC_ADJ,
@@ -244,7 +244,7 @@ inline const char* syncCommandTypeToString(SyncCommandType type) {
         case SyncCommandType::PAUSE_SESSION: return "PAUSE_SESSION";
         case SyncCommandType::RESUME_SESSION: return "RESUME_SESSION";
         case SyncCommandType::STOP_SESSION: return "STOP_SESSION";
-        case SyncCommandType::EXECUTE_BUZZ: return "EXECUTE_BUZZ";
+        case SyncCommandType::BUZZ: return "BUZZ";
         case SyncCommandType::DEACTIVATE: return "DEACTIVATE";
         case SyncCommandType::HEARTBEAT: return "HEARTBEAT";
         case SyncCommandType::SYNC_ADJ: return "SYNC_ADJ";

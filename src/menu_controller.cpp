@@ -16,7 +16,7 @@
 // =============================================================================
 
 const char* INTERNAL_MESSAGES[] = {
-    "EXECUTE_BUZZ",
+    "BUZZ",
     "BUZZ_COMPLETE",
     "PARAM_UPDATE",
     "SEED",
