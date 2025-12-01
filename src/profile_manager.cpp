@@ -313,6 +313,8 @@ bool ProfileManager::saveSettings() {
 
     // Device role
     data.role = (_deviceRole == DeviceRole::SECONDARY) ? 1 : 0;
+    Serial.printf("[SETTINGS] Saving role: %s (value=%d)\n",
+                  deviceRoleToString(_deviceRole), data.role);
 
     // Profile data
     data.profileId = _currentProfileId;
@@ -332,13 +334,18 @@ bool ProfileManager::saveSettings() {
     }
 
     // Write binary data
+    // Note: FILE_O_WRITE seeks to end-of-file, so we must seek(0) to overwrite
     File file(InternalFS);
     if (!file.open(SETTINGS_FILE, FILE_O_WRITE)) {
         Serial.println(F("[SETTINGS] Failed to open file for writing"));
         return false;
     }
 
+    // Seek to beginning to overwrite (FILE_O_WRITE positions at EOF)
+    file.seek(0);
+
     size_t written = file.write((uint8_t*)&data, sizeof(data));
+    file.flush();  // Ensure data is written to flash before close
     file.close();
 
     if (written != sizeof(data)) {

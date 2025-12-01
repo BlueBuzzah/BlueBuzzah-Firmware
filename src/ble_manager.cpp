@@ -209,10 +209,17 @@ bool BLEManager::startScanning(const char* targetName) {
     Serial.println(F("[BLE]   - Callback registered"));
     Bluefruit.Scanner.restartOnDisconnect(true);
     Serial.println(F("[BLE]   - Restart on disconnect: ON"));
+
+    // CRITICAL: Filter by UART service UUID to avoid callback flood
+    // Without this filter, callback fires for EVERY BLE device in range,
+    // which can be 100s per second in busy environments, starving the main loop
     Bluefruit.Scanner.clearFilters();
-    Serial.println(F("[BLE]   - Filters cleared"));
-    Bluefruit.Scanner.setInterval(160, 80);  // 100ms interval, 50ms window
-    Serial.println(F("[BLE]   - Interval: 100ms/50ms"));
+    Bluefruit.Scanner.filterUuid(_clientUart.uuid);  // Only devices with UART service
+    Serial.println(F("[BLE]   - Filter: UART service UUID"));
+
+    // Use longer interval with shorter window to reduce CPU load
+    Bluefruit.Scanner.setInterval(320, 60);  // 200ms interval, 37.5ms window (19% duty)
+    Serial.println(F("[BLE]   - Interval: 200ms/37.5ms"));
     Bluefruit.Scanner.useActiveScan(true);   // Request scan response for name
     Serial.println(F("[BLE]   - Active scan: ON"));
 

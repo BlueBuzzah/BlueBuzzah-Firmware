@@ -177,6 +177,10 @@ void setup() {
         delay(10);
     }
 
+    // Early debug - print immediately after serial ready
+    Serial.println(F("\n[BOOT] Serial ready"));
+    Serial.flush();
+
     printBanner();
 
     // Initialize LED FIRST (needed for configuration feedback)
@@ -218,7 +222,11 @@ void setup() {
 
     // Initialize BLE
     Serial.println(F("\n--- BLE Initialization ---"));
+    Serial.printf("[DEBUG] About to init BLE as %s\n", deviceRoleToString(deviceRole));
+    Serial.flush();
     bleReady = initializeBLE();
+    Serial.println(F("[DEBUG] BLE init returned"));
+    Serial.flush();
 
     if (bleReady) {
         // Start in IDLE state with breathing blue LED
@@ -970,13 +978,15 @@ void handleSerialCommand(const char* command) {
             profiles.setDeviceRole(DeviceRole::PRIMARY);
             profiles.saveSettings();
             Serial.println(F("[CONFIG] Role set to PRIMARY - restarting..."));
-            delay(500);
+            Serial.flush();
+            delay(100);
             NVIC_SystemReset();
         } else if (strcasecmp(roleStr, "SECONDARY") == 0) {
             profiles.setDeviceRole(DeviceRole::SECONDARY);
             profiles.saveSettings();
             Serial.println(F("[CONFIG] Role set to SECONDARY - restarting..."));
-            delay(500);
+            Serial.flush();
+            delay(100);
             NVIC_SystemReset();
         } else {
             Serial.println(F("[ERROR] Invalid role. Use: SET_ROLE:PRIMARY or SET_ROLE:SECONDARY"));
@@ -993,7 +1003,8 @@ void handleSerialCommand(const char* command) {
     // REBOOT - restart the device
     if (strcmp(command, "REBOOT") == 0) {
         Serial.println(F("[CONFIG] Rebooting..."));
-        delay(500);
+        Serial.flush();
+        delay(100);
         NVIC_SystemReset();
         return;
     }
