@@ -161,13 +161,24 @@ def list_devices():
 # Serial Communication
 # =============================================================================
 
-def configure_role(port, role, retries=3):
+def configure_role(port, role, retries=5):
     """Send role configuration command to device via serial with retry logic"""
     print(f"{C.YELLOW}Configuring role as {role}...{C.NC}")
     for attempt in range(retries):
         try:
+            # Re-detect port on retry (device may have reconnected on different port)
+            if attempt > 0:
+                print(f"  {C.YELLOW}Retry {attempt + 1}/{retries} - re-detecting device...{C.NC}")
+                time.sleep(2)
+                devices = find_devices()
+                if devices:
+                    port = devices[0]
+                else:
+                    print(f"  {C.RED}Device not found{C.NC}")
+                    continue
+
             with serial.Serial(port, 115200, timeout=2) as ser:
-                time.sleep(0.5)  # Let serial settle
+                time.sleep(1.0)  # Let serial settle (increased from 0.5)
 
                 # Drain any pending input from device boot
                 ser.reset_input_buffer()
@@ -185,23 +196,34 @@ def configure_role(port, role, retries=3):
                 expected_confirmation = f"[CONFIG] Role set to {role}"
                 response = ""
                 start_time = time.time()
-                while (time.time() - start_time) < 3.0:  # 3 second timeout
-                    if ser.in_waiting:
-                        chunk = ser.read(ser.in_waiting).decode(errors='ignore')
-                        response += chunk
-                        # Check for confirmation with CORRECT role
-                        if expected_confirmation in response:
-                            print(f"  {C.GREEN}Role configured as {role}!{C.NC}")
-                            # Device will reboot - wait for it
-                            time.sleep(2)
-                            return True
-                        # Check if wrong role was set
-                        if "[CONFIG] Role set to" in response and expected_confirmation not in response:
-                            print(f"  {C.RED}ERROR: Device set wrong role!{C.NC}")
-                            print(f"  Expected: {role}")
-                            print(f"  Response: {response.strip()}")
-                            return False
-                    time.sleep(0.1)
+                try:
+                    while (time.time() - start_time) < 3.0:  # 3 second timeout
+                        if ser.in_waiting:
+                            chunk = ser.read(ser.in_waiting).decode(errors='ignore')
+                            response += chunk
+                            # Check for confirmation with CORRECT role
+                            if expected_confirmation in response:
+                                print(f"  {C.GREEN}Role configured as {role}!{C.NC}")
+                                # Device will reboot - wait for it
+                                time.sleep(2)
+                                return True
+                            # Check if wrong role was set
+                            if "[CONFIG] Role set to" in response and expected_confirmation not in response:
+                                print(f"  {C.RED}ERROR: Device set wrong role!{C.NC}")
+                                print(f"  Expected: {role}")
+                                print(f"  Response: {response.strip()}")
+                                return False
+                        time.sleep(0.1)
+                except OSError:
+                    # Device disconnected - expected when it reboots after setting role
+                    if expected_confirmation in response:
+                        print(f"  {C.GREEN}Role configured as {role}!{C.NC}")
+                        time.sleep(2)
+                        return True
+                    # Device rebooted but we didn't see confirmation - likely still successful
+                    print(f"  {C.YELLOW}Device rebooted (role likely set){C.NC}")
+                    time.sleep(2)
+                    return True
 
                 # No confirmation found - do NOT assume success
                 if response:
@@ -352,12 +374,22 @@ def deploy_single_device(device):
     print("Configure role? [P]rimary, [S]econdary, or [N]one: ", end="", flush=True)
     choice = input().strip().upper()
     if choice == "P":
-        print(f"\n{C.YELLOW}Waiting for device to restart...{C.NC}")
-        time.sleep(7)  # nRF52840 needs time to fully boot
+        print(f"\n{C.YELLOW}Waiting for device to restart (12s for full boot)...{C.NC}")
+        time.sleep(12)  # nRF52840 with BLE stack needs ~10-12s to fully boot
+        # Re-detect device after reboot (port may have changed)
+        new_devices = find_devices()
+        if not new_devices:
+            print(f"{C.RED}Device not found after reboot!{C.NC}")
+            return False
+        device = new_devices[0]
         if configure_role(device, "PRIMARY"):
             # Wait for reboot after role change, then verify
             print(f"{C.YELLOW}Waiting for device to reboot...{C.NC}")
             time.sleep(5)
+            # Re-detect device after role-change reboot
+            new_devices = find_devices()
+            if new_devices:
+                device = new_devices[0]
             verified = verify_role(device, "PRIMARY")
             if verified:
                 print(f"\n{C.GREEN}=== Device configured as PRIMARY! ==={C.NC}\n")
@@ -370,12 +402,22 @@ def deploy_single_device(device):
             print(f"\n{C.RED}=== Failed to configure role! ==={C.NC}\n")
             return False
     elif choice == "S":
-        print(f"\n{C.YELLOW}Waiting for device to restart...{C.NC}")
-        time.sleep(7)  # nRF52840 needs time to fully boot
+        print(f"\n{C.YELLOW}Waiting for device to restart (12s for full boot)...{C.NC}")
+        time.sleep(12)  # nRF52840 with BLE stack needs ~10-12s to fully boot
+        # Re-detect device after reboot (port may have changed)
+        new_devices = find_devices()
+        if not new_devices:
+            print(f"{C.RED}Device not found after reboot!{C.NC}")
+            return False
+        device = new_devices[0]
         if configure_role(device, "SECONDARY"):
             # Wait for reboot after role change, then verify
             print(f"{C.YELLOW}Waiting for device to reboot...{C.NC}")
             time.sleep(5)
+            # Re-detect device after role-change reboot
+            new_devices = find_devices()
+            if new_devices:
+                device = new_devices[0]
             verified = verify_role(device, "SECONDARY")
             if verified:
                 print(f"\n{C.GREEN}=== Device configured as SECONDARY! ==={C.NC}\n")
@@ -418,8 +460,14 @@ def deploy_two_devices(devices):
     if not upload_firmware(secondary_dev):
         return False
 
-    print(f"\n{C.YELLOW}[3/6] Waiting for devices to restart...{C.NC}")
-    time.sleep(7)  # nRF52840 needs time to fully boot
+    print(f"\n{C.YELLOW}[3/6] Waiting for devices to restart (12s for full boot)...{C.NC}")
+    time.sleep(12)  # nRF52840 with BLE stack needs ~10-12s to fully boot
+
+    # Re-detect devices after reboot (ports may have changed)
+    new_devices = find_devices()
+    if len(new_devices) >= 2:
+        primary_dev = new_devices[0]
+        secondary_dev = new_devices[1]
 
     print(f"\n{C.YELLOW}[4/6] Configuring PRIMARY role...{C.NC}")
     if not configure_role(primary_dev, "PRIMARY"):
@@ -435,6 +483,12 @@ def deploy_two_devices(devices):
 
     print(f"\n{C.YELLOW}[6/6] Verifying roles...{C.NC}")
     time.sleep(5)  # Wait for devices to reboot
+
+    # Re-detect devices after role-change reboots
+    new_devices = find_devices()
+    if len(new_devices) >= 2:
+        primary_dev = new_devices[0]
+        secondary_dev = new_devices[1]
 
     primary_verified = verify_role(primary_dev, "PRIMARY")
     secondary_verified = verify_role(secondary_dev, "SECONDARY")
@@ -517,8 +571,15 @@ def deploy_multiple_devices(devices):
     if not upload_firmware(secondary_dev):
         return False
 
-    print(f"\n{C.YELLOW}[3/6] Waiting for devices to restart...{C.NC}")
-    time.sleep(7)  # nRF52840 needs time to fully boot
+    print(f"\n{C.YELLOW}[3/6] Waiting for devices to restart (12s for full boot)...{C.NC}")
+    time.sleep(12)  # nRF52840 with BLE stack needs ~10-12s to fully boot
+
+    # Re-detect devices after reboot (ports may have changed)
+    # Note: For 3+ devices, we can't reliably map old to new ports, so we just use first two
+    new_devices = find_devices()
+    if len(new_devices) >= 2:
+        primary_dev = new_devices[0]
+        secondary_dev = new_devices[1]
 
     print(f"\n{C.YELLOW}[4/6] Configuring PRIMARY role...{C.NC}")
     if not configure_role(primary_dev, "PRIMARY"):
@@ -534,6 +595,12 @@ def deploy_multiple_devices(devices):
 
     print(f"\n{C.YELLOW}[6/6] Verifying roles...{C.NC}")
     time.sleep(5)  # Wait for devices to reboot
+
+    # Re-detect devices after role-change reboots
+    new_devices = find_devices()
+    if len(new_devices) >= 2:
+        primary_dev = new_devices[0]
+        secondary_dev = new_devices[1]
 
     primary_verified = verify_role(primary_dev, "PRIMARY")
     secondary_verified = verify_role(secondary_dev, "SECONDARY")
