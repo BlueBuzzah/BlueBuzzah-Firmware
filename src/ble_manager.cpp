@@ -110,9 +110,20 @@ void BLEManager::setupSecondaryMode() {
 
 void BLEManager::setupAdvertising() {
     // Configure advertising data
+    // Note: BLE advertising packet is limited to 31 bytes
+    // Flags: ~3 bytes, TxPower: ~3 bytes, 128-bit UUID: ~18 bytes = ~24 bytes
     Bluefruit.Advertising.addFlags(BLE_GAP_ADV_FLAGS_LE_ONLY_GENERAL_DISC_MODE);
     Bluefruit.Advertising.addTxPower();
-    Bluefruit.Advertising.addService(_uartService);
+
+    // Add service UUID - check if it succeeds (packet may be full)
+    if (!Bluefruit.Advertising.addService(_uartService)) {
+        Serial.println(F("[BLE] WARNING: Failed to add service to advertising!"));
+        // Try adding to scan response instead
+        Bluefruit.ScanResponse.addService(_uartService);
+        Serial.println(F("[BLE] Added service UUID to scan response"));
+    } else {
+        Serial.println(F("[BLE] Service UUID added to advertising packet"));
+    }
 
     // Include device name in scan response
     Bluefruit.ScanResponse.addName();
@@ -210,12 +221,16 @@ bool BLEManager::startScanning(const char* targetName) {
     Bluefruit.Scanner.restartOnDisconnect(true);
     Serial.println(F("[BLE]   - Restart on disconnect: ON"));
 
-    // CRITICAL: Filter by UART service UUID to avoid callback flood
-    // Without this filter, callback fires for EVERY BLE device in range,
-    // which can be 100s per second in busy environments, starving the main loop
+    // CRITICAL: Filter to prevent callback flood in busy BLE environments
+    // Note: Service UUID filtering doesn't work reliably because:
+    // - 128-bit UUIDs may not fit in advertising packet (31 byte limit)
+    // - UUID may be in scan response, which filters don't check
+    // Solution: Use RSSI filter + name matching in callback
     Bluefruit.Scanner.clearFilters();
-    Bluefruit.Scanner.filterUuid(_clientUart.uuid);  // Only devices with UART service
-    Serial.println(F("[BLE]   - Filter: UART service UUID"));
+
+    // RSSI filter: Only nearby devices (reduces callback volume significantly)
+    Bluefruit.Scanner.filterRssi(-80);
+    Serial.println(F("[BLE]   - Filter: RSSI >= -80 dBm (name matching in callback)"));
 
     // Use longer interval with shorter window to reduce CPU load
     Bluefruit.Scanner.setInterval(320, 60);  // 200ms interval, 37.5ms window (19% duty)
@@ -710,22 +725,16 @@ void BLEManager::_onCentralDisconnect(uint16_t connHandle, uint8_t reason) {
 }
 
 void BLEManager::_onScanCallback(ble_gap_evt_adv_report_t* report) {
-    // Debug: confirm callback is being invoked with timestamp
-    // Serial.printf("[SCAN-CB] Callback at %lums\n", millis());
-
     if (!g_bleManager) {
         Serial.println(F("[SCAN-CB] ERROR: g_bleManager is NULL!"));
         return;
     }
 
-    // Check if we're actually supposed to be scanning
-    // Serial.printf("[SCAN-CB] Scanner.isRunning(): %s\n",
-    //               Bluefruit.Scanner.isRunning() ? "YES" : "NO");
+    // Count callbacks to show scanner is working
+    static uint32_t callbackCount = 0;
+    callbackCount++;
 
-    static uint32_t scanCount = 0;
-    scanCount++;
-
-    // Get device name (even if no matching service)
+    // Get device name from advertising/scan response data
     char name[32] = {0};
     uint8_t nameLen = Bluefruit.Scanner.parseReportByType(report, BLE_GAP_AD_TYPE_COMPLETE_LOCAL_NAME,
                                                            (uint8_t*)name, sizeof(name) - 1);
@@ -735,24 +744,22 @@ void BLEManager::_onScanCallback(ble_gap_evt_adv_report_t* report) {
                                                       (uint8_t*)name, sizeof(name) - 1);
     }
 
-    // Check if this device has the UART service
-    bool hasUartService = Bluefruit.Scanner.checkReportForService(report, g_bleManager->_clientUart);
+    // DEBUG: Log every 10th callback to show scanner is working
+    if (callbackCount % 10 == 1) {
+        if (nameLen > 0) {
+            Serial.printf("[SCAN #%lu] '%s' RSSI:%d\n", callbackCount, name, report->rssi);
+        } else {
+            Serial.printf("[SCAN #%lu] <no name> RSSI:%d\n", callbackCount, report->rssi);
+        }
+    }
 
-    // Log all discovered devices (with or without names)
-    // if (nameLen > 0) {
-    //     Serial.printf("[SCAN #%lu] '%s' RSSI:%d UART:%s\n",
-    //                   scanCount, name, report->rssi, hasUartService ? "YES" : "no");
-    // } else {
-    //     // Log unnamed devices occasionally (every 10th)
-    //     if (scanCount % 10 == 0) {
-    //         Serial.printf("[SCAN #%lu] <unnamed> RSSI:%d\n", scanCount, report->rssi);
-    //     }
-    // }
+    // Check for name match
+    if (nameLen > 0) {
+        // DEBUG: Log ALL named devices
+        Serial.printf("[SCAN] Named device: '%s' (looking for '%s')\n", name, g_bleManager->_targetName);
 
-    // Only connect to devices with UART service and matching name
-    if (hasUartService && nameLen > 0) {
         if (strcmp(name, g_bleManager->_targetName) == 0) {
-            Serial.printf("[SCAN] >>> MATCH! Connecting to '%s'...\n", name);
+            Serial.printf("[SCAN] >>> MATCH! Found '%s' RSSI:%d, connecting...\n", name, report->rssi);
             g_bleManager->connectToPrimary(report);
             return;  // Don't resume scanner - we're connecting
         }
