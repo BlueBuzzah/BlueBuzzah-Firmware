@@ -60,6 +60,7 @@ typedef bool boolean;
 // Mock timing state - can be manipulated by tests
 extern uint32_t _mock_millis;
 extern uint32_t _mock_micros;
+extern uint32_t _mock_micros_increment;  // Auto-increment per micros() call (default 0)
 
 /**
  * @brief Get mock milliseconds since start
@@ -68,8 +69,16 @@ inline uint32_t millis() { return _mock_millis; }
 
 /**
  * @brief Get mock microseconds since start
+ * @note If _mock_micros_increment > 0, time advances on each call (for spin-wait tests)
  */
-inline uint32_t micros() { return _mock_micros; }
+inline uint32_t micros() {
+    uint32_t current = _mock_micros;
+    if (_mock_micros_increment > 0) {
+        _mock_micros += _mock_micros_increment;
+        _mock_millis = _mock_micros / 1000;
+    }
+    return current;
+}
 
 /**
  * @brief Mock delay (advances mock time)
@@ -97,6 +106,16 @@ inline void delayMicroseconds(uint32_t us) {
 inline void mockResetTime() {
     _mock_millis = 0;
     _mock_micros = 0;
+    _mock_micros_increment = 0;
+}
+
+/**
+ * @brief Enable auto-increment of time on each micros() call
+ * @param increment Microseconds to add per call (0 to disable)
+ * @note Use this for testing spin-wait loops
+ */
+inline void mockEnableTimeAutoIncrement(uint32_t increment) {
+    _mock_micros_increment = increment;
 }
 
 /**

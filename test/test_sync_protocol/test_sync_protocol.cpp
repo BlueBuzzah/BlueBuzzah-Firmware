@@ -530,9 +530,14 @@ void test_SimpleSyncProtocol_waitUntil_success(void) {
     // Schedule 10ms in the future
     uint64_t scheduledTime = 110000;  // 110000us = 110ms
 
-    // Mock will increment time on each getMicros() call
-    // waitUntil should spin until we reach scheduledTime
+    // Enable time auto-increment to simulate time passing in spin loop
+    // Increment 100us per micros() call to make the loop complete quickly
+    mockEnableTimeAutoIncrement(100);
+
     bool result = sync.waitUntil(scheduledTime, 50000);  // Max wait: 50ms
+
+    // Disable auto-increment after test
+    mockEnableTimeAutoIncrement(0);
 
     TEST_ASSERT_TRUE(result);
 }

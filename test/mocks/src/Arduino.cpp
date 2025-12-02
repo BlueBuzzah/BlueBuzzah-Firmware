@@ -13,6 +13,7 @@
 
 uint32_t _mock_millis = 0;
 uint32_t _mock_micros = 0;
+uint32_t _mock_micros_increment = 0;
 
 // =============================================================================
 // ADC MOCK STATE

@@ -231,7 +231,9 @@ enum class SyncCommandType : uint8_t {
     SYNC_ADJ,
     SYNC_ADJ_START,
     FIRST_SYNC,
-    ACK_SYNC_ADJ
+    ACK_SYNC_ADJ,
+    SYNC_PROBE,       // RTT probe request (PRIMARY -> SECONDARY)
+    SYNC_PROBE_ACK    // RTT probe response (SECONDARY -> PRIMARY)
 };
 
 /**
@@ -250,6 +252,8 @@ inline const char* syncCommandTypeToString(SyncCommandType type) {
         case SyncCommandType::SYNC_ADJ_START: return "SYNC_ADJ_START";
         case SyncCommandType::FIRST_SYNC: return "FIRST_SYNC";
         case SyncCommandType::ACK_SYNC_ADJ: return "ACK_SYNC_ADJ";
+        case SyncCommandType::SYNC_PROBE: return "SYNC_PROBE";
+        case SyncCommandType::SYNC_PROBE_ACK: return "SYNC_PROBE_ACK";
         default: return "UNKNOWN";
     }
 }

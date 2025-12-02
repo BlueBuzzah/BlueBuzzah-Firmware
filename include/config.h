@@ -185,6 +185,19 @@
 #endif
 
 // =============================================================================
+// LATENCY METRICS CONFIGURATION
+// =============================================================================
+
+// Reporting
+#define LATENCY_REPORT_INTERVAL_MS 30000  // Auto-report every 30s when enabled
+#define LATENCY_LATE_THRESHOLD_US 1000    // >1ms considered "late"
+
+// RTT Probe Configuration (for enhanced clock sync)
+#define SYNC_PROBE_COUNT 10               // Number of RTT probes during initial sync
+#define SYNC_PROBE_INTERVAL_MS 50         // Interval between probes
+#define SYNC_PROBE_TIMEOUT_MS 200         // Timeout waiting for probe ACK
+
+// =============================================================================
 // MEMORY MANAGEMENT
 // =============================================================================
 

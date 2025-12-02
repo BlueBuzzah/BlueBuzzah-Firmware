@@ -401,10 +401,85 @@ public:
      */
     uint32_t getEstimatedLatency() const { return _estimatedLatency; }
 
+    /**
+     * @brief Get current time in microseconds (wrapper for getMicros())
+     * @return Current time in microseconds
+     */
+    uint64_t getMicros() const { return ::getMicros(); }
+
+    // =========================================================================
+    // RTT PROBING METHODS (for enhanced clock synchronization)
+    // =========================================================================
+
+    /**
+     * @brief Start RTT probing sequence
+     * @return true if probing started successfully
+     */
+    bool startRttProbing();
+
+    /**
+     * @brief Record an RTT probe response
+     * @param seq Sequence number of the probe
+     * @param originalT1 Original send timestamp
+     * @return true if probe was recorded successfully
+     */
+    bool handleProbeAck(uint8_t seq, uint64_t originalT1);
+
+    /**
+     * @brief Check if RTT probing is in progress
+     */
+    bool isProbingInProgress() const { return _probingInProgress; }
+
+    /**
+     * @brief Check if RTT probing is complete
+     */
+    bool isProbingComplete() const;
+
+    /**
+     * @brief Get current probe sequence number
+     */
+    uint8_t getCurrentProbeSeq() const { return _currentProbeSeq; }
+
+    /**
+     * @brief Get minimum RTT from probing
+     * @return Minimum RTT in microseconds
+     */
+    uint32_t getMinRtt() const;
+
+    /**
+     * @brief Get maximum RTT from probing
+     * @return Maximum RTT in microseconds
+     */
+    uint32_t getMaxRtt() const;
+
+    /**
+     * @brief Get RTT spread (max - min)
+     * @return RTT spread in microseconds
+     */
+    uint32_t getRttSpread() const;
+
+    /**
+     * @brief Get number of RTT samples collected
+     */
+    uint8_t getRttSampleCount() const { return _rttSampleCount; }
+
+    /**
+     * @brief Finalize sync using minimum RTT from probing
+     * Uses minimum RTT as best estimate of true latency
+     */
+    void finalizeSync();
+
 private:
     int64_t _currentOffset;     // Current clock offset (microseconds)
     uint32_t _lastSyncTime;     // Time of last sync (millis)
     uint32_t _estimatedLatency; // Estimated one-way latency (microseconds)
+
+    // RTT probing state
+    uint32_t _rttSamples[SYNC_PROBE_COUNT];  // RTT samples from probing
+    uint8_t _rttSampleCount;                  // Number of RTT samples collected
+    uint8_t _currentProbeSeq;                 // Current probe sequence number
+    uint64_t _probeSentTime;                  // Time when current probe was sent
+    bool _probingInProgress;                  // Whether probing is active
 };
 
 #endif // SYNC_PROTOCOL_H

@@ -202,6 +202,7 @@ Key technical documentation in `docs/`:
 | `ARDUINO_FIRMWARE_ARCHITECTURE.md` | Architecture overview (source of truth) |
 | `BLE_PROTOCOL.md` | BLE command protocol for mobile apps |
 | `COMMAND_REFERENCE.md` | All 18 BLE commands with C++ implementations |
+| `LATENCY_METRICS.md` | Latency measurement system and Serial commands |
 | `SYNCHRONIZATION_PROTOCOL.md` | PRIMARY↔SECONDARY coordination |
 | `THERAPY_ENGINE.md` | Pattern generation and motor control |
 | `TESTING.md` | Hardware integration testing guide |
