@@ -211,6 +211,110 @@ void test_syncCommandTypeToString_deactivate(void) {
 }
 
 // =============================================================================
+// ADDITIONAL STATE TRIGGER TESTS (COVERAGE)
+// =============================================================================
+
+void test_stateTriggerToString_pauseSession(void) {
+    TEST_ASSERT_EQUAL_STRING("PAUSE_SESSION", stateTriggerToString(StateTrigger::PAUSE_SESSION));
+}
+
+void test_stateTriggerToString_resumeSession(void) {
+    TEST_ASSERT_EQUAL_STRING("RESUME_SESSION", stateTriggerToString(StateTrigger::RESUME_SESSION));
+}
+
+void test_stateTriggerToString_sessionComplete(void) {
+    TEST_ASSERT_EQUAL_STRING("SESSION_COMPLETE", stateTriggerToString(StateTrigger::SESSION_COMPLETE));
+}
+
+void test_stateTriggerToString_batteryWarning(void) {
+    TEST_ASSERT_EQUAL_STRING("BATTERY_WARNING", stateTriggerToString(StateTrigger::BATTERY_WARNING));
+}
+
+void test_stateTriggerToString_batteryCritical(void) {
+    TEST_ASSERT_EQUAL_STRING("BATTERY_CRITICAL", stateTriggerToString(StateTrigger::BATTERY_CRITICAL));
+}
+
+void test_stateTriggerToString_batteryOk(void) {
+    TEST_ASSERT_EQUAL_STRING("BATTERY_OK", stateTriggerToString(StateTrigger::BATTERY_OK));
+}
+
+void test_stateTriggerToString_reconnected(void) {
+    TEST_ASSERT_EQUAL_STRING("RECONNECTED", stateTriggerToString(StateTrigger::RECONNECTED));
+}
+
+void test_stateTriggerToString_reconnectFailed(void) {
+    TEST_ASSERT_EQUAL_STRING("RECONNECT_FAILED", stateTriggerToString(StateTrigger::RECONNECT_FAILED));
+}
+
+void test_stateTriggerToString_phoneLost(void) {
+    TEST_ASSERT_EQUAL_STRING("PHONE_LOST", stateTriggerToString(StateTrigger::PHONE_LOST));
+}
+
+void test_stateTriggerToString_phoneReconnected(void) {
+    TEST_ASSERT_EQUAL_STRING("PHONE_RECONNECTED", stateTriggerToString(StateTrigger::PHONE_RECONNECTED));
+}
+
+void test_stateTriggerToString_phoneTimeout(void) {
+    TEST_ASSERT_EQUAL_STRING("PHONE_TIMEOUT", stateTriggerToString(StateTrigger::PHONE_TIMEOUT));
+}
+
+void test_stateTriggerToString_errorOccurred(void) {
+    TEST_ASSERT_EQUAL_STRING("ERROR_OCCURRED", stateTriggerToString(StateTrigger::ERROR_OCCURRED));
+}
+
+void test_stateTriggerToString_reset(void) {
+    TEST_ASSERT_EQUAL_STRING("RESET", stateTriggerToString(StateTrigger::RESET));
+}
+
+void test_stateTriggerToString_stopped(void) {
+    TEST_ASSERT_EQUAL_STRING("STOPPED", stateTriggerToString(StateTrigger::STOPPED));
+}
+
+void test_stateTriggerToString_forcedShutdown(void) {
+    TEST_ASSERT_EQUAL_STRING("FORCED_SHUTDOWN", stateTriggerToString(StateTrigger::FORCED_SHUTDOWN));
+}
+
+// =============================================================================
+// ADDITIONAL SYNC COMMAND TYPE TESTS (COVERAGE)
+// =============================================================================
+
+void test_syncCommandTypeToString_pauseSession(void) {
+    TEST_ASSERT_EQUAL_STRING("PAUSE_SESSION", syncCommandTypeToString(SyncCommandType::PAUSE_SESSION));
+}
+
+void test_syncCommandTypeToString_resumeSession(void) {
+    TEST_ASSERT_EQUAL_STRING("RESUME_SESSION", syncCommandTypeToString(SyncCommandType::RESUME_SESSION));
+}
+
+void test_syncCommandTypeToString_stopSession(void) {
+    TEST_ASSERT_EQUAL_STRING("STOP_SESSION", syncCommandTypeToString(SyncCommandType::STOP_SESSION));
+}
+
+void test_syncCommandTypeToString_syncAdj(void) {
+    TEST_ASSERT_EQUAL_STRING("SYNC_ADJ", syncCommandTypeToString(SyncCommandType::SYNC_ADJ));
+}
+
+void test_syncCommandTypeToString_syncAdjStart(void) {
+    TEST_ASSERT_EQUAL_STRING("SYNC_ADJ_START", syncCommandTypeToString(SyncCommandType::SYNC_ADJ_START));
+}
+
+void test_syncCommandTypeToString_firstSync(void) {
+    TEST_ASSERT_EQUAL_STRING("FIRST_SYNC", syncCommandTypeToString(SyncCommandType::FIRST_SYNC));
+}
+
+void test_syncCommandTypeToString_ackSyncAdj(void) {
+    TEST_ASSERT_EQUAL_STRING("ACK_SYNC_ADJ", syncCommandTypeToString(SyncCommandType::ACK_SYNC_ADJ));
+}
+
+void test_syncCommandTypeToString_syncProbe(void) {
+    TEST_ASSERT_EQUAL_STRING("SYNC_PROBE", syncCommandTypeToString(SyncCommandType::SYNC_PROBE));
+}
+
+void test_syncCommandTypeToString_syncProbeAck(void) {
+    TEST_ASSERT_EQUAL_STRING("SYNC_PROBE_ACK", syncCommandTypeToString(SyncCommandType::SYNC_PROBE_ACK));
+}
+
+// =============================================================================
 // RGB COLOR TESTS
 // =============================================================================
 
@@ -268,6 +372,42 @@ void test_RGBColor_predefined_blue(void) {
     TEST_ASSERT_EQUAL_UINT8(0, Colors::BLUE.r);
     TEST_ASSERT_EQUAL_UINT8(0, Colors::BLUE.g);
     TEST_ASSERT_EQUAL_UINT8(255, Colors::BLUE.b);
+}
+
+void test_RGBColor_predefined_off(void) {
+    TEST_ASSERT_EQUAL_UINT8(0, Colors::OFF.r);
+    TEST_ASSERT_EQUAL_UINT8(0, Colors::OFF.g);
+    TEST_ASSERT_EQUAL_UINT8(0, Colors::OFF.b);
+}
+
+void test_RGBColor_predefined_white(void) {
+    TEST_ASSERT_EQUAL_UINT8(255, Colors::WHITE.r);
+    TEST_ASSERT_EQUAL_UINT8(255, Colors::WHITE.g);
+    TEST_ASSERT_EQUAL_UINT8(255, Colors::WHITE.b);
+}
+
+void test_RGBColor_predefined_yellow(void) {
+    TEST_ASSERT_EQUAL_UINT8(255, Colors::YELLOW.r);
+    TEST_ASSERT_EQUAL_UINT8(255, Colors::YELLOW.g);
+    TEST_ASSERT_EQUAL_UINT8(0, Colors::YELLOW.b);
+}
+
+void test_RGBColor_predefined_orange(void) {
+    TEST_ASSERT_EQUAL_UINT8(255, Colors::ORANGE.r);
+    TEST_ASSERT_EQUAL_UINT8(128, Colors::ORANGE.g);
+    TEST_ASSERT_EQUAL_UINT8(0, Colors::ORANGE.b);
+}
+
+void test_RGBColor_predefined_purple(void) {
+    TEST_ASSERT_EQUAL_UINT8(128, Colors::PURPLE.r);
+    TEST_ASSERT_EQUAL_UINT8(0, Colors::PURPLE.g);
+    TEST_ASSERT_EQUAL_UINT8(255, Colors::PURPLE.b);
+}
+
+void test_RGBColor_predefined_cyan(void) {
+    TEST_ASSERT_EQUAL_UINT8(0, Colors::CYAN.r);
+    TEST_ASSERT_EQUAL_UINT8(255, Colors::CYAN.g);
+    TEST_ASSERT_EQUAL_UINT8(255, Colors::CYAN.b);
 }
 
 // =============================================================================
@@ -491,6 +631,21 @@ int main(int argc, char **argv) {
     RUN_TEST(test_stateTriggerToString_startSession);
     RUN_TEST(test_stateTriggerToString_stopSession);
     RUN_TEST(test_stateTriggerToString_emergencyStop);
+    RUN_TEST(test_stateTriggerToString_pauseSession);
+    RUN_TEST(test_stateTriggerToString_resumeSession);
+    RUN_TEST(test_stateTriggerToString_sessionComplete);
+    RUN_TEST(test_stateTriggerToString_batteryWarning);
+    RUN_TEST(test_stateTriggerToString_batteryCritical);
+    RUN_TEST(test_stateTriggerToString_batteryOk);
+    RUN_TEST(test_stateTriggerToString_reconnected);
+    RUN_TEST(test_stateTriggerToString_reconnectFailed);
+    RUN_TEST(test_stateTriggerToString_phoneLost);
+    RUN_TEST(test_stateTriggerToString_phoneReconnected);
+    RUN_TEST(test_stateTriggerToString_phoneTimeout);
+    RUN_TEST(test_stateTriggerToString_errorOccurred);
+    RUN_TEST(test_stateTriggerToString_reset);
+    RUN_TEST(test_stateTriggerToString_stopped);
+    RUN_TEST(test_stateTriggerToString_forcedShutdown);
 
     // Boot Result Tests
     RUN_TEST(test_isBootSuccess_failed_returns_false);
@@ -503,6 +658,15 @@ int main(int argc, char **argv) {
     RUN_TEST(test_syncCommandTypeToString_buzz);
     RUN_TEST(test_syncCommandTypeToString_heartbeat);
     RUN_TEST(test_syncCommandTypeToString_deactivate);
+    RUN_TEST(test_syncCommandTypeToString_pauseSession);
+    RUN_TEST(test_syncCommandTypeToString_resumeSession);
+    RUN_TEST(test_syncCommandTypeToString_stopSession);
+    RUN_TEST(test_syncCommandTypeToString_syncAdj);
+    RUN_TEST(test_syncCommandTypeToString_syncAdjStart);
+    RUN_TEST(test_syncCommandTypeToString_firstSync);
+    RUN_TEST(test_syncCommandTypeToString_ackSyncAdj);
+    RUN_TEST(test_syncCommandTypeToString_syncProbe);
+    RUN_TEST(test_syncCommandTypeToString_syncProbeAck);
 
     // RGB Color Tests
     RUN_TEST(test_RGBColor_default_constructor);
@@ -514,6 +678,12 @@ int main(int argc, char **argv) {
     RUN_TEST(test_RGBColor_predefined_red);
     RUN_TEST(test_RGBColor_predefined_green);
     RUN_TEST(test_RGBColor_predefined_blue);
+    RUN_TEST(test_RGBColor_predefined_off);
+    RUN_TEST(test_RGBColor_predefined_white);
+    RUN_TEST(test_RGBColor_predefined_yellow);
+    RUN_TEST(test_RGBColor_predefined_orange);
+    RUN_TEST(test_RGBColor_predefined_purple);
+    RUN_TEST(test_RGBColor_predefined_cyan);
 
     // Battery Status Tests
     RUN_TEST(test_BatteryStatus_default_constructor);

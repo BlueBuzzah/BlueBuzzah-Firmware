@@ -135,11 +135,19 @@ inline void mockAdvanceMicros(uint32_t us) {
 }
 
 /**
- * @brief Set mock time directly
+ * @brief Set mock time directly (milliseconds)
  */
 inline void mockSetMillis(uint32_t ms) {
     _mock_millis = ms;
     _mock_micros = ms * 1000;
+}
+
+/**
+ * @brief Set mock time directly (microseconds)
+ */
+inline void mockSetMicros(uint32_t us) {
+    _mock_micros = us;
+    _mock_millis = us / 1000;
 }
 
 // =============================================================================

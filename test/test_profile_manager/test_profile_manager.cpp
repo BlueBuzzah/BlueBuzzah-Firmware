@@ -240,6 +240,26 @@ void test_getCurrentProfile_quick_test_has_5_minute_duration(void) {
     TEST_ASSERT_EQUAL_UINT16(5, p->sessionDurationMin);
 }
 
+void test_getCurrentProfile_returns_null_when_not_loaded(void) {
+    ProfileManager pm;
+    // Don't call begin() or loadProfile() - profile not loaded
+    const TherapyProfile* p = pm.getCurrentProfile();
+    TEST_ASSERT_NULL(p);
+}
+
+void test_getCurrentProfileName_returns_none_when_not_loaded(void) {
+    ProfileManager pm;
+    // Don't call begin() or loadProfile() - profile not loaded
+    TEST_ASSERT_EQUAL_STRING("none", pm.getCurrentProfileName());
+}
+
+void test_getProfileNames_with_null_count(void) {
+    // Verify getProfileNames handles null count parameter
+    const char** names = profiles->getProfileNames(nullptr);
+    TEST_ASSERT_NOT_NULL(names);
+    TEST_ASSERT_NOT_NULL(names[0]);
+}
+
 // =============================================================================
 // SET PARAMETER TESTS - TYPE
 // =============================================================================
@@ -496,6 +516,112 @@ void test_setParameter_null_value_returns_false(void) {
     TEST_ASSERT_FALSE(profiles->setParameter("FREQ", nullptr));
 }
 
+void test_setParameter_without_profile_loaded_returns_false(void) {
+    // Create fresh instance without loading profile
+    ProfileManager pm;
+    // Don't call begin() or loadProfile() to ensure _profileLoaded = false
+    TEST_ASSERT_FALSE(pm.setParameter("FREQ", "100"));
+}
+
+// =============================================================================
+// SET PARAMETER TESTS - ADDITIONAL BOUNDARY CONDITIONS
+// =============================================================================
+
+void test_setParameter_OFF_invalid_below_10(void) {
+    profiles->loadProfile(1);
+    TEST_ASSERT_FALSE(profiles->setParameter("OFF", "9"));
+}
+
+void test_setParameter_OFF_invalid_above_1000(void) {
+    profiles->loadProfile(1);
+    TEST_ASSERT_FALSE(profiles->setParameter("OFF", "1001"));
+}
+
+void test_setParameter_AMPMAX_invalid_above_100(void) {
+    profiles->loadProfile(1);
+    TEST_ASSERT_FALSE(profiles->setParameter("AMPMAX", "101"));
+}
+
+void test_setParameter_AMPMIN_zero_is_valid(void) {
+    profiles->loadProfile(1);
+    TEST_ASSERT_TRUE(profiles->setParameter("AMPMIN", "0"));
+
+    const TherapyProfile* p = profiles->getCurrentProfile();
+    TEST_ASSERT_EQUAL_UINT8(0, p->amplitudeMin);
+}
+
+void test_setParameter_AMPMAX_zero_is_valid(void) {
+    profiles->loadProfile(1);
+    TEST_ASSERT_TRUE(profiles->setParameter("AMPMAX", "0"));
+
+    const TherapyProfile* p = profiles->getCurrentProfile();
+    TEST_ASSERT_EQUAL_UINT8(0, p->amplitudeMax);
+}
+
+void test_setParameter_JITTER_zero_is_valid(void) {
+    profiles->loadProfile(1);
+    TEST_ASSERT_TRUE(profiles->setParameter("JITTER", "0"));
+
+    const TherapyProfile* p = profiles->getCurrentProfile();
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, 0.0f, p->jitterPercent);
+}
+
+void test_setParameter_JITTER_100_is_valid(void) {
+    profiles->loadProfile(1);
+    TEST_ASSERT_TRUE(profiles->setParameter("JITTER", "100"));
+
+    const TherapyProfile* p = profiles->getCurrentProfile();
+    TEST_ASSERT_FLOAT_WITHIN(0.1f, 100.0f, p->jitterPercent);
+}
+
+void test_setParameter_ON_10_is_valid(void) {
+    profiles->loadProfile(1);
+    TEST_ASSERT_TRUE(profiles->setParameter("ON", "10"));
+
+    const TherapyProfile* p = profiles->getCurrentProfile();
+    TEST_ASSERT_FLOAT_WITHIN(0.1f, 10.0f, p->timeOnMs);
+}
+
+void test_setParameter_ON_1000_is_valid(void) {
+    profiles->loadProfile(1);
+    TEST_ASSERT_TRUE(profiles->setParameter("ON", "1000"));
+
+    const TherapyProfile* p = profiles->getCurrentProfile();
+    TEST_ASSERT_FLOAT_WITHIN(0.1f, 1000.0f, p->timeOnMs);
+}
+
+void test_setParameter_OFF_10_is_valid(void) {
+    profiles->loadProfile(1);
+    TEST_ASSERT_TRUE(profiles->setParameter("OFF", "10"));
+
+    const TherapyProfile* p = profiles->getCurrentProfile();
+    TEST_ASSERT_FLOAT_WITHIN(0.1f, 10.0f, p->timeOffMs);
+}
+
+void test_setParameter_OFF_1000_is_valid(void) {
+    profiles->loadProfile(1);
+    TEST_ASSERT_TRUE(profiles->setParameter("OFF", "1000"));
+
+    const TherapyProfile* p = profiles->getCurrentProfile();
+    TEST_ASSERT_FLOAT_WITHIN(0.1f, 1000.0f, p->timeOffMs);
+}
+
+void test_setParameter_FINGERS_1_is_valid(void) {
+    profiles->loadProfile(1);
+    TEST_ASSERT_TRUE(profiles->setParameter("FINGERS", "1"));
+
+    const TherapyProfile* p = profiles->getCurrentProfile();
+    TEST_ASSERT_EQUAL_UINT8(1, p->numFingers);
+}
+
+void test_setParameter_FINGERS_5_is_valid(void) {
+    profiles->loadProfile(1);
+    TEST_ASSERT_TRUE(profiles->setParameter("FINGERS", "5"));
+
+    const TherapyProfile* p = profiles->getCurrentProfile();
+    TEST_ASSERT_EQUAL_UINT8(5, p->numFingers);
+}
+
 // =============================================================================
 // RESET TO DEFAULTS TESTS
 // =============================================================================
@@ -589,6 +715,9 @@ int main(int argc, char **argv) {
     RUN_TEST(test_getCurrentProfile_noisy_vcr_has_correct_defaults);
     RUN_TEST(test_getCurrentProfile_gentle_has_correct_values);
     RUN_TEST(test_getCurrentProfile_quick_test_has_5_minute_duration);
+    RUN_TEST(test_getCurrentProfile_returns_null_when_not_loaded);
+    RUN_TEST(test_getCurrentProfileName_returns_none_when_not_loaded);
+    RUN_TEST(test_getProfileNames_with_null_count);
 
     // Set Parameter Tests - TYPE
     RUN_TEST(test_setParameter_TYPE_valid_LRA);
@@ -639,6 +768,22 @@ int main(int argc, char **argv) {
     RUN_TEST(test_setParameter_unknown_param_returns_false);
     RUN_TEST(test_setParameter_null_param_returns_false);
     RUN_TEST(test_setParameter_null_value_returns_false);
+    RUN_TEST(test_setParameter_without_profile_loaded_returns_false);
+
+    // Set Parameter Tests - Additional Boundary Conditions
+    RUN_TEST(test_setParameter_OFF_invalid_below_10);
+    RUN_TEST(test_setParameter_OFF_invalid_above_1000);
+    RUN_TEST(test_setParameter_AMPMAX_invalid_above_100);
+    RUN_TEST(test_setParameter_AMPMIN_zero_is_valid);
+    RUN_TEST(test_setParameter_AMPMAX_zero_is_valid);
+    RUN_TEST(test_setParameter_JITTER_zero_is_valid);
+    RUN_TEST(test_setParameter_JITTER_100_is_valid);
+    RUN_TEST(test_setParameter_ON_10_is_valid);
+    RUN_TEST(test_setParameter_ON_1000_is_valid);
+    RUN_TEST(test_setParameter_OFF_10_is_valid);
+    RUN_TEST(test_setParameter_OFF_1000_is_valid);
+    RUN_TEST(test_setParameter_FINGERS_1_is_valid);
+    RUN_TEST(test_setParameter_FINGERS_5_is_valid);
 
     // Reset to Defaults Tests
     RUN_TEST(test_resetToDefaults_restores_builtin_values);
