@@ -340,11 +340,27 @@ SyncCommand SyncCommand::createStopSession(uint32_t sequenceId) {
     return SyncCommand(SyncCommandType::STOP_SESSION, sequenceId);
 }
 
-SyncCommand SyncCommand::createBuzz(uint32_t sequenceId, uint8_t finger, uint8_t amplitude) {
+SyncCommand SyncCommand::createBuzz(uint32_t sequenceId, uint8_t finger, uint8_t amplitude, uint64_t executeAt) {
     SyncCommand cmd(SyncCommandType::BUZZ, sequenceId);
     cmd.setData("0", (int32_t)finger);
     cmd.setData("1", (int32_t)amplitude);
+
+    // Add scheduled execution time if specified (split 64-bit into 2x32-bit for ARM)
+    if (executeAt > 0) {
+        uint32_t execHigh = (uint32_t)(executeAt >> 32);
+        uint32_t execLow = (uint32_t)(executeAt & 0xFFFFFFFF);
+        char highStr[16], lowStr[16];
+        snprintf(highStr, sizeof(highStr), "%lu", (unsigned long)execHigh);
+        snprintf(lowStr, sizeof(lowStr), "%lu", (unsigned long)execLow);
+        cmd.setData("2", highStr);
+        cmd.setData("3", lowStr);
+    }
     return cmd;
+}
+
+SyncCommand SyncCommand::createBuzz(uint32_t sequenceId, uint8_t finger, uint8_t amplitude) {
+    // Backward compatible - immediate execution (executeAt = 0)
+    return createBuzz(sequenceId, finger, amplitude, 0);
 }
 
 SyncCommand SyncCommand::createBuzzed(uint32_t sequenceId) {
@@ -407,4 +423,50 @@ uint32_t SimpleSyncProtocol::calculateRoundTrip(uint64_t sentTime, uint64_t rece
     _lastSyncTime = millis();
 
     return _estimatedLatency;
+}
+
+// =============================================================================
+// SIMPLE SYNC PROTOCOL - SCHEDULED EXECUTION
+// =============================================================================
+
+uint64_t SimpleSyncProtocol::scheduleExecution(uint32_t bufferMs) const {
+    // Schedule execution bufferMs in the future
+    return getMicros() + ((uint64_t)bufferMs * 1000ULL);
+}
+
+uint64_t SimpleSyncProtocol::toLocalTime(uint64_t primaryScheduledTime) const {
+    // Convert PRIMARY's time to SECONDARY's local time by applying offset
+    // If SECONDARY is ahead (positive offset), add offset to get local time
+    // If SECONDARY is behind (negative offset), subtract to get local time
+    return primaryScheduledTime + _currentOffset;
+}
+
+bool SimpleSyncProtocol::waitUntil(uint64_t scheduledTime, uint32_t maxWaitUs) const {
+    uint64_t startTime = getMicros();
+    uint64_t deadline = startTime + maxWaitUs;
+
+    // Check if scheduled time is already in the past
+    if (scheduledTime <= startTime) {
+        Serial.printf("[SYNC] waitUntil: scheduled time already passed (late by %lu us)\n",
+                      (unsigned long)(startTime - scheduledTime));
+        return false;
+    }
+
+    // Check if wait would exceed maximum
+    if (scheduledTime > deadline) {
+        Serial.printf("[SYNC] waitUntil: would exceed max wait (need %lu us, max %lu us)\n",
+                      (unsigned long)(scheduledTime - startTime), (unsigned long)maxWaitUs);
+        return false;
+    }
+
+    // Spin-wait until scheduled time (tight loop for precision)
+    while (getMicros() < scheduledTime) {
+        // Tight loop - no yield for maximum precision
+    }
+
+    uint64_t actualTime = getMicros();
+    int32_t drift = (int32_t)(actualTime - scheduledTime);
+    Serial.printf("[SYNC] waitUntil: executed at target (drift: %ld us)\n", (long)drift);
+
+    return true;
 }

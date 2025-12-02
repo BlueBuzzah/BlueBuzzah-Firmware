@@ -463,6 +463,181 @@ void test_SimpleSyncProtocol_calculateRoundTrip(void) {
 }
 
 // =============================================================================
+// SCHEDULED EXECUTION TESTS
+// =============================================================================
+
+void test_SimpleSyncProtocol_scheduleExecution(void) {
+    SimpleSyncProtocol sync;
+    mockSetMillis(100);  // Current time: 100ms = 100000us
+
+    // Schedule 50ms in the future
+    uint64_t scheduled = sync.scheduleExecution(50);
+
+    // Should be current time + 50ms = 100000 + 50000 = 150000
+    TEST_ASSERT_EQUAL_UINT64(150000, scheduled);
+}
+
+void test_SimpleSyncProtocol_scheduleExecution_custom_buffer(void) {
+    SimpleSyncProtocol sync;
+    mockSetMillis(200);  // Current time: 200ms = 200000us
+
+    // Schedule 75ms in the future
+    uint64_t scheduled = sync.scheduleExecution(75);
+
+    // Should be current time + 75ms = 200000 + 75000 = 275000
+    TEST_ASSERT_EQUAL_UINT64(275000, scheduled);
+}
+
+void test_SimpleSyncProtocol_toLocalTime_positive_offset(void) {
+    SimpleSyncProtocol sync;
+    mockSetMillis(100);
+
+    // SECONDARY is 5000us ahead of PRIMARY
+    sync.calculateOffset(1000000, 1005000);
+
+    // PRIMARY scheduled time: 2000000
+    // Local (SECONDARY) time = 2000000 + 5000 = 2005000
+    uint64_t localTime = sync.toLocalTime(2000000);
+
+    TEST_ASSERT_EQUAL_UINT64(2005000, localTime);
+}
+
+void test_SimpleSyncProtocol_toLocalTime_negative_offset(void) {
+    SimpleSyncProtocol sync;
+    mockSetMillis(100);
+
+    // SECONDARY is 3000us behind PRIMARY
+    sync.calculateOffset(1005000, 1002000);  // offset = -3000
+
+    // PRIMARY scheduled time: 2000000
+    // Local (SECONDARY) time = 2000000 + (-3000) = 1997000
+    uint64_t localTime = sync.toLocalTime(2000000);
+
+    TEST_ASSERT_EQUAL_UINT64(1997000, localTime);
+}
+
+void test_SimpleSyncProtocol_toLocalTime_zero_offset(void) {
+    SimpleSyncProtocol sync;
+    mockSetMillis(100);
+
+    // Clocks are perfectly synchronized
+    sync.calculateOffset(1000000, 1000000);  // offset = 0
+
+    // PRIMARY scheduled time = local time when offset is 0
+    uint64_t localTime = sync.toLocalTime(2000000);
+
+    TEST_ASSERT_EQUAL_UINT64(2000000, localTime);
+}
+
+void test_SimpleSyncProtocol_waitUntil_success(void) {
+    SimpleSyncProtocol sync;
+    mockSetMillis(100);  // Current time: 100000us
+
+    // Schedule 10ms in the future
+    uint64_t scheduledTime = 110000;  // 110000us = 110ms
+
+    // Mock will increment time on each getMicros() call
+    // waitUntil should spin until we reach scheduledTime
+    bool result = sync.waitUntil(scheduledTime, 50000);  // Max wait: 50ms
+
+    TEST_ASSERT_TRUE(result);
+}
+
+void test_SimpleSyncProtocol_waitUntil_already_passed(void) {
+    SimpleSyncProtocol sync;
+    mockSetMillis(200);  // Current time: 200000us
+
+    // Scheduled time is in the past
+    uint64_t scheduledTime = 100000;  // Already passed
+
+    bool result = sync.waitUntil(scheduledTime);
+
+    TEST_ASSERT_FALSE(result);
+}
+
+void test_SimpleSyncProtocol_waitUntil_exceeds_max_wait(void) {
+    SimpleSyncProtocol sync;
+    mockSetMillis(100);  // Current time: 100000us
+
+    // Schedule 200ms in the future, but only allow 50ms wait
+    uint64_t scheduledTime = 300000;  // 300ms
+
+    bool result = sync.waitUntil(scheduledTime, 50000);  // Max: 50ms
+
+    TEST_ASSERT_FALSE(result);
+}
+
+void test_SimpleSyncProtocol_getEstimatedLatency(void) {
+    SimpleSyncProtocol sync;
+    mockSetMillis(100);
+
+    // Calculate round trip: RTT = 20000us, latency = 10000us
+    sync.calculateRoundTrip(1000000, 1020000, 1010000);
+
+    TEST_ASSERT_EQUAL_UINT32(10000, sync.getEstimatedLatency());
+}
+
+// =============================================================================
+// CREATEBUZZ WITH EXECUTEAT TESTS
+// =============================================================================
+
+void test_SyncCommand_createBuzz_with_executeAt(void) {
+    // Create BUZZ with scheduled execution time
+    uint64_t executeAt = 0x0000000100000000ULL;  // High bits set
+    SyncCommand cmd = SyncCommand::createBuzz(42, 2, 75, executeAt);
+
+    TEST_ASSERT_EQUAL(SyncCommandType::BUZZ, cmd.getType());
+    TEST_ASSERT_EQUAL_UINT32(42, cmd.getSequenceId());
+    TEST_ASSERT_EQUAL_INT32(2, cmd.getDataInt("0", -1));    // finger
+    TEST_ASSERT_EQUAL_INT32(75, cmd.getDataInt("1", -1));   // amplitude
+
+    // Check executeAt is split into high/low
+    uint32_t execHigh = (uint32_t)cmd.getDataInt("2", 0);
+    uint32_t execLow = (uint32_t)cmd.getDataInt("3", 0);
+    uint64_t reconstructed = ((uint64_t)execHigh << 32) | (uint64_t)execLow;
+
+    TEST_ASSERT_EQUAL_UINT64(executeAt, reconstructed);
+}
+
+void test_SyncCommand_createBuzz_immediate_execution(void) {
+    // Create BUZZ without scheduled execution (executeAt = 0)
+    SyncCommand cmd = SyncCommand::createBuzz(42, 2, 75);
+
+    TEST_ASSERT_EQUAL(SyncCommandType::BUZZ, cmd.getType());
+    TEST_ASSERT_EQUAL_INT32(2, cmd.getDataInt("0", -1));    // finger
+    TEST_ASSERT_EQUAL_INT32(75, cmd.getDataInt("1", -1));   // amplitude
+
+    // No executeAt data should be present (positions 2,3 should be 0/missing)
+    TEST_ASSERT_EQUAL_INT32(0, cmd.getDataInt("2", 0));
+    TEST_ASSERT_EQUAL_INT32(0, cmd.getDataInt("3", 0));
+}
+
+void test_SyncCommand_createBuzz_with_executeAt_serialize_deserialize(void) {
+    // Test round-trip serialization
+    uint64_t executeAt = 123456789012345ULL;
+    SyncCommand original = SyncCommand::createBuzz(99, 3, 80, executeAt);
+
+    char buffer[256];
+    TEST_ASSERT_TRUE(original.serialize(buffer, sizeof(buffer)));
+
+    SyncCommand parsed;
+    TEST_ASSERT_TRUE(parsed.deserialize(buffer));
+
+    // Verify all fields preserved
+    TEST_ASSERT_EQUAL(SyncCommandType::BUZZ, parsed.getType());
+    TEST_ASSERT_EQUAL_UINT32(99, parsed.getSequenceId());
+    TEST_ASSERT_EQUAL_INT32(3, parsed.getDataInt("0", -1));
+    TEST_ASSERT_EQUAL_INT32(80, parsed.getDataInt("1", -1));
+
+    // Reconstruct executeAt
+    uint32_t execHigh = (uint32_t)parsed.getDataInt("2", 0);
+    uint32_t execLow = (uint32_t)parsed.getDataInt("3", 0);
+    uint64_t reconstructed = ((uint64_t)execHigh << 32) | (uint64_t)execLow;
+
+    TEST_ASSERT_EQUAL_UINT64(executeAt, reconstructed);
+}
+
+// =============================================================================
 // TIMING UTILITY TESTS
 // =============================================================================
 
@@ -551,6 +726,22 @@ int main(int argc, char **argv) {
     RUN_TEST(test_SimpleSyncProtocol_getTimeSinceSync_after_sync);
     RUN_TEST(test_SimpleSyncProtocol_reset);
     RUN_TEST(test_SimpleSyncProtocol_calculateRoundTrip);
+
+    // Scheduled Execution Tests
+    RUN_TEST(test_SimpleSyncProtocol_scheduleExecution);
+    RUN_TEST(test_SimpleSyncProtocol_scheduleExecution_custom_buffer);
+    RUN_TEST(test_SimpleSyncProtocol_toLocalTime_positive_offset);
+    RUN_TEST(test_SimpleSyncProtocol_toLocalTime_negative_offset);
+    RUN_TEST(test_SimpleSyncProtocol_toLocalTime_zero_offset);
+    RUN_TEST(test_SimpleSyncProtocol_waitUntil_success);
+    RUN_TEST(test_SimpleSyncProtocol_waitUntil_already_passed);
+    RUN_TEST(test_SimpleSyncProtocol_waitUntil_exceeds_max_wait);
+    RUN_TEST(test_SimpleSyncProtocol_getEstimatedLatency);
+
+    // createBuzz with executeAt Tests
+    RUN_TEST(test_SyncCommand_createBuzz_with_executeAt);
+    RUN_TEST(test_SyncCommand_createBuzz_immediate_execution);
+    RUN_TEST(test_SyncCommand_createBuzz_with_executeAt_serialize_deserialize);
 
     // Timing Utility Tests
     RUN_TEST(test_getMicros);

@@ -46,6 +46,7 @@ TherapyEngine therapy;
 TherapyStateMachine stateMachine;
 MenuController menu;
 ProfileManager profiles;
+SimpleSyncProtocol syncProtocol;
 
 // =============================================================================
 // STATE VARIABLES
@@ -75,6 +76,10 @@ bool autoStartTriggered = false;    // Prevent repeated auto-starts
 
 // SECONDARY heartbeat monitoring
 uint32_t lastHeartbeatReceived = 0;  // Tracks last heartbeat from PRIMARY
+
+// Clock synchronization timing
+uint32_t lastSyncAdjustment = 0;     // Last periodic sync adjustment time
+#define SYNC_ADJUSTMENT_INTERVAL_MS 30000  // Resync every 30 seconds
 
 // Finger names for display
 const char* FINGER_NAMES[] = { "Thumb", "Index", "Middle", "Ring", "Pinky" };
@@ -356,6 +361,19 @@ void loop() {
         }
     }
 
+    // PRIMARY: Periodic clock synchronization during therapy
+    if (deviceRole == DeviceRole::PRIMARY && ble.isSecondaryConnected() && therapy.isRunning()) {
+        if (now - lastSyncAdjustment >= SYNC_ADJUSTMENT_INTERVAL_MS) {
+            lastSyncAdjustment = now;
+            Serial.println(F("[SYNC] Sending periodic SYNC_ADJ"));
+            SyncCommand syncCmd(SyncCommandType::SYNC_ADJ, g_sequenceGenerator.next());
+            char syncBuffer[128];
+            if (syncCmd.serialize(syncBuffer, sizeof(syncBuffer))) {
+                ble.sendToSecondary(syncBuffer);
+            }
+        }
+    }
+
     // Check connection state changes
     bool isConnected = (deviceRole == DeviceRole::PRIMARY) ?
                        ble.isSecondaryConnected() :
@@ -590,6 +608,14 @@ void onBLEConnect(uint16_t connHandle, ConnectionType type) {
             bootWindowStart = millis();
             bootWindowActive = true;
             Serial.println(F("[BOOT] SECONDARY connected - starting 30s boot window for phone"));
+
+            // Initiate clock synchronization with SECONDARY
+            Serial.println(F("[SYNC] Initiating FIRST_SYNC with SECONDARY"));
+            SyncCommand syncCmd(SyncCommandType::FIRST_SYNC, g_sequenceGenerator.next());
+            char syncBuffer[128];
+            if (syncCmd.serialize(syncBuffer, sizeof(syncBuffer))) {
+                ble.sendToSecondary(syncBuffer);
+            }
         } else if (type == ConnectionType::PHONE && bootWindowActive) {
             // Phone connected within boot window - cancel auto-start
             bootWindowActive = false;
@@ -681,10 +707,31 @@ void onBLEMessage(uint16_t connHandle, const char* message) {
                     int32_t finger = cmd.getDataInt("0", -1);
                     int32_t amplitude = cmd.getDataInt("1", 50);
 
-                    Serial.printf("[BUZZ] Received: finger=%ld, amplitude=%ld\n",
-                                  (long)finger, (long)amplitude);
+                    // Parse scheduled execution time (positions 2,3 = high,low 32-bit)
+                    uint32_t execHigh = (uint32_t)cmd.getDataInt("2", 0);
+                    uint32_t execLow = (uint32_t)cmd.getDataInt("3", 0);
+                    uint64_t executeAt = ((uint64_t)execHigh << 32) | (uint64_t)execLow;
+
+                    Serial.printf("[BUZZ] Received: finger=%ld, amplitude=%ld, executeAt=%lu\n",
+                                  (long)finger, (long)amplitude, (unsigned long)execLow);
 
                     if (finger >= 0 && finger < MAX_ACTUATORS) {
+                        bool executeSuccess = true;
+
+                        // If scheduled execution time provided, wait for it
+                        if (executeAt > 0 && syncProtocol.isSynced()) {
+                            // Convert PRIMARY's time to local time
+                            uint64_t localExecTime = syncProtocol.toLocalTime(executeAt);
+                            Serial.printf("[BUZZ] Waiting for scheduled time (local: %lu)\n",
+                                          (unsigned long)(localExecTime & 0xFFFFFFFF));
+
+                            // Wait until scheduled time
+                            executeSuccess = syncProtocol.waitUntil(localExecTime);
+                            if (!executeSuccess) {
+                                Serial.println(F("[BUZZ] WARNING: Scheduled time missed, executing now"));
+                            }
+                        }
+
                         Serial.printf("[BUZZ] Activating: %s, Amplitude: %d%%\n",
                                       FINGER_NAMES[finger], amplitude);
 
@@ -734,6 +781,88 @@ void onBLEMessage(uint16_t connHandle, const char* message) {
                 stateMachine.transition(StateTrigger::STOP_SESSION);
                 break;
 
+            // Clock synchronization handlers
+            case SyncCommandType::FIRST_SYNC:
+                {
+                    // SECONDARY receives FIRST_SYNC from PRIMARY
+                    // Respond with ACK_SYNC_ADJ containing local timestamp
+                    if (deviceRole == DeviceRole::SECONDARY) {
+                        uint64_t primaryTime = cmd.getTimestamp();
+                        uint64_t localTime = getMicros();
+
+                        Serial.printf("[SYNC] FIRST_SYNC received, primary_ts=%lu, local_ts=%lu\n",
+                                      (unsigned long)(primaryTime & 0xFFFFFFFF),
+                                      (unsigned long)(localTime & 0xFFFFFFFF));
+
+                        // Create ACK with our local timestamp
+                        SyncCommand ack(SyncCommandType::ACK_SYNC_ADJ, cmd.getSequenceId());
+                        ack.setTimestamp(localTime);
+                        // Include PRIMARY's original timestamp for RTT calculation
+                        uint32_t tsHigh = (uint32_t)(primaryTime >> 32);
+                        uint32_t tsLow = (uint32_t)(primaryTime & 0xFFFFFFFF);
+                        char highStr[16], lowStr[16];
+                        snprintf(highStr, sizeof(highStr), "%lu", (unsigned long)tsHigh);
+                        snprintf(lowStr, sizeof(lowStr), "%lu", (unsigned long)tsLow);
+                        ack.setData("0", highStr);
+                        ack.setData("1", lowStr);
+
+                        char buffer[128];
+                        if (ack.serialize(buffer, sizeof(buffer))) {
+                            ble.sendToPrimary(buffer);
+                        }
+                    }
+                }
+                break;
+
+            case SyncCommandType::ACK_SYNC_ADJ:
+                {
+                    // PRIMARY receives ACK_SYNC_ADJ from SECONDARY
+                    if (deviceRole == DeviceRole::PRIMARY) {
+                        uint64_t receivedTime = getMicros();
+                        uint64_t secondaryTime = cmd.getTimestamp();
+
+                        // Reconstruct original sent time from data
+                        uint32_t sentHigh = (uint32_t)cmd.getDataInt("0", 0);
+                        uint32_t sentLow = (uint32_t)cmd.getDataInt("1", 0);
+                        uint64_t sentTime = ((uint64_t)sentHigh << 32) | (uint64_t)sentLow;
+
+                        // Calculate RTT and offset
+                        uint32_t latency = syncProtocol.calculateRoundTrip(sentTime, receivedTime, secondaryTime);
+
+                        Serial.printf("[SYNC] ACK_SYNC_ADJ: RTT=%lu us, offset=%ld us\n",
+                                      (unsigned long)(latency * 2),
+                                      (long)syncProtocol.getOffset());
+                    }
+                }
+                break;
+
+            case SyncCommandType::SYNC_ADJ:
+                {
+                    // Periodic sync adjustment - same as FIRST_SYNC for SECONDARY
+                    if (deviceRole == DeviceRole::SECONDARY) {
+                        uint64_t primaryTime = cmd.getTimestamp();
+                        uint64_t localTime = getMicros();
+
+                        Serial.printf("[SYNC] SYNC_ADJ received\n");
+
+                        SyncCommand ack(SyncCommandType::ACK_SYNC_ADJ, cmd.getSequenceId());
+                        ack.setTimestamp(localTime);
+                        uint32_t tsHigh = (uint32_t)(primaryTime >> 32);
+                        uint32_t tsLow = (uint32_t)(primaryTime & 0xFFFFFFFF);
+                        char highStr[16], lowStr[16];
+                        snprintf(highStr, sizeof(highStr), "%lu", (unsigned long)tsHigh);
+                        snprintf(lowStr, sizeof(lowStr), "%lu", (unsigned long)tsLow);
+                        ack.setData("0", highStr);
+                        ack.setData("1", lowStr);
+
+                        char buffer[128];
+                        if (ack.serialize(buffer, sizeof(buffer))) {
+                            ble.sendToPrimary(buffer);
+                        }
+                    }
+                }
+                break;
+
             default:
                 break;
         }
@@ -745,20 +874,43 @@ void onBLEMessage(uint16_t connHandle, const char* message) {
 // =============================================================================
 
 void onSendCommand(const char* commandType, uint8_t leftFinger, uint8_t rightFinger, uint8_t amplitude, uint32_t seq) {
-    SyncCommand cmd(SyncCommandType::BUZZ, seq);
-    cmd.setData("0", (int32_t)leftFinger);
-    cmd.setData("1", (int32_t)amplitude);
+    // Schedule execution in the future to allow SECONDARY time to receive and prepare
+    uint64_t executeAt = syncProtocol.scheduleExecution(SYNC_EXECUTION_BUFFER_MS);
+
+    // Create BUZZ command with scheduled execution time
+    SyncCommand cmd = SyncCommand::createBuzz(seq, leftFinger, amplitude, executeAt);
 
     char buffer[128];
     if (cmd.serialize(buffer, sizeof(buffer))) {
         if (ble.sendToSecondary(buffer)) {
-            Serial.printf("[TX->SEC] %s (L:%d R:%d)\n", commandType, leftFinger, rightFinger);
+            Serial.printf("[TX->SEC] %s (L:%d R:%d) executeAt:%lu\n",
+                          commandType, leftFinger, rightFinger, (unsigned long)(executeAt & 0xFFFFFFFF));
+        }
+    }
+
+    // Wait until scheduled execution time, then activate locally
+    if (syncProtocol.waitUntil(executeAt)) {
+        // Execute at the scheduled time
+        if (haptic.isEnabled(leftFinger)) {
+            haptic.activate(leftFinger, amplitude);
+        }
+    } else {
+        // Fallback: execute immediately if wait failed
+        Serial.println(F("[SYNC] WARNING: waitUntil failed, executing immediately"));
+        if (haptic.isEnabled(leftFinger)) {
+            haptic.activate(leftFinger, amplitude);
         }
     }
 }
 
 void onActivate(uint8_t finger, uint8_t amplitude) {
-    // Activate local motor (PRIMARY side)
+    // When SECONDARY is connected, onSendCommand handles local activation
+    // to achieve synchronized execution. Skip here to avoid duplicate activation.
+    if (deviceRole == DeviceRole::PRIMARY && ble.isSecondaryConnected()) {
+        return;
+    }
+
+    // Standalone mode: activate local motor directly
     if (haptic.isEnabled(finger)) {
         haptic.activate(finger, amplitude);
     }

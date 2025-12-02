@@ -30,6 +30,10 @@
 #define SYNC_MAX_KEY_LEN 16
 #define SYNC_MAX_VALUE_LEN 32
 
+// Scheduled execution constants
+#define SYNC_EXECUTION_BUFFER_MS    50      // Schedule execution 50ms in future
+#define SYNC_MAX_WAIT_US            100000  // Max spin-wait time (100ms)
+
 // =============================================================================
 // SYNC COMMAND DATA
 // =============================================================================
@@ -216,7 +220,17 @@ public:
     static SyncCommand createStopSession(uint32_t sequenceId = 0);
 
     /**
-     * @brief Create BUZZ command
+     * @brief Create BUZZ command with scheduled execution time
+     * @param sequenceId Sequence ID for the command
+     * @param finger Finger index (0-4)
+     * @param amplitude Amplitude percentage (0-100)
+     * @param executeAt Scheduled execution time in microseconds (0 = immediate)
+     */
+    static SyncCommand createBuzz(uint32_t sequenceId, uint8_t finger, uint8_t amplitude, uint64_t executeAt);
+
+    /**
+     * @brief Create BUZZ command for immediate execution (backward compatible)
+     * @param sequenceId Sequence ID for the command
      * @param finger Finger index (0-4)
      * @param amplitude Amplitude percentage (0-100)
      */
@@ -359,6 +373,38 @@ public:
      * @return Estimated one-way latency in microseconds
      */
     uint32_t calculateRoundTrip(uint64_t sentTime, uint64_t receivedTime, uint64_t remoteTime);
+
+    // =========================================================================
+    // SCHEDULED EXECUTION METHODS
+    // =========================================================================
+
+    /**
+     * @brief Schedule execution time in the future
+     * @param bufferMs Milliseconds to schedule ahead (default 50ms)
+     * @return Scheduled execution time in microseconds
+     */
+    uint64_t scheduleExecution(uint32_t bufferMs = SYNC_EXECUTION_BUFFER_MS) const;
+
+    /**
+     * @brief Convert PRIMARY's scheduled time to local time
+     * @param primaryScheduledTime Execution time in PRIMARY's clock (microseconds)
+     * @return Equivalent time in local clock (microseconds)
+     */
+    uint64_t toLocalTime(uint64_t primaryScheduledTime) const;
+
+    /**
+     * @brief Spin-wait until scheduled execution time
+     * @param scheduledTime Target time in local clock (microseconds)
+     * @param maxWaitUs Maximum wait time before timeout (default 100ms)
+     * @return true if reached target time, false if timeout
+     */
+    bool waitUntil(uint64_t scheduledTime, uint32_t maxWaitUs = SYNC_MAX_WAIT_US) const;
+
+    /**
+     * @brief Get estimated one-way latency
+     * @return Latency in microseconds
+     */
+    uint32_t getEstimatedLatency() const { return _estimatedLatency; }
 
 private:
     int64_t _currentOffset;     // Current clock offset (microseconds)
