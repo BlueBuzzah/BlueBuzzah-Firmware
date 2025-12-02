@@ -363,13 +363,8 @@ void loop() {
 
     if (isConnected != wasConnected) {
         wasConnected = isConnected;
-        if (isConnected) {
-            led.setPattern(Colors::GREEN, LEDPattern::SOLID);
-            Serial.println(F("[STATE] Connected!"));
-        } else {
-            led.setPattern(Colors::BLUE, LEDPattern::BREATHE_SLOW);
-            Serial.println(F("[STATE] Disconnected"));
-        }
+        // LED is handled by state machine - just log the change
+        Serial.println(isConnected ? F("[STATE] Connected!") : F("[STATE] Disconnected"));
     }
 
     // Send heartbeat every 2 seconds when connected
@@ -675,14 +670,6 @@ void onBLEMessage(uint16_t connHandle, const char* message) {
         // Handle specific command types
         switch (cmd.getType()) {
             case SyncCommandType::HEARTBEAT:
-                // Brief cyan flash for heartbeat (temporary override, returns to current pattern)
-                {
-                    RGBColor savedColor = led.getColor();
-                    LEDPattern savedPattern = led.getPattern();
-                    led.setColor(Colors::CYAN);
-                    delay(50);
-                    led.setPattern(savedColor, savedPattern);
-                }
                 // Track heartbeat for SECONDARY timeout detection
                 if (deviceRole == DeviceRole::SECONDARY) {
                     lastHeartbeatReceived = millis();
@@ -728,23 +715,23 @@ void onBLEMessage(uint16_t connHandle, const char* message) {
 
             case SyncCommandType::START_SESSION:
                 Serial.println(F("[SESSION] Start requested"));
-                led.setPattern(Colors::GREEN, LEDPattern::PULSE_SLOW);
+                stateMachine.transition(StateTrigger::START_SESSION);
                 break;
 
             case SyncCommandType::PAUSE_SESSION:
                 Serial.println(F("[SESSION] Pause requested"));
-                led.setPattern(Colors::YELLOW, LEDPattern::SOLID);
+                stateMachine.transition(StateTrigger::PAUSE_SESSION);
                 break;
 
             case SyncCommandType::RESUME_SESSION:
                 Serial.println(F("[SESSION] Resume requested"));
-                led.setPattern(Colors::GREEN, LEDPattern::PULSE_SLOW);
+                stateMachine.transition(StateTrigger::RESUME_SESSION);
                 break;
 
             case SyncCommandType::STOP_SESSION:
                 Serial.println(F("[SESSION] Stop requested"));
                 haptic.emergencyStop();
-                led.setPattern(Colors::BLUE, LEDPattern::BREATHE_SLOW);
+                stateMachine.transition(StateTrigger::STOP_SESSION);
                 break;
 
             default:
@@ -1053,13 +1040,10 @@ void handleHeartbeatTimeout() {
     haptic.emergencyStop();
     therapy.stop();
 
-    // 2. Update state machine
+    // 2. Update state machine (LED handled by onStateChange callback)
     stateMachine.transition(StateTrigger::DISCONNECTED);
 
-    // 3. Visual indicator - purple fast blink for connection lost
-    led.setPattern(Colors::PURPLE, LEDPattern::BLINK_CONNECT);
-
-    // 4. Attempt reconnection (3 attempts, 2s apart)
+    // 3. Attempt reconnection (3 attempts, 2s apart)
     for (uint8_t attempt = 1; attempt <= 3; attempt++) {
         Serial.printf("[RECOVERY] Attempt %d/3...\n", attempt);
         delay(2000);
@@ -1067,19 +1051,17 @@ void handleHeartbeatTimeout() {
         if (ble.isPrimaryConnected()) {
             Serial.println(F("[RECOVERY] PRIMARY reconnected"));
             stateMachine.transition(StateTrigger::RECONNECTED);
-            led.setPattern(Colors::GREEN, LEDPattern::SOLID);
             lastHeartbeatReceived = millis();  // Reset timeout
             return;
         }
     }
 
-    // 5. Recovery failed - return to IDLE
+    // 4. Recovery failed - return to IDLE
     Serial.println(F("[RECOVERY] Failed - returning to IDLE"));
     stateMachine.transition(StateTrigger::RECONNECT_FAILED);
-    led.setPattern(Colors::BLUE, LEDPattern::BREATHE_SLOW);
     lastHeartbeatReceived = 0;  // Reset for next session
 
-    // 6. Restart scanning for PRIMARY
+    // 5. Restart scanning for PRIMARY
     ble.startScanning(BLE_NAME);
 }
 
