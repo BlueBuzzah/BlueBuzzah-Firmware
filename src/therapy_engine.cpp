@@ -192,6 +192,8 @@ TherapyEngine::TherapyEngine() :
     _jitterPercent(23.5f),
     _numFingers(5),
     _mirrorPattern(true),
+    _amplitudeMin(50),
+    _amplitudeMax(100),
     _patternIndex(0),
     _activationStartTime(0),
     _waitingForInterval(false),
@@ -240,7 +242,9 @@ void TherapyEngine::startSession(
     float timeOffMs,
     float jitterPercent,
     uint8_t numFingers,
-    bool mirrorPattern
+    bool mirrorPattern,
+    uint8_t amplitudeMin,
+    uint8_t amplitudeMax
 ) {
     // Reset state
     _isRunning = true;
@@ -259,6 +263,8 @@ void TherapyEngine::startSession(
     _jitterPercent = jitterPercent;
     _numFingers = numFingers;
     _mirrorPattern = mirrorPattern;
+    _amplitudeMin = amplitudeMin;
+    _amplitudeMax = amplitudeMax;
 
     // Reset pattern execution state
     _patternIndex = 0;
@@ -458,9 +464,14 @@ void TherapyEngine::executePatternStep() {
                 uint8_t leftFinger, rightFinger;
                 _currentPattern.getFingerPair(_patternIndex, leftFinger, rightFinger);
 
+                // Calculate random amplitude within configured range
+                uint8_t amplitude = (_amplitudeMin == _amplitudeMax)
+                    ? _amplitudeMin
+                    : (uint8_t)random(_amplitudeMin, _amplitudeMax + 1);
+
                 // Send sync command to SECONDARY (if PRIMARY with callback)
                 if (_sendCommandCallback) {
-                    _sendCommandCallback("BUZZ", leftFinger, rightFinger, 100, _buzzSequenceId);
+                    _sendCommandCallback("BUZZ", leftFinger, rightFinger, amplitude, _buzzSequenceId);
                     _buzzSequenceId++;
                 }
 
@@ -469,7 +480,7 @@ void TherapyEngine::executePatternStep() {
 
                 // Activate local motors
                 if (_activateCallback) {
-                    _activateCallback(leftFinger, 100);
+                    _activateCallback(leftFinger, amplitude);
                 }
 
                 _activationStartTime = now;

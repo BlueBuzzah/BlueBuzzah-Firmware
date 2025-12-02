@@ -1112,7 +1112,9 @@ void startTherapyTest()
         profile->timeOffMs,
         profile->jitterPercent,
         profile->numFingers,
-        profile->mirrorPattern);
+        profile->mirrorPattern,
+        profile->amplitudeMin,
+        profile->amplitudeMax);
 }
 
 void stopTherapyTest()
@@ -1183,7 +1185,9 @@ void autoStartTherapy()
             5000,              // 5000ms off time
             20.0f,             // 20% jitter
             5,                 // All 5 fingers
-            true               // Mirror pattern
+            true,              // Mirror pattern
+            50,                // Amplitude min (default)
+            100                // Amplitude max (default)
         );
         return;
     }
@@ -1217,7 +1221,9 @@ void autoStartTherapy()
         profile->timeOffMs,
         profile->jitterPercent,
         profile->numFingers,
-        profile->mirrorPattern);
+        profile->mirrorPattern,
+        profile->amplitudeMin,
+        profile->amplitudeMax);
 }
 
 // =============================================================================

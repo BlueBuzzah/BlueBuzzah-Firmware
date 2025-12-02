@@ -243,6 +243,8 @@ public:
      * @param jitterPercent Timing jitter percentage
      * @param numFingers Number of fingers per hand
      * @param mirrorPattern If true, same finger on both hands
+     * @param amplitudeMin Minimum motor amplitude (0-100)
+     * @param amplitudeMax Maximum motor amplitude (0-100)
      */
     void startSession(
         uint32_t durationSec,
@@ -251,7 +253,9 @@ public:
         float timeOffMs = 67.0f,
         float jitterPercent = 23.5f,
         uint8_t numFingers = 5,
-        bool mirrorPattern = true
+        bool mirrorPattern = true,
+        uint8_t amplitudeMin = 50,
+        uint8_t amplitudeMax = 100
     );
 
     /**
@@ -328,6 +332,8 @@ private:
     float _jitterPercent;
     uint8_t _numFingers;
     bool _mirrorPattern;
+    uint8_t _amplitudeMin;
+    uint8_t _amplitudeMax;
 
     // Current pattern execution
     Pattern _currentPattern;
