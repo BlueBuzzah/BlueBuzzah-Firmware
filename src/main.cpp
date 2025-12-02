@@ -70,19 +70,19 @@ bool wasTherapyRunning = false;
 
 // Boot window auto-start tracking (PRIMARY only)
 // When SECONDARY connects but phone doesn't within 30s, auto-start therapy
-uint32_t bootWindowStart = 0;      // When SECONDARY connected (starts countdown)
-bool bootWindowActive = false;      // Whether we're waiting for phone
-bool autoStartTriggered = false;    // Prevent repeated auto-starts
+uint32_t bootWindowStart = 0;    // When SECONDARY connected (starts countdown)
+bool bootWindowActive = false;   // Whether we're waiting for phone
+bool autoStartTriggered = false; // Prevent repeated auto-starts
 
 // SECONDARY heartbeat monitoring
-uint32_t lastHeartbeatReceived = 0;  // Tracks last heartbeat from PRIMARY
+uint32_t lastHeartbeatReceived = 0; // Tracks last heartbeat from PRIMARY
 
 // Clock synchronization timing
-uint32_t lastSyncAdjustment = 0;     // Last periodic sync adjustment time
-#define SYNC_ADJUSTMENT_INTERVAL_MS 30000  // Resync every 30 seconds
+uint32_t lastSyncAdjustment = 0;          // Last periodic sync adjustment time
+#define SYNC_ADJUSTMENT_INTERVAL_MS 30000 // Resync every 30 seconds
 
 // Finger names for display
-const char* FINGER_NAMES[] = { "Thumb", "Index", "Middle", "Ring", "Pinky" };
+const char *FINGER_NAMES[] = {"Thumb", "Index", "Middle", "Ring", "Pinky"};
 
 // =============================================================================
 // FUNCTION DECLARATIONS
@@ -102,25 +102,25 @@ void autoStartTherapy();
 // BLE Callbacks
 void onBLEConnect(uint16_t connHandle, ConnectionType type);
 void onBLEDisconnect(uint16_t connHandle, ConnectionType type, uint8_t reason);
-void onBLEMessage(uint16_t connHandle, const char* message);
+void onBLEMessage(uint16_t connHandle, const char *message);
 
 // Therapy Callbacks
-void onSendCommand(const char* commandType, uint8_t leftFinger, uint8_t rightFinger, uint8_t amplitude, uint32_t seq);
+void onSendCommand(const char *commandType, uint8_t leftFinger, uint8_t rightFinger, uint8_t amplitude, uint32_t seq);
 void onActivate(uint8_t finger, uint8_t amplitude);
 void onDeactivate(uint8_t finger);
 void onCycleComplete(uint32_t cycleCount);
 
 // State Machine Callback
-void onStateChange(const StateTransition& transition);
+void onStateChange(const StateTransition &transition);
 
 // Menu Controller Callback
-void onMenuSendResponse(const char* response);
+void onMenuSendResponse(const char *response);
 
 // SECONDARY Heartbeat Timeout
 void handleHeartbeatTimeout();
 
 // Serial-Only Commands (not available via BLE)
-void handleSerialCommand(const char* command);
+void handleSerialCommand(const char *command);
 
 // Role Configuration Wait (blocks until role is set)
 void waitForRoleConfiguration();
@@ -136,7 +136,8 @@ void waitForRoleConfiguration();
  * and waits for SET_ROLE:PRIMARY or SET_ROLE:SECONDARY command.
  * Device auto-reboots after role is saved.
  */
-void waitForRoleConfiguration() {
+void waitForRoleConfiguration()
+{
     Serial.println(F("\n========================================"));
     Serial.println(F(" DEVICE NOT CONFIGURED"));
     Serial.println(F("========================================"));
@@ -149,26 +150,31 @@ void waitForRoleConfiguration() {
     // Use slow blink orange pattern for unconfigured state
     led.setPattern(Colors::ORANGE, LEDPattern::BLINK_SLOW);
 
-    while (true) {
+    while (true)
+    {
         // Update LED pattern animation
         led.update();
 
         // Check for serial input
-        if (Serial.available()) {
+        if (Serial.available())
+        {
             String input = Serial.readStringUntil('\n');
             input.trim();
 
             // Only process SET_ROLE commands
-            if (input.startsWith("SET_ROLE:")) {
+            if (input.startsWith("SET_ROLE:"))
+            {
                 handleSerialCommand(input.c_str());
                 // handleSerialCommand will reboot after saving
-            } else if (input.length() > 0) {
+            }
+            else if (input.length() > 0)
+            {
                 Serial.println(F("[CONFIG] Only SET_ROLE command accepted."));
                 Serial.println(F("  Use: SET_ROLE:PRIMARY or SET_ROLE:SECONDARY"));
             }
         }
 
-        delay(10);  // Small delay to prevent busy-looping
+        delay(10); // Small delay to prevent busy-looping
     }
 }
 
@@ -176,7 +182,12 @@ void waitForRoleConfiguration() {
 // SETUP
 // =============================================================================
 
-void setup() {
+void setup()
+{
+    // Configure USB device descriptors (must be before Serial.begin)
+    TinyUSBDevice.setManufacturerDescriptor("BlueBuzzah Partners");
+    TinyUSBDevice.setProductDescriptor("BlueBuzzah");
+
     // Initialize serial
     Serial.begin(115200);
 
@@ -185,7 +196,8 @@ void setup() {
 
     // Wait for serial with timeout
     uint32_t serialWaitStart = millis();
-    while (!Serial && (millis() - serialWaitStart < 3000)) {
+    while (!Serial && (millis() - serialWaitStart < 3000))
+    {
         delay(10);
     }
 
@@ -197,7 +209,8 @@ void setup() {
 
     // Initialize LED FIRST (needed for configuration feedback)
     Serial.println(F("\n--- LED Initialization ---"));
-    if (led.begin()) {
+    if (led.begin())
+    {
         led.setPattern(Colors::BLUE, LEDPattern::BLINK_CONNECT);
         Serial.println(F("LED: OK"));
     }
@@ -208,7 +221,8 @@ void setup() {
     Serial.printf("[PROFILE] Initialized with %d profiles\n", profiles.getProfileCount());
 
     // Check if device has a configured role
-    if (!profiles.hasStoredRole()) {
+    if (!profiles.hasStoredRole())
+    {
         // Block and wait for role configuration via Serial
         waitForRoleConfiguration();
         // Note: waitForRoleConfiguration() never returns - it reboots after role is set
@@ -224,10 +238,13 @@ void setup() {
     Serial.println(F("\n--- Hardware Initialization ---"));
     hardwareReady = initializeHardware();
 
-    if (hardwareReady) {
+    if (hardwareReady)
+    {
         led.setPattern(Colors::CYAN, LEDPattern::BLINK_CONNECT);
         Serial.println(F("[SUCCESS] Hardware initialization complete"));
-    } else {
+    }
+    else
+    {
         led.setPattern(Colors::RED, LEDPattern::BLINK_SLOW);
         Serial.println(F("[WARNING] Some hardware initialization failed"));
     }
@@ -240,11 +257,14 @@ void setup() {
     Serial.println(F("[DEBUG] BLE init returned"));
     Serial.flush();
 
-    if (bleReady) {
+    if (bleReady)
+    {
         // Start in IDLE state with breathing blue LED
         led.setPattern(Colors::BLUE, LEDPattern::BREATHE_SLOW);
         Serial.println(F("[SUCCESS] BLE initialization complete"));
-    } else {
+    }
+    else
+    {
         led.setPattern(Colors::RED, LEDPattern::BLINK_SLOW);
         Serial.println(F("[FAILURE] BLE initialization failed"));
     }
@@ -275,11 +295,14 @@ void setup() {
 
     // Instructions
     Serial.println(F("\n+============================================================+"));
-    if (deviceRole == DeviceRole::PRIMARY) {
+    if (deviceRole == DeviceRole::PRIMARY)
+    {
         Serial.println(F("|  PRIMARY MODE - Advertising as 'BlueBuzzah'              |"));
         Serial.println(F("|  Send 'TEST' via BLE to start 30-second therapy test     |"));
         Serial.println(F("|  Send 'STOP' via BLE to stop therapy                     |"));
-    } else {
+    }
+    else
+    {
         Serial.println(F("|  SECONDARY MODE - Scanning for 'BlueBuzzah'              |"));
         Serial.println(F("|  Will execute BUZZ commands from PRIMARY                 |"));
     }
@@ -293,7 +316,8 @@ void setup() {
 // LOOP
 // =============================================================================
 
-void loop() {
+void loop()
+{
     uint32_t now = millis();
 
     // Update LED pattern animation
@@ -303,10 +327,12 @@ void loop() {
     ble.update();
 
     // Process Serial commands (uses serial-only handler for SET_ROLE, GET_ROLE)
-    if (Serial.available()) {
+    if (Serial.available())
+    {
         String input = Serial.readStringUntil('\n');
         input.trim();
-        if (input.length() > 0) {
+        if (input.length() > 0)
+        {
             Serial.printf("[SERIAL] Command: %s\n", input.c_str());
             handleSerialCommand(input.c_str());
         }
@@ -318,7 +344,8 @@ void loop() {
 
     // Detect when therapy session ends (for resuming scanning on SECONDARY)
     bool isTherapyRunning = therapy.isRunning();
-    if (wasTherapyRunning && !isTherapyRunning) {
+    if (wasTherapyRunning && !isTherapyRunning)
+    {
         // Therapy just stopped
         Serial.println(F("\n+============================================================+"));
         Serial.println(F("|  THERAPY TEST COMPLETE                                     |"));
@@ -329,32 +356,40 @@ void loop() {
         stateMachine.transition(StateTrigger::STOPPED);
 
         // Resume scanning on SECONDARY after standalone test
-        if (deviceRole == DeviceRole::SECONDARY && !ble.isPrimaryConnected()) {
+        if (deviceRole == DeviceRole::SECONDARY && !ble.isPrimaryConnected())
+        {
             Serial.println(F("[TEST] Resuming scanning..."));
-            ble.setScannerAutoRestart(true);  // Re-enable health check
+            ble.setScannerAutoRestart(true); // Re-enable health check
             ble.startScanning(BLE_NAME);
         }
     }
     wasTherapyRunning = isTherapyRunning;
 
     // SECONDARY: Check for heartbeat timeout during active connection
-    if (deviceRole == DeviceRole::SECONDARY && ble.isPrimaryConnected()) {
+    if (deviceRole == DeviceRole::SECONDARY && ble.isPrimaryConnected())
+    {
         if (lastHeartbeatReceived > 0 &&
-            (millis() - lastHeartbeatReceived > HEARTBEAT_TIMEOUT_MS)) {
+            (millis() - lastHeartbeatReceived > HEARTBEAT_TIMEOUT_MS))
+        {
             handleHeartbeatTimeout();
         }
     }
 
     // PRIMARY: Check boot window for auto-start therapy
-    if (deviceRole == DeviceRole::PRIMARY && bootWindowActive && !autoStartTriggered) {
-        if (now - bootWindowStart >= STARTUP_WINDOW_MS) {
+    if (deviceRole == DeviceRole::PRIMARY && bootWindowActive && !autoStartTriggered)
+    {
+        if (now - bootWindowStart >= STARTUP_WINDOW_MS)
+        {
             // Boot window expired without phone connecting
-            if (ble.isSecondaryConnected() && !ble.isPhoneConnected()) {
+            if (ble.isSecondaryConnected() && !ble.isPhoneConnected())
+            {
                 Serial.println(F("[BOOT] 30s window expired without phone - auto-starting therapy"));
                 bootWindowActive = false;
                 autoStartTriggered = true;
                 autoStartTherapy();
-            } else {
+            }
+            else
+            {
                 // SECONDARY disconnected during window, cancel
                 bootWindowActive = false;
             }
@@ -362,43 +397,48 @@ void loop() {
     }
 
     // PRIMARY: Periodic clock synchronization during therapy
-    if (deviceRole == DeviceRole::PRIMARY && ble.isSecondaryConnected() && therapy.isRunning()) {
-        if (now - lastSyncAdjustment >= SYNC_ADJUSTMENT_INTERVAL_MS) {
+    if (deviceRole == DeviceRole::PRIMARY && ble.isSecondaryConnected() && therapy.isRunning())
+    {
+        if (now - lastSyncAdjustment >= SYNC_ADJUSTMENT_INTERVAL_MS)
+        {
             lastSyncAdjustment = now;
             Serial.println(F("[SYNC] Sending periodic SYNC_ADJ"));
             SyncCommand syncCmd(SyncCommandType::SYNC_ADJ, g_sequenceGenerator.next());
             char syncBuffer[128];
-            if (syncCmd.serialize(syncBuffer, sizeof(syncBuffer))) {
+            if (syncCmd.serialize(syncBuffer, sizeof(syncBuffer)))
+            {
                 ble.sendToSecondary(syncBuffer);
             }
         }
     }
 
     // Check connection state changes
-    bool isConnected = (deviceRole == DeviceRole::PRIMARY) ?
-                       ble.isSecondaryConnected() :
-                       ble.isPrimaryConnected();
+    bool isConnected = (deviceRole == DeviceRole::PRIMARY) ? ble.isSecondaryConnected() : ble.isPrimaryConnected();
 
-    if (isConnected != wasConnected) {
+    if (isConnected != wasConnected)
+    {
         wasConnected = isConnected;
         // LED is handled by state machine - just log the change
         Serial.println(isConnected ? F("[STATE] Connected!") : F("[STATE] Disconnected"));
     }
 
     // Send heartbeat every 2 seconds when connected
-    if (isConnected && (now - lastHeartbeat >= HEARTBEAT_INTERVAL_MS)) {
+    if (isConnected && (now - lastHeartbeat >= HEARTBEAT_INTERVAL_MS))
+    {
         lastHeartbeat = now;
         sendHeartbeat();
     }
 
     // Print status every 5 seconds
-    if (now - lastStatusPrint >= 5000) {
+    if (now - lastStatusPrint >= 5000)
+    {
         lastStatusPrint = now;
         printStatus();
     }
 
     // Check battery every 60 seconds
-    if (now - lastBatteryCheck >= BATTERY_CHECK_INTERVAL_MS) {
+    if (now - lastBatteryCheck >= BATTERY_CHECK_INTERVAL_MS)
+    {
         lastBatteryCheck = now;
         BatteryStatus status = battery.getStatus();
         Serial.printf("[BATTERY] %.2fV | %d%% | Status: %s\n",
@@ -413,27 +453,31 @@ void loop() {
 // INITIALIZATION FUNCTIONS
 // =============================================================================
 
-void printBanner() {
+void printBanner()
+{
     Serial.println(F("\n"));
     Serial.println(F("+============================================================+"));
     Serial.println(F("|                  BlueBuzzah Firmware                       |"));
     Serial.println(F("+============================================================+"));
-    Serial.printf( "|  Firmware: %-47s |\n", FIRMWARE_VERSION);
+    Serial.printf("|  Firmware: %-47s |\n", FIRMWARE_VERSION);
     Serial.println(F("|  Platform: Adafruit Feather nRF52840 Express              |"));
     Serial.println(F("+============================================================+"));
 }
 
-DeviceRole determineRole() {
+DeviceRole determineRole()
+{
     // Check if USER button is held (active LOW)
     // Button held = SECONDARY mode (emergency override)
-    if (digitalRead(USER_BUTTON_PIN) == LOW) {
+    if (digitalRead(USER_BUTTON_PIN) == LOW)
+    {
         Serial.println(F("[INFO] USER button held - forcing SECONDARY mode"));
-        delay(500);  // Debounce
+        delay(500); // Debounce
         return DeviceRole::SECONDARY;
     }
 
     // Check if role was loaded from settings.json
-    if (profiles.hasStoredRole()) {
+    if (profiles.hasStoredRole())
+    {
         Serial.println(F("[INFO] Using role from settings.json"));
         return profiles.getDeviceRole();
     }
@@ -443,52 +487,66 @@ DeviceRole determineRole() {
     return DeviceRole::PRIMARY;
 }
 
-bool initializeHardware() {
+bool initializeHardware()
+{
     bool success = true;
 
     // Initialize haptic controller
     Serial.println(F("\nInitializing Haptic Controller..."));
-    if (!haptic.begin()) {
+    if (!haptic.begin())
+    {
         Serial.println(F("[ERROR] Haptic controller initialization failed"));
         success = false;
-    } else {
+    }
+    else
+    {
         Serial.printf("Haptic Controller: %d/%d fingers enabled\n",
                       haptic.getEnabledCount(), MAX_ACTUATORS);
     }
 
     // Initialize battery monitor
     Serial.println(F("\nInitializing Battery Monitor..."));
-    if (!battery.begin()) {
+    if (!battery.begin())
+    {
         Serial.println(F("[ERROR] Battery monitor initialization failed"));
         success = false;
-    } else {
+    }
+    else
+    {
         Serial.println(F("Battery Monitor: OK"));
     }
 
     return success;
 }
 
-bool initializeBLE() {
+bool initializeBLE()
+{
     // Set up BLE callbacks
     ble.setConnectCallback(onBLEConnect);
     ble.setDisconnectCallback(onBLEDisconnect);
     ble.setMessageCallback(onBLEMessage);
 
     // Initialize BLE with appropriate role
-    if (!ble.begin(deviceRole, BLE_NAME)) {
+    if (!ble.begin(deviceRole, BLE_NAME))
+    {
         Serial.println(F("[ERROR] BLE begin() failed"));
         return false;
     }
 
     // Start advertising or scanning based on role
-    if (deviceRole == DeviceRole::PRIMARY) {
-        if (!ble.startAdvertising()) {
+    if (deviceRole == DeviceRole::PRIMARY)
+    {
+        if (!ble.startAdvertising())
+        {
             Serial.println(F("[ERROR] Failed to start advertising"));
             return false;
         }
         Serial.println(F("[BLE] Advertising started"));
-    } else {
-        if (!ble.startScanning(BLE_NAME)) {
+    }
+    else
+    {
+        if (!ble.startScanning(BLE_NAME))
+        {
             Serial.println(F("[ERROR] Failed to start scanning"));
             return false;
         }
@@ -498,14 +556,16 @@ bool initializeBLE() {
     return true;
 }
 
-bool initializeTherapy() {
+bool initializeTherapy()
+{
     // Set local motor callbacks (both roles need these for standalone tests)
     therapy.setActivateCallback(onActivate);
     therapy.setDeactivateCallback(onDeactivate);
     therapy.setCycleCompleteCallback(onCycleComplete);
 
     // Set BLE sync callback (PRIMARY only - sends commands to SECONDARY)
-    if (deviceRole == DeviceRole::PRIMARY) {
+    if (deviceRole == DeviceRole::PRIMARY)
+    {
         therapy.setSendCommandCallback(onSendCommand);
     }
     return true;
@@ -515,7 +575,8 @@ bool initializeTherapy() {
 // BLE EVENT HANDLERS
 // =============================================================================
 
-void sendHeartbeat() {
+void sendHeartbeat()
+{
     heartbeatSequence++;
 
     // Create heartbeat command
@@ -523,22 +584,28 @@ void sendHeartbeat() {
 
     // Serialize
     char buffer[128];
-    if (cmd.serialize(buffer, sizeof(buffer))) {
+    if (cmd.serialize(buffer, sizeof(buffer)))
+    {
         // Send based on role
         bool sent = false;
-        if (deviceRole == DeviceRole::PRIMARY) {
+        if (deviceRole == DeviceRole::PRIMARY)
+        {
             sent = ble.sendToSecondary(buffer);
-        } else {
+        }
+        else
+        {
             sent = ble.sendToPrimary(buffer);
         }
 
-        if (sent) {
+        if (sent)
+        {
             Serial.printf("[TX] %s\n", buffer);
         }
     }
 }
 
-void printStatus() {
+void printStatus()
+{
     Serial.println(F("------------------------------------------------------------"));
 
     // Line 1: Role and State
@@ -547,23 +614,29 @@ void printStatus() {
                   therapyStateToString(stateMachine.getCurrentState()));
 
     // Line 2: BLE activity and connections
-    if (deviceRole == DeviceRole::PRIMARY) {
+    if (deviceRole == DeviceRole::PRIMARY)
+    {
         Serial.printf("[BLE] Advertising: %s | Connections: %d\n",
                       ble.isAdvertising() ? "YES" : "NO",
                       ble.getConnectionCount());
         Serial.printf("[CONN] SECONDARY: %s | Phone: %s\n",
                       ble.isSecondaryConnected() ? "Connected" : "Waiting...",
                       ble.isPhoneConnected() ? "Connected" : "Waiting...");
-    } else {
+    }
+    else
+    {
         // SECONDARY mode
         Serial.printf("[BLE] Scanning: %s | Connections: %d\n",
                       ble.isScanning() ? "YES" : "NO",
                       ble.getConnectionCount());
 
-        if (ble.isPrimaryConnected()) {
+        if (ble.isPrimaryConnected())
+        {
             uint32_t timeSinceHB = millis() - lastHeartbeatReceived;
             Serial.printf("[CONN] PRIMARY: Connected | Last HB: %lums ago\n", timeSinceHB);
-        } else {
+        }
+        else
+        {
             Serial.println(F("[CONN] PRIMARY: Searching..."));
         }
     }
@@ -575,20 +648,32 @@ void printStatus() {
 // BLE CALLBACKS
 // =============================================================================
 
-void onBLEConnect(uint16_t connHandle, ConnectionType type) {
-    const char* typeStr = "UNKNOWN";
-    switch (type) {
-        case ConnectionType::UNKNOWN: typeStr = "UNKNOWN"; break;
-        case ConnectionType::PHONE: typeStr = "PHONE"; break;
-        case ConnectionType::SECONDARY: typeStr = "SECONDARY"; break;
-        case ConnectionType::PRIMARY: typeStr = "PRIMARY"; break;
-        default: break;
+void onBLEConnect(uint16_t connHandle, ConnectionType type)
+{
+    const char *typeStr = "UNKNOWN";
+    switch (type)
+    {
+    case ConnectionType::UNKNOWN:
+        typeStr = "UNKNOWN";
+        break;
+    case ConnectionType::PHONE:
+        typeStr = "PHONE";
+        break;
+    case ConnectionType::SECONDARY:
+        typeStr = "SECONDARY";
+        break;
+    case ConnectionType::PRIMARY:
+        typeStr = "PRIMARY";
+        break;
+    default:
+        break;
     }
 
     Serial.printf("[CONNECT] Handle: %d, Type: %s\n", connHandle, typeStr);
 
     // If SECONDARY device connected to PRIMARY, send identification
-    if (deviceRole == DeviceRole::SECONDARY && type == ConnectionType::PRIMARY) {
+    if (deviceRole == DeviceRole::SECONDARY && type == ConnectionType::PRIMARY)
+    {
         Serial.println(F("[SECONDARY] Sending IDENTIFY:SECONDARY to PRIMARY"));
         ble.sendToPrimary("IDENTIFY:SECONDARY");
         // Start heartbeat timeout tracking
@@ -597,13 +682,16 @@ void onBLEConnect(uint16_t connHandle, ConnectionType type) {
 
     // Update state machine on relevant connections
     if ((deviceRole == DeviceRole::PRIMARY && type == ConnectionType::SECONDARY) ||
-        (deviceRole == DeviceRole::SECONDARY && type == ConnectionType::PRIMARY)) {
+        (deviceRole == DeviceRole::SECONDARY && type == ConnectionType::PRIMARY))
+    {
         stateMachine.transition(StateTrigger::CONNECTED);
     }
 
     // PRIMARY: Boot window logic for auto-start
-    if (deviceRole == DeviceRole::PRIMARY) {
-        if (type == ConnectionType::SECONDARY && !autoStartTriggered) {
+    if (deviceRole == DeviceRole::PRIMARY)
+    {
+        if (type == ConnectionType::SECONDARY && !autoStartTriggered)
+        {
             // SECONDARY connected - start 30-second boot window for phone
             bootWindowStart = millis();
             bootWindowActive = true;
@@ -613,10 +701,13 @@ void onBLEConnect(uint16_t connHandle, ConnectionType type) {
             Serial.println(F("[SYNC] Initiating FIRST_SYNC with SECONDARY"));
             SyncCommand syncCmd(SyncCommandType::FIRST_SYNC, g_sequenceGenerator.next());
             char syncBuffer[128];
-            if (syncCmd.serialize(syncBuffer, sizeof(syncBuffer))) {
+            if (syncCmd.serialize(syncBuffer, sizeof(syncBuffer)))
+            {
                 ble.sendToSecondary(syncBuffer);
             }
-        } else if (type == ConnectionType::PHONE && bootWindowActive) {
+        }
+        else if (type == ConnectionType::PHONE && bootWindowActive)
+        {
             // Phone connected within boot window - cancel auto-start
             bootWindowActive = false;
             Serial.println(F("[BOOT] Phone connected - boot window cancelled"));
@@ -624,20 +715,30 @@ void onBLEConnect(uint16_t connHandle, ConnectionType type) {
     }
 
     // Quick haptic feedback on thumb
-    if (haptic.isEnabled(FINGER_THUMB)) {
+    if (haptic.isEnabled(FINGER_THUMB))
+    {
         haptic.activate(FINGER_THUMB, 30);
         delay(50);
         haptic.deactivate(FINGER_THUMB);
     }
 }
 
-void onBLEDisconnect(uint16_t connHandle, ConnectionType type, uint8_t reason) {
-    const char* typeStr = "UNKNOWN";
-    switch (type) {
-        case ConnectionType::PHONE: typeStr = "PHONE"; break;
-        case ConnectionType::SECONDARY: typeStr = "SECONDARY"; break;
-        case ConnectionType::PRIMARY: typeStr = "PRIMARY"; break;
-        default: break;
+void onBLEDisconnect(uint16_t connHandle, ConnectionType type, uint8_t reason)
+{
+    const char *typeStr = "UNKNOWN";
+    switch (type)
+    {
+    case ConnectionType::PHONE:
+        typeStr = "PHONE";
+        break;
+    case ConnectionType::SECONDARY:
+        typeStr = "SECONDARY";
+        break;
+    case ConnectionType::PRIMARY:
+        typeStr = "PRIMARY";
+        break;
+    default:
+        break;
     }
 
     Serial.printf("[DISCONNECT] Handle: %d, Type: %s, Reason: 0x%02X\n",
@@ -645,14 +746,18 @@ void onBLEDisconnect(uint16_t connHandle, ConnectionType type, uint8_t reason) {
 
     // Update state machine on relevant disconnections
     if ((deviceRole == DeviceRole::PRIMARY && type == ConnectionType::SECONDARY) ||
-        (deviceRole == DeviceRole::SECONDARY && type == ConnectionType::PRIMARY)) {
+        (deviceRole == DeviceRole::SECONDARY && type == ConnectionType::PRIMARY))
+    {
         stateMachine.transition(StateTrigger::DISCONNECTED);
-    } else if (deviceRole == DeviceRole::PRIMARY && type == ConnectionType::PHONE) {
+    }
+    else if (deviceRole == DeviceRole::PRIMARY && type == ConnectionType::PHONE)
+    {
         stateMachine.transition(StateTrigger::PHONE_LOST);
     }
 
     // Double haptic pulse on thumb
-    if (haptic.isEnabled(FINGER_THUMB)) {
+    if (haptic.isEnabled(FINGER_THUMB))
+    {
         haptic.activate(FINGER_THUMB, 50);
         delay(50);
         haptic.deactivate(FINGER_THUMB);
@@ -663,192 +768,209 @@ void onBLEDisconnect(uint16_t connHandle, ConnectionType type, uint8_t reason) {
     }
 }
 
-void onBLEMessage(uint16_t connHandle, const char* message) {
+void onBLEMessage(uint16_t connHandle, const char *message)
+{
     Serial.printf("[RX] Handle: %d, Message: %s\n", connHandle, message);
 
     // Check for simple text commands first (for testing)
     // Both PRIMARY and SECONDARY can run standalone tests for hardware verification
-    if (strcmp(message, "TEST") == 0 || strcmp(message, "test") == 0) {
+    if (strcmp(message, "TEST") == 0 || strcmp(message, "test") == 0)
+    {
         startTherapyTest();
         return;
     }
 
-    if (strcmp(message, "STOP") == 0 || strcmp(message, "stop") == 0) {
+    if (strcmp(message, "STOP") == 0 || strcmp(message, "stop") == 0)
+    {
         stopTherapyTest();
         return;
     }
 
     // Try menu controller first for phone/BLE commands (PRIMARY only)
-    if (deviceRole == DeviceRole::PRIMARY && !menu.isInternalMessage(message)) {
-        if (menu.handleCommand(message)) {
-            return;  // Command handled by menu controller
+    if (deviceRole == DeviceRole::PRIMARY && !menu.isInternalMessage(message))
+    {
+        if (menu.handleCommand(message))
+        {
+            return; // Command handled by menu controller
         }
     }
 
     // Parse sync/internal commands
     SyncCommand cmd;
-    if (cmd.deserialize(message)) {
+    if (cmd.deserialize(message))
+    {
         Serial.printf("[CMD] Type: %s, Seq: %lu, Time: %lu\n",
                       cmd.getTypeString(),
                       (unsigned long)cmd.getSequenceId(),
                       (unsigned long)(cmd.getTimestamp() & 0xFFFFFFFF));
 
         // Handle specific command types
-        switch (cmd.getType()) {
-            case SyncCommandType::HEARTBEAT:
-                // Track heartbeat for SECONDARY timeout detection
-                if (deviceRole == DeviceRole::SECONDARY) {
-                    lastHeartbeatReceived = millis();
-                }
-                break;
+        switch (cmd.getType())
+        {
+        case SyncCommandType::HEARTBEAT:
+            // Track heartbeat for SECONDARY timeout detection
+            if (deviceRole == DeviceRole::SECONDARY)
+            {
+                lastHeartbeatReceived = millis();
+            }
+            break;
 
-            case SyncCommandType::BUZZ:
+        case SyncCommandType::BUZZ:
+        {
+            int32_t finger = cmd.getDataInt("0", -1);
+            int32_t amplitude = cmd.getDataInt("1", 50);
+
+            // Parse scheduled execution time (positions 2,3 = high,low 32-bit)
+            uint32_t execHigh = (uint32_t)cmd.getDataInt("2", 0);
+            uint32_t execLow = (uint32_t)cmd.getDataInt("3", 0);
+            uint64_t executeAt = ((uint64_t)execHigh << 32) | (uint64_t)execLow;
+
+            Serial.printf("[BUZZ] Received: finger=%ld, amplitude=%ld, executeAt=%lu\n",
+                          (long)finger, (long)amplitude, (unsigned long)execLow);
+
+            if (finger >= 0 && finger < MAX_ACTUATORS)
+            {
+                bool executeSuccess = true;
+
+                // If scheduled execution time provided, wait for it
+                if (executeAt > 0 && syncProtocol.isSynced())
                 {
-                    int32_t finger = cmd.getDataInt("0", -1);
-                    int32_t amplitude = cmd.getDataInt("1", 50);
+                    // Convert PRIMARY's time to local time
+                    uint64_t localExecTime = syncProtocol.toLocalTime(executeAt);
+                    Serial.printf("[BUZZ] Waiting for scheduled time (local: %lu)\n",
+                                  (unsigned long)(localExecTime & 0xFFFFFFFF));
 
-                    // Parse scheduled execution time (positions 2,3 = high,low 32-bit)
-                    uint32_t execHigh = (uint32_t)cmd.getDataInt("2", 0);
-                    uint32_t execLow = (uint32_t)cmd.getDataInt("3", 0);
-                    uint64_t executeAt = ((uint64_t)execHigh << 32) | (uint64_t)execLow;
-
-                    Serial.printf("[BUZZ] Received: finger=%ld, amplitude=%ld, executeAt=%lu\n",
-                                  (long)finger, (long)amplitude, (unsigned long)execLow);
-
-                    if (finger >= 0 && finger < MAX_ACTUATORS) {
-                        bool executeSuccess = true;
-
-                        // If scheduled execution time provided, wait for it
-                        if (executeAt > 0 && syncProtocol.isSynced()) {
-                            // Convert PRIMARY's time to local time
-                            uint64_t localExecTime = syncProtocol.toLocalTime(executeAt);
-                            Serial.printf("[BUZZ] Waiting for scheduled time (local: %lu)\n",
-                                          (unsigned long)(localExecTime & 0xFFFFFFFF));
-
-                            // Wait until scheduled time
-                            executeSuccess = syncProtocol.waitUntil(localExecTime);
-                            if (!executeSuccess) {
-                                Serial.println(F("[BUZZ] WARNING: Scheduled time missed, executing now"));
-                            }
-                        }
-
-                        Serial.printf("[BUZZ] Activating: %s, Amplitude: %d%%\n",
-                                      FINGER_NAMES[finger], amplitude);
-
-                        if (haptic.isEnabled(finger)) {
-                            haptic.activate(finger, amplitude);
-                            delay(100);
-                            haptic.deactivate(finger);
-                        }
+                    // Wait until scheduled time
+                    executeSuccess = syncProtocol.waitUntil(localExecTime);
+                    if (!executeSuccess)
+                    {
+                        Serial.println(F("[BUZZ] WARNING: Scheduled time missed, executing now"));
                     }
                 }
-                break;
 
-            case SyncCommandType::START_SESSION:
-                Serial.println(F("[SESSION] Start requested"));
-                stateMachine.transition(StateTrigger::START_SESSION);
-                break;
+                Serial.printf("[BUZZ] Activating: %s, Amplitude: %d%%\n",
+                              FINGER_NAMES[finger], amplitude);
 
-            case SyncCommandType::PAUSE_SESSION:
-                Serial.println(F("[SESSION] Pause requested"));
-                stateMachine.transition(StateTrigger::PAUSE_SESSION);
-                break;
-
-            case SyncCommandType::RESUME_SESSION:
-                Serial.println(F("[SESSION] Resume requested"));
-                stateMachine.transition(StateTrigger::RESUME_SESSION);
-                break;
-
-            case SyncCommandType::STOP_SESSION:
-                Serial.println(F("[SESSION] Stop requested"));
-                haptic.emergencyStop();
-                stateMachine.transition(StateTrigger::STOP_SESSION);
-                break;
-
-            // Clock synchronization handlers
-            case SyncCommandType::FIRST_SYNC:
+                if (haptic.isEnabled(finger))
                 {
-                    // SECONDARY receives FIRST_SYNC from PRIMARY
-                    // Respond with ACK_SYNC_ADJ containing local timestamp
-                    if (deviceRole == DeviceRole::SECONDARY) {
-                        uint64_t primaryTime = cmd.getTimestamp();
-                        uint64_t localTime = getMicros();
-
-                        Serial.printf("[SYNC] FIRST_SYNC received, primary_ts=%lu, local_ts=%lu\n",
-                                      (unsigned long)(primaryTime & 0xFFFFFFFF),
-                                      (unsigned long)(localTime & 0xFFFFFFFF));
-
-                        // Create ACK with our local timestamp
-                        SyncCommand ack(SyncCommandType::ACK_SYNC_ADJ, cmd.getSequenceId());
-                        ack.setTimestamp(localTime);
-                        // Include PRIMARY's original timestamp for RTT calculation
-                        uint32_t tsHigh = (uint32_t)(primaryTime >> 32);
-                        uint32_t tsLow = (uint32_t)(primaryTime & 0xFFFFFFFF);
-                        char highStr[16], lowStr[16];
-                        snprintf(highStr, sizeof(highStr), "%lu", (unsigned long)tsHigh);
-                        snprintf(lowStr, sizeof(lowStr), "%lu", (unsigned long)tsLow);
-                        ack.setData("0", highStr);
-                        ack.setData("1", lowStr);
-
-                        char buffer[128];
-                        if (ack.serialize(buffer, sizeof(buffer))) {
-                            ble.sendToPrimary(buffer);
-                        }
-                    }
+                    haptic.activate(finger, amplitude);
+                    delay(100);
+                    haptic.deactivate(finger);
                 }
-                break;
+            }
+        }
+        break;
 
-            case SyncCommandType::ACK_SYNC_ADJ:
+        case SyncCommandType::START_SESSION:
+            Serial.println(F("[SESSION] Start requested"));
+            stateMachine.transition(StateTrigger::START_SESSION);
+            break;
+
+        case SyncCommandType::PAUSE_SESSION:
+            Serial.println(F("[SESSION] Pause requested"));
+            stateMachine.transition(StateTrigger::PAUSE_SESSION);
+            break;
+
+        case SyncCommandType::RESUME_SESSION:
+            Serial.println(F("[SESSION] Resume requested"));
+            stateMachine.transition(StateTrigger::RESUME_SESSION);
+            break;
+
+        case SyncCommandType::STOP_SESSION:
+            Serial.println(F("[SESSION] Stop requested"));
+            haptic.emergencyStop();
+            stateMachine.transition(StateTrigger::STOP_SESSION);
+            break;
+
+        // Clock synchronization handlers
+        case SyncCommandType::FIRST_SYNC:
+        {
+            // SECONDARY receives FIRST_SYNC from PRIMARY
+            // Respond with ACK_SYNC_ADJ containing local timestamp
+            if (deviceRole == DeviceRole::SECONDARY)
+            {
+                uint64_t primaryTime = cmd.getTimestamp();
+                uint64_t localTime = getMicros();
+
+                Serial.printf("[SYNC] FIRST_SYNC received, primary_ts=%lu, local_ts=%lu\n",
+                              (unsigned long)(primaryTime & 0xFFFFFFFF),
+                              (unsigned long)(localTime & 0xFFFFFFFF));
+
+                // Create ACK with our local timestamp
+                SyncCommand ack(SyncCommandType::ACK_SYNC_ADJ, cmd.getSequenceId());
+                ack.setTimestamp(localTime);
+                // Include PRIMARY's original timestamp for RTT calculation
+                uint32_t tsHigh = (uint32_t)(primaryTime >> 32);
+                uint32_t tsLow = (uint32_t)(primaryTime & 0xFFFFFFFF);
+                char highStr[16], lowStr[16];
+                snprintf(highStr, sizeof(highStr), "%lu", (unsigned long)tsHigh);
+                snprintf(lowStr, sizeof(lowStr), "%lu", (unsigned long)tsLow);
+                ack.setData("0", highStr);
+                ack.setData("1", lowStr);
+
+                char buffer[128];
+                if (ack.serialize(buffer, sizeof(buffer)))
                 {
-                    // PRIMARY receives ACK_SYNC_ADJ from SECONDARY
-                    if (deviceRole == DeviceRole::PRIMARY) {
-                        uint64_t receivedTime = getMicros();
-                        uint64_t secondaryTime = cmd.getTimestamp();
-
-                        // Reconstruct original sent time from data
-                        uint32_t sentHigh = (uint32_t)cmd.getDataInt("0", 0);
-                        uint32_t sentLow = (uint32_t)cmd.getDataInt("1", 0);
-                        uint64_t sentTime = ((uint64_t)sentHigh << 32) | (uint64_t)sentLow;
-
-                        // Calculate RTT and offset
-                        uint32_t latency = syncProtocol.calculateRoundTrip(sentTime, receivedTime, secondaryTime);
-
-                        Serial.printf("[SYNC] ACK_SYNC_ADJ: RTT=%lu us, offset=%ld us\n",
-                                      (unsigned long)(latency * 2),
-                                      (long)syncProtocol.getOffset());
-                    }
+                    ble.sendToPrimary(buffer);
                 }
-                break;
+            }
+        }
+        break;
 
-            case SyncCommandType::SYNC_ADJ:
+        case SyncCommandType::ACK_SYNC_ADJ:
+        {
+            // PRIMARY receives ACK_SYNC_ADJ from SECONDARY
+            if (deviceRole == DeviceRole::PRIMARY)
+            {
+                uint64_t receivedTime = getMicros();
+                uint64_t secondaryTime = cmd.getTimestamp();
+
+                // Reconstruct original sent time from data
+                uint32_t sentHigh = (uint32_t)cmd.getDataInt("0", 0);
+                uint32_t sentLow = (uint32_t)cmd.getDataInt("1", 0);
+                uint64_t sentTime = ((uint64_t)sentHigh << 32) | (uint64_t)sentLow;
+
+                // Calculate RTT and offset
+                uint32_t latency = syncProtocol.calculateRoundTrip(sentTime, receivedTime, secondaryTime);
+
+                Serial.printf("[SYNC] ACK_SYNC_ADJ: RTT=%lu us, offset=%ld us\n",
+                              (unsigned long)(latency * 2),
+                              (long)syncProtocol.getOffset());
+            }
+        }
+        break;
+
+        case SyncCommandType::SYNC_ADJ:
+        {
+            // Periodic sync adjustment - same as FIRST_SYNC for SECONDARY
+            if (deviceRole == DeviceRole::SECONDARY)
+            {
+                uint64_t primaryTime = cmd.getTimestamp();
+                uint64_t localTime = getMicros();
+
+                Serial.printf("[SYNC] SYNC_ADJ received\n");
+
+                SyncCommand ack(SyncCommandType::ACK_SYNC_ADJ, cmd.getSequenceId());
+                ack.setTimestamp(localTime);
+                uint32_t tsHigh = (uint32_t)(primaryTime >> 32);
+                uint32_t tsLow = (uint32_t)(primaryTime & 0xFFFFFFFF);
+                char highStr[16], lowStr[16];
+                snprintf(highStr, sizeof(highStr), "%lu", (unsigned long)tsHigh);
+                snprintf(lowStr, sizeof(lowStr), "%lu", (unsigned long)tsLow);
+                ack.setData("0", highStr);
+                ack.setData("1", lowStr);
+
+                char buffer[128];
+                if (ack.serialize(buffer, sizeof(buffer)))
                 {
-                    // Periodic sync adjustment - same as FIRST_SYNC for SECONDARY
-                    if (deviceRole == DeviceRole::SECONDARY) {
-                        uint64_t primaryTime = cmd.getTimestamp();
-                        uint64_t localTime = getMicros();
-
-                        Serial.printf("[SYNC] SYNC_ADJ received\n");
-
-                        SyncCommand ack(SyncCommandType::ACK_SYNC_ADJ, cmd.getSequenceId());
-                        ack.setTimestamp(localTime);
-                        uint32_t tsHigh = (uint32_t)(primaryTime >> 32);
-                        uint32_t tsLow = (uint32_t)(primaryTime & 0xFFFFFFFF);
-                        char highStr[16], lowStr[16];
-                        snprintf(highStr, sizeof(highStr), "%lu", (unsigned long)tsHigh);
-                        snprintf(lowStr, sizeof(lowStr), "%lu", (unsigned long)tsLow);
-                        ack.setData("0", highStr);
-                        ack.setData("1", lowStr);
-
-                        char buffer[128];
-                        if (ack.serialize(buffer, sizeof(buffer))) {
-                            ble.sendToPrimary(buffer);
-                        }
-                    }
+                    ble.sendToPrimary(buffer);
                 }
-                break;
+            }
+        }
+        break;
 
-            default:
-                break;
+        default:
+            break;
         }
     }
 }
@@ -857,7 +979,8 @@ void onBLEMessage(uint16_t connHandle, const char* message) {
 // THERAPY CALLBACKS
 // =============================================================================
 
-void onSendCommand(const char* commandType, uint8_t leftFinger, uint8_t rightFinger, uint8_t amplitude, uint32_t seq) {
+void onSendCommand(const char *commandType, uint8_t leftFinger, uint8_t rightFinger, uint8_t amplitude, uint32_t seq)
+{
     // Schedule execution in the future to allow SECONDARY time to receive and prepare
     uint64_t executeAt = syncProtocol.scheduleExecution(SYNC_EXECUTION_BUFFER_MS);
 
@@ -865,49 +988,62 @@ void onSendCommand(const char* commandType, uint8_t leftFinger, uint8_t rightFin
     SyncCommand cmd = SyncCommand::createBuzz(seq, leftFinger, amplitude, executeAt);
 
     char buffer[128];
-    if (cmd.serialize(buffer, sizeof(buffer))) {
-        if (ble.sendToSecondary(buffer)) {
+    if (cmd.serialize(buffer, sizeof(buffer)))
+    {
+        if (ble.sendToSecondary(buffer))
+        {
             Serial.printf("[TX->SEC] %s (L:%d R:%d) executeAt:%lu\n",
                           commandType, leftFinger, rightFinger, (unsigned long)(executeAt & 0xFFFFFFFF));
         }
     }
 
     // Wait until scheduled execution time, then activate locally
-    if (syncProtocol.waitUntil(executeAt)) {
+    if (syncProtocol.waitUntil(executeAt))
+    {
         // Execute at the scheduled time
-        if (haptic.isEnabled(leftFinger)) {
+        if (haptic.isEnabled(leftFinger))
+        {
             haptic.activate(leftFinger, amplitude);
         }
-    } else {
+    }
+    else
+    {
         // Fallback: execute immediately if wait failed
         Serial.println(F("[SYNC] WARNING: waitUntil failed, executing immediately"));
-        if (haptic.isEnabled(leftFinger)) {
+        if (haptic.isEnabled(leftFinger))
+        {
             haptic.activate(leftFinger, amplitude);
         }
     }
 }
 
-void onActivate(uint8_t finger, uint8_t amplitude) {
+void onActivate(uint8_t finger, uint8_t amplitude)
+{
     // When SECONDARY is connected, onSendCommand handles local activation
     // to achieve synchronized execution. Skip here to avoid duplicate activation.
-    if (deviceRole == DeviceRole::PRIMARY && ble.isSecondaryConnected()) {
+    if (deviceRole == DeviceRole::PRIMARY && ble.isSecondaryConnected())
+    {
         return;
     }
 
     // Standalone mode: activate local motor directly
-    if (haptic.isEnabled(finger)) {
+    if (haptic.isEnabled(finger))
+    {
         haptic.activate(finger, amplitude);
     }
 }
 
-void onDeactivate(uint8_t finger) {
+void onDeactivate(uint8_t finger)
+{
     // Deactivate local motor
-    if (haptic.isEnabled(finger)) {
+    if (haptic.isEnabled(finger))
+    {
         haptic.deactivate(finger);
     }
 }
 
-void onCycleComplete(uint32_t cycleCount) {
+void onCycleComplete(uint32_t cycleCount)
+{
     Serial.printf("[THERAPY] Cycle %lu complete\n", cycleCount);
 
     // Brief purple flash for cycle completion (temporary override, returns to current pattern)
@@ -922,30 +1058,37 @@ void onCycleComplete(uint32_t cycleCount) {
 // THERAPY TEST FUNCTIONS
 // =============================================================================
 
-void startTherapyTest() {
-    if (therapy.isRunning()) {
+void startTherapyTest()
+{
+    if (therapy.isRunning())
+    {
         Serial.println(F("[TEST] Therapy already running"));
         return;
     }
 
     // Get current profile
-    const TherapyProfile* profile = profiles.getCurrentProfile();
-    if (!profile) {
+    const TherapyProfile *profile = profiles.getCurrentProfile();
+    if (!profile)
+    {
         Serial.println(F("[TEST] No profile loaded!"));
         return;
     }
 
     // Convert pattern type string to constant
     uint8_t patternType = PATTERN_TYPE_RNDP;
-    if (strcmp(profile->patternType, "sequential") == 0) {
+    if (strcmp(profile->patternType, "sequential") == 0)
+    {
         patternType = PATTERN_TYPE_SEQUENTIAL;
-    } else if (strcmp(profile->patternType, "mirrored") == 0) {
+    }
+    else if (strcmp(profile->patternType, "mirrored") == 0)
+    {
         patternType = PATTERN_TYPE_MIRRORED;
     }
 
     // Stop scanning during standalone test (SECONDARY only)
-    if (deviceRole == DeviceRole::SECONDARY) {
-        ble.setScannerAutoRestart(false);  // Prevent health check from restarting
+    if (deviceRole == DeviceRole::SECONDARY)
+    {
+        ble.setScannerAutoRestart(false); // Prevent health check from restarting
         ble.stopScanning();
         Serial.println(F("[TEST] Scanning paused for standalone test"));
     }
@@ -963,18 +1106,19 @@ void startTherapyTest() {
 
     // Start 5-minute test using profile settings (send STOP to end early)
     therapy.startSession(
-        300,                        // 5 minutes (300 seconds)
+        300, // 5 minutes (300 seconds)
         patternType,
         profile->timeOnMs,
         profile->timeOffMs,
         profile->jitterPercent,
         profile->numFingers,
-        profile->mirrorPattern
-    );
+        profile->mirrorPattern);
 }
 
-void stopTherapyTest() {
-    if (!therapy.isRunning()) {
+void stopTherapyTest()
+{
+    if (!therapy.isRunning())
+    {
         Serial.println(F("[TEST] Therapy not running"));
         return;
     }
@@ -991,9 +1135,10 @@ void stopTherapyTest() {
     stateMachine.transition(StateTrigger::STOPPED);
 
     // Resume scanning after standalone test (SECONDARY only)
-    if (deviceRole == DeviceRole::SECONDARY) {
+    if (deviceRole == DeviceRole::SECONDARY)
+    {
         Serial.println(F("[TEST] Resuming scanning..."));
-        ble.setScannerAutoRestart(true);  // Re-enable health check
+        ble.setScannerAutoRestart(true); // Re-enable health check
         ble.startScanning(BLE_NAME);
     }
 }
@@ -1004,20 +1149,24 @@ void stopTherapyTest() {
  * Called when PRIMARY+SECONDARY are connected but phone doesn't connect
  * within 30 seconds. Starts therapy with current profile settings.
  */
-void autoStartTherapy() {
-    if (deviceRole != DeviceRole::PRIMARY) {
+void autoStartTherapy()
+{
+    if (deviceRole != DeviceRole::PRIMARY)
+    {
         Serial.println(F("[AUTO] Auto-start only available on PRIMARY"));
         return;
     }
 
-    if (therapy.isRunning()) {
+    if (therapy.isRunning())
+    {
         Serial.println(F("[AUTO] Therapy already running"));
         return;
     }
 
     // Get current profile
-    const TherapyProfile* profile = profiles.getCurrentProfile();
-    if (!profile) {
+    const TherapyProfile *profile = profiles.getCurrentProfile();
+    if (!profile)
+    {
         Serial.println(F("[AUTO] No profile loaded - using defaults"));
 
         // Default settings if no profile
@@ -1028,22 +1177,25 @@ void autoStartTherapy() {
 
         stateMachine.transition(StateTrigger::START_SESSION);
         therapy.startSession(
-            1800,                       // 30 minutes (1800 seconds)
-            PATTERN_TYPE_RNDP,          // Random pattern
-            1500,                       // 1500ms on time
-            5000,                       // 5000ms off time
-            20.0f,                      // 20% jitter
-            5,                          // All 5 fingers
-            true                        // Mirror pattern
+            1800,              // 30 minutes (1800 seconds)
+            PATTERN_TYPE_RNDP, // Random pattern
+            1500,              // 1500ms on time
+            5000,              // 5000ms off time
+            20.0f,             // 20% jitter
+            5,                 // All 5 fingers
+            true               // Mirror pattern
         );
         return;
     }
 
     // Convert pattern type string to constant
     uint8_t patternType = PATTERN_TYPE_RNDP;
-    if (strcmp(profile->patternType, "sequential") == 0) {
+    if (strcmp(profile->patternType, "sequential") == 0)
+    {
         patternType = PATTERN_TYPE_SEQUENTIAL;
-    } else if (strcmp(profile->patternType, "mirrored") == 0) {
+    }
+    else if (strcmp(profile->patternType, "mirrored") == 0)
+    {
         patternType = PATTERN_TYPE_MIRRORED;
     }
 
@@ -1059,14 +1211,13 @@ void autoStartTherapy() {
 
     // Start 30-minute session using profile settings
     therapy.startSession(
-        1800,                       // 30 minutes (1800 seconds)
+        1800, // 30 minutes (1800 seconds)
         patternType,
         profile->timeOnMs,
         profile->timeOffMs,
         profile->jitterPercent,
         profile->numFingers,
-        profile->mirrorPattern
-    );
+        profile->mirrorPattern);
 }
 
 // =============================================================================
@@ -1091,66 +1242,69 @@ void autoStartTherapy() {
  * | CONNECTION_LOST    | Purple | Fast blink    | BLE connection lost            |
  * | PHONE_DISCONNECTED | —      | No change     | Informational only             |
  */
-void onStateChange(const StateTransition& transition) {
+void onStateChange(const StateTransition &transition)
+{
     // Update LED pattern based on new state
-    switch (transition.toState) {
-        case TherapyState::IDLE:
-            led.setPattern(Colors::BLUE, LEDPattern::BREATHE_SLOW);
-            break;
+    switch (transition.toState)
+    {
+    case TherapyState::IDLE:
+        led.setPattern(Colors::BLUE, LEDPattern::BREATHE_SLOW);
+        break;
 
-        case TherapyState::CONNECTING:
-            led.setPattern(Colors::BLUE, LEDPattern::BLINK_CONNECT);
-            break;
+    case TherapyState::CONNECTING:
+        led.setPattern(Colors::BLUE, LEDPattern::BLINK_CONNECT);
+        break;
 
-        case TherapyState::READY:
-            led.setPattern(Colors::GREEN, LEDPattern::SOLID);
-            break;
+    case TherapyState::READY:
+        led.setPattern(Colors::GREEN, LEDPattern::SOLID);
+        break;
 
-        case TherapyState::RUNNING:
-            led.setPattern(Colors::GREEN, LEDPattern::PULSE_SLOW);
-            break;
+    case TherapyState::RUNNING:
+        led.setPattern(Colors::GREEN, LEDPattern::PULSE_SLOW);
+        break;
 
-        case TherapyState::PAUSED:
-            led.setPattern(Colors::YELLOW, LEDPattern::SOLID);
-            break;
+    case TherapyState::PAUSED:
+        led.setPattern(Colors::YELLOW, LEDPattern::SOLID);
+        break;
 
-        case TherapyState::STOPPING:
-            led.setPattern(Colors::YELLOW, LEDPattern::BLINK_FAST);
-            break;
+    case TherapyState::STOPPING:
+        led.setPattern(Colors::YELLOW, LEDPattern::BLINK_FAST);
+        break;
 
-        case TherapyState::ERROR:
-            led.setPattern(Colors::RED, LEDPattern::BLINK_SLOW);
-            // Emergency stop on error
-            haptic.emergencyStop();
+    case TherapyState::ERROR:
+        led.setPattern(Colors::RED, LEDPattern::BLINK_SLOW);
+        // Emergency stop on error
+        haptic.emergencyStop();
+        therapy.stop();
+        break;
+
+    case TherapyState::CRITICAL_BATTERY:
+        led.setPattern(Colors::RED, LEDPattern::BLINK_URGENT);
+        // Emergency stop on critical battery
+        haptic.emergencyStop();
+        therapy.stop();
+        break;
+
+    case TherapyState::LOW_BATTERY:
+        led.setPattern(Colors::ORANGE, LEDPattern::BLINK_SLOW);
+        break;
+
+    case TherapyState::CONNECTION_LOST:
+        led.setPattern(Colors::PURPLE, LEDPattern::BLINK_CONNECT);
+        // Stop therapy on connection loss
+        if (therapy.isRunning())
+        {
             therapy.stop();
-            break;
-
-        case TherapyState::CRITICAL_BATTERY:
-            led.setPattern(Colors::RED, LEDPattern::BLINK_URGENT);
-            // Emergency stop on critical battery
             haptic.emergencyStop();
-            therapy.stop();
-            break;
+        }
+        break;
 
-        case TherapyState::LOW_BATTERY:
-            led.setPattern(Colors::ORANGE, LEDPattern::BLINK_SLOW);
-            break;
+    case TherapyState::PHONE_DISCONNECTED:
+        // Informational only - keep current LED pattern
+        break;
 
-        case TherapyState::CONNECTION_LOST:
-            led.setPattern(Colors::PURPLE, LEDPattern::BLINK_CONNECT);
-            // Stop therapy on connection loss
-            if (therapy.isRunning()) {
-                therapy.stop();
-                haptic.emergencyStop();
-            }
-            break;
-
-        case TherapyState::PHONE_DISCONNECTED:
-            // Informational only - keep current LED pattern
-            break;
-
-        default:
-            break;
+    default:
+        break;
     }
 }
 
@@ -1158,9 +1312,11 @@ void onStateChange(const StateTransition& transition) {
 // MENU CONTROLLER CALLBACK
 // =============================================================================
 
-void onMenuSendResponse(const char* response) {
+void onMenuSendResponse(const char *response)
+{
     // Send response to phone (or whoever sent the command)
-    if (ble.isPhoneConnected()) {
+    if (ble.isPhoneConnected())
+    {
         ble.sendToPhone(response);
     }
 }
@@ -1169,7 +1325,8 @@ void onMenuSendResponse(const char* response) {
 // SECONDARY HEARTBEAT TIMEOUT HANDLER
 // =============================================================================
 
-void handleHeartbeatTimeout() {
+void handleHeartbeatTimeout()
+{
     Serial.println(F("[WARN] Heartbeat timeout - PRIMARY connection lost"));
 
     // 1. Safety first - stop all motors immediately
@@ -1180,14 +1337,16 @@ void handleHeartbeatTimeout() {
     stateMachine.transition(StateTrigger::DISCONNECTED);
 
     // 3. Attempt reconnection (3 attempts, 2s apart)
-    for (uint8_t attempt = 1; attempt <= 3; attempt++) {
+    for (uint8_t attempt = 1; attempt <= 3; attempt++)
+    {
         Serial.printf("[RECOVERY] Attempt %d/3...\n", attempt);
         delay(2000);
 
-        if (ble.isPrimaryConnected()) {
+        if (ble.isPrimaryConnected())
+        {
             Serial.println(F("[RECOVERY] PRIMARY reconnected"));
             stateMachine.transition(StateTrigger::RECONNECTED);
-            lastHeartbeatReceived = millis();  // Reset timeout
+            lastHeartbeatReceived = millis(); // Reset timeout
             return;
         }
     }
@@ -1195,7 +1354,7 @@ void handleHeartbeatTimeout() {
     // 4. Recovery failed - return to IDLE
     Serial.println(F("[RECOVERY] Failed - returning to IDLE"));
     stateMachine.transition(StateTrigger::RECONNECT_FAILED);
-    lastHeartbeatReceived = 0;  // Reset for next session
+    lastHeartbeatReceived = 0; // Reset for next session
 
     // 5. Restart scanning for PRIMARY
     ble.startScanning(BLE_NAME);
@@ -1205,38 +1364,54 @@ void handleHeartbeatTimeout() {
 // SERIAL-ONLY COMMANDS
 // =============================================================================
 
-void handleSerialCommand(const char* command) {
+void handleSerialCommand(const char *command)
+{
     // SET_ROLE - one-time device configuration (serial only for security)
-    if (strncmp(command, "SET_ROLE:", 9) == 0) {
-        const char* roleStr = command + 9;
-        if (strcasecmp(roleStr, "PRIMARY") == 0) {
+    if (strncmp(command, "SET_ROLE:", 9) == 0)
+    {
+        const char *roleStr = command + 9;
+        if (strcasecmp(roleStr, "PRIMARY") == 0)
+        {
             profiles.setDeviceRole(DeviceRole::PRIMARY);
             profiles.saveSettings();
             Serial.println(F("[CONFIG] Role set to PRIMARY - restarting..."));
             Serial.flush();
             delay(100);
             NVIC_SystemReset();
-        } else if (strcasecmp(roleStr, "SECONDARY") == 0) {
+        }
+        else if (strcasecmp(roleStr, "SECONDARY") == 0)
+        {
             profiles.setDeviceRole(DeviceRole::SECONDARY);
             profiles.saveSettings();
             Serial.println(F("[CONFIG] Role set to SECONDARY - restarting..."));
             Serial.flush();
             delay(100);
             NVIC_SystemReset();
-        } else {
+        }
+        else
+        {
             Serial.println(F("[ERROR] Invalid role. Use: SET_ROLE:PRIMARY or SET_ROLE:SECONDARY"));
         }
         return;
     }
 
     // GET_ROLE - query current device role
-    if (strcmp(command, "GET_ROLE") == 0) {
+    if (strcmp(command, "GET_ROLE") == 0)
+    {
         Serial.printf("[CONFIG] Current role: %s\n", deviceRoleToString(deviceRole));
         return;
     }
 
+    // GET_VER - query firmware version
+    if (strcmp(command, "GET_VER") == 0)
+    {
+        Serial.printf("VER:%s\n", FIRMWARE_VERSION);
+        return;
+    }
+
     // REBOOT - restart the device
-    if (strcmp(command, "REBOOT") == 0) {
+    if (strcmp(command, "REBOOT") == 0)
+    {
         Serial.println(F("[CONFIG] Rebooting..."));
         Serial.flush();
         delay(100);
