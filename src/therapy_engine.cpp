@@ -36,7 +36,7 @@ Pattern generateRandomPermutation(
     pattern.numFingers = numFingers;
     pattern.burstDurationMs = timeOnMs;
 
-    // Calculate inter-burst interval: 4 * (time_on + time_off)
+    // TIME_RELAX = 4 * (time_on + time_off) - fixed interval between pattern cycles
     float cycleDurationMs = timeOnMs + timeOffMs;
     pattern.interBurstIntervalMs = 4.0f * cycleDurationMs;
 
@@ -60,18 +60,21 @@ Pattern generateRandomPermutation(
         shuffleArray(pattern.rightSequence, numFingers);
     }
 
-    // Generate timing with optional jitter
+    // Calculate jitter amount per v1 formula: (TIME_ON + TIME_OFF) * jitter% / 100 / 2
+    // With 23.5% jitter: 167ms * 0.235 / 2 = 19.6ms
     float jitterAmount = cycleDurationMs * (jitterPercent / 100.0f) / 2.0f;
 
+    // Apply jitter to TIME_OFF (67ms), NOT the inter-burst interval
+    // v1 behavior: TIME_OFF_actual = TIME_OFF ± jitter (range: 47-87ms with 23.5% jitter)
     for (int i = 0; i < numFingers; i++) {
-        float interval = pattern.interBurstIntervalMs;
+        float offTime = timeOffMs;
         if (jitterPercent > 0) {
-            // Add random jitter
+            // Add random jitter to TIME_OFF
             float jitter = random(-1000, 1001) / 1000.0f * jitterAmount;
-            interval += jitter;
-            if (interval < 0) interval = 0;
+            offTime += jitter;
+            if (offTime < 0) offTime = 0;
         }
-        pattern.timingMs[i] = interval;
+        pattern.timeOffMs[i] = offTime;
     }
 
     return pattern;
@@ -89,7 +92,7 @@ Pattern generateSequentialPattern(
     pattern.numFingers = numFingers;
     pattern.burstDurationMs = timeOnMs;
 
-    // Calculate inter-burst interval
+    // TIME_RELAX = 4 * (time_on + time_off) - fixed interval between pattern cycles
     float cycleDurationMs = timeOnMs + timeOffMs;
     pattern.interBurstIntervalMs = 4.0f * cycleDurationMs;
 
@@ -115,17 +118,18 @@ Pattern generateSequentialPattern(
         }
     }
 
-    // Generate timing with optional jitter
+    // Calculate jitter amount per v1 formula: (TIME_ON + TIME_OFF) * jitter% / 100 / 2
     float jitterAmount = cycleDurationMs * (jitterPercent / 100.0f) / 2.0f;
 
+    // Apply jitter to TIME_OFF, NOT the inter-burst interval
     for (int i = 0; i < numFingers; i++) {
-        float interval = pattern.interBurstIntervalMs;
+        float offTime = timeOffMs;
         if (jitterPercent > 0) {
             float jitter = random(-1000, 1001) / 1000.0f * jitterAmount;
-            interval += jitter;
-            if (interval < 0) interval = 0;
+            offTime += jitter;
+            if (offTime < 0) offTime = 0;
         }
-        pattern.timingMs[i] = interval;
+        pattern.timeOffMs[i] = offTime;
     }
 
     return pattern;
@@ -142,7 +146,7 @@ Pattern generateMirroredPattern(
     pattern.numFingers = numFingers;
     pattern.burstDurationMs = timeOnMs;
 
-    // Calculate inter-burst interval
+    // TIME_RELAX = 4 * (time_on + time_off) - fixed interval between pattern cycles
     float cycleDurationMs = timeOnMs + timeOffMs;
     pattern.interBurstIntervalMs = 4.0f * cycleDurationMs;
 
@@ -160,17 +164,18 @@ Pattern generateMirroredPattern(
         pattern.rightSequence[i] = pattern.leftSequence[i];
     }
 
-    // Generate timing with optional jitter
+    // Calculate jitter amount per v1 formula: (TIME_ON + TIME_OFF) * jitter% / 100 / 2
     float jitterAmount = cycleDurationMs * (jitterPercent / 100.0f) / 2.0f;
 
+    // Apply jitter to TIME_OFF, NOT the inter-burst interval
     for (int i = 0; i < numFingers; i++) {
-        float interval = pattern.interBurstIntervalMs;
+        float offTime = timeOffMs;
         if (jitterPercent > 0) {
             float jitter = random(-1000, 1001) / 1000.0f * jitterAmount;
-            interval += jitter;
-            if (interval < 0) interval = 0;
+            offTime += jitter;
+            if (offTime < 0) offTime = 0;
         }
-        pattern.timingMs[i] = interval;
+        pattern.timeOffMs[i] = offTime;
     }
 
     return pattern;
@@ -189,11 +194,14 @@ TherapyEngine::TherapyEngine() :
     _patternType(PATTERN_TYPE_RNDP),
     _timeOnMs(100.0f),
     _timeOffMs(67.0f),
-    _jitterPercent(23.5f),
-    _numFingers(5),
-    _mirrorPattern(true),
-    _amplitudeMin(50),
+    _jitterPercent(0.0f),
+    _numFingers(4),
+    _mirrorPattern(false),
+    _amplitudeMin(100),
     _amplitudeMax(100),
+    _frequencyRandomization(false),
+    _frequencyMin(210),
+    _frequencyMax(260),
     _patternIndex(0),
     _activationStartTime(0),
     _waitingForInterval(false),
@@ -207,7 +215,8 @@ TherapyEngine::TherapyEngine() :
     _sendCommandCallback(nullptr),
     _activateCallback(nullptr),
     _deactivateCallback(nullptr),
-    _cycleCompleteCallback(nullptr)
+    _cycleCompleteCallback(nullptr),
+    _setFrequencyCallback(nullptr)
 {
 }
 
@@ -229,6 +238,16 @@ void TherapyEngine::setDeactivateCallback(DeactivateCallback callback) {
 
 void TherapyEngine::setCycleCompleteCallback(CycleCompleteCallback callback) {
     _cycleCompleteCallback = callback;
+}
+
+void TherapyEngine::setSetFrequencyCallback(SetFrequencyCallback callback) {
+    _setFrequencyCallback = callback;
+}
+
+void TherapyEngine::setFrequencyRandomization(bool enabled, uint16_t minHz, uint16_t maxHz) {
+    _frequencyRandomization = enabled;
+    _frequencyMin = minHz;
+    _frequencyMax = maxHz;
 }
 
 // =============================================================================
@@ -432,71 +451,51 @@ void TherapyEngine::generateNextPattern() {
     // Reset flow control state for new pattern
     _buzzFlowState = BuzzFlowState::IDLE;
     _buzzSendTime = millis();  // Allow immediate first buzz
+
+    // Apply frequency randomization if enabled (Custom vCR feature)
+    // v1 reconfigures frequency at the start of each pattern cycle
+    applyFrequencyRandomization();
 }
 
 void TherapyEngine::executePatternStep() {
-    // Check if pattern is complete
-    if (_patternIndex >= _currentPattern.numFingers) {
-        // Cycle complete
-        _cyclesCompleted++;
-
-        if (_cycleCompleteCallback) {
-            _cycleCompleteCallback(_cyclesCompleted);
-        }
-
-        // Generate next pattern
-        generateNextPattern();
-        return;
-    }
-
     uint32_t now = millis();
 
-    // State machine for flow control
+    // State machine for flow control - matches v1 timing model
     switch (_buzzFlowState) {
         case BuzzFlowState::IDLE: {
-            // Check if inter-burst interval has elapsed (from _buzzSendTime)
-            float requiredInterval = (_patternIndex > 0)
-                ? _currentPattern.timingMs[_patternIndex - 1]
-                : 0;  // No wait for first buzz in pattern
+            // Ready to send BUZZ - no wait state, immediately activate
+            uint8_t leftFinger, rightFinger;
+            _currentPattern.getFingerPair(_patternIndex, leftFinger, rightFinger);
 
-            if ((now - _buzzSendTime) >= (uint32_t)requiredInterval) {
-                // Ready to send BUZZ
-                uint8_t leftFinger, rightFinger;
-                _currentPattern.getFingerPair(_patternIndex, leftFinger, rightFinger);
+            // Calculate random amplitude within configured range
+            uint8_t amplitude = (_amplitudeMin == _amplitudeMax)
+                ? _amplitudeMin
+                : (uint8_t)random(_amplitudeMin, _amplitudeMax + 1);
 
-                // Calculate random amplitude within configured range
-                uint8_t amplitude = (_amplitudeMin == _amplitudeMax)
-                    ? _amplitudeMin
-                    : (uint8_t)random(_amplitudeMin, _amplitudeMax + 1);
-
-                // Send sync command to SECONDARY (if PRIMARY with callback)
-                if (_sendCommandCallback) {
-                    _sendCommandCallback("BUZZ", leftFinger, rightFinger, amplitude, _buzzSequenceId);
-                    _buzzSequenceId++;
-                }
-
-                // Record buzz send time for timing calculations
-                _buzzSendTime = now;
-
-                // Activate local motors
-                if (_activateCallback) {
-                    _activateCallback(leftFinger, amplitude);
-                }
-
-                _activationStartTime = now;
-                _motorActive = true;
-                _totalActivations++;
-
-                // Transition to ACTIVE
-                _buzzFlowState = BuzzFlowState::ACTIVE;
+            // Send sync command to SECONDARY (if PRIMARY with callback)
+            if (_sendCommandCallback) {
+                _sendCommandCallback("BUZZ", leftFinger, rightFinger, amplitude, _buzzSequenceId);
+                _buzzSequenceId++;
             }
+
+            // Activate local motors
+            if (_activateCallback) {
+                _activateCallback(leftFinger, amplitude);
+            }
+
+            _activationStartTime = now;
+            _motorActive = true;
+            _totalActivations++;
+
+            // Transition to ACTIVE (waiting for TIME_ON to elapse)
+            _buzzFlowState = BuzzFlowState::ACTIVE;
             break;
         }
 
         case BuzzFlowState::ACTIVE: {
-            // Check if burst duration has elapsed
+            // Motor is ON - wait for TIME_ON (burstDurationMs = 100ms)
             if ((now - _activationStartTime) >= (uint32_t)_currentPattern.burstDurationMs) {
-                // Deactivate motors
+                // TIME_ON elapsed - deactivate motor
                 uint8_t leftFinger, rightFinger;
                 _currentPattern.getFingerPair(_patternIndex, leftFinger, rightFinger);
 
@@ -505,13 +504,71 @@ void TherapyEngine::executePatternStep() {
                 }
 
                 _motorActive = false;
-                _activationStartTime = 0;
+                _buzzSendTime = now;  // Record time for TIME_OFF wait
 
-                // Advance to next finger in pattern
-                _patternIndex++;
-                _buzzFlowState = BuzzFlowState::IDLE;
+                // Transition to WAITING_OFF (waiting for TIME_OFF + jitter)
+                _buzzFlowState = BuzzFlowState::WAITING_OFF;
             }
             break;
         }
+
+        case BuzzFlowState::WAITING_OFF: {
+            // Motor is OFF - wait for TIME_OFF + jitter (timeOffMs[i])
+            float timeOffWithJitter = _currentPattern.timeOffMs[_patternIndex];
+
+            if ((now - _buzzSendTime) >= (uint32_t)timeOffWithJitter) {
+                // TIME_OFF elapsed - advance to next finger
+                _patternIndex++;
+
+                if (_patternIndex >= _currentPattern.numFingers) {
+                    // Pattern cycle complete - wait TIME_RELAX before next cycle
+                    _cyclesCompleted++;
+
+                    if (_cycleCompleteCallback) {
+                        _cycleCompleteCallback(_cyclesCompleted);
+                    }
+
+                    _buzzSendTime = now;  // Record time for TIME_RELAX wait
+                    _buzzFlowState = BuzzFlowState::WAITING_RELAX;
+                } else {
+                    // More fingers to go - immediately start next buzz
+                    _buzzFlowState = BuzzFlowState::IDLE;
+                }
+            }
+            break;
+        }
+
+        case BuzzFlowState::WAITING_RELAX: {
+            // Pattern complete - wait for TIME_RELAX (interBurstIntervalMs = 668ms)
+            if ((now - _buzzSendTime) >= (uint32_t)_currentPattern.interBurstIntervalMs) {
+                // TIME_RELAX elapsed - generate new pattern and start next cycle
+                generateNextPattern();
+            }
+            break;
+        }
+    }
+}
+
+void TherapyEngine::applyFrequencyRandomization() {
+    // Custom vCR feature: randomize motor frequency at start of each pattern cycle
+    // v1 behavior from defaults_CustomVCR.py:
+    //   ACTUATOR_FREQL = 210 Hz
+    //   ACTUATOR_FREQH = 260 Hz
+    //   ACTUATOR_FREQUENCY = random.randrange(FREQL, FREQH, 5)
+    // Generates: 210, 215, 220, 225, 230, 235, 240, 245, 250, 255, 260 Hz
+
+    if (!_frequencyRandomization || !_setFrequencyCallback) {
+        return;
+    }
+
+    // Calculate number of 5Hz steps between min and max
+    uint16_t range = _frequencyMax - _frequencyMin;
+    uint16_t steps = range / 5;
+
+    // Apply randomized frequency to each finger's motor
+    for (int finger = 0; finger < _numFingers; finger++) {
+        // Generate random frequency in 5 Hz steps (matching v1 behavior)
+        uint16_t freq = _frequencyMin + (random(0, steps + 1) * 5);
+        _setFrequencyCallback(finger, freq);
     }
 }

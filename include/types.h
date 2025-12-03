@@ -368,19 +368,19 @@ struct TherapyConfig {
     uint16_t timeOnMs;          // Vibration on time in ms
     uint16_t timeOffMs;         // Vibration off time in ms
     uint8_t jitterPercent;      // Timing jitter (0-100)
-    uint8_t numFingers;         // Number of fingers to use (1-5)
+    uint8_t numFingers;         // Number of fingers to use (1-4, v1 uses 4)
     bool mirrorPattern;         // True for noisy vCR, false for regular vCR
     ActuatorType actuatorType;  // LRA or ERM
 
     TherapyConfig() :
         durationSec(7200),      // 2 hours default
-        amplitude(80),
-        frequencyHz(175),
+        amplitude(100),         // 100% fixed amplitude (v1 default)
+        frequencyHz(250),       // 250 Hz (v1 default)
         timeOnMs(100),
-        timeOffMs(100),
-        jitterPercent(0),
-        numFingers(5),
-        mirrorPattern(true),    // Noisy vCR by default
+        timeOffMs(67),          // 67ms (v1 default)
+        jitterPercent(0),       // No jitter for Regular vCR (v1 default)
+        numFingers(4),          // 4 fingers per hand (v1 default)
+        mirrorPattern(false),   // Regular vCR by default (non-mirrored)
         actuatorType(ActuatorType::LRA) {}
 };
 

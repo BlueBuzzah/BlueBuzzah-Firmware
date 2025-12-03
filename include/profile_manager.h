@@ -23,7 +23,7 @@
 // =============================================================================
 
 // Maximum number of profiles
-#define MAX_PROFILES 5
+#define MAX_PROFILES 8
 
 // Profile name max length
 #define PROFILE_NAME_MAX 32
@@ -64,7 +64,7 @@ struct __attribute__((packed)) SettingsData {
     uint16_t sessionDurationMin; // Minutes
     char patternType[16];        // "rndp", "sequential", "mirrored"
     uint8_t mirrorPattern;       // 0 or 1
-    uint8_t numFingers;          // 1-5
+    uint8_t numFingers;          // 1-4 (index through pinky)
     uint8_t reserved[4];         // Future use, padding
 };
 
@@ -106,21 +106,29 @@ struct TherapyProfile {
     // Metadata
     bool isDefault;
 
+    // Frequency randomization (Custom vCR feature)
+    bool frequencyRandomization;
+    uint16_t frequencyMin;  // Min frequency for randomization (Hz)
+    uint16_t frequencyMax;  // Max frequency for randomization (Hz)
+
     /**
      * @brief Default constructor with noisy vCR defaults
      */
     TherapyProfile() :
         actuatorType(ActuatorType::LRA),
-        frequencyHz(175),
+        frequencyHz(250),
         timeOnMs(100.0f),
         timeOffMs(67.0f),
         jitterPercent(23.5f),
-        amplitudeMin(50),
+        amplitudeMin(100),
         amplitudeMax(100),
         sessionDurationMin(120),  // 2 hours
         mirrorPattern(true),
-        numFingers(5),
-        isDefault(false)
+        numFingers(4),
+        isDefault(false),
+        frequencyRandomization(false),
+        frequencyMin(210),
+        frequencyMax(260)
     {
         strcpy(name, "default");
         strcpy(description, "Default profile");
@@ -145,6 +153,9 @@ struct TherapyProfile {
         mirrorPattern = other.mirrorPattern;
         numFingers = other.numFingers;
         isDefault = other.isDefault;
+        frequencyRandomization = other.frequencyRandomization;
+        frequencyMin = other.frequencyMin;
+        frequencyMax = other.frequencyMax;
     }
 
     /**
@@ -166,6 +177,9 @@ struct TherapyProfile {
             mirrorPattern = other.mirrorPattern;
             numFingers = other.numFingers;
             isDefault = other.isDefault;
+            frequencyRandomization = other.frequencyRandomization;
+            frequencyMin = other.frequencyMin;
+            frequencyMax = other.frequencyMax;
         }
         return *this;
     }
@@ -275,7 +289,7 @@ public:
      * - PATTERN: rndp, sequential, or mirrored
      * - MIRROR: 0 or 1
      * - JITTER: Jitter percent (0-100)
-     * - FINGERS: Number of fingers (1-5)
+     * - FINGERS: Number of fingers (1-4)
      */
     bool setParameter(const char* paramName, const char* value);
 

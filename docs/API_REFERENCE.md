@@ -726,7 +726,7 @@ if (!hardware.begin()) {
 }
 
 // Activate motor
-hardware.buzzFinger(0, 100);  // Thumb at ~78% (100/127)
+hardware.buzzFinger(0, 100);  // Index finger at ~78% (100/127)
 delay(100);
 hardware.stopFinger(0);
 
@@ -1344,7 +1344,7 @@ CalibrationController calibration(hardware);
 calibration.startCalibration();
 
 // Test individual finger
-calibration.testFinger(0, 100, 200);  // Thumb, amplitude 100, 200ms
+calibration.testFinger(0, 100, 200);  // Index finger, amplitude 100, 200ms
 
 // Test all fingers sequentially
 calibration.testAllFingers(100, 100);

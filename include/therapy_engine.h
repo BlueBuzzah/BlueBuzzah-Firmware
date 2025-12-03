@@ -25,17 +25,25 @@
 
 /**
  * @brief State machine for buzz execution flow control
+ *
+ * v1 timing model:
+ *   IDLE → Send BUZZ, activate motor → ACTIVE
+ *   ACTIVE → Wait TIME_ON (100ms) → deactivate motor → WAITING_OFF
+ *   WAITING_OFF → Wait TIME_OFF + jitter (67ms ± jitter) → IDLE (next finger)
+ *   After all fingers: WAITING_RELAX → Wait TIME_RELAX (668ms) → IDLE (new pattern)
  */
 enum class BuzzFlowState : uint8_t {
-    IDLE = 0,           // Waiting for inter-burst interval
-    ACTIVE              // Motor running, waiting for burst duration
+    IDLE = 0,           // Ready to send next BUZZ
+    ACTIVE,             // Motor running, waiting for TIME_ON (burst duration)
+    WAITING_OFF,        // Motor off, waiting for TIME_OFF + jitter before next finger
+    WAITING_RELAX       // Pattern complete, waiting TIME_RELAX before next cycle
 };
 
 // =============================================================================
 // PATTERN CONSTANTS
 // =============================================================================
 
-#define PATTERN_MAX_FINGERS 5
+#define PATTERN_MAX_FINGERS 4           // v1 uses 4 fingers per hand (no pinky)
 #define PATTERN_TYPE_RNDP 0
 #define PATTERN_TYPE_SEQUENTIAL 1
 #define PATTERN_TYPE_MIRRORED 2
@@ -48,24 +56,28 @@ enum class BuzzFlowState : uint8_t {
  * @brief Generated therapy pattern
  *
  * Contains finger sequences for both hands with timing information.
+ *
+ * Timing model (matching v1 original):
+ *   For each finger: MOTOR_ON(burstDurationMs) → MOTOR_OFF(timeOffMs[i] with jitter)
+ *   After all fingers: Wait interBurstIntervalMs (TIME_RELAX = 668ms)
  */
 struct Pattern {
     uint8_t leftSequence[PATTERN_MAX_FINGERS];
     uint8_t rightSequence[PATTERN_MAX_FINGERS];
-    float timingMs[PATTERN_MAX_FINGERS];
+    float timeOffMs[PATTERN_MAX_FINGERS];   // TIME_OFF + jitter for each finger (v1: 67ms ± jitter)
     uint8_t numFingers;
-    float burstDurationMs;
-    float interBurstIntervalMs;
+    float burstDurationMs;                  // TIME_ON (v1: 100ms)
+    float interBurstIntervalMs;             // TIME_RELAX after pattern cycle (v1: 668ms fixed)
 
     Pattern() :
-        numFingers(5),
+        numFingers(4),
         burstDurationMs(100.0f),
         interBurstIntervalMs(668.0f)
     {
         for (int i = 0; i < PATTERN_MAX_FINGERS; i++) {
             leftSequence[i] = i;
             rightSequence[i] = i;
-            timingMs[i] = 668.0f;
+            timeOffMs[i] = 67.0f;           // Default TIME_OFF (no jitter)
         }
     }
 
@@ -75,9 +87,9 @@ struct Pattern {
     float getTotalDurationMs() const {
         float total = 0;
         for (int i = 0; i < numFingers; i++) {
-            total += timingMs[i] + burstDurationMs;
+            total += burstDurationMs + timeOffMs[i];
         }
-        return total;
+        return total + interBurstIntervalMs;  // Include TIME_RELAX at end
     }
 
     /**
@@ -111,7 +123,7 @@ void shuffleArray(uint8_t* arr, uint8_t n);
  * Each finger activated exactly once per cycle in randomized order.
  * Used for noisy vCR therapy.
  *
- * @param numFingers Number of fingers per hand (1-5)
+ * @param numFingers Number of fingers per hand (1-4)
  * @param timeOnMs Vibration burst duration
  * @param timeOffMs Time between bursts
  * @param jitterPercent Timing jitter percentage (0-100)
@@ -119,32 +131,32 @@ void shuffleArray(uint8_t* arr, uint8_t n);
  * @return Generated pattern
  */
 Pattern generateRandomPermutation(
-    uint8_t numFingers = 5,
+    uint8_t numFingers = 4,
     float timeOnMs = 100.0f,
     float timeOffMs = 67.0f,
-    float jitterPercent = 23.5f,
-    bool mirrorPattern = true
+    float jitterPercent = 0.0f,
+    bool mirrorPattern = false
 );
 
 /**
  * @brief Generate sequential pattern
  *
- * Fingers activated in order: 0->1->2->3->4 (or reverse)
+ * Fingers activated in order: 0->1->2->3 (or reverse)
  *
- * @param numFingers Number of fingers per hand (1-5)
+ * @param numFingers Number of fingers per hand (1-4)
  * @param timeOnMs Vibration burst duration
  * @param timeOffMs Time between bursts
  * @param jitterPercent Timing jitter percentage (0-100)
  * @param mirrorPattern If true, same sequence for both hands
- * @param reverse If true, reverse order (4->0)
+ * @param reverse If true, reverse order (3->0)
  * @return Generated pattern
  */
 Pattern generateSequentialPattern(
-    uint8_t numFingers = 5,
+    uint8_t numFingers = 4,
     float timeOnMs = 100.0f,
     float timeOffMs = 67.0f,
     float jitterPercent = 0.0f,
-    bool mirrorPattern = true,
+    bool mirrorPattern = false,
     bool reverse = false
 );
 
@@ -153,7 +165,7 @@ Pattern generateSequentialPattern(
  *
  * Both hands use identical finger sequences.
  *
- * @param numFingers Number of fingers per hand (1-5)
+ * @param numFingers Number of fingers per hand (1-4)
  * @param timeOnMs Vibration burst duration
  * @param timeOffMs Time between bursts
  * @param jitterPercent Timing jitter percentage (0-100)
@@ -161,10 +173,10 @@ Pattern generateSequentialPattern(
  * @return Generated pattern
  */
 Pattern generateMirroredPattern(
-    uint8_t numFingers = 5,
+    uint8_t numFingers = 4,
     float timeOnMs = 100.0f,
     float timeOffMs = 67.0f,
-    float jitterPercent = 23.5f,
+    float jitterPercent = 0.0f,
     bool randomize = true
 );
 
@@ -183,6 +195,10 @@ typedef void (*DeactivateCallback)(uint8_t finger);
 
 // Callback for cycle completion
 typedef void (*CycleCompleteCallback)(uint32_t cycleCount);
+
+// Callback for setting motor frequency (for Custom vCR frequency randomization)
+// Called at start of each pattern cycle when frequencyRandomization is enabled
+typedef void (*SetFrequencyCallback)(uint8_t finger, uint16_t frequencyHz);
 
 // =============================================================================
 // THERAPY ENGINE CLASS
@@ -230,6 +246,19 @@ public:
      */
     void setCycleCompleteCallback(CycleCompleteCallback callback);
 
+    /**
+     * @brief Set callback for frequency changes (Custom vCR frequency randomization)
+     */
+    void setSetFrequencyCallback(SetFrequencyCallback callback);
+
+    /**
+     * @brief Enable/disable frequency randomization (Custom vCR feature)
+     * @param enabled Enable frequency randomization
+     * @param minHz Minimum frequency (default 210 Hz)
+     * @param maxHz Maximum frequency (default 260 Hz)
+     */
+    void setFrequencyRandomization(bool enabled, uint16_t minHz = 210, uint16_t maxHz = 260);
+
     // =========================================================================
     // SESSION CONTROL
     // =========================================================================
@@ -251,10 +280,10 @@ public:
         uint8_t patternType = PATTERN_TYPE_RNDP,
         float timeOnMs = 100.0f,
         float timeOffMs = 67.0f,
-        float jitterPercent = 23.5f,
-        uint8_t numFingers = 5,
-        bool mirrorPattern = true,
-        uint8_t amplitudeMin = 50,
+        float jitterPercent = 0.0f,
+        uint8_t numFingers = 4,
+        bool mirrorPattern = false,
+        uint8_t amplitudeMin = 100,
         uint8_t amplitudeMax = 100
     );
 
@@ -335,6 +364,11 @@ private:
     uint8_t _amplitudeMin;
     uint8_t _amplitudeMax;
 
+    // Frequency randomization (Custom vCR feature - v1 defaults_CustomVCR.py)
+    bool _frequencyRandomization;
+    uint16_t _frequencyMin;     // 210 Hz (v1 ACTUATOR_FREQL)
+    uint16_t _frequencyMax;     // 260 Hz (v1 ACTUATOR_FREQH)
+
     // Current pattern execution
     Pattern _currentPattern;
     uint8_t _patternIndex;
@@ -359,10 +393,12 @@ private:
     ActivateCallback _activateCallback;
     DeactivateCallback _deactivateCallback;
     CycleCompleteCallback _cycleCompleteCallback;
+    SetFrequencyCallback _setFrequencyCallback;
 
     // Internal methods
     void generateNextPattern();
     void executePatternStep();
+    void applyFrequencyRandomization();  // Called at start of each pattern cycle
 };
 
 #endif // THERAPY_ENGINE_H

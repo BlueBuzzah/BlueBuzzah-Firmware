@@ -88,11 +88,10 @@ nRF52840 MCU
 ├── Battery ADC (voltage monitoring)
 └── I2C Bus @ 400kHz
     └── TCA9548A Multiplexer (0x70)
-        ├── Ch0: DRV2605 - Thumb
-        ├── Ch1: DRV2605 - Index
-        ├── Ch2: DRV2605 - Middle
-        ├── Ch3: DRV2605 - Ring
-        └── Ch4: DRV2605 - Pinky
+        ├── Ch0: DRV2605 - Index
+        ├── Ch1: DRV2605 - Middle
+        ├── Ch2: DRV2605 - Ring
+        └── Ch3: DRV2605 - Pinky
 ```
 
 ---

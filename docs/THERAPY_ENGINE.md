@@ -229,7 +229,7 @@ void TherapyEngine::shuffleArray(uint8_t* array, uint8_t size) {
 }
 ```
 
-Both hands use finger indices 0-3, with the hardware wiring ensuring each channel maps to the same anatomical finger on both gloves (channel 0 = pinky on both, etc.).
+Both hands use finger indices 0-3, with the hardware wiring ensuring each channel maps to the same anatomical finger on both gloves (channel 0 = index on both, etc.).
 
 ### Seed Synchronization
 
@@ -313,10 +313,10 @@ bool TherapyEngine::waitForSeed() {
 **Physical Layout**:
 ```
 LEFT GLOVE (PRIMARY):        RIGHT GLOVE (SECONDARY):
-0: Thumb                     0: Thumb
-1: Index                     1: Index
-2: Middle                    2: Middle
-3: Ring                      3: Ring
+0: Index                     0: Index
+1: Middle                    1: Middle
+2: Ring                      2: Ring
+3: Pinky                     3: Pinky
 ```
 
 **Pattern Example** (non-mirrored):
@@ -326,10 +326,10 @@ uint8_t sequence[8] = {2, 1, 0, 3, 3, 0, 1, 2};
 // Pairs: (L2,R1), (L0,R3), (L3,R0), (L1,R2)
 
 // Execution sequence:
-// Buzz 1: LEFT Middle (2) + RIGHT Index  (1)
-// Buzz 2: LEFT Thumb  (0) + RIGHT Ring   (3)
-// Buzz 3: LEFT Ring   (3) + RIGHT Thumb  (0)
-// Buzz 4: LEFT Index  (1) + RIGHT Middle (2)
+// Buzz 1: LEFT Ring   (2) + RIGHT Middle (1)
+// Buzz 2: LEFT Index  (0) + RIGHT Pinky  (3)
+// Buzz 3: LEFT Pinky  (3) + RIGHT Index  (0)
+// Buzz 4: LEFT Middle (1) + RIGHT Ring   (2)
 ```
 
 ---
@@ -895,10 +895,10 @@ drivers_[fingerIndex].setRealtimeValue(0);
 nRF52840 I2C Bus (SCL/SDA)
   |
   +-- TCA9548A Multiplexer (0x70)
-        |-- Port 0: DRV2605 #1 (Thumb)   @ 0x5A
-        |-- Port 1: DRV2605 #2 (Index)   @ 0x5A
-        |-- Port 2: DRV2605 #3 (Middle)  @ 0x5A
-        +-- Port 3: DRV2605 #4 (Ring)    @ 0x5A
+        |-- Port 0: DRV2605 #1 (Index)   @ 0x5A
+        |-- Port 1: DRV2605 #2 (Middle)  @ 0x5A
+        |-- Port 2: DRV2605 #3 (Ring)    @ 0x5A
+        +-- Port 3: DRV2605 #4 (Pinky)   @ 0x5A
 ```
 
 **Why Multiplexer?** All DRV2605 chips have fixed address 0x5A. Multiplexer allows 4 chips on same bus.

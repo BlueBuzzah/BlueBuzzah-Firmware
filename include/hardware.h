@@ -28,10 +28,10 @@
 // =============================================================================
 
 /**
- * @brief Controls 5 DRV2605 haptic drivers via TCA9548A I2C multiplexer
+ * @brief Controls 4 DRV2605 haptic drivers via TCA9548A I2C multiplexer
  *
- * Each finger (thumb through pinky) has a dedicated DRV2605 driver connected
- * to the TCA9548A multiplexer on channels 0-4. All drivers share the same
+ * Each finger (index through pinky) has a dedicated DRV2605 driver connected
+ * to the TCA9548A multiplexer on channels 0-3. All drivers share the same
  * I2C address (0x5A) and are accessed by selecting the appropriate channel.
  *
  * Usage:
@@ -54,14 +54,14 @@ public:
 
     /**
      * @brief Initialize a specific finger's DRV2605 driver
-     * @param finger Finger index (0-4: thumb through pinky)
+     * @param finger Finger index (0-3: index through pinky)
      * @return true if initialization successful
      */
     bool initializeFinger(uint8_t finger);
 
     /**
      * @brief Activate motor on specified finger
-     * @param finger Finger index (0-4)
+     * @param finger Finger index (0-3)
      * @param amplitude Amplitude percentage (0-100)
      * @return Result code indicating success or error
      */
@@ -100,7 +100,7 @@ public:
 
     /**
      * @brief Set resonant frequency for LRA actuator
-     * @param finger Finger index (0-4)
+     * @param finger Finger index (0-3)
      * @param frequencyHz Frequency in Hz (150-250)
      * @return Result code indicating success or error
      */
@@ -108,7 +108,7 @@ public:
 
     /**
      * @brief Get number of successfully initialized fingers
-     * @return Count of enabled fingers (0-5)
+     * @return Count of enabled fingers (0-4)
      */
     uint8_t getEnabledCount() const;
 
@@ -121,7 +121,7 @@ private:
 
     /**
      * @brief Select multiplexer channel and prepare for DRV2605 communication
-     * @param finger Finger index (0-4)
+     * @param finger Finger index (0-3)
      * @return true if channel selected successfully
      */
     bool selectChannel(uint8_t finger);

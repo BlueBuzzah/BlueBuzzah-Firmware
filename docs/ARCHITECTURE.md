@@ -801,7 +801,7 @@ void TherapyEngine::generatePattern() {
 }
 ```
 
-**Hardware Note**: Both gloves use identical channel-to-finger mapping (channel 0 = pinky on both gloves). The `mirrorPattern` setting controls whether the same channel number is sent to both devices (mirrored) or different channels (non-mirrored).
+**Hardware Note**: Both gloves use identical channel-to-finger mapping (channel 0 = index on both gloves). The `mirrorPattern` setting controls whether the same channel number is sent to both devices (mirrored) or different channels (non-mirrored).
 
 ### Configuration System
 
@@ -1011,11 +1011,10 @@ SYNC:ACK:command|START_SESSION<EOT>
 [HardwareController]
     └── I2C Bus (Wire @ 400kHz)
         └── TCA9548A Multiplexer (0x70)
-            ├── Port 0: DRV2605 (Thumb)   @ 0x5A
-            ├── Port 1: DRV2605 (Index)   @ 0x5A
-            ├── Port 2: DRV2605 (Middle)  @ 0x5A
-            ├── Port 3: DRV2605 (Ring)    @ 0x5A
-            └── Port 4: DRV2605 (Pinky)   @ 0x5A
+            ├── Port 0: DRV2605 (Index)   @ 0x5A
+            ├── Port 1: DRV2605 (Middle)  @ 0x5A
+            ├── Port 2: DRV2605 (Ring)    @ 0x5A
+            └── Port 3: DRV2605 (Pinky)   @ 0x5A
 ```
 
 ### I2C Initialization
@@ -1028,7 +1027,7 @@ SYNC:ACK:command|START_SESSION<EOT>
 #include <Adafruit_DRV2605.h>
 
 Adafruit_TCA9548A tca;
-Adafruit_DRV2605 drv[5];
+Adafruit_DRV2605 drv[4];
 
 bool HardwareController::begin() {
     Wire.begin();
@@ -1850,7 +1849,7 @@ The architecture enables confident refactoring, easy testing, and straightforwar
 
 | Specification | Value |
 |---------------|-------|
-| **Quantity** | 5 per glove (one per finger) |
+| **Quantity** | 4 per glove (index through pinky) |
 | **I2C Address** | 0x5A (fixed, requires multiplexer) |
 | **I2C Speed** | 400 kHz |
 | **RTP Mode** | 0-127 amplitude |

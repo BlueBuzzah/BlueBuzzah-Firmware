@@ -94,10 +94,10 @@ void tearDown(void) {
 // =============================================================================
 
 void test_shuffleArray_produces_valid_permutation(void) {
-    uint8_t arr[5] = {0, 1, 2, 3, 4};
-    shuffleArray(arr, 5);
+    uint8_t arr[4] = {0, 1, 2, 3};
+    shuffleArray(arr, 4);
 
-    TEST_ASSERT_TRUE(isValidPermutation(arr, 5));
+    TEST_ASSERT_TRUE(isValidPermutation(arr, 4));
 }
 
 void test_shuffleArray_single_element(void) {
@@ -117,16 +117,16 @@ void test_shuffleArray_two_elements(void) {
 void test_shuffleArray_maintains_all_elements(void) {
     randomSeed(12345);  // Different seed
 
-    uint8_t arr[5] = {0, 1, 2, 3, 4};
-    shuffleArray(arr, 5);
+    uint8_t arr[4] = {0, 1, 2, 3};
+    shuffleArray(arr, 4);
 
     // Count each element - should appear exactly once
-    int counts[5] = {0};
-    for (int i = 0; i < 5; i++) {
+    int counts[4] = {0};
+    for (int i = 0; i < 4; i++) {
         counts[arr[i]]++;
     }
 
-    for (int i = 0; i < 5; i++) {
+    for (int i = 0; i < 4; i++) {
         TEST_ASSERT_EQUAL_INT(1, counts[i]);
     }
 }
@@ -138,12 +138,12 @@ void test_shuffleArray_maintains_all_elements(void) {
 void test_Pattern_default_constructor(void) {
     Pattern p;
 
-    TEST_ASSERT_EQUAL_UINT8(5, p.numFingers);
+    TEST_ASSERT_EQUAL_UINT8(4, p.numFingers);
     TEST_ASSERT_FLOAT_WITHIN(0.1f, 100.0f, p.burstDurationMs);
     TEST_ASSERT_FLOAT_WITHIN(0.1f, 668.0f, p.interBurstIntervalMs);
 
-    // Default sequence is 0,1,2,3,4
-    for (int i = 0; i < 5; i++) {
+    // Default sequence is 0,1,2,3
+    for (int i = 0; i < 4; i++) {
         TEST_ASSERT_EQUAL_UINT8(i, p.leftSequence[i]);
         TEST_ASSERT_EQUAL_UINT8(i, p.rightSequence[i]);
     }
@@ -151,25 +151,25 @@ void test_Pattern_default_constructor(void) {
 
 void test_Pattern_getTotalDurationMs(void) {
     Pattern p;
-    p.numFingers = 5;
+    p.numFingers = 4;
     p.burstDurationMs = 100.0f;
-    for (int i = 0; i < 5; i++) {
-        p.timingMs[i] = 500.0f;  // 500ms between each
+    for (int i = 0; i < 4; i++) {
+        p.timeOffMs[i] = 500.0f;  // 500ms between each
     }
 
-    // Total = sum of (timing + burst) for each finger
-    // = 5 * (500 + 100) = 3000ms
+    // Total = sum of (timeOff + burst) for each finger + interBurstInterval
+    // = 4 * (500 + 100) + 668 = 3068ms
     float total = p.getTotalDurationMs();
-    TEST_ASSERT_FLOAT_WITHIN(0.1f, 3000.0f, total);
+    TEST_ASSERT_FLOAT_WITHIN(0.1f, 3068.0f, total);
 }
 
 void test_Pattern_getFingerPair(void) {
     Pattern p;
-    p.numFingers = 5;
+    p.numFingers = 4;
     p.leftSequence[0] = 3;
     p.leftSequence[1] = 1;
     p.rightSequence[0] = 2;
-    p.rightSequence[1] = 4;
+    p.rightSequence[1] = 3;
 
     uint8_t left, right;
 
@@ -179,7 +179,7 @@ void test_Pattern_getFingerPair(void) {
 
     p.getFingerPair(1, left, right);
     TEST_ASSERT_EQUAL_UINT8(1, left);
-    TEST_ASSERT_EQUAL_UINT8(4, right);
+    TEST_ASSERT_EQUAL_UINT8(3, right);
 }
 
 // =============================================================================
@@ -187,38 +187,38 @@ void test_Pattern_getFingerPair(void) {
 // =============================================================================
 
 void test_generateRandomPermutation_produces_valid_pattern(void) {
-    Pattern p = generateRandomPermutation(5, 100.0f, 67.0f, 0.0f, true);
+    Pattern p = generateRandomPermutation(4, 100.0f, 67.0f, 0.0f, true);
 
-    TEST_ASSERT_EQUAL_UINT8(5, p.numFingers);
-    TEST_ASSERT_TRUE(isValidPermutation(p.leftSequence, 5));
-    TEST_ASSERT_TRUE(isValidPermutation(p.rightSequence, 5));
+    TEST_ASSERT_EQUAL_UINT8(4, p.numFingers);
+    TEST_ASSERT_TRUE(isValidPermutation(p.leftSequence, 4));
+    TEST_ASSERT_TRUE(isValidPermutation(p.rightSequence, 4));
 }
 
 void test_generateRandomPermutation_mirrored(void) {
-    Pattern p = generateRandomPermutation(5, 100.0f, 67.0f, 0.0f, true);
+    Pattern p = generateRandomPermutation(4, 100.0f, 67.0f, 0.0f, true);
 
     // Mirrored: left and right should be identical
-    TEST_ASSERT_TRUE(arraysEqual(p.leftSequence, p.rightSequence, 5));
+    TEST_ASSERT_TRUE(arraysEqual(p.leftSequence, p.rightSequence, 4));
 }
 
 void test_generateRandomPermutation_non_mirrored(void) {
     randomSeed(999);  // Seed to ensure different sequences
 
-    Pattern p = generateRandomPermutation(5, 100.0f, 67.0f, 0.0f, false);
+    Pattern p = generateRandomPermutation(4, 100.0f, 67.0f, 0.0f, false);
 
     // Both should still be valid permutations
-    TEST_ASSERT_TRUE(isValidPermutation(p.leftSequence, 5));
-    TEST_ASSERT_TRUE(isValidPermutation(p.rightSequence, 5));
+    TEST_ASSERT_TRUE(isValidPermutation(p.leftSequence, 4));
+    TEST_ASSERT_TRUE(isValidPermutation(p.rightSequence, 4));
 
     // Note: They might be equal by chance, but usually won't be
 }
 
 void test_generateRandomPermutation_with_jitter(void) {
-    Pattern p = generateRandomPermutation(5, 100.0f, 67.0f, 23.5f, true);
+    Pattern p = generateRandomPermutation(4, 100.0f, 67.0f, 23.5f, true);
 
     // With jitter, timing values will vary but should be positive
-    for (int i = 0; i < 5; i++) {
-        TEST_ASSERT_TRUE(p.timingMs[i] >= 0.0f);
+    for (int i = 0; i < 4; i++) {
+        TEST_ASSERT_TRUE(p.timeOffMs[i] >= 0.0f);
     }
 }
 
@@ -230,14 +230,14 @@ void test_generateRandomPermutation_partial_fingers(void) {
 }
 
 void test_generateRandomPermutation_burst_duration(void) {
-    Pattern p = generateRandomPermutation(5, 150.0f, 50.0f, 0.0f, true);
+    Pattern p = generateRandomPermutation(4, 150.0f, 50.0f, 0.0f, true);
 
     TEST_ASSERT_FLOAT_WITHIN(0.1f, 150.0f, p.burstDurationMs);
 }
 
 void test_generateRandomPermutation_interBurstInterval(void) {
     // Inter-burst = 4 * (timeOn + timeOff) = 4 * (100 + 67) = 668
-    Pattern p = generateRandomPermutation(5, 100.0f, 67.0f, 0.0f, true);
+    Pattern p = generateRandomPermutation(4, 100.0f, 67.0f, 0.0f, true);
 
     TEST_ASSERT_FLOAT_WITHIN(0.1f, 668.0f, p.interBurstIntervalMs);
 }
@@ -247,38 +247,38 @@ void test_generateRandomPermutation_interBurstInterval(void) {
 // =============================================================================
 
 void test_generateSequentialPattern_forward(void) {
-    Pattern p = generateSequentialPattern(5, 100.0f, 67.0f, 0.0f, true, false);
+    Pattern p = generateSequentialPattern(4, 100.0f, 67.0f, 0.0f, true, false);
 
-    // Sequential forward: 0, 1, 2, 3, 4
-    for (int i = 0; i < 5; i++) {
+    // Sequential forward: 0, 1, 2, 3
+    for (int i = 0; i < 4; i++) {
         TEST_ASSERT_EQUAL_UINT8(i, p.leftSequence[i]);
     }
 }
 
 void test_generateSequentialPattern_reverse(void) {
-    Pattern p = generateSequentialPattern(5, 100.0f, 67.0f, 0.0f, true, true);
+    Pattern p = generateSequentialPattern(4, 100.0f, 67.0f, 0.0f, true, true);
 
-    // Sequential reverse: 4, 3, 2, 1, 0
-    for (int i = 0; i < 5; i++) {
-        TEST_ASSERT_EQUAL_UINT8(4 - i, p.leftSequence[i]);
+    // Sequential reverse: 3, 2, 1, 0
+    for (int i = 0; i < 4; i++) {
+        TEST_ASSERT_EQUAL_UINT8(3 - i, p.leftSequence[i]);
     }
 }
 
 void test_generateSequentialPattern_mirrored(void) {
-    Pattern p = generateSequentialPattern(5, 100.0f, 67.0f, 0.0f, true, false);
+    Pattern p = generateSequentialPattern(4, 100.0f, 67.0f, 0.0f, true, false);
 
     // Mirrored: left and right identical
-    TEST_ASSERT_TRUE(arraysEqual(p.leftSequence, p.rightSequence, 5));
+    TEST_ASSERT_TRUE(arraysEqual(p.leftSequence, p.rightSequence, 4));
 }
 
 void test_generateSequentialPattern_non_mirrored(void) {
-    Pattern p = generateSequentialPattern(5, 100.0f, 67.0f, 0.0f, false, false);
+    Pattern p = generateSequentialPattern(4, 100.0f, 67.0f, 0.0f, false, false);
 
     // Non-mirrored: right is opposite order of left
-    // Left: 0,1,2,3,4  Right: 4,3,2,1,0
-    for (int i = 0; i < 5; i++) {
+    // Left: 0,1,2,3  Right: 3,2,1,0
+    for (int i = 0; i < 4; i++) {
         TEST_ASSERT_EQUAL_UINT8(i, p.leftSequence[i]);
-        TEST_ASSERT_EQUAL_UINT8(4 - i, p.rightSequence[i]);
+        TEST_ASSERT_EQUAL_UINT8(3 - i, p.rightSequence[i]);
     }
 }
 
@@ -287,25 +287,25 @@ void test_generateSequentialPattern_non_mirrored(void) {
 // =============================================================================
 
 void test_generateMirroredPattern_not_randomized(void) {
-    Pattern p = generateMirroredPattern(5, 100.0f, 67.0f, 0.0f, false);
+    Pattern p = generateMirroredPattern(4, 100.0f, 67.0f, 0.0f, false);
 
     // Not randomized: sequential
-    for (int i = 0; i < 5; i++) {
+    for (int i = 0; i < 4; i++) {
         TEST_ASSERT_EQUAL_UINT8(i, p.leftSequence[i]);
     }
 
     // Always mirrored
-    TEST_ASSERT_TRUE(arraysEqual(p.leftSequence, p.rightSequence, 5));
+    TEST_ASSERT_TRUE(arraysEqual(p.leftSequence, p.rightSequence, 4));
 }
 
 void test_generateMirroredPattern_randomized(void) {
-    Pattern p = generateMirroredPattern(5, 100.0f, 67.0f, 0.0f, true);
+    Pattern p = generateMirroredPattern(4, 100.0f, 67.0f, 0.0f, true);
 
     // Randomized: valid permutation
-    TEST_ASSERT_TRUE(isValidPermutation(p.leftSequence, 5));
+    TEST_ASSERT_TRUE(isValidPermutation(p.leftSequence, 4));
 
     // Always mirrored
-    TEST_ASSERT_TRUE(arraysEqual(p.leftSequence, p.rightSequence, 5));
+    TEST_ASSERT_TRUE(arraysEqual(p.leftSequence, p.rightSequence, 4));
 }
 
 // =============================================================================
@@ -328,7 +328,7 @@ void test_TherapyEngine_default_state(void) {
 void test_TherapyEngine_startSession(void) {
     TherapyEngine engine;
 
-    engine.startSession(7200, PATTERN_TYPE_RNDP, 100.0f, 67.0f, 23.5f, 5, true);
+    engine.startSession(7200, PATTERN_TYPE_RNDP, 100.0f, 67.0f, 23.5f, 4, true);
 
     TEST_ASSERT_TRUE(engine.isRunning());
     TEST_ASSERT_FALSE(engine.isPaused());
@@ -337,7 +337,7 @@ void test_TherapyEngine_startSession(void) {
 
 void test_TherapyEngine_pause(void) {
     TherapyEngine engine;
-    engine.startSession(7200, PATTERN_TYPE_RNDP, 100.0f, 67.0f, 23.5f, 5, true);
+    engine.startSession(7200, PATTERN_TYPE_RNDP, 100.0f, 67.0f, 23.5f, 4, true);
 
     engine.pause();
 
@@ -347,7 +347,7 @@ void test_TherapyEngine_pause(void) {
 
 void test_TherapyEngine_resume(void) {
     TherapyEngine engine;
-    engine.startSession(7200, PATTERN_TYPE_RNDP, 100.0f, 67.0f, 23.5f, 5, true);
+    engine.startSession(7200, PATTERN_TYPE_RNDP, 100.0f, 67.0f, 23.5f, 4, true);
     engine.pause();
 
     engine.resume();
@@ -358,7 +358,7 @@ void test_TherapyEngine_resume(void) {
 
 void test_TherapyEngine_stop(void) {
     TherapyEngine engine;
-    engine.startSession(7200, PATTERN_TYPE_RNDP, 100.0f, 67.0f, 23.5f, 5, true);
+    engine.startSession(7200, PATTERN_TYPE_RNDP, 100.0f, 67.0f, 23.5f, 4, true);
 
     engine.stop();
 
@@ -367,11 +367,11 @@ void test_TherapyEngine_stop(void) {
 
 void test_TherapyEngine_resets_stats_on_start(void) {
     TherapyEngine engine;
-    engine.startSession(100, PATTERN_TYPE_RNDP, 100.0f, 67.0f, 0.0f, 5, true);
+    engine.startSession(100, PATTERN_TYPE_RNDP, 100.0f, 67.0f, 0.0f, 4, true);
     engine.stop();
 
     // Start new session
-    engine.startSession(200, PATTERN_TYPE_RNDP, 100.0f, 67.0f, 0.0f, 5, true);
+    engine.startSession(200, PATTERN_TYPE_RNDP, 100.0f, 67.0f, 0.0f, 4, true);
 
     TEST_ASSERT_EQUAL_UINT32(0, engine.getCyclesCompleted());
     TEST_ASSERT_EQUAL_UINT32(0, engine.getTotalActivations());
@@ -386,7 +386,7 @@ void test_TherapyEngine_getElapsedSeconds(void) {
     // Start with non-zero time (startTime == 0 is a guard condition in the code)
     mockSetMillis(1000);
 
-    engine.startSession(7200, PATTERN_TYPE_RNDP, 100.0f, 67.0f, 0.0f, 5, true);
+    engine.startSession(7200, PATTERN_TYPE_RNDP, 100.0f, 67.0f, 0.0f, 4, true);
 
     // Advance time by 5000ms (5 seconds)
     mockAdvanceMillis(5000);
@@ -399,7 +399,7 @@ void test_TherapyEngine_getRemainingSeconds(void) {
     // Start with non-zero time (startTime == 0 is a guard condition in the code)
     mockSetMillis(1000);
 
-    engine.startSession(100, PATTERN_TYPE_RNDP, 100.0f, 67.0f, 0.0f, 5, true);
+    engine.startSession(100, PATTERN_TYPE_RNDP, 100.0f, 67.0f, 0.0f, 4, true);
 
     // Advance time by 30 seconds
     mockAdvanceMillis(30000);
@@ -427,7 +427,7 @@ void test_TherapyEngine_setActivateCallback(void) {
     TherapyEngine engine;
     engine.setActivateCallback(mockActivateCallback);
 
-    engine.startSession(7200, PATTERN_TYPE_RNDP, 100.0f, 67.0f, 0.0f, 5, true);
+    engine.startSession(7200, PATTERN_TYPE_RNDP, 100.0f, 67.0f, 0.0f, 4, true);
     engine.update();  // Should trigger activation
 
     TEST_ASSERT_TRUE(g_activateCallCount > 0);
@@ -438,7 +438,7 @@ void test_TherapyEngine_setDeactivateCallback(void) {
     engine.setActivateCallback(mockActivateCallback);
     engine.setDeactivateCallback(mockDeactivateCallback);
 
-    engine.startSession(7200, PATTERN_TYPE_RNDP, 100.0f, 67.0f, 0.0f, 5, true);
+    engine.startSession(7200, PATTERN_TYPE_RNDP, 100.0f, 67.0f, 0.0f, 4, true);
     engine.update();  // Activate
 
     // Advance past burst duration to trigger deactivation
@@ -453,7 +453,7 @@ void test_TherapyEngine_pause_deactivates_motors(void) {
     engine.setActivateCallback(mockActivateCallback);
     engine.setDeactivateCallback(mockDeactivateCallback);
 
-    engine.startSession(7200, PATTERN_TYPE_RNDP, 100.0f, 67.0f, 0.0f, 5, true);
+    engine.startSession(7200, PATTERN_TYPE_RNDP, 100.0f, 67.0f, 0.0f, 4, true);
     engine.update();  // Activate motors
 
     int deactivateCountBefore = g_deactivateCallCount;
@@ -467,7 +467,7 @@ void test_TherapyEngine_stop_deactivates_motors(void) {
     engine.setActivateCallback(mockActivateCallback);
     engine.setDeactivateCallback(mockDeactivateCallback);
 
-    engine.startSession(7200, PATTERN_TYPE_RNDP, 100.0f, 67.0f, 0.0f, 5, true);
+    engine.startSession(7200, PATTERN_TYPE_RNDP, 100.0f, 67.0f, 0.0f, 4, true);
     engine.update();  // Activate motors
 
     int deactivateCountBefore = g_deactivateCallCount;
@@ -493,7 +493,7 @@ void test_TherapyEngine_update_does_nothing_when_paused(void) {
     TherapyEngine engine;
     engine.setActivateCallback(mockActivateCallback);
 
-    engine.startSession(7200, PATTERN_TYPE_RNDP, 100.0f, 67.0f, 0.0f, 5, true);
+    engine.startSession(7200, PATTERN_TYPE_RNDP, 100.0f, 67.0f, 0.0f, 4, true);
     engine.pause();
 
     int countBefore = g_activateCallCount;
@@ -506,7 +506,7 @@ void test_TherapyEngine_session_timeout(void) {
     TherapyEngine engine;
     mockSetMillis(0);
 
-    engine.startSession(10, PATTERN_TYPE_RNDP, 100.0f, 67.0f, 0.0f, 5, true);  // 10 second session
+    engine.startSession(10, PATTERN_TYPE_RNDP, 100.0f, 67.0f, 0.0f, 4, true);  // 10 second session
 
     // Advance past session duration
     mockAdvanceMillis(11000);
@@ -523,7 +523,7 @@ void test_TherapyEngine_pattern_type_rndp(void) {
     TherapyEngine engine;
     engine.setActivateCallback(mockActivateCallback);
 
-    engine.startSession(7200, PATTERN_TYPE_RNDP, 100.0f, 67.0f, 0.0f, 5, true);
+    engine.startSession(7200, PATTERN_TYPE_RNDP, 100.0f, 67.0f, 0.0f, 4, true);
     engine.update();
 
     // Should have activated (RNDP pattern generated)
@@ -534,7 +534,7 @@ void test_TherapyEngine_pattern_type_sequential(void) {
     TherapyEngine engine;
     engine.setActivateCallback(mockActivateCallback);
 
-    engine.startSession(7200, PATTERN_TYPE_SEQUENTIAL, 100.0f, 67.0f, 0.0f, 5, true);
+    engine.startSession(7200, PATTERN_TYPE_SEQUENTIAL, 100.0f, 67.0f, 0.0f, 4, true);
     engine.update();
 
     TEST_ASSERT_TRUE(g_activateCallCount > 0);
@@ -544,7 +544,7 @@ void test_TherapyEngine_pattern_type_mirrored(void) {
     TherapyEngine engine;
     engine.setActivateCallback(mockActivateCallback);
 
-    engine.startSession(7200, PATTERN_TYPE_MIRRORED, 100.0f, 67.0f, 0.0f, 5, true);
+    engine.startSession(7200, PATTERN_TYPE_MIRRORED, 100.0f, 67.0f, 0.0f, 4, true);
     engine.update();
 
     TEST_ASSERT_TRUE(g_activateCallCount > 0);

@@ -420,10 +420,24 @@ public:
     /**
      * @brief Record an RTT probe response
      * @param seq Sequence number of the probe
+     * @param sessionId Session ID from the probe
      * @param originalT1 Original send timestamp
      * @return true if probe was recorded successfully
      */
-    bool handleProbeAck(uint8_t seq, uint64_t originalT1);
+    bool handleProbeAck(uint8_t seq, uint16_t sessionId, uint64_t originalT1);
+
+    /**
+     * @brief Create a SYNC_PROBE command for RTT measurement
+     * Updates internal state to track the pending probe.
+     * @param seq Probe sequence number (0 to SYNC_PROBE_COUNT-1)
+     * @return SyncCommand ready to serialize and send
+     */
+    SyncCommand createProbe(uint8_t seq);
+
+    /**
+     * @brief Get current probe session ID
+     */
+    uint16_t getProbeSessionId() const { return _probeSessionId; }
 
     /**
      * @brief Check if RTT probing is in progress
@@ -480,6 +494,11 @@ private:
     uint8_t _currentProbeSeq;                 // Current probe sequence number
     uint64_t _probeSentTime;                  // Time when current probe was sent
     bool _probingInProgress;                  // Whether probing is active
+
+    // Session isolation (prevents stale ACK processing)
+    uint16_t _probeSessionId;                 // Increments each startRttProbing()
+    uint64_t _pendingProbeT1;                 // T1 timestamp of current outstanding probe
+    bool _probeAckReceived[SYNC_PROBE_COUNT]; // Tracks which probes have been ACK'd
 };
 
 #endif // SYNC_PROTOCOL_H

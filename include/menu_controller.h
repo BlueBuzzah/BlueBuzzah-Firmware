@@ -26,6 +26,7 @@ class BatteryMonitor;
 class HapticController;
 class TherapyStateMachine;
 class ProfileManager;
+class BLEManager;
 
 // =============================================================================
 // CONSTANTS
@@ -101,13 +102,15 @@ public:
      * @param hapticController HapticController instance
      * @param stateMachine TherapyStateMachine instance
      * @param profileManager ProfileManager instance (optional)
+     * @param bleManager BLEManager instance for sync commands (optional)
      */
     void begin(
         TherapyEngine* therapyEngine,
         BatteryMonitor* batteryMonitor,
         HapticController* hapticController,
         TherapyStateMachine* stateMachine,
-        ProfileManager* profileManager = nullptr
+        ProfileManager* profileManager = nullptr,
+        BLEManager* bleManager = nullptr
     );
 
     /**
@@ -162,6 +165,7 @@ private:
     HapticController* _haptic;
     TherapyStateMachine* _stateMachine;
     ProfileManager* _profiles;
+    BLEManager* _ble;
 
     // Device info
     DeviceRole _role;

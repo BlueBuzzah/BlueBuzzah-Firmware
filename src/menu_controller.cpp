@@ -10,6 +10,8 @@
 #include "hardware.h"
 #include "state_machine.h"
 #include "profile_manager.h"
+#include "ble_manager.h"
+#include "sync_protocol.h"
 
 // =============================================================================
 // INTERNAL MESSAGE PREFIXES
@@ -24,7 +26,13 @@ const char* INTERNAL_MESSAGES[] = {
     "BATRESPONSE",
     "ACK_PARAM_UPDATE",
     "HEARTBEAT",
-    "SYNC:",
+    "SYNC_",           // Covers SYNC_ADJ, SYNC_PROBE, SYNC_PROBE_ACK
+    "FIRST_SYNC",
+    "ACK_SYNC",        // Covers ACK_SYNC_ADJ
+    "START_SESSION",
+    "PAUSE_SESSION",
+    "RESUME_SESSION",
+    "STOP_SESSION",
     "IDENTIFY:"
 };
 
@@ -40,6 +48,7 @@ MenuController::MenuController() :
     _haptic(nullptr),
     _stateMachine(nullptr),
     _profiles(nullptr),
+    _ble(nullptr),
     _role(DeviceRole::PRIMARY),
     _sendCallback(nullptr),
     _restartCallback(nullptr),
@@ -60,13 +69,15 @@ void MenuController::begin(
     BatteryMonitor* batteryMonitor,
     HapticController* hapticController,
     TherapyStateMachine* stateMachine,
-    ProfileManager* profileManager
+    ProfileManager* profileManager,
+    BLEManager* bleManager
 ) {
     _therapy = therapyEngine;
     _battery = batteryMonitor;
     _haptic = hapticController;
     _stateMachine = stateMachine;
     _profiles = profileManager;
+    _ble = bleManager;
 
     Serial.println(F("[MENU] Controller initialized"));
 }
@@ -377,12 +388,6 @@ void MenuController::handleProfileList() {
 }
 
 void MenuController::handleProfileLoad(const char params[][PARAM_BUFFER_SIZE], uint8_t paramCount) {
-    // Check if session is active
-    if (_therapy && _therapy->isRunning()) {
-        sendError("Cannot modify parameters during active session");
-        return;
-    }
-
     if (paramCount < 1) {
         sendError("Profile ID required");
         return;
@@ -399,10 +404,35 @@ void MenuController::handleProfileLoad(const char params[][PARAM_BUFFER_SIZE], u
         return;
     }
 
+    // Save settings to persist profile change
+    _profiles->saveSettings();
+
+    // Stop any active therapy session before rebooting
+    if (_therapy) {
+        _therapy->stop();
+    }
+    if (_haptic) {
+        _haptic->emergencyStop();
+    }
+    if (_stateMachine) {
+        _stateMachine->transition(StateTrigger::STOP_SESSION);
+    }
+
+    // Send response before reboot
     beginResponse();
-    addResponseLine("STATUS", "LOADED");
+    addResponseLine("STATUS", "REBOOTING");
     addResponseLine("PROFILE", _profiles->getCurrentProfileName());
     sendResponse();
+
+    // Give time for response to be sent
+    delay(100);
+
+    // Reboot
+    if (_restartCallback) {
+        _restartCallback();
+    } else {
+        NVIC_SystemReset();
+    }
 }
 
 void MenuController::handleProfileGet() {
@@ -493,7 +523,7 @@ void MenuController::handleSessionStart() {
     float timeOnMs = 100.0f;
     float timeOffMs = 67.0f;
     float jitterPercent = 23.5f;
-    uint8_t numFingers = 5;
+    uint8_t numFingers = 4;  // 4 fingers per hand (index, middle, ring, pinky)
     bool mirror = true;
 
     if (_profiles) {
@@ -521,6 +551,15 @@ void MenuController::handleSessionStart() {
         _stateMachine->transition(StateTrigger::START_SESSION);
     }
 
+    // Notify SECONDARY of session start
+    if (_ble && _ble->isSecondaryConnected()) {
+        SyncCommand cmd = SyncCommand::createStartSession(0);
+        char buffer[64];
+        if (cmd.serialize(buffer, sizeof(buffer))) {
+            _ble->sendToSecondary(buffer);
+        }
+    }
+
     beginResponse();
     addResponseLine("SESSION_STATUS", "RUNNING");
     sendResponse();
@@ -536,6 +575,15 @@ void MenuController::handleSessionPause() {
 
     if (_stateMachine) {
         _stateMachine->transition(StateTrigger::PAUSE_SESSION);
+    }
+
+    // Notify SECONDARY of session pause
+    if (_ble && _ble->isSecondaryConnected()) {
+        SyncCommand cmd = SyncCommand::createPauseSession(0);
+        char buffer[64];
+        if (cmd.serialize(buffer, sizeof(buffer))) {
+            _ble->sendToSecondary(buffer);
+        }
     }
 
     beginResponse();
@@ -560,6 +608,15 @@ void MenuController::handleSessionResume() {
         _stateMachine->transition(StateTrigger::RESUME_SESSION);
     }
 
+    // Notify SECONDARY of session resume
+    if (_ble && _ble->isSecondaryConnected()) {
+        SyncCommand cmd = SyncCommand::createResumeSession(0);
+        char buffer[64];
+        if (cmd.serialize(buffer, sizeof(buffer))) {
+            _ble->sendToSecondary(buffer);
+        }
+    }
+
     beginResponse();
     addResponseLine("SESSION_STATUS", "RUNNING");
     sendResponse();
@@ -576,6 +633,15 @@ void MenuController::handleSessionStop() {
 
     if (_stateMachine) {
         _stateMachine->transition(StateTrigger::STOP_SESSION);
+    }
+
+    // Notify SECONDARY of session stop
+    if (_ble && _ble->isSecondaryConnected()) {
+        SyncCommand cmd = SyncCommand::createStopSession(0);
+        char buffer[64];
+        if (cmd.serialize(buffer, sizeof(buffer))) {
+            _ble->sendToSecondary(buffer);
+        }
     }
 
     beginResponse();

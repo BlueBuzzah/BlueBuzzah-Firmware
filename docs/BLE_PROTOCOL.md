@@ -626,14 +626,14 @@ Test individual finger motor.
 **Finger Mapping:**
 | Index | Device | Finger |
 |-------|--------|--------|
-| 0 | PRIMARY | Thumb |
-| 1 | PRIMARY | Index |
-| 2 | PRIMARY | Middle |
-| 3 | PRIMARY | Ring |
-| 4 | SECONDARY | Thumb |
-| 5 | SECONDARY | Index |
-| 6 | SECONDARY | Middle |
-| 7 | SECONDARY | Ring |
+| 0 | PRIMARY | Index |
+| 1 | PRIMARY | Middle |
+| 2 | PRIMARY | Ring |
+| 3 | PRIMARY | Pinky |
+| 4 | SECONDARY | Index |
+| 5 | SECONDARY | Middle |
+| 6 | SECONDARY | Ring |
+| 7 | SECONDARY | Pinky |
 
 **Response (Success):**
 ```

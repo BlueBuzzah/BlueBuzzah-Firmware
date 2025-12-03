@@ -121,10 +121,10 @@ void MenuController::cmdCalibrateStop() {
 ```text
 PRIMARY GLOVE:                  SECONDARY GLOVE:
 ┌─────────────────────┐        ┌─────────────────────┐
-│  0: Thumb           │        │  4: Thumb           │
-│  1: Index           │        │  5: Index           │
-│  2: Middle          │        │  6: Middle          │
-│  3: Ring            │        │  7: Ring            │
+│  0: Index           │        │  4: Index           │
+│  1: Middle          │        │  5: Middle          │
+│  2: Ring            │        │  6: Ring            │
+│  3: Pinky           │        │  7: Pinky           │
 └─────────────────────┘        └─────────────────────┘
 ```
 
@@ -132,14 +132,14 @@ PRIMARY GLOVE:                  SECONDARY GLOVE:
 
 | Index | Glove | Finger | Motor Channel | Control Path |
 |-------|-------|--------|---------------|--------------|
-| 0 | PRIMARY | Thumb | 0 | Direct (PRIMARY local) |
-| 1 | PRIMARY | Index | 1 | Direct (PRIMARY local) |
-| 2 | PRIMARY | Middle | 2 | Direct (PRIMARY local) |
-| 3 | PRIMARY | Ring | 3 | Direct (PRIMARY local) |
-| 4 | SECONDARY | Thumb | 0 | Relay (PRIMARY → SECONDARY) |
-| 5 | SECONDARY | Index | 1 | Relay (PRIMARY → SECONDARY) |
-| 6 | SECONDARY | Middle | 2 | Relay (PRIMARY → SECONDARY) |
-| 7 | SECONDARY | Ring | 3 | Relay (PRIMARY → SECONDARY) |
+| 0 | PRIMARY | Index | 0 | Direct (PRIMARY local) |
+| 1 | PRIMARY | Middle | 1 | Direct (PRIMARY local) |
+| 2 | PRIMARY | Ring | 2 | Direct (PRIMARY local) |
+| 3 | PRIMARY | Pinky | 3 | Direct (PRIMARY local) |
+| 4 | SECONDARY | Index | 0 | Relay (PRIMARY → SECONDARY) |
+| 5 | SECONDARY | Middle | 1 | Relay (PRIMARY → SECONDARY) |
+| 6 | SECONDARY | Ring | 2 | Relay (PRIMARY → SECONDARY) |
+| 7 | SECONDARY | Pinky | 3 | Relay (PRIMARY → SECONDARY) |
 
 **Motor Channel Calculation**:
 ```cpp
@@ -163,12 +163,12 @@ uint8_t motorChannel = fingerIndex - 4;  // 4→0, 5→1, 6→2, 7→3
 2. PRIMARY → Phone: MODE:CALIBRATION\n\x04
 
 3. Phone → PRIMARY: CALIBRATE_BUZZ:0:50:500\n
-4. PRIMARY: <tests local thumb at 50% for 500ms>
+4. PRIMARY: <tests local index finger at 50% for 500ms>
 5. PRIMARY → Phone: FINGER:0\nINTENSITY:50\nDURATION:500\n\x04
 
 6. Phone → PRIMARY: CALIBRATE_BUZZ:4:75:500\n
 7. PRIMARY → SECONDARY: CALIBRATE_BUZZ:4:75:500\n
-8. SECONDARY: <tests local thumb at 75% for 500ms>
+8. SECONDARY: <tests local index finger at 75% for 500ms>
 9. PRIMARY → Phone: FINGER:4\nINTENSITY:75\nDURATION:500\n\x04
 
 ... (repeat for all 8 fingers)
@@ -572,14 +572,14 @@ profile.amplitudeMax = 45;  // Fixed intensity (no variation)
 **Example**:
 ```
 Detection Thresholds:
-    Finger 0 (PRIMARY Thumb):  15%
-    Finger 1 (PRIMARY Index):  20%  ← Highest
-    Finger 2 (PRIMARY Middle): 12%
-    Finger 3 (PRIMARY Ring):   18%
-    Finger 4 (SECONDARY Thumb):  14%
-    Finger 5 (SECONDARY Index):  16%
-    Finger 6 (SECONDARY Middle): 11%
-    Finger 7 (SECONDARY Ring):   19%
+    Finger 0 (PRIMARY Index):  15%
+    Finger 1 (PRIMARY Middle):  20%  ← Highest
+    Finger 2 (PRIMARY Ring): 12%
+    Finger 3 (PRIMARY Pinky):   18%
+    Finger 4 (SECONDARY Index):  14%
+    Finger 5 (SECONDARY Middle):  16%
+    Finger 6 (SECONDARY Ring): 11%
+    Finger 7 (SECONDARY Pinky):   19%
 
 Set therapeutic intensity based on Finger 1 (20%):
     AMPLITUDE_MIN = 20 + 30 = 50%
@@ -762,11 +762,11 @@ const char* MenuController::getFingerName(uint8_t fingerIndex) {
      *     fingerIndex: 0-7
      *
      * Returns:
-     *     const char*: Finger name (e.g., "PRIMARY Thumb", "SECONDARY Index")
+     *     const char*: Finger name (e.g., "PRIMARY Index", "SECONDARY Middle")
      */
     static const char* fingerNames[] = {
-        "PRIMARY Thumb", "PRIMARY Index", "PRIMARY Middle", "PRIMARY Ring",
-        "SECONDARY Thumb", "SECONDARY Index", "SECONDARY Middle", "SECONDARY Ring"
+        "PRIMARY Index", "PRIMARY Middle", "PRIMARY Ring", "PRIMARY Pinky",
+        "SECONDARY Index", "SECONDARY Middle", "SECONDARY Ring", "SECONDARY Pinky"
     };
 
     if (fingerIndex > 7) return "Unknown";
@@ -776,8 +776,8 @@ const char* MenuController::getFingerName(uint8_t fingerIndex) {
 
 **Example**:
 ```cpp
-getFingerName(0);  // "PRIMARY Thumb"
-getFingerName(5);  // "SECONDARY Index"
+getFingerName(0);  // "PRIMARY Index"
+getFingerName(5);  // "SECONDARY Middle"
 ```
 
 ---
@@ -798,14 +798,14 @@ struct TherapyParams {
 
 // Initialize per-finger map
 uint8_t fingerMap[8] = {
-    45,  // PRIMARY Thumb
-    55,  // PRIMARY Index (less sensitive, needs higher)
-    40,  // PRIMARY Middle
-    50,  // PRIMARY Ring
-    42,  // SECONDARY Thumb
-    52,  // SECONDARY Index
-    38,  // SECONDARY Middle
-    48   // SECONDARY Ring
+    45,  // PRIMARY Index
+    55,  // PRIMARY Middle (less sensitive, needs higher)
+    40,  // PRIMARY Ring
+    50,  // PRIMARY Pinky
+    42,  // SECONDARY Index
+    52,  // SECONDARY Middle
+    38,  // SECONDARY Ring
+    48   // SECONDARY Pinky
 };
 
 // In therapy engine

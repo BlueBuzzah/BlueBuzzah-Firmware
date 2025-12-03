@@ -50,7 +50,7 @@ bool ProfileManager::begin(bool loadFromStorage) {
 
     // Load default profile if none loaded
     if (!_profileLoaded) {
-        loadProfile(1);  // Load first profile (Noisy vCR)
+        loadProfile(1);  // Load first profile (Regular vCR)
     }
 
     Serial.printf("[PROFILE] Initialized with %d profiles\n", _profileCount);
@@ -60,50 +60,112 @@ bool ProfileManager::begin(bool loadFromStorage) {
 void ProfileManager::initBuiltInProfiles() {
     _profileCount = 0;
 
-    // Profile 1: Noisy vCR (Default)
+    // =========================================================================
+    // V1 ORIGINAL PROFILES (research-based vCR therapy)
+    // =========================================================================
+
+    // Profile 1: Regular vCR (Default) - Non-mirrored, no jitter
+    // Reference: Original v1 defaults_RegVCR.py
+    TherapyProfile& regular = _builtInProfiles[_profileCount];
+    strcpy(regular.name, "regular_vcr");
+    strcpy(regular.description, "Regular vCR - non-mirrored, no jitter");
+    regular.actuatorType = ActuatorType::LRA;
+    regular.frequencyHz = 250;
+    regular.timeOnMs = 100.0f;
+    regular.timeOffMs = 67.0f;
+    regular.jitterPercent = 0.0f;
+    regular.amplitudeMin = 100;
+    regular.amplitudeMax = 100;
+    regular.sessionDurationMin = 120;
+    strcpy(regular.patternType, "rndp");
+    regular.mirrorPattern = false;
+    regular.numFingers = 4;
+    regular.isDefault = true;
+    regular.frequencyRandomization = false;
+    regular.frequencyMin = 210;
+    regular.frequencyMax = 260;
+    _profileNames[_profileCount] = _builtInProfiles[_profileCount].name;
+    _profileCount++;
+
+    // Profile 2: Noisy vCR - Mirrored with 23.5% jitter
+    // Reference: Original v1 defaults_NoisyVCR.py
     TherapyProfile& noisy = _builtInProfiles[_profileCount];
     strcpy(noisy.name, "noisy_vcr");
-    strcpy(noisy.description, "Noisy vCR with 23.5% jitter");
+    strcpy(noisy.description, "Noisy vCR - mirrored with 23.5% jitter");
     noisy.actuatorType = ActuatorType::LRA;
-    noisy.frequencyHz = 175;
+    noisy.frequencyHz = 250;
     noisy.timeOnMs = 100.0f;
     noisy.timeOffMs = 67.0f;
     noisy.jitterPercent = 23.5f;
-    noisy.amplitudeMin = 50;
+    noisy.amplitudeMin = 100;
     noisy.amplitudeMax = 100;
     noisy.sessionDurationMin = 120;
     strcpy(noisy.patternType, "rndp");
     noisy.mirrorPattern = true;
-    noisy.numFingers = 5;
-    noisy.isDefault = true;
+    noisy.numFingers = 4;
+    noisy.isDefault = false;
+    noisy.frequencyRandomization = false;
+    noisy.frequencyMin = 210;
+    noisy.frequencyMax = 260;
     _profileNames[_profileCount] = _builtInProfiles[_profileCount].name;
     _profileCount++;
 
-    // Profile 2: Standard vCR (No jitter)
-    TherapyProfile& standard = _builtInProfiles[_profileCount];
-    strcpy(standard.name, "standard_vcr");
-    strcpy(standard.description, "Standard vCR without jitter");
-    standard.actuatorType = ActuatorType::LRA;
-    standard.frequencyHz = 175;
-    standard.timeOnMs = 100.0f;
-    standard.timeOffMs = 67.0f;
-    standard.jitterPercent = 0.0f;
-    standard.amplitudeMin = 50;
-    standard.amplitudeMax = 100;
-    standard.sessionDurationMin = 120;
-    strcpy(standard.patternType, "rndp");
-    standard.mirrorPattern = true;
-    standard.numFingers = 5;
-    standard.isDefault = false;
+    // Profile 3: Hybrid vCR - Non-mirrored with 23.5% jitter
+    // Reference: Original v1 defaults_HybridVCR.py
+    TherapyProfile& hybrid = _builtInProfiles[_profileCount];
+    strcpy(hybrid.name, "hybrid_vcr");
+    strcpy(hybrid.description, "Hybrid vCR - non-mirrored with 23.5% jitter");
+    hybrid.actuatorType = ActuatorType::LRA;
+    hybrid.frequencyHz = 250;
+    hybrid.timeOnMs = 100.0f;
+    hybrid.timeOffMs = 67.0f;
+    hybrid.jitterPercent = 23.5f;
+    hybrid.amplitudeMin = 100;
+    hybrid.amplitudeMax = 100;
+    hybrid.sessionDurationMin = 120;
+    strcpy(hybrid.patternType, "rndp");
+    hybrid.mirrorPattern = false;
+    hybrid.numFingers = 4;
+    hybrid.isDefault = false;
+    hybrid.frequencyRandomization = false;
+    hybrid.frequencyMin = 210;
+    hybrid.frequencyMax = 260;
     _profileNames[_profileCount] = _builtInProfiles[_profileCount].name;
     _profileCount++;
 
-    // Profile 3: Gentle (Lower amplitude)
+    // Profile 4: Custom vCR - Non-mirrored, jitter, amplitude range, freq randomization
+    // Reference: Original v1 defaults_CustomVCR.py
+    TherapyProfile& custom = _builtInProfiles[_profileCount];
+    strcpy(custom.name, "custom_vcr");
+    strcpy(custom.description, "Custom vCR - variable amplitude & frequency");
+    custom.actuatorType = ActuatorType::LRA;
+    custom.frequencyHz = 250;
+    custom.timeOnMs = 100.0f;
+    custom.timeOffMs = 67.0f;
+    custom.jitterPercent = 23.5f;
+    custom.amplitudeMin = 70;
+    custom.amplitudeMax = 100;
+    custom.sessionDurationMin = 120;
+    strcpy(custom.patternType, "rndp");
+    custom.mirrorPattern = false;
+    custom.numFingers = 4;
+    custom.isDefault = false;
+    custom.frequencyRandomization = true;
+    custom.frequencyMin = 210;
+    custom.frequencyMax = 260;
+    _profileNames[_profileCount] = _builtInProfiles[_profileCount].name;
+    _profileCount++;
+
+    // =========================================================================
+    // V2 ADDITIONAL PROFILES (convenience/testing)
+    // =========================================================================
+
+    // Profile 5: Gentle (Lower amplitude, v2 addition)
     TherapyProfile& gentle = _builtInProfiles[_profileCount];
     strcpy(gentle.name, "gentle");
-    strcpy(gentle.description, "Gentle therapy with lower amplitude");
+    strcpy(gentle.description, "Gentle therapy with lower amplitude (v2)");
     gentle.actuatorType = ActuatorType::LRA;
-    gentle.frequencyHz = 175;
+    gentle.frequencyHz = 250;
     gentle.timeOnMs = 80.0f;
     gentle.timeOffMs = 87.0f;
     gentle.jitterPercent = 15.0f;
@@ -112,17 +174,20 @@ void ProfileManager::initBuiltInProfiles() {
     gentle.sessionDurationMin = 60;
     strcpy(gentle.patternType, "sequential");
     gentle.mirrorPattern = true;
-    gentle.numFingers = 5;
+    gentle.numFingers = 4;
     gentle.isDefault = false;
+    gentle.frequencyRandomization = false;
+    gentle.frequencyMin = 210;
+    gentle.frequencyMax = 260;
     _profileNames[_profileCount] = _builtInProfiles[_profileCount].name;
     _profileCount++;
 
-    // Profile 4: Quick Test (Short duration)
+    // Profile 6: Quick Test (Short duration, v2 addition)
     TherapyProfile& quick = _builtInProfiles[_profileCount];
     strcpy(quick.name, "quick_test");
-    strcpy(quick.description, "Quick test session (5 minutes)");
+    strcpy(quick.description, "Quick test session - 5 minutes (v2)");
     quick.actuatorType = ActuatorType::LRA;
-    quick.frequencyHz = 175;
+    quick.frequencyHz = 250;
     quick.timeOnMs = 100.0f;
     quick.timeOffMs = 67.0f;
     quick.jitterPercent = 23.5f;
@@ -131,8 +196,11 @@ void ProfileManager::initBuiltInProfiles() {
     quick.sessionDurationMin = 5;
     strcpy(quick.patternType, "rndp");
     quick.mirrorPattern = true;
-    quick.numFingers = 5;
+    quick.numFingers = 4;
     quick.isDefault = false;
+    quick.frequencyRandomization = false;
+    quick.frequencyMin = 210;
+    quick.frequencyMax = 260;
     _profileNames[_profileCount] = _builtInProfiles[_profileCount].name;
     _profileCount++;
 }
@@ -277,7 +345,7 @@ bool ProfileManager::setParameter(const char* paramName, const char* value) {
     }
     else if (strcmp(paramUpper, "FINGERS") == 0) {
         int fingers = atoi(value);
-        if (fingers < 1 || fingers > 5) return false;
+        if (fingers < 1 || fingers > 4) return false;
         _currentProfile.numFingers = fingers;
     }
     else {

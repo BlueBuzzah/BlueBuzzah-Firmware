@@ -94,13 +94,8 @@ bool HapticController::initializeFinger(uint8_t finger) {
             continue;
         }
 
-        // Apply appropriate delay
-        // Channel 4 (pinky) requires longer delay due to I2C path length
-        if (finger == FINGER_PINKY) {
-            delay(I2C_INIT_DELAY_CH4_MS);
-        } else {
-            delay(I2C_INIT_DELAY_MS);
-        }
+        // Apply initialization delay for I2C stabilization
+        delay(I2C_INIT_DELAY_MS);
 
         // Configure for LRA + RTP mode
         configureDRV2605(_drv[finger]);

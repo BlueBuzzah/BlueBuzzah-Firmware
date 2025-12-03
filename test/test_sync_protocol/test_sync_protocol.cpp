@@ -666,38 +666,47 @@ void test_SimpleSyncProtocol_getRttSpread_zero_samples(void) {
 
 void test_SimpleSyncProtocol_handleProbeAck_correct_sequence(void) {
     SimpleSyncProtocol sync;
-    sync.startRttProbing();
+    sync.startRttProbing();  // Session ID becomes 1
 
     // Set up time for RTT calculation
     mockSetMicros(1000);  // Sent at 1000us
-    uint64_t sentTime = 1000;
+
+    // Use createProbe() to set up internal state (sets _pendingProbeT1 and _currentProbeSeq)
+    SyncCommand probe = sync.createProbe(0);
+    uint16_t sessionId = sync.getProbeSessionId();
 
     mockSetMicros(2000);  // Received at 2000us, RTT = 1000us
 
-    TEST_ASSERT_TRUE(sync.handleProbeAck(0, sentTime));
+    TEST_ASSERT_TRUE(sync.handleProbeAck(0, sessionId, probe.getTimestamp()));
     TEST_ASSERT_EQUAL_UINT8(1, sync.getRttSampleCount());
 }
 
 void test_SimpleSyncProtocol_handleProbeAck_wrong_sequence(void) {
     SimpleSyncProtocol sync;
-    sync.startRttProbing();
+    sync.startRttProbing();  // Session ID becomes 1
+
+    mockSetMicros(1000);
+    SyncCommand probe = sync.createProbe(0);  // Expecting seq 0
+    uint16_t sessionId = sync.getProbeSessionId();
 
     mockSetMicros(2000);
 
     // Send wrong sequence number (expected 0, sent 5)
-    TEST_ASSERT_FALSE(sync.handleProbeAck(5, 1000));
+    TEST_ASSERT_FALSE(sync.handleProbeAck(5, sessionId, 1000));
     TEST_ASSERT_EQUAL_UINT8(0, sync.getRttSampleCount());
 }
 
 void test_SimpleSyncProtocol_isProbingComplete_false_before_threshold(void) {
     SimpleSyncProtocol sync;
-    sync.startRttProbing();
+    sync.startRttProbing();  // Session ID becomes 1
+    uint16_t sessionId = sync.getProbeSessionId();
 
     // Add a few samples but less than SYNC_PROBE_COUNT
     for (int i = 0; i < 5; i++) {
-        mockSetMicros((i + 1) * 2000);
-        sync.handleProbeAck(i, i * 1000);
-        // Manually increment _currentProbeSeq for next iteration
+        mockSetMicros((i + 1) * 1000);
+        SyncCommand probe = sync.createProbe(i);  // Sets up state for probe i
+        mockSetMicros((i + 1) * 2000);  // Receive ACK later
+        sync.handleProbeAck(i, sessionId, probe.getTimestamp());
     }
 
     TEST_ASSERT_FALSE(sync.isProbingComplete());
@@ -705,45 +714,60 @@ void test_SimpleSyncProtocol_isProbingComplete_false_before_threshold(void) {
 
 void test_SimpleSyncProtocol_getMinRtt_with_samples(void) {
     SimpleSyncProtocol sync;
-    sync.startRttProbing();
+    sync.startRttProbing();  // Session ID becomes 1
+    uint16_t sessionId = sync.getProbeSessionId();
 
-    // Simulate 3 probe responses with different RTTs
-    // RTT1: 1000us, RTT2: 500us, RTT3: 1500us
-    mockSetMicros(1000);
-    sync.handleProbeAck(0, 0);  // RTT = 1000
+    // Simulate probe with RTT = 1000us
+    mockSetMicros(0);
+    SyncCommand probe = sync.createProbe(0);  // T1 = 0
+
+    mockSetMicros(1000);  // Receive at 1000us, RTT = 1000
+    sync.handleProbeAck(0, sessionId, probe.getTimestamp());
 
     TEST_ASSERT_EQUAL_UINT32(1000, sync.getMinRtt());
 }
 
 void test_SimpleSyncProtocol_getMaxRtt_with_samples(void) {
     SimpleSyncProtocol sync;
-    sync.startRttProbing();
+    sync.startRttProbing();  // Session ID becomes 1
+    uint16_t sessionId = sync.getProbeSessionId();
 
     // Single sample with RTT = 2000us
-    mockSetMicros(2000);
-    sync.handleProbeAck(0, 0);  // RTT = 2000
+    mockSetMicros(0);
+    SyncCommand probe = sync.createProbe(0);  // T1 = 0
+
+    mockSetMicros(2000);  // Receive at 2000us, RTT = 2000
+    sync.handleProbeAck(0, sessionId, probe.getTimestamp());
 
     TEST_ASSERT_EQUAL_UINT32(2000, sync.getMaxRtt());
 }
 
 void test_SimpleSyncProtocol_getRttSpread_with_samples(void) {
     SimpleSyncProtocol sync;
-    sync.startRttProbing();
+    sync.startRttProbing();  // Session ID becomes 1
+    uint16_t sessionId = sync.getProbeSessionId();
 
     // Single sample, spread = max - min = 0
+    mockSetMicros(0);
+    SyncCommand probe = sync.createProbe(0);  // T1 = 0
+
     mockSetMicros(2000);
-    sync.handleProbeAck(0, 0);
+    sync.handleProbeAck(0, sessionId, probe.getTimestamp());
 
     TEST_ASSERT_EQUAL_UINT32(0, sync.getRttSpread());
 }
 
 void test_SimpleSyncProtocol_finalizeSync_with_samples(void) {
     SimpleSyncProtocol sync;
-    sync.startRttProbing();
+    sync.startRttProbing();  // Session ID becomes 1
+    uint16_t sessionId = sync.getProbeSessionId();
 
     // Add one sample with RTT = 1000us
-    mockSetMicros(1000);
-    sync.handleProbeAck(0, 0);  // RTT = 1000, one-way = 500
+    mockSetMicros(0);
+    SyncCommand probe = sync.createProbe(0);  // T1 = 0
+
+    mockSetMicros(1000);  // Receive at 1000us, RTT = 1000, one-way = 500
+    sync.handleProbeAck(0, sessionId, probe.getTimestamp());
 
     sync.finalizeSync();
 
@@ -759,6 +783,86 @@ void test_SimpleSyncProtocol_finalizeSync_zero_samples(void) {
     sync.finalizeSync();
 
     TEST_ASSERT_FALSE(sync.isProbingInProgress());
+}
+
+void test_SimpleSyncProtocol_handleProbeAck_stale_session_rejected(void) {
+    SimpleSyncProtocol sync;
+
+    // Start first session (session ID becomes 1)
+    sync.startRttProbing();
+    uint16_t oldSessionId = sync.getProbeSessionId();
+
+    mockSetMicros(0);
+    SyncCommand probe1 = sync.createProbe(0);
+
+    // Start a NEW session (simulating connection restart)
+    sync.startRttProbing();  // Session ID becomes 2
+    uint16_t newSessionId = sync.getProbeSessionId();
+
+    TEST_ASSERT_NOT_EQUAL(oldSessionId, newSessionId);
+
+    mockSetMicros(0);
+    SyncCommand probe2 = sync.createProbe(0);
+
+    mockSetMicros(1000);
+
+    // Try to use the OLD session's ACK - should be rejected
+    TEST_ASSERT_FALSE(sync.handleProbeAck(0, oldSessionId, probe1.getTimestamp()));
+    TEST_ASSERT_EQUAL_UINT8(0, sync.getRttSampleCount());  // No sample recorded
+
+    // Using the CURRENT session should work
+    TEST_ASSERT_TRUE(sync.handleProbeAck(0, newSessionId, probe2.getTimestamp()));
+    TEST_ASSERT_EQUAL_UINT8(1, sync.getRttSampleCount());  // Sample recorded
+}
+
+void test_SimpleSyncProtocol_handleProbeAck_duplicate_rejected(void) {
+    SimpleSyncProtocol sync;
+    sync.startRttProbing();  // Session ID becomes 1
+    uint16_t sessionId = sync.getProbeSessionId();
+
+    mockSetMicros(0);
+    SyncCommand probe = sync.createProbe(0);
+
+    mockSetMicros(1000);
+
+    // First ACK should succeed
+    TEST_ASSERT_TRUE(sync.handleProbeAck(0, sessionId, probe.getTimestamp()));
+    TEST_ASSERT_EQUAL_UINT8(1, sync.getRttSampleCount());
+
+    // Duplicate ACK should be rejected
+    TEST_ASSERT_FALSE(sync.handleProbeAck(0, sessionId, probe.getTimestamp()));
+    TEST_ASSERT_EQUAL_UINT8(1, sync.getRttSampleCount());  // Still 1, not 2
+}
+
+void test_SimpleSyncProtocol_createProbe_includes_session_id(void) {
+    SimpleSyncProtocol sync;
+    sync.startRttProbing();  // Session ID becomes 1
+
+    mockSetMicros(5000);
+    SyncCommand probe = sync.createProbe(3);
+
+    // Verify probe contains session ID in data field "1"
+    TEST_ASSERT_EQUAL_INT32(sync.getProbeSessionId(), probe.getDataInt("1", 0));
+    // Verify probe contains sequence in data field "0"
+    TEST_ASSERT_EQUAL_INT32(3, probe.getDataInt("0", -1));
+    // Verify timestamp was set
+    TEST_ASSERT_EQUAL_UINT64(5000, probe.getTimestamp());
+}
+
+void test_SimpleSyncProtocol_session_id_increments(void) {
+    SimpleSyncProtocol sync;
+
+    sync.startRttProbing();
+    uint16_t session1 = sync.getProbeSessionId();
+
+    sync.startRttProbing();
+    uint16_t session2 = sync.getProbeSessionId();
+
+    sync.startRttProbing();
+    uint16_t session3 = sync.getProbeSessionId();
+
+    TEST_ASSERT_EQUAL(session1 + 1, session2);
+    TEST_ASSERT_EQUAL(session2 + 1, session3);
 }
 
 // =============================================================================
@@ -1023,6 +1127,12 @@ int main(int argc, char **argv) {
     RUN_TEST(test_SimpleSyncProtocol_getRttSpread_with_samples);
     RUN_TEST(test_SimpleSyncProtocol_finalizeSync_with_samples);
     RUN_TEST(test_SimpleSyncProtocol_finalizeSync_zero_samples);
+
+    // Session Isolation and Duplicate Detection Tests
+    RUN_TEST(test_SimpleSyncProtocol_handleProbeAck_stale_session_rejected);
+    RUN_TEST(test_SimpleSyncProtocol_handleProbeAck_duplicate_rejected);
+    RUN_TEST(test_SimpleSyncProtocol_createProbe_includes_session_id);
+    RUN_TEST(test_SimpleSyncProtocol_session_id_increments);
 
     // setData Edge Case Tests
     RUN_TEST(test_SyncCommand_setData_max_pairs_reached);

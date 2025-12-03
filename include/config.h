@@ -100,21 +100,20 @@
 // HAPTIC CONFIGURATION
 // =============================================================================
 
-#define MAX_ACTUATORS 5                 // Number of fingers (thumb through pinky)
+#define MAX_ACTUATORS 4                 // Number of fingers (index through pinky, no thumb per v1)
 #define MAX_AMPLITUDE 100               // Maximum amplitude percentage (0-100)
 #define DRV2605_MAX_RTP 127             // DRV2605 RTP register max value
 
 // LRA (Linear Resonant Actuator) parameters
 #define MIN_FREQUENCY_HZ 150            // Minimum LRA resonant frequency
-#define MAX_FREQUENCY_HZ 250            // Maximum LRA resonant frequency
-#define DEFAULT_FREQUENCY_HZ 175        // Default/standard LRA frequency
+#define MAX_FREQUENCY_HZ 260            // Maximum LRA resonant frequency (v1 Custom vCR upper bound)
+#define DEFAULT_FREQUENCY_HZ 250        // Default/standard LRA frequency (v1 reference: 250Hz)
 
-// Finger indices
-#define FINGER_THUMB 0
-#define FINGER_INDEX 1
-#define FINGER_MIDDLE 2
-#define FINGER_RING 3
-#define FINGER_PINKY 4
+// Finger indices (4 fingers per hand, matching v1 original - no thumb)
+#define FINGER_INDEX 0
+#define FINGER_MIDDLE 1
+#define FINGER_RING 2
+#define FINGER_PINKY 3
 
 // =============================================================================
 // LED COLORS (RGB values)

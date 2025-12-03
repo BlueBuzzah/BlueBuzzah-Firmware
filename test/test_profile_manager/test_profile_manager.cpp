@@ -94,52 +94,66 @@ void test_ProfileManager_constructor_defaults(void) {
 }
 
 void test_ProfileManager_begin_initializes_profiles(void) {
-    TEST_ASSERT_EQUAL_UINT8(4, profiles->getProfileCount());
+    TEST_ASSERT_EQUAL_UINT8(6, profiles->getProfileCount());
 }
 
 void test_ProfileManager_getProfileNames_returns_valid_pointers(void) {
     uint8_t count = 0;
     const char** names = profiles->getProfileNames(&count);
 
-    TEST_ASSERT_EQUAL_UINT8(4, count);
+    TEST_ASSERT_EQUAL_UINT8(6, count);
     TEST_ASSERT_NOT_NULL(names);
     TEST_ASSERT_NOT_NULL(names[0]);
     TEST_ASSERT_NOT_NULL(names[1]);
     TEST_ASSERT_NOT_NULL(names[2]);
     TEST_ASSERT_NOT_NULL(names[3]);
+    TEST_ASSERT_NOT_NULL(names[4]);
+    TEST_ASSERT_NOT_NULL(names[5]);
 }
 
 void test_ProfileManager_getProfileNames_returns_correct_names(void) {
     uint8_t count = 0;
     const char** names = profiles->getProfileNames(&count);
 
-    TEST_ASSERT_EQUAL_STRING("noisy_vcr", names[0]);
-    TEST_ASSERT_EQUAL_STRING("standard_vcr", names[1]);
-    TEST_ASSERT_EQUAL_STRING("gentle", names[2]);
-    TEST_ASSERT_EQUAL_STRING("quick_test", names[3]);
+    TEST_ASSERT_EQUAL_STRING("regular_vcr", names[0]);
+    TEST_ASSERT_EQUAL_STRING("noisy_vcr", names[1]);
+    TEST_ASSERT_EQUAL_STRING("hybrid_vcr", names[2]);
+    TEST_ASSERT_EQUAL_STRING("custom_vcr", names[3]);
+    TEST_ASSERT_EQUAL_STRING("gentle", names[4]);
+    TEST_ASSERT_EQUAL_STRING("quick_test", names[5]);
 }
 
 // =============================================================================
 // LOAD PROFILE BY ID TESTS
 // =============================================================================
 
-void test_loadProfile_valid_id_1_loads_noisy_vcr(void) {
+void test_loadProfile_valid_id_1_loads_regular_vcr(void) {
     TEST_ASSERT_TRUE(profiles->loadProfile(1));
+    TEST_ASSERT_EQUAL_STRING("regular_vcr", profiles->getCurrentProfileName());
+}
+
+void test_loadProfile_valid_id_2_loads_noisy_vcr(void) {
+    TEST_ASSERT_TRUE(profiles->loadProfile(2));
     TEST_ASSERT_EQUAL_STRING("noisy_vcr", profiles->getCurrentProfileName());
 }
 
-void test_loadProfile_valid_id_2_loads_standard_vcr(void) {
-    TEST_ASSERT_TRUE(profiles->loadProfile(2));
-    TEST_ASSERT_EQUAL_STRING("standard_vcr", profiles->getCurrentProfileName());
+void test_loadProfile_valid_id_3_loads_hybrid_vcr(void) {
+    TEST_ASSERT_TRUE(profiles->loadProfile(3));
+    TEST_ASSERT_EQUAL_STRING("hybrid_vcr", profiles->getCurrentProfileName());
 }
 
-void test_loadProfile_valid_id_3_loads_gentle(void) {
-    TEST_ASSERT_TRUE(profiles->loadProfile(3));
+void test_loadProfile_valid_id_4_loads_custom_vcr(void) {
+    TEST_ASSERT_TRUE(profiles->loadProfile(4));
+    TEST_ASSERT_EQUAL_STRING("custom_vcr", profiles->getCurrentProfileName());
+}
+
+void test_loadProfile_valid_id_5_loads_gentle(void) {
+    TEST_ASSERT_TRUE(profiles->loadProfile(5));
     TEST_ASSERT_EQUAL_STRING("gentle", profiles->getCurrentProfileName());
 }
 
-void test_loadProfile_valid_id_4_loads_quick_test(void) {
-    TEST_ASSERT_TRUE(profiles->loadProfile(4));
+void test_loadProfile_valid_id_6_loads_quick_test(void) {
+    TEST_ASSERT_TRUE(profiles->loadProfile(6));
     TEST_ASSERT_EQUAL_STRING("quick_test", profiles->getCurrentProfileName());
 }
 
@@ -147,8 +161,8 @@ void test_loadProfile_invalid_id_0_returns_false(void) {
     TEST_ASSERT_FALSE(profiles->loadProfile(0));
 }
 
-void test_loadProfile_invalid_id_5_returns_false(void) {
-    TEST_ASSERT_FALSE(profiles->loadProfile(5));
+void test_loadProfile_invalid_id_7_returns_false(void) {
+    TEST_ASSERT_FALSE(profiles->loadProfile(7));
 }
 
 void test_loadProfile_invalid_id_255_returns_false(void) {
@@ -200,27 +214,27 @@ void test_getCurrentProfile_returns_profile_after_load(void) {
     const TherapyProfile* profile = profiles->getCurrentProfile();
 
     TEST_ASSERT_NOT_NULL(profile);
-    TEST_ASSERT_EQUAL_STRING("noisy_vcr", profile->name);
+    TEST_ASSERT_EQUAL_STRING("regular_vcr", profile->name);
     TEST_ASSERT_EQUAL(ActuatorType::LRA, profile->actuatorType);
-    TEST_ASSERT_EQUAL_UINT16(175, profile->frequencyHz);
+    TEST_ASSERT_EQUAL_UINT16(250, profile->frequencyHz);
 }
 
 void test_getCurrentProfile_noisy_vcr_has_correct_defaults(void) {
-    profiles->loadProfile(1);
+    profiles->loadProfile(2);  // noisy_vcr is now profile 2
     const TherapyProfile* p = profiles->getCurrentProfile();
 
     TEST_ASSERT_FLOAT_WITHIN(0.1f, 100.0f, p->timeOnMs);
     TEST_ASSERT_FLOAT_WITHIN(0.1f, 67.0f, p->timeOffMs);
     TEST_ASSERT_FLOAT_WITHIN(0.1f, 23.5f, p->jitterPercent);
-    TEST_ASSERT_EQUAL_UINT8(50, p->amplitudeMin);
+    TEST_ASSERT_EQUAL_UINT8(100, p->amplitudeMin);
     TEST_ASSERT_EQUAL_UINT8(100, p->amplitudeMax);
     TEST_ASSERT_EQUAL_UINT16(120, p->sessionDurationMin);
     TEST_ASSERT_TRUE(p->mirrorPattern);
-    TEST_ASSERT_EQUAL_UINT8(5, p->numFingers);
+    TEST_ASSERT_EQUAL_UINT8(4, p->numFingers);
 }
 
 void test_getCurrentProfile_gentle_has_correct_values(void) {
-    profiles->loadProfile(3);
+    profiles->loadProfile(5);  // gentle is now profile 5
     const TherapyProfile* p = profiles->getCurrentProfile();
 
     TEST_ASSERT_EQUAL_STRING("gentle", p->name);
@@ -233,7 +247,7 @@ void test_getCurrentProfile_gentle_has_correct_values(void) {
 }
 
 void test_getCurrentProfile_quick_test_has_5_minute_duration(void) {
-    profiles->loadProfile(4);
+    profiles->loadProfile(6);  // quick_test is now profile 6
     const TherapyProfile* p = profiles->getCurrentProfile();
 
     TEST_ASSERT_EQUAL_STRING("quick_test", p->name);
@@ -492,9 +506,9 @@ void test_setParameter_FINGERS_invalid_zero(void) {
     TEST_ASSERT_FALSE(profiles->setParameter("FINGERS", "0"));
 }
 
-void test_setParameter_FINGERS_invalid_above_5(void) {
+void test_setParameter_FINGERS_invalid_above_4(void) {
     profiles->loadProfile(1);
-    TEST_ASSERT_FALSE(profiles->setParameter("FINGERS", "6"));
+    TEST_ASSERT_FALSE(profiles->setParameter("FINGERS", "5"));
 }
 
 // =============================================================================
@@ -614,12 +628,12 @@ void test_setParameter_FINGERS_1_is_valid(void) {
     TEST_ASSERT_EQUAL_UINT8(1, p->numFingers);
 }
 
-void test_setParameter_FINGERS_5_is_valid(void) {
+void test_setParameter_FINGERS_4_is_valid(void) {
     profiles->loadProfile(1);
-    TEST_ASSERT_TRUE(profiles->setParameter("FINGERS", "5"));
+    TEST_ASSERT_TRUE(profiles->setParameter("FINGERS", "4"));
 
     const TherapyProfile* p = profiles->getCurrentProfile();
-    TEST_ASSERT_EQUAL_UINT8(5, p->numFingers);
+    TEST_ASSERT_EQUAL_UINT8(4, p->numFingers);
 }
 
 // =============================================================================
@@ -627,7 +641,7 @@ void test_setParameter_FINGERS_5_is_valid(void) {
 // =============================================================================
 
 void test_resetToDefaults_restores_builtin_values(void) {
-    profiles->loadProfile(1);
+    profiles->loadProfile(1);  // regular_vcr
 
     // Modify some parameters
     profiles->setParameter("FREQ", "200");
@@ -638,8 +652,8 @@ void test_resetToDefaults_restores_builtin_values(void) {
 
     // Verify original values restored
     const TherapyProfile* p = profiles->getCurrentProfile();
-    TEST_ASSERT_EQUAL_UINT16(175, p->frequencyHz);
-    TEST_ASSERT_FLOAT_WITHIN(0.1f, 23.5f, p->jitterPercent);
+    TEST_ASSERT_EQUAL_UINT16(250, p->frequencyHz);
+    TEST_ASSERT_FLOAT_WITHIN(0.1f, 0.0f, p->jitterPercent);  // regular_vcr has 0% jitter
 }
 
 // =============================================================================
@@ -693,12 +707,14 @@ int main(int argc, char **argv) {
     RUN_TEST(test_ProfileManager_getProfileNames_returns_correct_names);
 
     // Load Profile by ID Tests
-    RUN_TEST(test_loadProfile_valid_id_1_loads_noisy_vcr);
-    RUN_TEST(test_loadProfile_valid_id_2_loads_standard_vcr);
-    RUN_TEST(test_loadProfile_valid_id_3_loads_gentle);
-    RUN_TEST(test_loadProfile_valid_id_4_loads_quick_test);
+    RUN_TEST(test_loadProfile_valid_id_1_loads_regular_vcr);
+    RUN_TEST(test_loadProfile_valid_id_2_loads_noisy_vcr);
+    RUN_TEST(test_loadProfile_valid_id_3_loads_hybrid_vcr);
+    RUN_TEST(test_loadProfile_valid_id_4_loads_custom_vcr);
+    RUN_TEST(test_loadProfile_valid_id_5_loads_gentle);
+    RUN_TEST(test_loadProfile_valid_id_6_loads_quick_test);
     RUN_TEST(test_loadProfile_invalid_id_0_returns_false);
-    RUN_TEST(test_loadProfile_invalid_id_5_returns_false);
+    RUN_TEST(test_loadProfile_invalid_id_7_returns_false);
     RUN_TEST(test_loadProfile_invalid_id_255_returns_false);
 
     // Load Profile by Name Tests
@@ -762,7 +778,7 @@ int main(int argc, char **argv) {
     RUN_TEST(test_setParameter_MIRROR_disable);
     RUN_TEST(test_setParameter_FINGERS_valid);
     RUN_TEST(test_setParameter_FINGERS_invalid_zero);
-    RUN_TEST(test_setParameter_FINGERS_invalid_above_5);
+    RUN_TEST(test_setParameter_FINGERS_invalid_above_4);
 
     // Set Parameter Tests - Error Cases
     RUN_TEST(test_setParameter_unknown_param_returns_false);
@@ -783,7 +799,7 @@ int main(int argc, char **argv) {
     RUN_TEST(test_setParameter_OFF_10_is_valid);
     RUN_TEST(test_setParameter_OFF_1000_is_valid);
     RUN_TEST(test_setParameter_FINGERS_1_is_valid);
-    RUN_TEST(test_setParameter_FINGERS_5_is_valid);
+    RUN_TEST(test_setParameter_FINGERS_4_is_valid);
 
     // Reset to Defaults Tests
     RUN_TEST(test_resetToDefaults_restores_builtin_values);

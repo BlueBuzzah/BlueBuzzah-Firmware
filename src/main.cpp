@@ -88,8 +88,8 @@ uint64_t rttProbeSentTime = 0;            // Timestamp when current probe was se
 uint8_t rttProbeRetryCount = 0;           // Retry counter for current probe
 #define RTT_PROBE_MAX_RETRIES 3           // Max retries per probe before skipping
 
-// Finger names for display
-const char *FINGER_NAMES[] = {"Thumb", "Index", "Middle", "Ring", "Pinky"};
+// Finger names for display (4 fingers per hand - index through pinky, no thumb per v1)
+const char *FINGER_NAMES[] = {"Index", "Middle", "Ring", "Pinky"};
 
 // =============================================================================
 // FUNCTION DECLARATIONS
@@ -294,7 +294,7 @@ void setup()
 
     // Initialize Menu Controller
     Serial.println(F("\n--- Menu Controller Initialization ---"));
-    menu.begin(&therapy, &battery, &haptic, &stateMachine, &profiles);
+    menu.begin(&therapy, &battery, &haptic, &stateMachine, &profiles, &ble);
     menu.setDeviceInfo(deviceRole, FIRMWARE_VERSION, BLE_NAME);
     menu.setSendCallback(onMenuSendResponse);
     Serial.println(F("[SUCCESS] Menu controller initialized"));
@@ -776,12 +776,12 @@ void onBLEConnect(uint16_t connHandle, ConnectionType type)
         }
     }
 
-    // Quick haptic feedback on thumb
-    if (haptic.isEnabled(FINGER_THUMB))
+    // Quick haptic feedback on index finger
+    if (haptic.isEnabled(FINGER_INDEX))
     {
-        haptic.activate(FINGER_THUMB, 30);
+        haptic.activate(FINGER_INDEX, 30);
         delay(50);
-        haptic.deactivate(FINGER_THUMB);
+        haptic.deactivate(FINGER_INDEX);
     }
 }
 
@@ -817,16 +817,16 @@ void onBLEDisconnect(uint16_t connHandle, ConnectionType type, uint8_t reason)
         stateMachine.transition(StateTrigger::PHONE_LOST);
     }
 
-    // Double haptic pulse on thumb
-    if (haptic.isEnabled(FINGER_THUMB))
+    // Double haptic pulse on index finger
+    if (haptic.isEnabled(FINGER_INDEX))
     {
-        haptic.activate(FINGER_THUMB, 50);
+        haptic.activate(FINGER_INDEX, 50);
         delay(50);
-        haptic.deactivate(FINGER_THUMB);
+        haptic.deactivate(FINGER_INDEX);
         delay(100);
-        haptic.activate(FINGER_THUMB, 50);
+        haptic.activate(FINGER_INDEX, 50);
         delay(50);
-        haptic.deactivate(FINGER_THUMB);
+        haptic.deactivate(FINGER_INDEX);
     }
 }
 
@@ -1062,14 +1062,16 @@ void onBLEMessage(uint16_t connHandle, const char *message)
             if (deviceRole == DeviceRole::SECONDARY)
             {
                 uint8_t seq = (uint8_t)cmd.getDataInt("0", 0);
+                uint16_t sessionId = (uint16_t)cmd.getDataInt("1", 0);
                 uint64_t t1 = cmd.getTimestamp();
 
-                Serial.printf("[SYNC] SYNC_PROBE %u received, echoing ACK\n", seq);
+                Serial.printf("[SYNC] SYNC_PROBE %u (session %u) received, echoing ACK\n", seq, sessionId);
 
-                // Immediately echo back with original timestamp
+                // Immediately echo back with original timestamp and session ID
                 SyncCommand ack(SyncCommandType::SYNC_PROBE_ACK, cmd.getSequenceId());
                 ack.setTimestamp(t1);  // Echo original T1
                 ack.setData("0", (int32_t)seq);
+                ack.setData("1", (int32_t)sessionId);  // Echo session ID for validation
 
                 char buffer[128];
                 if (ack.serialize(buffer, sizeof(buffer)))
@@ -1086,20 +1088,22 @@ void onBLEMessage(uint16_t connHandle, const char *message)
             if (deviceRole == DeviceRole::PRIMARY)
             {
                 uint8_t seq = (uint8_t)cmd.getDataInt("0", 0);
+                uint16_t sessionId = (uint16_t)cmd.getDataInt("1", 0);
                 uint64_t originalT1 = cmd.getTimestamp();
 
-                // Calculate RTT and record sample
+                // Calculate RTT for logging (actual RTT calc is in handleProbeAck)
                 uint64_t now = getMicros();
                 uint32_t rtt = (uint32_t)(now - originalT1);
 
-                if (syncProtocol.handleProbeAck(seq, originalT1))
+                // Validate session ID, sequence, and process the ACK
+                if (syncProtocol.handleProbeAck(seq, sessionId, originalT1))
                 {
                     // Reset retry counter on successful ACK
                     rttProbeRetryCount = 0;
 
                     // Record probe RTT for latency metrics
                     latencyMetrics.recordSyncProbe(rtt);
-                    Serial.printf("[SYNC] Probe %u RTT: %lu us\n", seq, (unsigned long)rtt);
+                    Serial.printf("[SYNC] Probe %u RTT: %lu us (session %u)\n", seq, (unsigned long)rtt, sessionId);
 
                     // Check if more probes needed
                     if (seq + 1 < SYNC_PROBE_COUNT)
@@ -1341,7 +1345,7 @@ void autoStartTherapy()
             1500,              // 1500ms on time
             5000,              // 5000ms off time
             20.0f,             // 20% jitter
-            5,                 // All 5 fingers
+            4,                 // All 4 fingers (index, middle, ring, pinky)
             true,              // Mirror pattern
             50,                // Amplitude min (default)
             100                // Amplitude max (default)
@@ -1397,12 +1401,8 @@ void startRttProbing()
 
 void sendRttProbe(uint8_t seq)
 {
-    uint64_t t1 = getMicros();
-    rttProbeSentTime = t1;
-
-    SyncCommand probe(SyncCommandType::SYNC_PROBE, g_sequenceGenerator.next());
-    probe.setTimestamp(t1);
-    probe.setData("0", (int32_t)seq);
+    // Use createProbe() to centralize state management and include session ID
+    SyncCommand probe = syncProtocol.createProbe(seq);
 
     char buffer[128];
     if (probe.serialize(buffer, sizeof(buffer)))
@@ -1621,31 +1621,40 @@ void handleSerialCommand(const char *command)
         const char *internalName = nullptr;
 
         // Map user-friendly names to internal profile names
-        if (strcasecmp(profileStr, "NOISY") == 0)
+        if (strcasecmp(profileStr, "REGULAR") == 0)
+        {
+            internalName = "regular_vcr";
+        }
+        else if (strcasecmp(profileStr, "NOISY") == 0)
         {
             internalName = "noisy_vcr";
         }
-        else if (strcasecmp(profileStr, "STANDARD") == 0)
+        else if (strcasecmp(profileStr, "HYBRID") == 0)
         {
-            internalName = "standard_vcr";
+            internalName = "hybrid_vcr";
         }
         else if (strcasecmp(profileStr, "GENTLE") == 0)
         {
             internalName = "gentle";
         }
-        else if (strcasecmp(profileStr, "QUICK_TEST") == 0)
-        {
-            internalName = "quick_test";
-        }
 
         if (internalName && profiles.loadProfileByName(internalName))
         {
             profiles.saveSettings();
-            Serial.printf("[CONFIG] Profile set to %s\n", profileStr);
+
+            // Stop any active therapy session before rebooting
+            therapy.stop();
+            haptic.emergencyStop();
+            stateMachine.transition(StateTrigger::STOP_SESSION);
+
+            Serial.printf("[CONFIG] Profile set to %s - restarting...\n", profileStr);
+            Serial.flush();
+            delay(100);
+            NVIC_SystemReset();
         }
         else
         {
-            Serial.println(F("[ERROR] Invalid profile. Use: SET_PROFILE:NOISY, STANDARD, GENTLE, or QUICK_TEST"));
+            Serial.println(F("[ERROR] Invalid profile. Use: SET_PROFILE:REGULAR, NOISY, HYBRID, or GENTLE"));
         }
         return;
     }
@@ -1656,14 +1665,14 @@ void handleSerialCommand(const char *command)
         const char *name = profiles.getCurrentProfileName();
         // Map internal name back to user-friendly name for output
         const char *displayName = name;
-        if (strcasecmp(name, "noisy_vcr") == 0)
+        if (strcasecmp(name, "regular_vcr") == 0)
+            displayName = "REGULAR";
+        else if (strcasecmp(name, "noisy_vcr") == 0)
             displayName = "NOISY";
-        else if (strcasecmp(name, "standard_vcr") == 0)
-            displayName = "STANDARD";
+        else if (strcasecmp(name, "hybrid_vcr") == 0)
+            displayName = "HYBRID";
         else if (strcasecmp(name, "gentle") == 0)
             displayName = "GENTLE";
-        else if (strcasecmp(name, "quick_test") == 0)
-            displayName = "QUICK_TEST";
 
         Serial.printf("PROFILE:%s\n", displayName);
         return;

@@ -379,9 +379,12 @@ SimpleSyncProtocol::SimpleSyncProtocol() :
     _rttSampleCount(0),
     _currentProbeSeq(0),
     _probeSentTime(0),
-    _probingInProgress(false)
+    _probingInProgress(false),
+    _probeSessionId(0),
+    _pendingProbeT1(0)
 {
     memset(_rttSamples, 0, sizeof(_rttSamples));
+    memset(_probeAckReceived, false, sizeof(_probeAckReceived));
 }
 
 int64_t SimpleSyncProtocol::calculateOffset(uint64_t primaryTime, uint64_t secondaryTime) {
@@ -482,28 +485,65 @@ bool SimpleSyncProtocol::waitUntil(uint64_t scheduledTime, uint32_t maxWaitUs) c
 // =============================================================================
 
 bool SimpleSyncProtocol::startRttProbing() {
+    // Increment session ID to invalidate any stale ACKs from previous sessions
+    _probeSessionId++;
+
     // Reset RTT probing state
     _rttSampleCount = 0;
     _currentProbeSeq = 0;
     _probeSentTime = 0;
+    _pendingProbeT1 = 0;
     _probingInProgress = true;
     memset(_rttSamples, 0, sizeof(_rttSamples));
+    memset(_probeAckReceived, false, sizeof(_probeAckReceived));
 
-    Serial.println(F("[SYNC] RTT probing started"));
+    Serial.printf("[SYNC] RTT probing started (session %u)\n", _probeSessionId);
     return true;
 }
 
-bool SimpleSyncProtocol::handleProbeAck(uint8_t seq, uint64_t originalT1) {
-    // Verify sequence number matches expected
+SyncCommand SimpleSyncProtocol::createProbe(uint8_t seq) {
+    // Update internal state for this probe
+    _currentProbeSeq = seq;
+    _pendingProbeT1 = getMicros();
+
+    // Create the probe command
+    SyncCommand probe(SyncCommandType::SYNC_PROBE, g_sequenceGenerator.next());
+    probe.setTimestamp(_pendingProbeT1);
+    probe.setData("0", (int32_t)seq);            // Probe sequence
+    probe.setData("1", (int32_t)_probeSessionId); // Session ID for isolation
+
+    return probe;
+}
+
+bool SimpleSyncProtocol::handleProbeAck(uint8_t seq, uint16_t sessionId, uint64_t originalT1) {
+    // Layer 1: Validate session ID (rejects stale ACKs from previous sessions)
+    if (sessionId != _probeSessionId) {
+        Serial.printf("[SYNC] Stale ACK rejected: session %u != current %u\n",
+                      sessionId, _probeSessionId);
+        return false;
+    }
+
+    // Layer 2: Validate sequence number matches expected
     if (seq != _currentProbeSeq) {
         Serial.printf("[SYNC] Probe ACK seq mismatch: expected %u, got %u\n",
                       _currentProbeSeq, seq);
         return false;
     }
 
-    // Calculate RTT
+    // Layer 3: Check for duplicate ACKs (handles BLE retransmits)
+    if (seq < SYNC_PROBE_COUNT && _probeAckReceived[seq]) {
+        Serial.printf("[SYNC] Duplicate ACK ignored: probe %u\n", seq);
+        return false;
+    }
+
+    // Mark this probe as acknowledged
+    if (seq < SYNC_PROBE_COUNT) {
+        _probeAckReceived[seq] = true;
+    }
+
+    // Calculate RTT using our stored T1 (not the echoed one, for extra safety)
     uint64_t now = getMicros();
-    uint32_t rtt = (uint32_t)(now - originalT1);
+    uint32_t rtt = (uint32_t)(now - _pendingProbeT1);
 
     // Store RTT sample
     if (_rttSampleCount < SYNC_PROBE_COUNT) {
