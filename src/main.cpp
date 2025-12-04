@@ -1206,13 +1206,6 @@ void onDeactivate(uint8_t finger)
 void onCycleComplete(uint32_t cycleCount)
 {
     Serial.printf("[THERAPY] Cycle %lu complete\n", cycleCount);
-
-    // Brief purple flash for cycle completion (temporary override, returns to current pattern)
-    RGBColor savedColor = led.getColor();
-    LEDPattern savedPattern = led.getPattern();
-    led.setColor(Colors::PURPLE);
-    delay(50);
-    led.setPattern(savedColor, savedPattern);
 }
 
 // =============================================================================
@@ -1264,6 +1257,17 @@ void startTherapyTest()
 
     // Update state machine
     stateMachine.transition(StateTrigger::START_SESSION);
+
+    // Notify SECONDARY of session start (enables pulsing LED on SECONDARY)
+    if (deviceRole == DeviceRole::PRIMARY && ble.isSecondaryConnected())
+    {
+        SyncCommand cmd = SyncCommand::createStartSession(g_sequenceGenerator.next());
+        char buffer[64];
+        if (cmd.serialize(buffer, sizeof(buffer)))
+        {
+            ble.sendToSecondary(buffer);
+        }
+    }
 
     // Start 5-minute test using profile settings (send STOP to end early)
     therapy.startSession(
@@ -1339,6 +1343,18 @@ void autoStartTherapy()
         Serial.println(F("+============================================================+\n"));
 
         stateMachine.transition(StateTrigger::START_SESSION);
+
+        // Notify SECONDARY of session start (enables pulsing LED on SECONDARY)
+        if (ble.isSecondaryConnected())
+        {
+            SyncCommand cmd = SyncCommand::createStartSession(g_sequenceGenerator.next());
+            char buffer[64];
+            if (cmd.serialize(buffer, sizeof(buffer)))
+            {
+                ble.sendToSecondary(buffer);
+            }
+        }
+
         therapy.startSession(
             1800,              // 30 minutes (1800 seconds)
             PATTERN_TYPE_RNDP, // Random pattern
@@ -1373,6 +1389,17 @@ void autoStartTherapy()
 
     // Update state machine
     stateMachine.transition(StateTrigger::START_SESSION);
+
+    // Notify SECONDARY of session start (enables pulsing LED on SECONDARY)
+    if (ble.isSecondaryConnected())
+    {
+        SyncCommand cmd = SyncCommand::createStartSession(g_sequenceGenerator.next());
+        char buffer[64];
+        if (cmd.serialize(buffer, sizeof(buffer)))
+        {
+            ble.sendToSecondary(buffer);
+        }
+    }
 
     // Start 30-minute session using profile settings
     therapy.startSession(
