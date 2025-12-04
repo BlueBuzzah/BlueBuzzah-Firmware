@@ -26,11 +26,20 @@
 /**
  * @brief State machine for buzz execution flow control
  *
- * v1 timing model:
- *   IDLE → Send BUZZ, activate motor → ACTIVE
- *   ACTIVE → Wait TIME_ON (100ms) → deactivate motor → WAITING_OFF
- *   WAITING_OFF → Wait TIME_OFF + jitter (67ms ± jitter) → IDLE (next finger)
- *   After all fingers: WAITING_RELAX → Wait TIME_RELAX (668ms) → IDLE (new pattern)
+ * v1 macrocycle timing model:
+ *   A macrocycle consists of 3 patterns followed by double TIME_RELAX:
+ *
+ *   [Pattern 1] -> [Pattern 2] -> [Pattern 3] -> [Relax] -> [Relax]
+ *      668ms        668ms         668ms       668ms     668ms   = 3340ms
+ *
+ *   Within each pattern (4 fingers):
+ *     IDLE -> Send BUZZ, activate motor -> ACTIVE
+ *     ACTIVE -> Wait TIME_ON (100ms) -> deactivate motor -> WAITING_OFF
+ *     WAITING_OFF -> Wait TIME_OFF + jitter (67ms +/- jitter) -> IDLE (next finger)
+ *
+ *   After pattern completes:
+ *     If patterns < 3: -> generate new pattern -> IDLE (NO relaxation)
+ *     If patterns == 3: -> WAITING_RELAX -> Wait 2x TIME_RELAX (1336ms) -> IDLE (new macrocycle)
  */
 enum class BuzzFlowState : uint8_t {
     IDLE = 0,           // Ready to send next BUZZ
@@ -185,7 +194,7 @@ Pattern generateMirroredPattern(
 // =============================================================================
 
 // Callback for sending sync commands to SECONDARY
-typedef void (*SendCommandCallback)(const char* commandType, uint8_t leftFinger, uint8_t rightFinger, uint8_t amplitude, uint32_t seq);
+typedef void (*SendCommandCallback)(const char* commandType, uint8_t leftFinger, uint8_t rightFinger, uint8_t amplitude, uint32_t durationMs, uint32_t seq);
 
 // Callback for activating haptic motor
 typedef void (*ActivateCallback)(uint8_t finger, uint8_t amplitude);
@@ -199,6 +208,10 @@ typedef void (*CycleCompleteCallback)(uint32_t cycleCount);
 // Callback for setting motor frequency (for Custom vCR frequency randomization)
 // Called at start of each pattern cycle when frequencyRandomization is enabled
 typedef void (*SetFrequencyCallback)(uint8_t finger, uint16_t frequencyHz);
+
+// Callback for macrocycle start (for PING/PONG latency measurement)
+// Called at the start of each macrocycle before the first pattern
+typedef void (*MacrocycleStartCallback)(uint32_t macrocycleCount);
 
 // =============================================================================
 // THERAPY ENGINE CLASS
@@ -250,6 +263,11 @@ public:
      * @brief Set callback for frequency changes (Custom vCR frequency randomization)
      */
     void setSetFrequencyCallback(SetFrequencyCallback callback);
+
+    /**
+     * @brief Set callback for macrocycle start (PING/PONG latency measurement)
+     */
+    void setMacrocycleStartCallback(MacrocycleStartCallback callback);
 
     /**
      * @brief Enable/disable frequency randomization (Custom vCR feature)
@@ -381,6 +399,10 @@ private:
     uint32_t _cyclesCompleted;
     uint32_t _totalActivations;
 
+    // Macrocycle tracking (v1 parity: 3 patterns per macrocycle)
+    uint8_t _patternsInMacrocycle;      // Count of patterns executed in current macrocycle (0-2)
+    static const uint8_t PATTERNS_PER_MACROCYCLE = 3;  // v1: 3 patterns per macrocycle
+
     // Sequence tracking
     uint32_t _buzzSequenceId;
 
@@ -394,6 +416,7 @@ private:
     DeactivateCallback _deactivateCallback;
     CycleCompleteCallback _cycleCompleteCallback;
     SetFrequencyCallback _setFrequencyCallback;
+    MacrocycleStartCallback _macrocycleStartCallback;
 
     // Internal methods
     void generateNextPattern();

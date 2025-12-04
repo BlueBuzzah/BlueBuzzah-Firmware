@@ -324,11 +324,12 @@ void test_SyncCommand_createStopSession(void) {
 }
 
 void test_SyncCommand_createBuzz(void) {
-    SyncCommand cmd = SyncCommand::createBuzz(30, 2, 75);
+    SyncCommand cmd = SyncCommand::createBuzz(30, 2, 75, 100);  // finger 2, amplitude 75, duration 100ms
     TEST_ASSERT_EQUAL(SyncCommandType::BUZZ, cmd.getType());
     TEST_ASSERT_EQUAL_UINT32(30, cmd.getSequenceId());
-    TEST_ASSERT_EQUAL_INT32(2, cmd.getDataInt("0", -1));
-    TEST_ASSERT_EQUAL_INT32(75, cmd.getDataInt("1", -1));
+    TEST_ASSERT_EQUAL_INT32(2, cmd.getDataInt("0", -1));    // finger
+    TEST_ASSERT_EQUAL_INT32(75, cmd.getDataInt("1", -1));   // amplitude
+    TEST_ASSERT_EQUAL_INT32(100, cmd.getDataInt("2", -1));  // duration
 }
 
 void test_SyncCommand_createDeactivate(void) {
@@ -443,178 +444,63 @@ void test_SimpleSyncProtocol_reset(void) {
     TEST_ASSERT_EQUAL_INT64(0, sync.getOffset());
 }
 
-void test_SimpleSyncProtocol_calculateRoundTrip(void) {
+// =============================================================================
+// PING/PONG LATENCY MEASUREMENT TESTS
+// =============================================================================
+
+void test_SimpleSyncProtocol_getMeasuredLatency_initial_zero(void) {
     SimpleSyncProtocol sync;
-    mockSetMillis(200);
+    TEST_ASSERT_EQUAL_UINT32(0, sync.getMeasuredLatency());
+}
 
-    // Sent: 1000000, Received: 1010000 (RTT = 10000 us)
-    // Remote time: 1005000 (captured midway)
-    // One-way latency = 10000 / 2 = 5000
-    uint32_t latency = sync.calculateRoundTrip(1000000, 1010000, 1005000);
+void test_SimpleSyncProtocol_updateLatency(void) {
+    SimpleSyncProtocol sync;
 
-    TEST_ASSERT_EQUAL_UINT32(5000, latency);
-    TEST_ASSERT_TRUE(sync.isSynced());
+    // RTT = 20000us, one-way = 10000us
+    sync.updateLatency(20000);
+    TEST_ASSERT_EQUAL_UINT32(10000, sync.getMeasuredLatency());
+}
+
+void test_SimpleSyncProtocol_updateLatency_multiple(void) {
+    SimpleSyncProtocol sync;
+
+    // First measurement: RTT = 30000us
+    sync.updateLatency(30000);
+    TEST_ASSERT_EQUAL_UINT32(15000, sync.getMeasuredLatency());
+
+    // Second measurement: RTT = 20000us (lower, better)
+    sync.updateLatency(20000);
+    TEST_ASSERT_EQUAL_UINT32(10000, sync.getMeasuredLatency());
 }
 
 // =============================================================================
-// SCHEDULED EXECUTION TESTS
+// CREATEBUZZ WITH DURATION TESTS
 // =============================================================================
 
-void test_SimpleSyncProtocol_scheduleExecution(void) {
-    SimpleSyncProtocol sync;
-    mockSetMillis(100);  // Current time: 100ms = 100000us
-
-    // Schedule 50ms in the future
-    uint64_t scheduled = sync.scheduleExecution(50);
-
-    // Should be current time + 50ms = 100000 + 50000 = 150000
-    TEST_ASSERT_EQUAL_UINT64(150000, scheduled);
-}
-
-void test_SimpleSyncProtocol_scheduleExecution_custom_buffer(void) {
-    SimpleSyncProtocol sync;
-    mockSetMillis(200);  // Current time: 200ms = 200000us
-
-    // Schedule 75ms in the future
-    uint64_t scheduled = sync.scheduleExecution(75);
-
-    // Should be current time + 75ms = 200000 + 75000 = 275000
-    TEST_ASSERT_EQUAL_UINT64(275000, scheduled);
-}
-
-void test_SimpleSyncProtocol_toLocalTime_positive_offset(void) {
-    SimpleSyncProtocol sync;
-    mockSetMillis(100);
-
-    // SECONDARY is 5000us ahead of PRIMARY
-    sync.calculateOffset(1000000, 1005000);
-
-    // PRIMARY scheduled time: 2000000
-    // Local (SECONDARY) time = 2000000 + 5000 = 2005000
-    uint64_t localTime = sync.toLocalTime(2000000);
-
-    TEST_ASSERT_EQUAL_UINT64(2005000, localTime);
-}
-
-void test_SimpleSyncProtocol_toLocalTime_negative_offset(void) {
-    SimpleSyncProtocol sync;
-    mockSetMillis(100);
-
-    // SECONDARY is 3000us behind PRIMARY
-    sync.calculateOffset(1005000, 1002000);  // offset = -3000
-
-    // PRIMARY scheduled time: 2000000
-    // Local (SECONDARY) time = 2000000 + (-3000) = 1997000
-    uint64_t localTime = sync.toLocalTime(2000000);
-
-    TEST_ASSERT_EQUAL_UINT64(1997000, localTime);
-}
-
-void test_SimpleSyncProtocol_toLocalTime_zero_offset(void) {
-    SimpleSyncProtocol sync;
-    mockSetMillis(100);
-
-    // Clocks are perfectly synchronized
-    sync.calculateOffset(1000000, 1000000);  // offset = 0
-
-    // PRIMARY scheduled time = local time when offset is 0
-    uint64_t localTime = sync.toLocalTime(2000000);
-
-    TEST_ASSERT_EQUAL_UINT64(2000000, localTime);
-}
-
-void test_SimpleSyncProtocol_waitUntil_success(void) {
-    SimpleSyncProtocol sync;
-    mockSetMillis(100);  // Current time: 100000us
-
-    // Schedule 10ms in the future
-    uint64_t scheduledTime = 110000;  // 110000us = 110ms
-
-    // Enable time auto-increment to simulate time passing in spin loop
-    // Increment 100us per micros() call to make the loop complete quickly
-    mockEnableTimeAutoIncrement(100);
-
-    bool result = sync.waitUntil(scheduledTime, 50000);  // Max wait: 50ms
-
-    // Disable auto-increment after test
-    mockEnableTimeAutoIncrement(0);
-
-    TEST_ASSERT_TRUE(result);
-}
-
-void test_SimpleSyncProtocol_waitUntil_already_passed(void) {
-    SimpleSyncProtocol sync;
-    mockSetMillis(200);  // Current time: 200000us
-
-    // Scheduled time is in the past
-    uint64_t scheduledTime = 100000;  // Already passed
-
-    bool result = sync.waitUntil(scheduledTime);
-
-    TEST_ASSERT_FALSE(result);
-}
-
-void test_SimpleSyncProtocol_waitUntil_exceeds_max_wait(void) {
-    SimpleSyncProtocol sync;
-    mockSetMillis(100);  // Current time: 100000us
-
-    // Schedule 200ms in the future, but only allow 50ms wait
-    uint64_t scheduledTime = 300000;  // 300ms
-
-    bool result = sync.waitUntil(scheduledTime, 50000);  // Max: 50ms
-
-    TEST_ASSERT_FALSE(result);
-}
-
-void test_SimpleSyncProtocol_getEstimatedLatency(void) {
-    SimpleSyncProtocol sync;
-    mockSetMillis(100);
-
-    // Calculate round trip: RTT = 20000us, latency = 10000us
-    sync.calculateRoundTrip(1000000, 1020000, 1010000);
-
-    TEST_ASSERT_EQUAL_UINT32(10000, sync.getEstimatedLatency());
-}
-
-// =============================================================================
-// CREATEBUZZ WITH EXECUTEAT TESTS
-// =============================================================================
-
-void test_SyncCommand_createBuzz_with_executeAt(void) {
-    // Create BUZZ with scheduled execution time
-    uint64_t executeAt = 0x0000000100000000ULL;  // High bits set
-    SyncCommand cmd = SyncCommand::createBuzz(42, 2, 75, executeAt);
+void test_SyncCommand_createBuzz_with_duration(void) {
+    // Create BUZZ with motor duration
+    SyncCommand cmd = SyncCommand::createBuzz(42, 2, 75, 150);  // 150ms duration
 
     TEST_ASSERT_EQUAL(SyncCommandType::BUZZ, cmd.getType());
     TEST_ASSERT_EQUAL_UINT32(42, cmd.getSequenceId());
     TEST_ASSERT_EQUAL_INT32(2, cmd.getDataInt("0", -1));    // finger
     TEST_ASSERT_EQUAL_INT32(75, cmd.getDataInt("1", -1));   // amplitude
-
-    // Check executeAt is split into high/low
-    uint32_t execHigh = (uint32_t)cmd.getDataInt("2", 0);
-    uint32_t execLow = (uint32_t)cmd.getDataInt("3", 0);
-    uint64_t reconstructed = ((uint64_t)execHigh << 32) | (uint64_t)execLow;
-
-    TEST_ASSERT_EQUAL_UINT64(executeAt, reconstructed);
+    TEST_ASSERT_EQUAL_INT32(150, cmd.getDataInt("2", -1));  // duration
 }
 
-void test_SyncCommand_createBuzz_immediate_execution(void) {
-    // Create BUZZ without scheduled execution (executeAt = 0)
-    SyncCommand cmd = SyncCommand::createBuzz(42, 2, 75);
+void test_SyncCommand_createBuzz_default_duration(void) {
+    // Create BUZZ with default 100ms duration (typical TIME_ON)
+    SyncCommand cmd = SyncCommand::createBuzz(42, 2, 75, 100);
 
     TEST_ASSERT_EQUAL(SyncCommandType::BUZZ, cmd.getType());
     TEST_ASSERT_EQUAL_INT32(2, cmd.getDataInt("0", -1));    // finger
     TEST_ASSERT_EQUAL_INT32(75, cmd.getDataInt("1", -1));   // amplitude
-
-    // No executeAt data should be present (positions 2,3 should be 0/missing)
-    TEST_ASSERT_EQUAL_INT32(0, cmd.getDataInt("2", 0));
-    TEST_ASSERT_EQUAL_INT32(0, cmd.getDataInt("3", 0));
+    TEST_ASSERT_EQUAL_INT32(100, cmd.getDataInt("2", -1));  // duration
 }
 
-void test_SyncCommand_createBuzz_with_executeAt_serialize_deserialize(void) {
-    // Test round-trip serialization
-    uint64_t executeAt = 123456789012345ULL;
-    SyncCommand original = SyncCommand::createBuzz(99, 3, 80, executeAt);
+void test_SyncCommand_createBuzz_serialize_deserialize(void) {
+    // Test round-trip serialization with duration
+    SyncCommand original = SyncCommand::createBuzz(99, 3, 80, 200);  // 200ms duration
 
     char buffer[256];
     TEST_ASSERT_TRUE(original.serialize(buffer, sizeof(buffer)));
@@ -625,244 +511,9 @@ void test_SyncCommand_createBuzz_with_executeAt_serialize_deserialize(void) {
     // Verify all fields preserved
     TEST_ASSERT_EQUAL(SyncCommandType::BUZZ, parsed.getType());
     TEST_ASSERT_EQUAL_UINT32(99, parsed.getSequenceId());
-    TEST_ASSERT_EQUAL_INT32(3, parsed.getDataInt("0", -1));
-    TEST_ASSERT_EQUAL_INT32(80, parsed.getDataInt("1", -1));
-
-    // Reconstruct executeAt
-    uint32_t execHigh = (uint32_t)parsed.getDataInt("2", 0);
-    uint32_t execLow = (uint32_t)parsed.getDataInt("3", 0);
-    uint64_t reconstructed = ((uint64_t)execHigh << 32) | (uint64_t)execLow;
-
-    TEST_ASSERT_EQUAL_UINT64(executeAt, reconstructed);
-}
-
-// =============================================================================
-// RTT PROBING TESTS
-// =============================================================================
-
-void test_SimpleSyncProtocol_startRttProbing(void) {
-    SimpleSyncProtocol sync;
-
-    TEST_ASSERT_TRUE(sync.startRttProbing());
-    TEST_ASSERT_TRUE(sync.isProbingInProgress());
-    TEST_ASSERT_EQUAL_UINT8(0, sync.getCurrentProbeSeq());
-    TEST_ASSERT_EQUAL_UINT8(0, sync.getRttSampleCount());
-}
-
-void test_SimpleSyncProtocol_getMinRtt_zero_samples(void) {
-    SimpleSyncProtocol sync;
-    TEST_ASSERT_EQUAL_UINT32(0, sync.getMinRtt());
-}
-
-void test_SimpleSyncProtocol_getMaxRtt_zero_samples(void) {
-    SimpleSyncProtocol sync;
-    TEST_ASSERT_EQUAL_UINT32(0, sync.getMaxRtt());
-}
-
-void test_SimpleSyncProtocol_getRttSpread_zero_samples(void) {
-    SimpleSyncProtocol sync;
-    TEST_ASSERT_EQUAL_UINT32(0, sync.getRttSpread());
-}
-
-void test_SimpleSyncProtocol_handleProbeAck_correct_sequence(void) {
-    SimpleSyncProtocol sync;
-    sync.startRttProbing();  // Session ID becomes 1
-
-    // Set up time for RTT calculation
-    mockSetMicros(1000);  // Sent at 1000us
-
-    // Use createProbe() to set up internal state (sets _pendingProbeT1 and _currentProbeSeq)
-    SyncCommand probe = sync.createProbe(0);
-    uint16_t sessionId = sync.getProbeSessionId();
-
-    mockSetMicros(2000);  // Received at 2000us, RTT = 1000us
-
-    TEST_ASSERT_TRUE(sync.handleProbeAck(0, sessionId, probe.getTimestamp()));
-    TEST_ASSERT_EQUAL_UINT8(1, sync.getRttSampleCount());
-}
-
-void test_SimpleSyncProtocol_handleProbeAck_wrong_sequence(void) {
-    SimpleSyncProtocol sync;
-    sync.startRttProbing();  // Session ID becomes 1
-
-    mockSetMicros(1000);
-    SyncCommand probe = sync.createProbe(0);  // Expecting seq 0
-    uint16_t sessionId = sync.getProbeSessionId();
-
-    mockSetMicros(2000);
-
-    // Send wrong sequence number (expected 0, sent 5)
-    TEST_ASSERT_FALSE(sync.handleProbeAck(5, sessionId, 1000));
-    TEST_ASSERT_EQUAL_UINT8(0, sync.getRttSampleCount());
-}
-
-void test_SimpleSyncProtocol_isProbingComplete_false_before_threshold(void) {
-    SimpleSyncProtocol sync;
-    sync.startRttProbing();  // Session ID becomes 1
-    uint16_t sessionId = sync.getProbeSessionId();
-
-    // Add a few samples but less than SYNC_PROBE_COUNT
-    for (int i = 0; i < 5; i++) {
-        mockSetMicros((i + 1) * 1000);
-        SyncCommand probe = sync.createProbe(i);  // Sets up state for probe i
-        mockSetMicros((i + 1) * 2000);  // Receive ACK later
-        sync.handleProbeAck(i, sessionId, probe.getTimestamp());
-    }
-
-    TEST_ASSERT_FALSE(sync.isProbingComplete());
-}
-
-void test_SimpleSyncProtocol_getMinRtt_with_samples(void) {
-    SimpleSyncProtocol sync;
-    sync.startRttProbing();  // Session ID becomes 1
-    uint16_t sessionId = sync.getProbeSessionId();
-
-    // Simulate probe with RTT = 1000us
-    mockSetMicros(0);
-    SyncCommand probe = sync.createProbe(0);  // T1 = 0
-
-    mockSetMicros(1000);  // Receive at 1000us, RTT = 1000
-    sync.handleProbeAck(0, sessionId, probe.getTimestamp());
-
-    TEST_ASSERT_EQUAL_UINT32(1000, sync.getMinRtt());
-}
-
-void test_SimpleSyncProtocol_getMaxRtt_with_samples(void) {
-    SimpleSyncProtocol sync;
-    sync.startRttProbing();  // Session ID becomes 1
-    uint16_t sessionId = sync.getProbeSessionId();
-
-    // Single sample with RTT = 2000us
-    mockSetMicros(0);
-    SyncCommand probe = sync.createProbe(0);  // T1 = 0
-
-    mockSetMicros(2000);  // Receive at 2000us, RTT = 2000
-    sync.handleProbeAck(0, sessionId, probe.getTimestamp());
-
-    TEST_ASSERT_EQUAL_UINT32(2000, sync.getMaxRtt());
-}
-
-void test_SimpleSyncProtocol_getRttSpread_with_samples(void) {
-    SimpleSyncProtocol sync;
-    sync.startRttProbing();  // Session ID becomes 1
-    uint16_t sessionId = sync.getProbeSessionId();
-
-    // Single sample, spread = max - min = 0
-    mockSetMicros(0);
-    SyncCommand probe = sync.createProbe(0);  // T1 = 0
-
-    mockSetMicros(2000);
-    sync.handleProbeAck(0, sessionId, probe.getTimestamp());
-
-    TEST_ASSERT_EQUAL_UINT32(0, sync.getRttSpread());
-}
-
-void test_SimpleSyncProtocol_finalizeSync_with_samples(void) {
-    SimpleSyncProtocol sync;
-    sync.startRttProbing();  // Session ID becomes 1
-    uint16_t sessionId = sync.getProbeSessionId();
-
-    // Add one sample with RTT = 1000us
-    mockSetMicros(0);
-    SyncCommand probe = sync.createProbe(0);  // T1 = 0
-
-    mockSetMicros(1000);  // Receive at 1000us, RTT = 1000, one-way = 500
-    sync.handleProbeAck(0, sessionId, probe.getTimestamp());
-
-    sync.finalizeSync();
-
-    TEST_ASSERT_FALSE(sync.isProbingInProgress());
-    TEST_ASSERT_EQUAL_UINT32(500, sync.getEstimatedLatency());
-}
-
-void test_SimpleSyncProtocol_finalizeSync_zero_samples(void) {
-    SimpleSyncProtocol sync;
-    sync.startRttProbing();
-
-    // Don't add any samples - finalizeSync should handle gracefully
-    sync.finalizeSync();
-
-    TEST_ASSERT_FALSE(sync.isProbingInProgress());
-}
-
-void test_SimpleSyncProtocol_handleProbeAck_stale_session_rejected(void) {
-    SimpleSyncProtocol sync;
-
-    // Start first session (session ID becomes 1)
-    sync.startRttProbing();
-    uint16_t oldSessionId = sync.getProbeSessionId();
-
-    mockSetMicros(0);
-    SyncCommand probe1 = sync.createProbe(0);
-
-    // Start a NEW session (simulating connection restart)
-    sync.startRttProbing();  // Session ID becomes 2
-    uint16_t newSessionId = sync.getProbeSessionId();
-
-    TEST_ASSERT_NOT_EQUAL(oldSessionId, newSessionId);
-
-    mockSetMicros(0);
-    SyncCommand probe2 = sync.createProbe(0);
-
-    mockSetMicros(1000);
-
-    // Try to use the OLD session's ACK - should be rejected
-    TEST_ASSERT_FALSE(sync.handleProbeAck(0, oldSessionId, probe1.getTimestamp()));
-    TEST_ASSERT_EQUAL_UINT8(0, sync.getRttSampleCount());  // No sample recorded
-
-    // Using the CURRENT session should work
-    TEST_ASSERT_TRUE(sync.handleProbeAck(0, newSessionId, probe2.getTimestamp()));
-    TEST_ASSERT_EQUAL_UINT8(1, sync.getRttSampleCount());  // Sample recorded
-}
-
-void test_SimpleSyncProtocol_handleProbeAck_duplicate_rejected(void) {
-    SimpleSyncProtocol sync;
-    sync.startRttProbing();  // Session ID becomes 1
-    uint16_t sessionId = sync.getProbeSessionId();
-
-    mockSetMicros(0);
-    SyncCommand probe = sync.createProbe(0);
-
-    mockSetMicros(1000);
-
-    // First ACK should succeed
-    TEST_ASSERT_TRUE(sync.handleProbeAck(0, sessionId, probe.getTimestamp()));
-    TEST_ASSERT_EQUAL_UINT8(1, sync.getRttSampleCount());
-
-    // Duplicate ACK should be rejected
-    TEST_ASSERT_FALSE(sync.handleProbeAck(0, sessionId, probe.getTimestamp()));
-    TEST_ASSERT_EQUAL_UINT8(1, sync.getRttSampleCount());  // Still 1, not 2
-}
-
-void test_SimpleSyncProtocol_createProbe_includes_session_id(void) {
-    SimpleSyncProtocol sync;
-    sync.startRttProbing();  // Session ID becomes 1
-
-    mockSetMicros(5000);
-    SyncCommand probe = sync.createProbe(3);
-
-    // Verify probe contains session ID in data field "1"
-    TEST_ASSERT_EQUAL_INT32(sync.getProbeSessionId(), probe.getDataInt("1", 0));
-    // Verify probe contains sequence in data field "0"
-    TEST_ASSERT_EQUAL_INT32(3, probe.getDataInt("0", -1));
-    // Verify timestamp was set
-    TEST_ASSERT_EQUAL_UINT64(5000, probe.getTimestamp());
-}
-
-void test_SimpleSyncProtocol_session_id_increments(void) {
-    SimpleSyncProtocol sync;
-
-    sync.startRttProbing();
-    uint16_t session1 = sync.getProbeSessionId();
-
-    sync.startRttProbing();
-    uint16_t session2 = sync.getProbeSessionId();
-
-    sync.startRttProbing();
-    uint16_t session3 = sync.getProbeSessionId();
-
-    TEST_ASSERT_EQUAL(session1 + 1, session2);
-    TEST_ASSERT_EQUAL(session2 + 1, session3);
+    TEST_ASSERT_EQUAL_INT32(3, parsed.getDataInt("0", -1));   // finger
+    TEST_ASSERT_EQUAL_INT32(80, parsed.getDataInt("1", -1));  // amplitude
+    TEST_ASSERT_EQUAL_INT32(200, parsed.getDataInt("2", -1)); // duration
 }
 
 // =============================================================================
@@ -920,74 +571,30 @@ void test_SyncCommand_serialize_large_timestamp(void) {
 // ADDITIONAL DESERIALIZE TESTS
 // =============================================================================
 
-void test_SyncCommand_deserialize_sync_adj(void) {
+void test_SyncCommand_deserialize_ping(void) {
     SyncCommand cmd;
-    TEST_ASSERT_TRUE(cmd.deserialize("SYNC_ADJ:1:1000000"));
-    TEST_ASSERT_EQUAL(SyncCommandType::SYNC_ADJ, cmd.getType());
+    TEST_ASSERT_TRUE(cmd.deserialize("PING:1:1000000"));
+    TEST_ASSERT_EQUAL(SyncCommandType::PING, cmd.getType());
 }
 
-void test_SyncCommand_deserialize_sync_probe(void) {
+void test_SyncCommand_deserialize_pong(void) {
     SyncCommand cmd;
-    TEST_ASSERT_TRUE(cmd.deserialize("SYNC_PROBE:1:1000000"));
-    TEST_ASSERT_EQUAL(SyncCommandType::SYNC_PROBE, cmd.getType());
-}
-
-void test_SyncCommand_deserialize_sync_probe_ack(void) {
-    SyncCommand cmd;
-    TEST_ASSERT_TRUE(cmd.deserialize("SYNC_PROBE_ACK:1:1000000"));
-    TEST_ASSERT_EQUAL(SyncCommandType::SYNC_PROBE_ACK, cmd.getType());
-}
-
-void test_SyncCommand_deserialize_first_sync(void) {
-    SyncCommand cmd;
-    TEST_ASSERT_TRUE(cmd.deserialize("FIRST_SYNC:1:1000000"));
-    TEST_ASSERT_EQUAL(SyncCommandType::FIRST_SYNC, cmd.getType());
-}
-
-void test_SyncCommand_deserialize_ack_sync_adj(void) {
-    SyncCommand cmd;
-    TEST_ASSERT_TRUE(cmd.deserialize("ACK_SYNC_ADJ:1:1000000"));
-    TEST_ASSERT_EQUAL(SyncCommandType::ACK_SYNC_ADJ, cmd.getType());
-}
-
-void test_SyncCommand_deserialize_sync_adj_start(void) {
-    SyncCommand cmd;
-    TEST_ASSERT_TRUE(cmd.deserialize("SYNC_ADJ_START:1:1000000"));
-    TEST_ASSERT_EQUAL(SyncCommandType::SYNC_ADJ_START, cmd.getType());
+    TEST_ASSERT_TRUE(cmd.deserialize("PONG:1:1000000"));
+    TEST_ASSERT_EQUAL(SyncCommandType::PONG, cmd.getType());
 }
 
 // =============================================================================
 // FACTORY METHOD TESTS FOR REMAINING TYPES
 // =============================================================================
 
-void test_SyncCommand_getTypeString_sync_adj(void) {
-    SyncCommand cmd(SyncCommandType::SYNC_ADJ, 0);
-    TEST_ASSERT_EQUAL_STRING("SYNC_ADJ", cmd.getTypeString());
+void test_SyncCommand_getTypeString_ping(void) {
+    SyncCommand cmd(SyncCommandType::PING, 0);
+    TEST_ASSERT_EQUAL_STRING("PING", cmd.getTypeString());
 }
 
-void test_SyncCommand_getTypeString_sync_probe(void) {
-    SyncCommand cmd(SyncCommandType::SYNC_PROBE, 0);
-    TEST_ASSERT_EQUAL_STRING("SYNC_PROBE", cmd.getTypeString());
-}
-
-void test_SyncCommand_getTypeString_sync_probe_ack(void) {
-    SyncCommand cmd(SyncCommandType::SYNC_PROBE_ACK, 0);
-    TEST_ASSERT_EQUAL_STRING("SYNC_PROBE_ACK", cmd.getTypeString());
-}
-
-void test_SyncCommand_getTypeString_first_sync(void) {
-    SyncCommand cmd(SyncCommandType::FIRST_SYNC, 0);
-    TEST_ASSERT_EQUAL_STRING("FIRST_SYNC", cmd.getTypeString());
-}
-
-void test_SyncCommand_getTypeString_ack_sync_adj(void) {
-    SyncCommand cmd(SyncCommandType::ACK_SYNC_ADJ, 0);
-    TEST_ASSERT_EQUAL_STRING("ACK_SYNC_ADJ", cmd.getTypeString());
-}
-
-void test_SyncCommand_getTypeString_sync_adj_start(void) {
-    SyncCommand cmd(SyncCommandType::SYNC_ADJ_START, 0);
-    TEST_ASSERT_EQUAL_STRING("SYNC_ADJ_START", cmd.getTypeString());
+void test_SyncCommand_getTypeString_pong(void) {
+    SyncCommand cmd(SyncCommandType::PONG, 0);
+    TEST_ASSERT_EQUAL_STRING("PONG", cmd.getTypeString());
 }
 
 void test_SyncCommand_getTypeString_deactivate(void) {
@@ -1092,47 +699,20 @@ int main(int argc, char **argv) {
     RUN_TEST(test_SimpleSyncProtocol_getTimeSinceSync_never_synced);
     RUN_TEST(test_SimpleSyncProtocol_getTimeSinceSync_after_sync);
     RUN_TEST(test_SimpleSyncProtocol_reset);
-    RUN_TEST(test_SimpleSyncProtocol_calculateRoundTrip);
 
-    // Scheduled Execution Tests
-    RUN_TEST(test_SimpleSyncProtocol_scheduleExecution);
-    RUN_TEST(test_SimpleSyncProtocol_scheduleExecution_custom_buffer);
-    RUN_TEST(test_SimpleSyncProtocol_toLocalTime_positive_offset);
-    RUN_TEST(test_SimpleSyncProtocol_toLocalTime_negative_offset);
-    RUN_TEST(test_SimpleSyncProtocol_toLocalTime_zero_offset);
-    RUN_TEST(test_SimpleSyncProtocol_waitUntil_success);
-    RUN_TEST(test_SimpleSyncProtocol_waitUntil_already_passed);
-    RUN_TEST(test_SimpleSyncProtocol_waitUntil_exceeds_max_wait);
-    RUN_TEST(test_SimpleSyncProtocol_getEstimatedLatency);
+    // PING/PONG Latency Measurement Tests
+    RUN_TEST(test_SimpleSyncProtocol_getMeasuredLatency_initial_zero);
+    RUN_TEST(test_SimpleSyncProtocol_updateLatency);
+    RUN_TEST(test_SimpleSyncProtocol_updateLatency_multiple);
 
-    // createBuzz with executeAt Tests
-    RUN_TEST(test_SyncCommand_createBuzz_with_executeAt);
-    RUN_TEST(test_SyncCommand_createBuzz_immediate_execution);
-    RUN_TEST(test_SyncCommand_createBuzz_with_executeAt_serialize_deserialize);
+    // createBuzz with duration Tests
+    RUN_TEST(test_SyncCommand_createBuzz_with_duration);
+    RUN_TEST(test_SyncCommand_createBuzz_default_duration);
+    RUN_TEST(test_SyncCommand_createBuzz_serialize_deserialize);
 
     // Timing Utility Tests
     RUN_TEST(test_getMicros);
     RUN_TEST(test_getMillis);
-
-    // RTT Probing Tests
-    RUN_TEST(test_SimpleSyncProtocol_startRttProbing);
-    RUN_TEST(test_SimpleSyncProtocol_getMinRtt_zero_samples);
-    RUN_TEST(test_SimpleSyncProtocol_getMaxRtt_zero_samples);
-    RUN_TEST(test_SimpleSyncProtocol_getRttSpread_zero_samples);
-    RUN_TEST(test_SimpleSyncProtocol_handleProbeAck_correct_sequence);
-    RUN_TEST(test_SimpleSyncProtocol_handleProbeAck_wrong_sequence);
-    RUN_TEST(test_SimpleSyncProtocol_isProbingComplete_false_before_threshold);
-    RUN_TEST(test_SimpleSyncProtocol_getMinRtt_with_samples);
-    RUN_TEST(test_SimpleSyncProtocol_getMaxRtt_with_samples);
-    RUN_TEST(test_SimpleSyncProtocol_getRttSpread_with_samples);
-    RUN_TEST(test_SimpleSyncProtocol_finalizeSync_with_samples);
-    RUN_TEST(test_SimpleSyncProtocol_finalizeSync_zero_samples);
-
-    // Session Isolation and Duplicate Detection Tests
-    RUN_TEST(test_SimpleSyncProtocol_handleProbeAck_stale_session_rejected);
-    RUN_TEST(test_SimpleSyncProtocol_handleProbeAck_duplicate_rejected);
-    RUN_TEST(test_SimpleSyncProtocol_createProbe_includes_session_id);
-    RUN_TEST(test_SimpleSyncProtocol_session_id_increments);
 
     // setData Edge Case Tests
     RUN_TEST(test_SyncCommand_setData_max_pairs_reached);
@@ -1143,20 +723,12 @@ int main(int argc, char **argv) {
     RUN_TEST(test_SyncCommand_serialize_large_timestamp);
 
     // Additional Deserialize Tests
-    RUN_TEST(test_SyncCommand_deserialize_sync_adj);
-    RUN_TEST(test_SyncCommand_deserialize_sync_probe);
-    RUN_TEST(test_SyncCommand_deserialize_sync_probe_ack);
-    RUN_TEST(test_SyncCommand_deserialize_first_sync);
-    RUN_TEST(test_SyncCommand_deserialize_ack_sync_adj);
-    RUN_TEST(test_SyncCommand_deserialize_sync_adj_start);
+    RUN_TEST(test_SyncCommand_deserialize_ping);
+    RUN_TEST(test_SyncCommand_deserialize_pong);
 
     // Additional getTypeString Tests
-    RUN_TEST(test_SyncCommand_getTypeString_sync_adj);
-    RUN_TEST(test_SyncCommand_getTypeString_sync_probe);
-    RUN_TEST(test_SyncCommand_getTypeString_sync_probe_ack);
-    RUN_TEST(test_SyncCommand_getTypeString_first_sync);
-    RUN_TEST(test_SyncCommand_getTypeString_ack_sync_adj);
-    RUN_TEST(test_SyncCommand_getTypeString_sync_adj_start);
+    RUN_TEST(test_SyncCommand_getTypeString_ping);
+    RUN_TEST(test_SyncCommand_getTypeString_pong);
     RUN_TEST(test_SyncCommand_getTypeString_deactivate);
     RUN_TEST(test_SyncCommand_getTypeString_pause_session);
     RUN_TEST(test_SyncCommand_getTypeString_resume_session);

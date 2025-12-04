@@ -77,8 +77,8 @@
 
 // Therapy timing
 #define THERAPY_CYCLE_MS 100            // Main therapy cycle period
-#define BURST_DURATION_MS 1500          // Standard burst duration (1.5 seconds)
-#define INTER_BURST_INTERVAL_MS 5000    // Pause between bursts
+// Note: Therapy timing (TIME_ON, TIME_OFF, etc.) is defined in therapy profiles
+// See ProfileManager and ORIGINAL_PARAMETERS.md for v1 reference values
 
 // =============================================================================
 // BATTERY CONFIGURATION
@@ -190,11 +190,6 @@
 // Reporting
 #define LATENCY_REPORT_INTERVAL_MS 30000  // Auto-report every 30s when enabled
 #define LATENCY_LATE_THRESHOLD_US 1000    // >1ms considered "late"
-
-// RTT Probe Configuration (for enhanced clock sync)
-#define SYNC_PROBE_COUNT 10               // Number of RTT probes during initial sync
-#define SYNC_PROBE_INTERVAL_MS 50         // Interval between probes
-#define SYNC_PROBE_TIMEOUT_MS 200         // Timeout waiting for probe ACK
 
 // =============================================================================
 // MEMORY MANAGEMENT

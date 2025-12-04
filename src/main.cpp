@@ -17,6 +17,8 @@
  */
 
 #include <Arduino.h>
+#include <Adafruit_LittleFS.h>
+#include <InternalFileSystem.h>
 #include "config.h"
 #include "types.h"
 #include "hardware.h"
@@ -78,15 +80,12 @@ bool autoStartTriggered = false; // Prevent repeated auto-starts
 // SECONDARY heartbeat monitoring
 uint32_t lastHeartbeatReceived = 0; // Tracks last heartbeat from PRIMARY
 
-// Clock synchronization timing
-uint32_t lastSyncAdjustment = 0;          // Last periodic sync adjustment time
-#define SYNC_ADJUSTMENT_INTERVAL_MS 30000 // Resync every 30 seconds
+// PING/PONG latency measurement (PRIMARY only)
+uint64_t pingStartTime = 0;               // Timestamp when PING was sent (micros)
 
-// RTT probing state (PRIMARY only)
-uint32_t rttProbeTimeout = 0;             // Timeout for current probe ACK
-uint64_t rttProbeSentTime = 0;            // Timestamp when current probe was sent
-uint8_t rttProbeRetryCount = 0;           // Retry counter for current probe
-#define RTT_PROBE_MAX_RETRIES 3           // Max retries per probe before skipping
+// SECONDARY non-blocking motor deactivation
+int8_t activeMotorFinger = -1;            // Currently active motor (-1 = none)
+uint32_t motorDeactivateTime = 0;         // Time to deactivate motor (millis)
 
 // Finger names for display (4 fingers per hand - index through pinky, no thumb per v1)
 const char *FINGER_NAMES[] = {"Index", "Middle", "Ring", "Pinky"};
@@ -106,10 +105,8 @@ void startTherapyTest();
 void stopTherapyTest();
 void autoStartTherapy();
 
-// RTT Probing helpers (PRIMARY only)
-void startRttProbing();
-void sendRttProbe(uint8_t seq);
-void finalizeRttProbing();
+// PING/PONG latency measurement (PRIMARY only)
+void sendPing();
 
 // BLE Callbacks
 void onBLEConnect(uint16_t connHandle, ConnectionType type);
@@ -117,10 +114,11 @@ void onBLEDisconnect(uint16_t connHandle, ConnectionType type, uint8_t reason);
 void onBLEMessage(uint16_t connHandle, const char *message);
 
 // Therapy Callbacks
-void onSendCommand(const char *commandType, uint8_t leftFinger, uint8_t rightFinger, uint8_t amplitude, uint32_t seq);
+void onSendCommand(const char *commandType, uint8_t leftFinger, uint8_t rightFinger, uint8_t amplitude, uint32_t durationMs, uint32_t seq);
 void onActivate(uint8_t finger, uint8_t amplitude);
 void onDeactivate(uint8_t finger);
 void onCycleComplete(uint32_t cycleCount);
+void onMacrocycleStart(uint32_t macrocycleCount);
 
 // State Machine Callback
 void onStateChange(const StateTransition &transition);
@@ -338,6 +336,16 @@ void loop()
     // Process BLE events
     ble.update();
 
+    // SECONDARY: Non-blocking motor deactivation check
+    if (deviceRole == DeviceRole::SECONDARY && activeMotorFinger >= 0)
+    {
+        if (now >= motorDeactivateTime)
+        {
+            haptic.deactivate(activeMotorFinger);
+            activeMotorFinger = -1;
+        }
+    }
+
     // Process Serial commands (uses serial-only handler for SET_ROLE, GET_ROLE)
     if (Serial.available())
     {
@@ -404,67 +412,6 @@ void loop()
             {
                 // SECONDARY disconnected during window, cancel
                 bootWindowActive = false;
-            }
-        }
-    }
-
-    // PRIMARY: Periodic clock synchronization during therapy
-    if (deviceRole == DeviceRole::PRIMARY && ble.isSecondaryConnected() && therapy.isRunning())
-    {
-        if (now - lastSyncAdjustment >= SYNC_ADJUSTMENT_INTERVAL_MS)
-        {
-            lastSyncAdjustment = now;
-            Serial.println(F("[SYNC] Sending periodic SYNC_ADJ"));
-            SyncCommand syncCmd(SyncCommandType::SYNC_ADJ, g_sequenceGenerator.next());
-            char syncBuffer[128];
-            if (syncCmd.serialize(syncBuffer, sizeof(syncBuffer)))
-            {
-                ble.sendToSecondary(syncBuffer);
-            }
-        }
-    }
-
-    // PRIMARY: RTT probe timeout handling
-    if (deviceRole == DeviceRole::PRIMARY && syncProtocol.isProbingInProgress())
-    {
-        if (rttProbeTimeout > 0 && now > rttProbeTimeout)
-        {
-            uint8_t currentSeq = syncProtocol.getCurrentProbeSeq();
-            rttProbeRetryCount++;
-
-            if (rttProbeRetryCount >= RTT_PROBE_MAX_RETRIES)
-            {
-                // Max retries reached for this probe, skip to next or finalize
-                Serial.printf("[SYNC] Probe %u failed after %u retries, skipping\n",
-                              currentSeq, rttProbeRetryCount);
-                rttProbeRetryCount = 0;
-
-                if (currentSeq + 1 < SYNC_PROBE_COUNT)
-                {
-                    // Try next probe
-                    sendRttProbe(currentSeq + 1);
-                }
-                else
-                {
-                    // All probes attempted, finalize with whatever we have
-                    if (syncProtocol.getRttSampleCount() > 0)
-                    {
-                        Serial.println(F("[SYNC] Probing complete (partial data)"));
-                        finalizeRttProbing();
-                    }
-                    else
-                    {
-                        Serial.println(F("[SYNC] Probing FAILED - no responses received"));
-                        // Clear probing state without finalizing
-                        rttProbeTimeout = 0;
-                    }
-                }
-            }
-            else
-            {
-                Serial.printf("[SYNC] Probe %u timed out, retry %u/%u\n",
-                              currentSeq, rttProbeRetryCount, RTT_PROBE_MAX_RETRIES);
-                sendRttProbe(currentSeq);
             }
         }
     }
@@ -635,6 +582,8 @@ bool initializeTherapy()
     if (deviceRole == DeviceRole::PRIMARY)
     {
         therapy.setSendCommandCallback(onSendCommand);
+        // Set macrocycle start callback for PING/PONG latency measurement
+        therapy.setMacrocycleStartCallback(onMacrocycleStart);
     }
     return true;
 }
@@ -764,9 +713,6 @@ void onBLEConnect(uint16_t connHandle, ConnectionType type)
             bootWindowStart = millis();
             bootWindowActive = true;
             Serial.println(F("[BOOT] SECONDARY connected - starting 30s boot window for phone"));
-
-            // Initiate enhanced clock synchronization with RTT probing
-            startRttProbing();
         }
         else if (type == ConnectionType::PHONE && bootWindowActive)
         {
@@ -832,8 +778,6 @@ void onBLEDisconnect(uint16_t connHandle, ConnectionType type, uint8_t reason)
 
 void onBLEMessage(uint16_t connHandle, const char *message)
 {
-    Serial.printf("[RX] Handle: %d, Message: %s\n", connHandle, message);
-
     // Check for simple text commands first (for testing)
     // Both PRIMARY and SECONDARY can run standalone tests for hardware verification
     if (strcmp(message, "TEST") == 0 || strcmp(message, "test") == 0)
@@ -861,11 +805,6 @@ void onBLEMessage(uint16_t connHandle, const char *message)
     SyncCommand cmd;
     if (cmd.deserialize(message))
     {
-        Serial.printf("[CMD] Type: %s, Seq: %lu, Time: %lu\n",
-                      cmd.getTypeString(),
-                      (unsigned long)cmd.getSequenceId(),
-                      (unsigned long)(cmd.getTimestamp() & 0xFFFFFFFF));
-
         // Handle specific command types
         switch (cmd.getType())
         {
@@ -877,58 +816,54 @@ void onBLEMessage(uint16_t connHandle, const char *message)
             }
             break;
 
+        case SyncCommandType::PING:
+            // SECONDARY: Immediately reply with PONG
+            if (deviceRole == DeviceRole::SECONDARY)
+            {
+                SyncCommand pong = SyncCommand::createPong(cmd.getSequenceId());
+                char buffer[64];
+                if (pong.serialize(buffer, sizeof(buffer)))
+                {
+                    ble.sendToPrimary(buffer);
+                }
+            }
+            break;
+
+        case SyncCommandType::PONG:
+            // PRIMARY: Calculate RTT and update measured latency
+            if (deviceRole == DeviceRole::PRIMARY && pingStartTime > 0)
+            {
+                uint64_t now = getMicros();
+                uint32_t rtt = (uint32_t)(now - pingStartTime);
+                syncProtocol.updateLatency(rtt);
+                Serial.printf("[SYNC] RTT=%lu us, one-way=%lu us\n",
+                              (unsigned long)rtt, (unsigned long)(rtt / 2));
+                pingStartTime = 0;  // Clear for next PING
+            }
+            break;
+
         case SyncCommandType::BUZZ:
         {
+            // SECONDARY: Activate motor immediately (no scheduled execution)
+            // PRIMARY has already compensated for BLE latency before sending
             int32_t finger = cmd.getDataInt("0", -1);
             int32_t amplitude = cmd.getDataInt("1", 50);
+            int32_t durationMs = cmd.getDataInt("2", 100);  // Default 100ms if not specified
 
-            // Parse scheduled execution time (positions 2,3 = high,low 32-bit)
-            uint32_t execHigh = (uint32_t)cmd.getDataInt("2", 0);
-            uint32_t execLow = (uint32_t)cmd.getDataInt("3", 0);
-            uint64_t executeAt = ((uint64_t)execHigh << 32) | (uint64_t)execLow;
-
-            Serial.printf("[BUZZ] Received: finger=%ld, amplitude=%ld, executeAt=%lu\n",
-                          (long)finger, (long)amplitude, (unsigned long)execLow);
-
-            if (finger >= 0 && finger < MAX_ACTUATORS)
+            if (finger >= 0 && finger < MAX_ACTUATORS && haptic.isEnabled(finger))
             {
-                bool executeSuccess = true;
-                uint64_t localExecTime = 0;
-
-                // If scheduled execution time provided, wait for it
-                if (executeAt > 0 && syncProtocol.isSynced())
+                // Deactivate any previously active motor first
+                if (activeMotorFinger >= 0)
                 {
-                    // Convert PRIMARY's time to local time
-                    localExecTime = syncProtocol.toLocalTime(executeAt);
-                    Serial.printf("[BUZZ] Waiting for scheduled time (local: %lu)\n",
-                                  (unsigned long)(localExecTime & 0xFFFFFFFF));
-
-                    // Wait until scheduled time
-                    executeSuccess = syncProtocol.waitUntil(localExecTime);
-
-                    // Record execution drift for latency metrics
-                    if (latencyMetrics.enabled && localExecTime > 0)
-                    {
-                        uint64_t actualTime = syncProtocol.getMicros();
-                        int32_t drift_us = (int32_t)(actualTime - localExecTime);
-                        latencyMetrics.recordExecution(drift_us);
-                    }
-
-                    if (!executeSuccess)
-                    {
-                        Serial.println(F("[BUZZ] WARNING: Scheduled time missed, executing now"));
-                    }
+                    haptic.deactivate(activeMotorFinger);
                 }
 
-                Serial.printf("[BUZZ] Activating: %s, Amplitude: %d%%\n",
-                              FINGER_NAMES[finger], amplitude);
+                // Activate immediately
+                haptic.activate(finger, amplitude);
 
-                if (haptic.isEnabled(finger))
-                {
-                    haptic.activate(finger, amplitude);
-                    delay(100);
-                    haptic.deactivate(finger);
-                }
+                // Schedule non-blocking deactivation after duration from profile
+                activeMotorFinger = finger;
+                motorDeactivateTime = millis() + durationMs;
             }
         }
         break;
@@ -954,174 +889,6 @@ void onBLEMessage(uint16_t connHandle, const char *message)
             stateMachine.transition(StateTrigger::STOP_SESSION);
             break;
 
-        // Clock synchronization handlers
-        case SyncCommandType::FIRST_SYNC:
-        {
-            // SECONDARY receives FIRST_SYNC from PRIMARY
-            // Respond with ACK_SYNC_ADJ containing local timestamp
-            if (deviceRole == DeviceRole::SECONDARY)
-            {
-                uint64_t primaryTime = cmd.getTimestamp();
-                uint64_t localTime = getMicros();
-
-                // Calculate and store clock offset (SECONDARY perspective)
-                // offset = localTime - primaryTime (how far ahead SECONDARY is)
-                // Note: This doesn't account for BLE transmission delay, but enables
-                // basic sync functionality. PRIMARY will refine with RTT measurements.
-                int64_t offset = syncProtocol.calculateOffset(primaryTime, localTime);
-                Serial.printf("[SYNC] FIRST_SYNC received, primary_ts=%lu, local_ts=%lu, offset=%ld us\n",
-                              (unsigned long)(primaryTime & 0xFFFFFFFF),
-                              (unsigned long)(localTime & 0xFFFFFFFF),
-                              (long)offset);
-
-                // Create ACK with our local timestamp
-                SyncCommand ack(SyncCommandType::ACK_SYNC_ADJ, cmd.getSequenceId());
-                ack.setTimestamp(localTime);
-                // Include PRIMARY's original timestamp for RTT calculation
-                uint32_t tsHigh = (uint32_t)(primaryTime >> 32);
-                uint32_t tsLow = (uint32_t)(primaryTime & 0xFFFFFFFF);
-                char highStr[16], lowStr[16];
-                snprintf(highStr, sizeof(highStr), "%lu", (unsigned long)tsHigh);
-                snprintf(lowStr, sizeof(lowStr), "%lu", (unsigned long)tsLow);
-                ack.setData("0", highStr);
-                ack.setData("1", lowStr);
-
-                char buffer[128];
-                if (ack.serialize(buffer, sizeof(buffer)))
-                {
-                    ble.sendToPrimary(buffer);
-                }
-            }
-        }
-        break;
-
-        case SyncCommandType::ACK_SYNC_ADJ:
-        {
-            // PRIMARY receives ACK_SYNC_ADJ from SECONDARY
-            if (deviceRole == DeviceRole::PRIMARY)
-            {
-                uint64_t receivedTime = getMicros();
-                uint64_t secondaryTime = cmd.getTimestamp();
-
-                // Reconstruct original sent time from data
-                uint32_t sentHigh = (uint32_t)cmd.getDataInt("0", 0);
-                uint32_t sentLow = (uint32_t)cmd.getDataInt("1", 0);
-                uint64_t sentTime = ((uint64_t)sentHigh << 32) | (uint64_t)sentLow;
-
-                // Calculate RTT and offset
-                uint32_t latency = syncProtocol.calculateRoundTrip(sentTime, receivedTime, secondaryTime);
-
-                // Record RTT for latency metrics (ongoing measurement)
-                if (latencyMetrics.enabled)
-                {
-                    latencyMetrics.recordRtt(latency * 2);  // Store full RTT, not one-way
-                }
-
-                Serial.printf("[SYNC] ACK_SYNC_ADJ: RTT=%lu us, offset=%ld us\n",
-                              (unsigned long)(latency * 2),
-                              (long)syncProtocol.getOffset());
-            }
-        }
-        break;
-
-        case SyncCommandType::SYNC_ADJ:
-        {
-            // Periodic sync adjustment - same as FIRST_SYNC for SECONDARY
-            if (deviceRole == DeviceRole::SECONDARY)
-            {
-                uint64_t primaryTime = cmd.getTimestamp();
-                uint64_t localTime = getMicros();
-
-                // Update clock offset with each sync adjustment
-                int64_t offset = syncProtocol.calculateOffset(primaryTime, localTime);
-                Serial.printf("[SYNC] SYNC_ADJ received, offset=%ld us\n", (long)offset);
-
-                SyncCommand ack(SyncCommandType::ACK_SYNC_ADJ, cmd.getSequenceId());
-                ack.setTimestamp(localTime);
-                uint32_t tsHigh = (uint32_t)(primaryTime >> 32);
-                uint32_t tsLow = (uint32_t)(primaryTime & 0xFFFFFFFF);
-                char highStr[16], lowStr[16];
-                snprintf(highStr, sizeof(highStr), "%lu", (unsigned long)tsHigh);
-                snprintf(lowStr, sizeof(lowStr), "%lu", (unsigned long)tsLow);
-                ack.setData("0", highStr);
-                ack.setData("1", lowStr);
-
-                char buffer[128];
-                if (ack.serialize(buffer, sizeof(buffer)))
-                {
-                    ble.sendToPrimary(buffer);
-                }
-            }
-        }
-        break;
-
-        // RTT Probing handlers (enhanced clock synchronization)
-        case SyncCommandType::SYNC_PROBE:
-        {
-            // SECONDARY receives SYNC_PROBE from PRIMARY - echo back immediately
-            if (deviceRole == DeviceRole::SECONDARY)
-            {
-                uint8_t seq = (uint8_t)cmd.getDataInt("0", 0);
-                uint16_t sessionId = (uint16_t)cmd.getDataInt("1", 0);
-                uint64_t t1 = cmd.getTimestamp();
-
-                Serial.printf("[SYNC] SYNC_PROBE %u (session %u) received, echoing ACK\n", seq, sessionId);
-
-                // Immediately echo back with original timestamp and session ID
-                SyncCommand ack(SyncCommandType::SYNC_PROBE_ACK, cmd.getSequenceId());
-                ack.setTimestamp(t1);  // Echo original T1
-                ack.setData("0", (int32_t)seq);
-                ack.setData("1", (int32_t)sessionId);  // Echo session ID for validation
-
-                char buffer[128];
-                if (ack.serialize(buffer, sizeof(buffer)))
-                {
-                    ble.sendToPrimary(buffer);
-                }
-            }
-        }
-        break;
-
-        case SyncCommandType::SYNC_PROBE_ACK:
-        {
-            // PRIMARY receives SYNC_PROBE_ACK from SECONDARY
-            if (deviceRole == DeviceRole::PRIMARY)
-            {
-                uint8_t seq = (uint8_t)cmd.getDataInt("0", 0);
-                uint16_t sessionId = (uint16_t)cmd.getDataInt("1", 0);
-                uint64_t originalT1 = cmd.getTimestamp();
-
-                // Calculate RTT for logging (actual RTT calc is in handleProbeAck)
-                uint64_t now = getMicros();
-                uint32_t rtt = (uint32_t)(now - originalT1);
-
-                // Validate session ID, sequence, and process the ACK
-                if (syncProtocol.handleProbeAck(seq, sessionId, originalT1))
-                {
-                    // Reset retry counter on successful ACK
-                    rttProbeRetryCount = 0;
-
-                    // Record probe RTT for latency metrics
-                    latencyMetrics.recordSyncProbe(rtt);
-                    Serial.printf("[SYNC] Probe %u RTT: %lu us (session %u)\n", seq, (unsigned long)rtt, sessionId);
-
-                    // Check if more probes needed
-                    if (seq + 1 < SYNC_PROBE_COUNT)
-                    {
-                        // Send next probe after interval
-                        delay(SYNC_PROBE_INTERVAL_MS);
-                        sendRttProbe(seq + 1);
-                    }
-                    else
-                    {
-                        // All probes complete - finalize synchronization
-                        finalizeRttProbing();
-                    }
-                }
-            }
-        }
-        break;
-
         default:
             break;
         }
@@ -1132,49 +899,30 @@ void onBLEMessage(uint16_t connHandle, const char *message)
 // THERAPY CALLBACKS
 // =============================================================================
 
-void onSendCommand(const char *commandType, uint8_t leftFinger, uint8_t rightFinger, uint8_t amplitude, uint32_t seq)
+void onSendCommand(const char *commandType, uint8_t leftFinger, uint8_t rightFinger, uint8_t amplitude, uint32_t durationMs, uint32_t seq)
 {
-    // Schedule execution in the future to allow SECONDARY time to receive and prepare
-    uint64_t executeAt = syncProtocol.scheduleExecution(SYNC_EXECUTION_BUFFER_MS);
-
-    // Create BUZZ command with scheduled execution time
-    SyncCommand cmd = SyncCommand::createBuzz(seq, leftFinger, amplitude, executeAt);
+    // Create BUZZ command with duration for SECONDARY motor deactivation
+    SyncCommand cmd = SyncCommand::createBuzz(seq, leftFinger, amplitude, durationMs);
 
     char buffer[128];
     if (cmd.serialize(buffer, sizeof(buffer)))
     {
-        if (ble.sendToSecondary(buffer))
-        {
-            Serial.printf("[TX->SEC] %s (L:%d R:%d) executeAt:%lu\n",
-                          commandType, leftFinger, rightFinger, (unsigned long)(executeAt & 0xFFFFFFFF));
-        }
+        ble.sendToSecondary(buffer);
     }
 
-    // Wait until scheduled execution time, then activate locally
-    if (syncProtocol.waitUntil(executeAt))
+    // Wait for measured BLE latency, then activate locally
+    // SECONDARY activates immediately on receive, so waiting here
+    // ensures both devices activate at roughly the same time
+    uint32_t latencyUs = syncProtocol.getMeasuredLatency();
+    if (latencyUs > 0)
     {
-        // Record execution drift for latency metrics
-        if (latencyMetrics.enabled)
-        {
-            uint64_t actualTime = syncProtocol.getMicros();
-            int32_t drift_us = (int32_t)(actualTime - executeAt);
-            latencyMetrics.recordExecution(drift_us);
-        }
-
-        // Execute at the scheduled time
-        if (haptic.isEnabled(leftFinger))
-        {
-            haptic.activate(leftFinger, amplitude);
-        }
+        delayMicroseconds(latencyUs);
     }
-    else
+
+    // Activate local motor
+    if (haptic.isEnabled(leftFinger))
     {
-        // Fallback: execute immediately if wait failed
-        Serial.println(F("[SYNC] WARNING: waitUntil failed, executing immediately"));
-        if (haptic.isEnabled(leftFinger))
-        {
-            haptic.activate(leftFinger, amplitude);
-        }
+        haptic.activate(leftFinger, amplitude);
     }
 }
 
@@ -1206,6 +954,15 @@ void onDeactivate(uint8_t finger)
 void onCycleComplete(uint32_t cycleCount)
 {
     Serial.printf("[THERAPY] Cycle %lu complete\n", cycleCount);
+}
+
+void onMacrocycleStart(uint32_t macrocycleCount)
+{
+    // PRIMARY: Send PING to measure BLE latency at start of each macrocycle
+    if (deviceRole == DeviceRole::PRIMARY)
+    {
+        sendPing();
+    }
 }
 
 // =============================================================================
@@ -1334,39 +1091,16 @@ void autoStartTherapy()
     const TherapyProfile *profile = profiles.getCurrentProfile();
     if (!profile)
     {
-        Serial.println(F("[AUTO] No profile loaded - using defaults"));
+        // No profile loaded - fall back to built-in "noisy_vcr" (v1 defaults)
+        Serial.println(F("[AUTO] No profile loaded - loading noisy_vcr defaults"));
+        profiles.loadProfileByName("noisy_vcr");
+        profile = profiles.getCurrentProfile();
 
-        // Default settings if no profile
-        Serial.println(F("\n+============================================================+"));
-        Serial.println(F("|  AUTO-STARTING DEFAULT THERAPY (no phone connected)        |"));
-        Serial.println(F("|  Duration: 30 minutes | Pattern: RNDP | Jitter: 20%        |"));
-        Serial.println(F("+============================================================+\n"));
-
-        stateMachine.transition(StateTrigger::START_SESSION);
-
-        // Notify SECONDARY of session start (enables pulsing LED on SECONDARY)
-        if (ble.isSecondaryConnected())
+        if (!profile)
         {
-            SyncCommand cmd = SyncCommand::createStartSession(g_sequenceGenerator.next());
-            char buffer[64];
-            if (cmd.serialize(buffer, sizeof(buffer)))
-            {
-                ble.sendToSecondary(buffer);
-            }
+            Serial.println(F("[AUTO] ERROR: Failed to load fallback profile"));
+            return;
         }
-
-        therapy.startSession(
-            1800,              // 30 minutes (1800 seconds)
-            PATTERN_TYPE_RNDP, // Random pattern
-            1500,              // 1500ms on time
-            5000,              // 5000ms off time
-            20.0f,             // 20% jitter
-            4,                 // All 4 fingers (index, middle, ring, pinky)
-            true,              // Mirror pattern
-            50,                // Amplitude min (default)
-            100                // Amplitude max (default)
-        );
-        return;
     }
 
     // Convert pattern type string to constant
@@ -1415,41 +1149,30 @@ void autoStartTherapy()
 }
 
 // =============================================================================
-// RTT PROBING HELPERS (PRIMARY only)
+// PING/PONG LATENCY MEASUREMENT (PRIMARY only)
 // =============================================================================
 
-void startRttProbing()
+/**
+ * @brief Send PING to SECONDARY to measure BLE latency
+ *
+ * Called at the start of each macrocycle. SECONDARY immediately replies
+ * with PONG, allowing PRIMARY to calculate RTT and one-way latency.
+ */
+void sendPing()
 {
-    Serial.println(F("[SYNC] Initiating RTT probing for enhanced clock sync"));
-    rttProbeRetryCount = 0;
-    syncProtocol.startRttProbing();
-    sendRttProbe(0);
-}
+    if (deviceRole != DeviceRole::PRIMARY || !ble.isSecondaryConnected())
+    {
+        return;
+    }
 
-void sendRttProbe(uint8_t seq)
-{
-    // Use createProbe() to centralize state management and include session ID
-    SyncCommand probe = syncProtocol.createProbe(seq);
+    pingStartTime = getMicros();
+    SyncCommand cmd = SyncCommand::createPing(g_sequenceGenerator.next());
 
-    char buffer[128];
-    if (probe.serialize(buffer, sizeof(buffer)))
+    char buffer[64];
+    if (cmd.serialize(buffer, sizeof(buffer)))
     {
         ble.sendToSecondary(buffer);
-        rttProbeTimeout = millis() + SYNC_PROBE_TIMEOUT_MS;
     }
-}
-
-void finalizeRttProbing()
-{
-    // Finalize sync protocol with minimum RTT estimate
-    syncProtocol.finalizeSync();
-
-    // Record sync quality in latency metrics
-    int64_t offset = syncProtocol.getOffset();
-    latencyMetrics.finalizeSyncProbing(offset);
-
-    Serial.printf("[SYNC] Clock sync complete. Estimated one-way latency: %lu us\n",
-                  (unsigned long)syncProtocol.getEstimatedLatency());
 }
 
 // =============================================================================
@@ -1746,6 +1469,25 @@ void handleSerialCommand(const char *command)
     }
 
     // =========================================================================
+
+    // FACTORY_RESET - delete settings file and reboot
+    if (strcmp(command, "FACTORY_RESET") == 0)
+    {
+        Serial.println(F("[CONFIG] Factory reset - deleting settings..."));
+        if (InternalFS.remove(SETTINGS_FILE))
+        {
+            Serial.println(F("[CONFIG] Settings deleted successfully"));
+        }
+        else
+        {
+            Serial.println(F("[CONFIG] No settings file to delete"));
+        }
+        Serial.println(F("[CONFIG] Rebooting..."));
+        Serial.flush();
+        delay(100);
+        NVIC_SystemReset();
+        return;
+    }
 
     // REBOOT - restart the device
     if (strcmp(command, "REBOOT") == 0)

@@ -209,6 +209,7 @@ TherapyEngine::TherapyEngine() :
     _motorActive(false),
     _cyclesCompleted(0),
     _totalActivations(0),
+    _patternsInMacrocycle(0),
     _buzzSequenceId(0),
     _buzzFlowState(BuzzFlowState::IDLE),
     _buzzSendTime(0),
@@ -216,7 +217,8 @@ TherapyEngine::TherapyEngine() :
     _activateCallback(nullptr),
     _deactivateCallback(nullptr),
     _cycleCompleteCallback(nullptr),
-    _setFrequencyCallback(nullptr)
+    _setFrequencyCallback(nullptr),
+    _macrocycleStartCallback(nullptr)
 {
 }
 
@@ -242,6 +244,10 @@ void TherapyEngine::setCycleCompleteCallback(CycleCompleteCallback callback) {
 
 void TherapyEngine::setSetFrequencyCallback(SetFrequencyCallback callback) {
     _setFrequencyCallback = callback;
+}
+
+void TherapyEngine::setMacrocycleStartCallback(MacrocycleStartCallback callback) {
+    _macrocycleStartCallback = callback;
 }
 
 void TherapyEngine::setFrequencyRandomization(bool enabled, uint16_t minHz, uint16_t maxHz) {
@@ -271,6 +277,7 @@ void TherapyEngine::startSession(
     _shouldStop = false;
     _cyclesCompleted = 0;
     _totalActivations = 0;
+    _patternsInMacrocycle = 0;
     _buzzSequenceId = 0;
 
     // Store session parameters
@@ -299,8 +306,16 @@ void TherapyEngine::startSession(
     // Generate first pattern
     generateNextPattern();
 
-    Serial.printf("[THERAPY] Session started: %lu sec, pattern=%d, jitter=%.1f%%\n",
-                  durationSec, patternType, jitterPercent);
+    // Notify macrocycle start (first macrocycle)
+    if (_macrocycleStartCallback) {
+        _macrocycleStartCallback(_cyclesCompleted);
+    }
+
+    Serial.printf("[THERAPY] Session started: %lu sec, pattern=%d\n", durationSec, patternType);
+    Serial.printf("[THERAPY] Timing: ON=%.1fms, OFF=%.1fms, Jitter=%.1f%%\n",
+                  timeOnMs, timeOffMs, jitterPercent);
+    Serial.printf("[THERAPY] Pattern duration: %.1fms, Relax: %.1fms\n",
+                  _currentPattern.burstDurationMs, _currentPattern.interBurstIntervalMs);
 }
 
 void TherapyEngine::update() {
@@ -474,7 +489,8 @@ void TherapyEngine::executePatternStep() {
 
             // Send sync command to SECONDARY (if PRIMARY with callback)
             if (_sendCommandCallback) {
-                _sendCommandCallback("BUZZ", leftFinger, rightFinger, amplitude, _buzzSequenceId);
+                uint32_t durationMs = (uint32_t)_currentPattern.burstDurationMs;
+                _sendCommandCallback("BUZZ", leftFinger, rightFinger, amplitude, durationMs, _buzzSequenceId);
                 _buzzSequenceId++;
             }
 
@@ -483,7 +499,10 @@ void TherapyEngine::executePatternStep() {
                 _activateCallback(leftFinger, amplitude);
             }
 
-            _activationStartTime = now;
+            // Use fresh timestamp AFTER callbacks complete - BLE send in
+            // _sendCommandCallback can take 10-15ms, and that time should
+            // NOT count against TIME_ON
+            _activationStartTime = millis();
             _motorActive = true;
             _totalActivations++;
 
@@ -521,17 +540,20 @@ void TherapyEngine::executePatternStep() {
                 _patternIndex++;
 
                 if (_patternIndex >= _currentPattern.numFingers) {
-                    // Pattern cycle complete - wait TIME_RELAX before next cycle
-                    _cyclesCompleted++;
+                    // One pattern complete - check if macrocycle is done
+                    _patternsInMacrocycle++;
 
-                    if (_cycleCompleteCallback) {
-                        _cycleCompleteCallback(_cyclesCompleted);
+                    if (_patternsInMacrocycle < PATTERNS_PER_MACROCYCLE) {
+                        // More patterns to execute in this macrocycle (3 patterns back-to-back)
+                        // NO TIME_RELAX wait between patterns within a macrocycle
+                        generateNextPattern();
+                    } else {
+                        // Macrocycle complete (3 patterns done) - now wait double TIME_RELAX
+                        _buzzSendTime = now;
+                        _buzzFlowState = BuzzFlowState::WAITING_RELAX;
                     }
-
-                    _buzzSendTime = now;  // Record time for TIME_RELAX wait
-                    _buzzFlowState = BuzzFlowState::WAITING_RELAX;
                 } else {
-                    // More fingers to go - immediately start next buzz
+                    // More fingers to go in current pattern
                     _buzzFlowState = BuzzFlowState::IDLE;
                 }
             }
@@ -539,10 +561,27 @@ void TherapyEngine::executePatternStep() {
         }
 
         case BuzzFlowState::WAITING_RELAX: {
-            // Pattern complete - wait for TIME_RELAX (interBurstIntervalMs = 668ms)
-            if ((now - _buzzSendTime) >= (uint32_t)_currentPattern.interBurstIntervalMs) {
-                // TIME_RELAX elapsed - generate new pattern and start next cycle
+            // Macrocycle complete (3 patterns done) - wait for 2x TIME_RELAX (1336ms total)
+            float doubleRelaxMs = 2.0f * _currentPattern.interBurstIntervalMs;
+
+            if ((now - _buzzSendTime) >= (uint32_t)doubleRelaxMs) {
+                // Double TIME_RELAX elapsed - macrocycle complete
+                _cyclesCompleted++;
+
+                if (_cycleCompleteCallback) {
+                    _cycleCompleteCallback(_cyclesCompleted);
+                }
+
+                // Reset pattern counter for next macrocycle
+                _patternsInMacrocycle = 0;
+
+                // Generate new pattern and start next macrocycle
                 generateNextPattern();
+
+                // Notify macrocycle start (for PING/PONG latency measurement)
+                if (_macrocycleStartCallback) {
+                    _macrocycleStartCallback(_cyclesCompleted);
+                }
             }
             break;
         }

@@ -463,8 +463,22 @@ bool ProfileManager::loadSettings() {
         // Apply saved customizations
         _currentProfile.actuatorType = (data.actuatorType == 1) ? ActuatorType::ERM : ActuatorType::LRA;
         _currentProfile.frequencyHz = data.frequencyHz;
-        _currentProfile.timeOnMs = data.timeOnMs;
-        _currentProfile.timeOffMs = data.timeOffMs;
+
+        // Validate timing values - reject if outside v1 reasonable range (10-500ms)
+        // This protects against corrupted settings from old firmware versions
+        if (data.timeOnMs >= 10.0f && data.timeOnMs <= 500.0f) {
+            _currentProfile.timeOnMs = data.timeOnMs;
+        } else {
+            Serial.printf("[SETTINGS] WARNING: Invalid timeOnMs %.1f, keeping default %.1f\n",
+                          data.timeOnMs, _currentProfile.timeOnMs);
+        }
+        if (data.timeOffMs >= 10.0f && data.timeOffMs <= 500.0f) {
+            _currentProfile.timeOffMs = data.timeOffMs;
+        } else {
+            Serial.printf("[SETTINGS] WARNING: Invalid timeOffMs %.1f, keeping default %.1f\n",
+                          data.timeOffMs, _currentProfile.timeOffMs);
+        }
+
         _currentProfile.jitterPercent = data.jitterPercent;
         _currentProfile.amplitudeMin = data.amplitudeMin;
         _currentProfile.amplitudeMax = data.amplitudeMax;
@@ -474,6 +488,10 @@ bool ProfileManager::loadSettings() {
         _currentProfile.numFingers = data.numFingers;
 
         _profileLoaded = true;
+
+        // Log loaded timing for debugging
+        Serial.printf("[SETTINGS] Timing: ON=%.1fms, OFF=%.1fms, Jitter=%.1f%%\n",
+                      _currentProfile.timeOnMs, _currentProfile.timeOffMs, _currentProfile.jitterPercent);
     }
 
     Serial.printf("[SETTINGS] Loaded profile: %s\n", _currentProfile.name);

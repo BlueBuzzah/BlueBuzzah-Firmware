@@ -29,15 +29,11 @@ static const CommandTypeMapping COMMAND_MAPPINGS[] = {
     { SyncCommandType::PAUSE_SESSION,  "PAUSE_SESSION" },
     { SyncCommandType::RESUME_SESSION, "RESUME_SESSION" },
     { SyncCommandType::STOP_SESSION,   "STOP_SESSION" },
-    { SyncCommandType::BUZZ,   "BUZZ" },
+    { SyncCommandType::BUZZ,           "BUZZ" },
     { SyncCommandType::DEACTIVATE,     "DEACTIVATE" },
     { SyncCommandType::HEARTBEAT,      "HEARTBEAT" },
-    { SyncCommandType::SYNC_ADJ,       "SYNC_ADJ" },
-    { SyncCommandType::SYNC_ADJ_START, "SYNC_ADJ_START" },
-    { SyncCommandType::FIRST_SYNC,     "FIRST_SYNC" },
-    { SyncCommandType::ACK_SYNC_ADJ,   "ACK_SYNC_ADJ" },
-    { SyncCommandType::SYNC_PROBE,     "SYNC_PROBE" },
-    { SyncCommandType::SYNC_PROBE_ACK, "SYNC_PROBE_ACK" }
+    { SyncCommandType::PING,           "PING" },
+    { SyncCommandType::PONG,           "PONG" }
 };
 
 static const size_t COMMAND_MAPPINGS_COUNT = sizeof(COMMAND_MAPPINGS) / sizeof(COMMAND_MAPPINGS[0]);
@@ -106,9 +102,6 @@ bool SyncCommand::serialize(char* buffer, size_t bufferSize) const {
         size_t remaining = bufferSize - written;
         serializeData(buffer + written, remaining);
     }
-
-    // Debug: show what was serialized
-    Serial.printf("[SYNC] Serialized: %s (data pairs: %d)\n", buffer, _dataCount);
 
     return true;
 }
@@ -341,31 +334,24 @@ SyncCommand SyncCommand::createStopSession(uint32_t sequenceId) {
     return SyncCommand(SyncCommandType::STOP_SESSION, sequenceId);
 }
 
-SyncCommand SyncCommand::createBuzz(uint32_t sequenceId, uint8_t finger, uint8_t amplitude, uint64_t executeAt) {
+SyncCommand SyncCommand::createBuzz(uint32_t sequenceId, uint8_t finger, uint8_t amplitude, uint32_t durationMs) {
     SyncCommand cmd(SyncCommandType::BUZZ, sequenceId);
     cmd.setData("0", (int32_t)finger);
     cmd.setData("1", (int32_t)amplitude);
-
-    // Add scheduled execution time if specified (split 64-bit into 2x32-bit for ARM)
-    if (executeAt > 0) {
-        uint32_t execHigh = (uint32_t)(executeAt >> 32);
-        uint32_t execLow = (uint32_t)(executeAt & 0xFFFFFFFF);
-        char highStr[16], lowStr[16];
-        snprintf(highStr, sizeof(highStr), "%lu", (unsigned long)execHigh);
-        snprintf(lowStr, sizeof(lowStr), "%lu", (unsigned long)execLow);
-        cmd.setData("2", highStr);
-        cmd.setData("3", lowStr);
-    }
+    cmd.setData("2", (int32_t)durationMs);
     return cmd;
-}
-
-SyncCommand SyncCommand::createBuzz(uint32_t sequenceId, uint8_t finger, uint8_t amplitude) {
-    // Backward compatible - immediate execution (executeAt = 0)
-    return createBuzz(sequenceId, finger, amplitude, 0);
 }
 
 SyncCommand SyncCommand::createDeactivate(uint32_t sequenceId) {
     return SyncCommand(SyncCommandType::DEACTIVATE, sequenceId);
+}
+
+SyncCommand SyncCommand::createPing(uint32_t sequenceId) {
+    return SyncCommand(SyncCommandType::PING, sequenceId);
+}
+
+SyncCommand SyncCommand::createPong(uint32_t sequenceId) {
+    return SyncCommand(SyncCommandType::PONG, sequenceId);
 }
 
 // =============================================================================
@@ -375,16 +361,8 @@ SyncCommand SyncCommand::createDeactivate(uint32_t sequenceId) {
 SimpleSyncProtocol::SimpleSyncProtocol() :
     _currentOffset(0),
     _lastSyncTime(0),
-    _estimatedLatency(0),
-    _rttSampleCount(0),
-    _currentProbeSeq(0),
-    _probeSentTime(0),
-    _probingInProgress(false),
-    _probeSessionId(0),
-    _pendingProbeT1(0)
+    _measuredLatencyUs(0)
 {
-    memset(_rttSamples, 0, sizeof(_rttSamples));
-    memset(_probeAckReceived, false, sizeof(_probeAckReceived));
 }
 
 int64_t SimpleSyncProtocol::calculateOffset(uint64_t primaryTime, uint64_t secondaryTime) {
@@ -411,196 +389,5 @@ uint32_t SimpleSyncProtocol::getTimeSinceSync() const {
 void SimpleSyncProtocol::reset() {
     _currentOffset = 0;
     _lastSyncTime = 0;
-    _estimatedLatency = 0;
-}
-
-uint32_t SimpleSyncProtocol::calculateRoundTrip(uint64_t sentTime, uint64_t receivedTime, uint64_t remoteTime) {
-    // Round trip time = received - sent
-    uint64_t rtt = receivedTime - sentTime;
-
-    // One-way latency estimate = RTT / 2
-    _estimatedLatency = (uint32_t)(rtt / 2);
-
-    // Recalculate offset accounting for latency
-    // Remote time was captured at: sentTime + latency
-    // So offset = remoteTime - (sentTime + latency)
-    _currentOffset = (int64_t)remoteTime - (int64_t)(sentTime + _estimatedLatency);
-    _lastSyncTime = millis();
-
-    return _estimatedLatency;
-}
-
-// =============================================================================
-// SIMPLE SYNC PROTOCOL - SCHEDULED EXECUTION
-// =============================================================================
-
-uint64_t SimpleSyncProtocol::scheduleExecution(uint32_t bufferMs) const {
-    // Schedule execution bufferMs in the future
-    return getMicros() + ((uint64_t)bufferMs * 1000ULL);
-}
-
-uint64_t SimpleSyncProtocol::toLocalTime(uint64_t primaryScheduledTime) const {
-    // Convert PRIMARY's time to SECONDARY's local time by applying offset
-    // If SECONDARY is ahead (positive offset), add offset to get local time
-    // If SECONDARY is behind (negative offset), subtract to get local time
-    return primaryScheduledTime + _currentOffset;
-}
-
-bool SimpleSyncProtocol::waitUntil(uint64_t scheduledTime, uint32_t maxWaitUs) const {
-    uint64_t startTime = getMicros();
-    uint64_t deadline = startTime + maxWaitUs;
-
-    // Check if scheduled time is already in the past
-    if (scheduledTime <= startTime) {
-        Serial.printf("[SYNC] waitUntil: late by %lu us\n",
-                      (unsigned long)(startTime - scheduledTime));
-        return false;
-    }
-
-    // Check if wait would exceed maximum
-    if (scheduledTime > deadline) {
-        Serial.printf("[SYNC] waitUntil: would exceed max wait (%lu us > %lu us)\n",
-                      (unsigned long)(scheduledTime - startTime), (unsigned long)maxWaitUs);
-        return false;
-    }
-
-    // Spin-wait until scheduled time (tight loop for precision)
-    while (getMicros() < scheduledTime) {
-        // Tight loop - no yield for maximum precision
-    }
-
-    // Drift logging moved to latency metrics system
-    // Only log errors, not every successful execution
-    #if DEBUG_ENABLED
-    uint64_t actualTime = getMicros();
-    int32_t drift = (int32_t)(actualTime - scheduledTime);
-    Serial.printf("[SYNC] waitUntil drift: %ld us\n", (long)drift);
-    #endif
-
-    return true;
-}
-
-// =============================================================================
-// SIMPLE SYNC PROTOCOL - RTT PROBING
-// =============================================================================
-
-bool SimpleSyncProtocol::startRttProbing() {
-    // Increment session ID to invalidate any stale ACKs from previous sessions
-    _probeSessionId++;
-
-    // Reset RTT probing state
-    _rttSampleCount = 0;
-    _currentProbeSeq = 0;
-    _probeSentTime = 0;
-    _pendingProbeT1 = 0;
-    _probingInProgress = true;
-    memset(_rttSamples, 0, sizeof(_rttSamples));
-    memset(_probeAckReceived, false, sizeof(_probeAckReceived));
-
-    Serial.printf("[SYNC] RTT probing started (session %u)\n", _probeSessionId);
-    return true;
-}
-
-SyncCommand SimpleSyncProtocol::createProbe(uint8_t seq) {
-    // Update internal state for this probe
-    _currentProbeSeq = seq;
-    _pendingProbeT1 = getMicros();
-
-    // Create the probe command
-    SyncCommand probe(SyncCommandType::SYNC_PROBE, g_sequenceGenerator.next());
-    probe.setTimestamp(_pendingProbeT1);
-    probe.setData("0", (int32_t)seq);            // Probe sequence
-    probe.setData("1", (int32_t)_probeSessionId); // Session ID for isolation
-
-    return probe;
-}
-
-bool SimpleSyncProtocol::handleProbeAck(uint8_t seq, uint16_t sessionId, uint64_t originalT1) {
-    // Layer 1: Validate session ID (rejects stale ACKs from previous sessions)
-    if (sessionId != _probeSessionId) {
-        Serial.printf("[SYNC] Stale ACK rejected: session %u != current %u\n",
-                      sessionId, _probeSessionId);
-        return false;
-    }
-
-    // Layer 2: Validate sequence number matches expected
-    if (seq != _currentProbeSeq) {
-        Serial.printf("[SYNC] Probe ACK seq mismatch: expected %u, got %u\n",
-                      _currentProbeSeq, seq);
-        return false;
-    }
-
-    // Layer 3: Check for duplicate ACKs (handles BLE retransmits)
-    if (seq < SYNC_PROBE_COUNT && _probeAckReceived[seq]) {
-        Serial.printf("[SYNC] Duplicate ACK ignored: probe %u\n", seq);
-        return false;
-    }
-
-    // Mark this probe as acknowledged
-    if (seq < SYNC_PROBE_COUNT) {
-        _probeAckReceived[seq] = true;
-    }
-
-    // Calculate RTT using our stored T1 (not the echoed one, for extra safety)
-    uint64_t now = getMicros();
-    uint32_t rtt = (uint32_t)(now - _pendingProbeT1);
-
-    // Store RTT sample
-    if (_rttSampleCount < SYNC_PROBE_COUNT) {
-        _rttSamples[_rttSampleCount++] = rtt;
-    }
-
-    return true;
-}
-
-bool SimpleSyncProtocol::isProbingComplete() const {
-    return _rttSampleCount >= SYNC_PROBE_COUNT;
-}
-
-uint32_t SimpleSyncProtocol::getMinRtt() const {
-    if (_rttSampleCount == 0) return 0;
-
-    uint32_t minVal = _rttSamples[0];
-    for (uint8_t i = 1; i < _rttSampleCount; i++) {
-        if (_rttSamples[i] < minVal) {
-            minVal = _rttSamples[i];
-        }
-    }
-    return minVal;
-}
-
-uint32_t SimpleSyncProtocol::getMaxRtt() const {
-    if (_rttSampleCount == 0) return 0;
-
-    uint32_t maxVal = _rttSamples[0];
-    for (uint8_t i = 1; i < _rttSampleCount; i++) {
-        if (_rttSamples[i] > maxVal) {
-            maxVal = _rttSamples[i];
-        }
-    }
-    return maxVal;
-}
-
-uint32_t SimpleSyncProtocol::getRttSpread() const {
-    if (_rttSampleCount == 0) return 0;
-    return getMaxRtt() - getMinRtt();
-}
-
-void SimpleSyncProtocol::finalizeSync() {
-    if (_rttSampleCount == 0) {
-        Serial.println(F("[SYNC] WARNING: No RTT samples collected"));
-        _probingInProgress = false;
-        return;
-    }
-
-    // Use minimum RTT as best estimate of true latency
-    // (Minimum RTT = least congested, closest to actual hardware latency)
-    uint32_t minRtt = getMinRtt();
-    _estimatedLatency = minRtt / 2;  // One-way = RTT / 2
-    _probingInProgress = false;
-
-    Serial.printf("[SYNC] RTT probing finalized: min=%lu us, one-way=%lu us, spread=%lu us\n",
-                  (unsigned long)minRtt,
-                  (unsigned long)_estimatedLatency,
-                  (unsigned long)getRttSpread());
+    _measuredLatencyUs = 0;
 }

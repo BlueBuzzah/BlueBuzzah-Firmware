@@ -18,10 +18,6 @@
 #define LATENCY_LATE_THRESHOLD_US 1000  // >1ms considered "late"
 #endif
 
-#ifndef SYNC_PROBE_COUNT
-#define SYNC_PROBE_COUNT 10  // Number of RTT probes during initial sync
-#endif
-
 /**
  * @brief Latency metrics collection and reporting
  *

@@ -118,10 +118,25 @@ void HapticController::configureDRV2605(Adafruit_DRV2605& drv) {
     // 1. Configure for LRA (Linear Resonant Actuator)
     drv.useLRA();
 
-    // 2. Set Real-Time Playback (RTP) mode
+    // 2. Enable open-loop mode (v1 requirement for proper LRA operation)
+    // Register 0x1D (CONTROL3): Set bits 5 (N_PWM_ANALOG) and 0 (LRA_OPEN_LOOP)
+    uint8_t control3 = drv.readRegister8(0x1D);
+    drv.writeRegister8(0x1D, control3 | 0x21);
+
+    // 3. Set peak voltage to 2.50V (v1 default: ACTUATOR_VOLTAGE = 2.50)
+    // Register 0x17 (OD_CLAMP): voltage = value * 0.02122V
+    // 2.50V / 0.02122 ≈ 118
+    drv.writeRegister8(0x17, 118);
+
+    // 4. Set driving frequency to 250Hz (v1 default)
+    // Register 0x20 (OL_LRA_PERIOD): period = 1 / (freq * 0.00009849)
+    // 250Hz: 1 / (250 * 0.00009849) ≈ 40
+    drv.writeRegister8(0x20, 40);
+
+    // 5. Set Real-Time Playback (RTP) mode
     drv.setMode(DRV2605_MODE_REALTIME);
 
-    // 3. Initialize RTP value to 0 (motor off)
+    // 6. Initialize RTP value to 0 (motor off)
     drv.setRealtimeValue(0);
 }
 

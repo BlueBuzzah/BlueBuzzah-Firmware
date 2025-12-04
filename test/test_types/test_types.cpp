@@ -290,28 +290,12 @@ void test_syncCommandTypeToString_stopSession(void) {
     TEST_ASSERT_EQUAL_STRING("STOP_SESSION", syncCommandTypeToString(SyncCommandType::STOP_SESSION));
 }
 
-void test_syncCommandTypeToString_syncAdj(void) {
-    TEST_ASSERT_EQUAL_STRING("SYNC_ADJ", syncCommandTypeToString(SyncCommandType::SYNC_ADJ));
+void test_syncCommandTypeToString_ping(void) {
+    TEST_ASSERT_EQUAL_STRING("PING", syncCommandTypeToString(SyncCommandType::PING));
 }
 
-void test_syncCommandTypeToString_syncAdjStart(void) {
-    TEST_ASSERT_EQUAL_STRING("SYNC_ADJ_START", syncCommandTypeToString(SyncCommandType::SYNC_ADJ_START));
-}
-
-void test_syncCommandTypeToString_firstSync(void) {
-    TEST_ASSERT_EQUAL_STRING("FIRST_SYNC", syncCommandTypeToString(SyncCommandType::FIRST_SYNC));
-}
-
-void test_syncCommandTypeToString_ackSyncAdj(void) {
-    TEST_ASSERT_EQUAL_STRING("ACK_SYNC_ADJ", syncCommandTypeToString(SyncCommandType::ACK_SYNC_ADJ));
-}
-
-void test_syncCommandTypeToString_syncProbe(void) {
-    TEST_ASSERT_EQUAL_STRING("SYNC_PROBE", syncCommandTypeToString(SyncCommandType::SYNC_PROBE));
-}
-
-void test_syncCommandTypeToString_syncProbeAck(void) {
-    TEST_ASSERT_EQUAL_STRING("SYNC_PROBE_ACK", syncCommandTypeToString(SyncCommandType::SYNC_PROBE_ACK));
+void test_syncCommandTypeToString_pong(void) {
+    TEST_ASSERT_EQUAL_STRING("PONG", syncCommandTypeToString(SyncCommandType::PONG));
 }
 
 // =============================================================================
@@ -661,12 +645,8 @@ int main(int argc, char **argv) {
     RUN_TEST(test_syncCommandTypeToString_pauseSession);
     RUN_TEST(test_syncCommandTypeToString_resumeSession);
     RUN_TEST(test_syncCommandTypeToString_stopSession);
-    RUN_TEST(test_syncCommandTypeToString_syncAdj);
-    RUN_TEST(test_syncCommandTypeToString_syncAdjStart);
-    RUN_TEST(test_syncCommandTypeToString_firstSync);
-    RUN_TEST(test_syncCommandTypeToString_ackSyncAdj);
-    RUN_TEST(test_syncCommandTypeToString_syncProbe);
-    RUN_TEST(test_syncCommandTypeToString_syncProbeAck);
+    RUN_TEST(test_syncCommandTypeToString_ping);
+    RUN_TEST(test_syncCommandTypeToString_pong);
 
     // RGB Color Tests
     RUN_TEST(test_RGBColor_default_constructor);

@@ -30,10 +30,6 @@
 #define SYNC_MAX_KEY_LEN 16
 #define SYNC_MAX_VALUE_LEN 32
 
-// Scheduled execution constants
-#define SYNC_EXECUTION_BUFFER_MS    50      // Schedule execution 50ms in future
-#define SYNC_MAX_WAIT_US            100000  // Max spin-wait time (100ms)
-
 // =============================================================================
 // SYNC COMMAND DATA
 // =============================================================================
@@ -220,26 +216,30 @@ public:
     static SyncCommand createStopSession(uint32_t sequenceId = 0);
 
     /**
-     * @brief Create BUZZ command with scheduled execution time
+     * @brief Create BUZZ command with motor activation duration
      * @param sequenceId Sequence ID for the command
-     * @param finger Finger index (0-4)
+     * @param finger Finger index (0-3)
      * @param amplitude Amplitude percentage (0-100)
-     * @param executeAt Scheduled execution time in microseconds (0 = immediate)
+     * @param durationMs How long motor should stay active (TIME_ON from profile)
      */
-    static SyncCommand createBuzz(uint32_t sequenceId, uint8_t finger, uint8_t amplitude, uint64_t executeAt);
-
-    /**
-     * @brief Create BUZZ command for immediate execution (backward compatible)
-     * @param sequenceId Sequence ID for the command
-     * @param finger Finger index (0-4)
-     * @param amplitude Amplitude percentage (0-100)
-     */
-    static SyncCommand createBuzz(uint32_t sequenceId, uint8_t finger, uint8_t amplitude);
+    static SyncCommand createBuzz(uint32_t sequenceId, uint8_t finger, uint8_t amplitude, uint32_t durationMs);
 
     /**
      * @brief Create DEACTIVATE command
      */
     static SyncCommand createDeactivate(uint32_t sequenceId = 0);
+
+    /**
+     * @brief Create PING command for latency measurement
+     * @param sequenceId Sequence ID for the command
+     */
+    static SyncCommand createPing(uint32_t sequenceId);
+
+    /**
+     * @brief Create PONG response to PING
+     * @param sequenceId Sequence ID (echoes the PING's sequence ID)
+     */
+    static SyncCommand createPong(uint32_t sequenceId);
 
 private:
     SyncCommandType _type;
@@ -360,145 +360,26 @@ public:
      */
     void reset();
 
-    /**
-     * @brief Calculate round-trip time from ping-pong exchange
-     * @param sentTime Time when ping was sent
-     * @param receivedTime Time when pong was received
-     * @param remoteTime Remote device's timestamp in pong
-     * @return Estimated one-way latency in microseconds
-     */
-    uint32_t calculateRoundTrip(uint64_t sentTime, uint64_t receivedTime, uint64_t remoteTime);
-
     // =========================================================================
-    // SCHEDULED EXECUTION METHODS
+    // PING/PONG LATENCY MEASUREMENT
     // =========================================================================
 
     /**
-     * @brief Schedule execution time in the future
-     * @param bufferMs Milliseconds to schedule ahead (default 50ms)
-     * @return Scheduled execution time in microseconds
+     * @brief Update measured latency from RTT
+     * @param rttUs Round-trip time in microseconds
      */
-    uint64_t scheduleExecution(uint32_t bufferMs = SYNC_EXECUTION_BUFFER_MS) const;
+    void updateLatency(uint32_t rttUs) { _measuredLatencyUs = rttUs / 2; }
 
     /**
-     * @brief Convert PRIMARY's scheduled time to local time
-     * @param primaryScheduledTime Execution time in PRIMARY's clock (microseconds)
-     * @return Equivalent time in local clock (microseconds)
+     * @brief Get measured one-way latency
+     * @return Latency in microseconds (0 if never measured)
      */
-    uint64_t toLocalTime(uint64_t primaryScheduledTime) const;
-
-    /**
-     * @brief Spin-wait until scheduled execution time
-     * @param scheduledTime Target time in local clock (microseconds)
-     * @param maxWaitUs Maximum wait time before timeout (default 100ms)
-     * @return true if reached target time, false if timeout
-     */
-    bool waitUntil(uint64_t scheduledTime, uint32_t maxWaitUs = SYNC_MAX_WAIT_US) const;
-
-    /**
-     * @brief Get estimated one-way latency
-     * @return Latency in microseconds
-     */
-    uint32_t getEstimatedLatency() const { return _estimatedLatency; }
-
-    /**
-     * @brief Get current time in microseconds (wrapper for getMicros())
-     * @return Current time in microseconds
-     */
-    uint64_t getMicros() const { return ::getMicros(); }
-
-    // =========================================================================
-    // RTT PROBING METHODS (for enhanced clock synchronization)
-    // =========================================================================
-
-    /**
-     * @brief Start RTT probing sequence
-     * @return true if probing started successfully
-     */
-    bool startRttProbing();
-
-    /**
-     * @brief Record an RTT probe response
-     * @param seq Sequence number of the probe
-     * @param sessionId Session ID from the probe
-     * @param originalT1 Original send timestamp
-     * @return true if probe was recorded successfully
-     */
-    bool handleProbeAck(uint8_t seq, uint16_t sessionId, uint64_t originalT1);
-
-    /**
-     * @brief Create a SYNC_PROBE command for RTT measurement
-     * Updates internal state to track the pending probe.
-     * @param seq Probe sequence number (0 to SYNC_PROBE_COUNT-1)
-     * @return SyncCommand ready to serialize and send
-     */
-    SyncCommand createProbe(uint8_t seq);
-
-    /**
-     * @brief Get current probe session ID
-     */
-    uint16_t getProbeSessionId() const { return _probeSessionId; }
-
-    /**
-     * @brief Check if RTT probing is in progress
-     */
-    bool isProbingInProgress() const { return _probingInProgress; }
-
-    /**
-     * @brief Check if RTT probing is complete
-     */
-    bool isProbingComplete() const;
-
-    /**
-     * @brief Get current probe sequence number
-     */
-    uint8_t getCurrentProbeSeq() const { return _currentProbeSeq; }
-
-    /**
-     * @brief Get minimum RTT from probing
-     * @return Minimum RTT in microseconds
-     */
-    uint32_t getMinRtt() const;
-
-    /**
-     * @brief Get maximum RTT from probing
-     * @return Maximum RTT in microseconds
-     */
-    uint32_t getMaxRtt() const;
-
-    /**
-     * @brief Get RTT spread (max - min)
-     * @return RTT spread in microseconds
-     */
-    uint32_t getRttSpread() const;
-
-    /**
-     * @brief Get number of RTT samples collected
-     */
-    uint8_t getRttSampleCount() const { return _rttSampleCount; }
-
-    /**
-     * @brief Finalize sync using minimum RTT from probing
-     * Uses minimum RTT as best estimate of true latency
-     */
-    void finalizeSync();
+    uint32_t getMeasuredLatency() const { return _measuredLatencyUs; }
 
 private:
-    int64_t _currentOffset;     // Current clock offset (microseconds)
-    uint32_t _lastSyncTime;     // Time of last sync (millis)
-    uint32_t _estimatedLatency; // Estimated one-way latency (microseconds)
-
-    // RTT probing state
-    uint32_t _rttSamples[SYNC_PROBE_COUNT];  // RTT samples from probing
-    uint8_t _rttSampleCount;                  // Number of RTT samples collected
-    uint8_t _currentProbeSeq;                 // Current probe sequence number
-    uint64_t _probeSentTime;                  // Time when current probe was sent
-    bool _probingInProgress;                  // Whether probing is active
-
-    // Session isolation (prevents stale ACK processing)
-    uint16_t _probeSessionId;                 // Increments each startRttProbing()
-    uint64_t _pendingProbeT1;                 // T1 timestamp of current outstanding probe
-    bool _probeAckReceived[SYNC_PROBE_COUNT]; // Tracks which probes have been ACK'd
+    int64_t _currentOffset;       // Current clock offset (microseconds)
+    uint32_t _lastSyncTime;       // Time of last sync (millis)
+    uint32_t _measuredLatencyUs;  // PING/PONG measured one-way latency (microseconds)
 };
 
 #endif // SYNC_PROTOCOL_H
