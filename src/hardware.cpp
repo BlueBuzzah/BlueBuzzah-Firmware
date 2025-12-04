@@ -100,6 +100,10 @@ bool HapticController::initializeFinger(uint8_t finger) {
         // Configure for LRA + RTP mode
         configureDRV2605(_drv[finger]);
 
+        // SAFETY: Immediately stop motor after init - DRV2605 retains RTP value
+        // across MCU resets, so motor may be buzzing from pre-power-off state
+        _drv[finger].setRealtimeValue(0);
+
         closeChannels();
 
         // Mark as enabled

@@ -94,6 +94,9 @@ static constexpr uint32_t PROBE_INTERVAL_MS = 500;  // Probe every 500ms during 
 int8_t activeMotorFinger = -1;            // Currently active motor (-1 = none)
 uint32_t motorDeactivateTime = 0;         // Time to deactivate motor (millis)
 
+// Safety shutdown flag - set by BLE callback (ISR context), processed by loop
+volatile bool safetyShutdownPending = false;
+
 // Finger names for display (4 fingers per hand - index through pinky, no thumb per v1)
 const char *FINGER_NAMES[] = {"Index", "Middle", "Ring", "Pinky"};
 
@@ -149,6 +152,9 @@ void handleSerialCommand(const char *command);
 // Role Configuration Wait (blocks until role is set)
 void waitForRoleConfiguration();
 
+// Safety shutdown helper (centralized motor stop sequence)
+void safeMotorShutdown();
+
 // =============================================================================
 // ROLE CONFIGURATION WAIT
 // =============================================================================
@@ -200,6 +206,49 @@ void waitForRoleConfiguration()
 
         delay(10); // Small delay to prevent busy-looping
     }
+}
+
+// =============================================================================
+// SAFE MOTOR SHUTDOWN
+// =============================================================================
+
+/**
+ * @brief Centralized safe motor shutdown sequence
+ *
+ * Called from safety shutdown handler and other stop paths.
+ * Order of operations is critical for safety:
+ * 1. Stop therapy engine (prevents new motor activations from being generated)
+ * 2. Cancel scheduler callbacks (prevents pending motor ops)
+ * 3. Clear deferred queue (prevents queued activations)
+ * 4. Cancel sync timer (PRIMARY only)
+ * 5. Deactivate active motor (SECONDARY - before clearing state)
+ * 6. Emergency stop all motors (final safety net)
+ */
+void safeMotorShutdown()
+{
+    // 1. Stop therapy engine FIRST - prevents new motor activations
+    therapy.stop();
+
+    // 2. Cancel all pending scheduler callbacks
+    scheduler.cancelAll();
+
+    // 3. Clear deferred work queue
+    deferredQueue.clear();
+
+    // 4. Cancel PRIMARY sync timer
+    if (deviceRole == DeviceRole::PRIMARY) {
+        syncTimer.cancel();
+    }
+
+    // 5. SECONDARY: Deactivate active motor before clearing state
+    if (deviceRole == DeviceRole::SECONDARY && activeMotorFinger >= 0) {
+        haptic.deactivate(activeMotorFinger);
+        activeMotorFinger = -1;
+        motorDeactivateTime = 0;
+    }
+
+    // 6. Emergency stop all motors
+    haptic.emergencyStop();
 }
 
 // =============================================================================
@@ -346,8 +395,15 @@ void setup()
 
 void loop()
 {
-    // CRITICAL: Process hardware timer activation first (microsecond precision sync)
-    // Must be at TOP of loop for minimum latency jitter
+    // SAFETY FIRST: Check for pending shutdown from BLE disconnect callback
+    // Must be at VERY TOP before any motor operations to prevent post-disconnect buzz
+    if (safetyShutdownPending) {
+        safetyShutdownPending = false;
+        safeMotorShutdown();
+        Serial.println(F("[SAFETY] Emergency motor shutdown complete"));
+    }
+
+    // Process hardware timer activation (microsecond precision sync)
     syncTimer.processPendingActivation();
 
     // Process millisecond timer callbacks (motor deactivation, deferred sequences)
@@ -815,25 +871,16 @@ void onBLEDisconnect(uint16_t connHandle, ConnectionType type, uint8_t reason)
     {
         stateMachine.transition(StateTrigger::DISCONNECTED);
 
+        // SAFETY: Set flag for main loop to execute motor shutdown
+        // Cannot call safeMotorShutdown() directly here (BLE callback = ISR context, no I2C)
+        safetyShutdownPending = true;
+
         // PRIMARY: Cancel boot window when SECONDARY disconnects (prevents race condition
         // where stale bootWindowStart causes immediate auto-start on reconnection)
         if (deviceRole == DeviceRole::PRIMARY && bootWindowActive)
         {
             bootWindowActive = false;
             Serial.println(F("[BOOT] SECONDARY disconnected - boot window cancelled"));
-        }
-
-        // Clear SECONDARY motor deactivation timer to prevent extended buzz
-        if (deviceRole == DeviceRole::SECONDARY)
-        {
-            activeMotorFinger = -1;
-            motorDeactivateTime = 0;
-        }
-
-        // Cancel PRIMARY pending sync timer activation
-        if (deviceRole == DeviceRole::PRIMARY)
-        {
-            syncTimer.cancel();
         }
     }
     else if (deviceRole == DeviceRole::PRIMARY && type == ConnectionType::PHONE)
@@ -860,6 +907,21 @@ void onBLEDisconnect(uint16_t connHandle, ConnectionType type, uint8_t reason)
  */
 void executeDeferredWork(DeferredWorkType type, uint8_t p1, uint8_t p2, uint32_t p3)
 {
+    // SAFETY: Skip haptic operations in critical error states
+    // Note: CONNECTION_LOST is intentionally NOT blocked - disconnect feedback pulses
+    // (queued AFTER safetyShutdownPending is set) should still execute for user feedback
+    if (type == DeferredWorkType::HAPTIC_PULSE ||
+        type == DeferredWorkType::HAPTIC_DOUBLE_PULSE)
+    {
+        TherapyState currentState = stateMachine.getCurrentState();
+        if (currentState == TherapyState::ERROR ||
+            currentState == TherapyState::CRITICAL_BATTERY)
+        {
+            Serial.println(F("[DEFERRED] Skipping haptic - safety state active"));
+            return;
+        }
+    }
+
     switch (type)
     {
     case DeferredWorkType::HAPTIC_PULSE:
@@ -1242,7 +1304,7 @@ void stopTherapyTest()
     Serial.println(F("+============================================================+\n"));
 
     therapy.stop();
-    haptic.emergencyStop();
+    safeMotorShutdown();
 
     // Update state machine
     stateMachine.transition(StateTrigger::STOP_SESSION);
@@ -1444,21 +1506,12 @@ void onStateChange(const StateTransition &transition)
         if (therapy.isRunning())
         {
             therapy.stop();
-            haptic.emergencyStop();
         }
-
-        // Clear SECONDARY motor deactivation timer to prevent stale timer check
-        if (deviceRole == DeviceRole::SECONDARY)
-        {
-            activeMotorFinger = -1;
-            motorDeactivateTime = 0;
-        }
-
-        // Cancel PRIMARY pending sync timer activation
-        if (deviceRole == DeviceRole::PRIMARY)
-        {
-            syncTimer.cancel();
-        }
+        // Always call emergencyStop - motors can be active without therapy running
+        // (e.g., from deferred queue connect/disconnect pulses)
+        // Note: safeMotorShutdown() will also run from loop() via safetyShutdownPending
+        // but this provides immediate belt-and-suspenders safety
+        haptic.emergencyStop();
         break;
 
     case TherapyState::PHONE_DISCONNECTED:
@@ -1491,9 +1544,9 @@ void handleHeartbeatTimeout()
 {
     Serial.println(F("[WARN] Heartbeat timeout - PRIMARY connection lost"));
 
-    // 1. Safety first - stop all motors immediately
-    haptic.emergencyStop();
+    // 1. Safety first - stop therapy and all motors immediately
     therapy.stop();
+    safeMotorShutdown();
 
     // 2. Update state machine (LED handled by onStateChange callback)
     stateMachine.transition(StateTrigger::DISCONNECTED);
@@ -1536,7 +1589,7 @@ void handleSerialCommand(const char *command)
         {
             profiles.setDeviceRole(DeviceRole::PRIMARY);
             profiles.saveSettings();
-            haptic.emergencyStop();  // Ensure motors off before reset
+            safeMotorShutdown();  // Ensure motors off before reset
             Serial.println(F("[CONFIG] Role set to PRIMARY - restarting..."));
             Serial.flush();
             delay(100);
@@ -1546,7 +1599,7 @@ void handleSerialCommand(const char *command)
         {
             profiles.setDeviceRole(DeviceRole::SECONDARY);
             profiles.saveSettings();
-            haptic.emergencyStop();  // Ensure motors off before reset
+            safeMotorShutdown();  // Ensure motors off before reset
             Serial.println(F("[CONFIG] Role set to SECONDARY - restarting..."));
             Serial.flush();
             delay(100);
@@ -1603,7 +1656,7 @@ void handleSerialCommand(const char *command)
 
             // Stop any active therapy session before rebooting
             therapy.stop();
-            haptic.emergencyStop();
+            safeMotorShutdown();
             stateMachine.transition(StateTrigger::STOP_SESSION);
 
             Serial.printf("[CONFIG] Profile set to %s - restarting...\n", profileStr);
@@ -1691,7 +1744,7 @@ void handleSerialCommand(const char *command)
         {
             Serial.println(F("[CONFIG] No settings file to delete"));
         }
-        haptic.emergencyStop();  // Ensure motors off before reset
+        safeMotorShutdown();  // Ensure motors off before reset
         Serial.println(F("[CONFIG] Rebooting..."));
         Serial.flush();
         delay(100);
@@ -1702,7 +1755,7 @@ void handleSerialCommand(const char *command)
     // REBOOT - restart the device
     if (strcmp(command, "REBOOT") == 0)
     {
-        haptic.emergencyStop();  // Ensure motors off before reset
+        safeMotorShutdown();  // Ensure motors off before reset
         Serial.println(F("[CONFIG] Rebooting..."));
         Serial.flush();
         delay(100);
