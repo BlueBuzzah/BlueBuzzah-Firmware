@@ -1040,15 +1040,9 @@ bool HardwareController::begin() {
     }
 
     // Initialize each DRV2605
-    for (uint8_t i = 0; i < 5; i++) {
+    for (uint8_t i = 0; i < 4; i++) {
         tca.select(i);
-
-        // Extra delay for channel 4 (longer I2C path)
-        if (i == 4) {
-            delay(10);
-        } else {
-            delay(5);
-        }
+        delay(5);
 
         if (!drv[i].begin()) {
             Serial.printf("[ERROR] DRV2605 on channel %d failed\n", i);
@@ -1769,7 +1763,7 @@ uint32_t remaining = (elapsed < duration) ? (duration - elapsed) : 0;
 **Use appropriate integer types:**
 
 ```cpp
-uint8_t fingerIndex;      // 0-255 (finger 0-4)
+uint8_t fingerIndex;      // 0-3 (finger index)
 uint16_t connHandle;      // BLE connection handles
 uint32_t timestamp;       // millis()/micros() values
 int32_t signedValue;      // When negative values possible
@@ -1872,7 +1866,7 @@ The architecture enables confident refactoring, easy testing, and straightforwar
 | Specification | Value |
 |---------------|-------|
 | **I2C Address** | 0x70 |
-| **Channels** | 5 used (one per finger) |
+| **Channels** | 4 used (one per finger) |
 | **I2C Speed** | 400 kHz |
 
 ### I2C Address Map
@@ -1880,7 +1874,7 @@ The architecture enables confident refactoring, easy testing, and straightforwar
 | Device | Address | Notes |
 |--------|---------|-------|
 | TCA9548A Mux | 0x70 | Default address |
-| DRV2605 (Ch 0-4) | 0x5A | Via multiplexer ports |
+| DRV2605 (Ch 0-3) | 0x5A | Via multiplexer ports |
 
 ### Pin Assignments
 

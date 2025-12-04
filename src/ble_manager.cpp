@@ -23,7 +23,10 @@ BLEManager::BLEManager() :
     _scannerAutoRestartEnabled(true),
     _connectCallback(nullptr),
     _disconnectCallback(nullptr),
-    _messageCallback(nullptr)
+    _messageCallback(nullptr),
+    _txHead(0),
+    _txTail(0),
+    _txCount(0)
 {
     memset(_deviceName, 0, sizeof(_deviceName));
     memset(_targetName, 0, sizeof(_targetName));
@@ -33,6 +36,13 @@ BLEManager::BLEManager() :
     // Initialize connections
     for (int i = 0; i < MAX_CONNECTIONS; i++) {
         _connections[i].reset();
+    }
+
+    // Initialize TX queue
+    for (uint8_t i = 0; i < TX_QUEUE_SIZE; i++) {
+        _txQueue[i].pending = false;
+        _txQueue[i].length = 0;
+        _txQueue[i].bytesSent = 0;
     }
 
     // Set global instance for static callbacks
@@ -176,6 +186,9 @@ void BLEManager::setupAdvertising() {
 
 void BLEManager::update() {
     uint32_t now = millis();
+
+    // Process TX queue (non-blocking message transmission)
+    processTxQueue();
 
     // Periodic scanner health check for SECONDARY mode
     static uint32_t lastScanCheck = 0;
@@ -400,79 +413,94 @@ bool BLEManager::send(uint16_t connHandleParam, const char* message) {
         return false;
     }
 
+    // Enqueue message for non-blocking transmission
+    return enqueueTx(connHandleParam, message);
+}
+
+bool BLEManager::enqueueTx(uint16_t connHandle, const char* message) {
+    // Check if queue is full
+    if (_txCount >= TX_QUEUE_SIZE) {
+        Serial.println(F("[BLE] TX queue full, dropping message"));
+        return false;
+    }
+
     // Calculate message length
     size_t msgLen = strlen(message);
-
-    // CRITICAL: Message + EOT must be in a SINGLE buffer/write to prevent
-    // BLE stack from batching/reordering them separately!
-    // Two separate writes can cause EOT to be batched with next message.
-    static char txBuffer[MESSAGE_BUFFER_SIZE];
     if (msgLen >= MESSAGE_BUFFER_SIZE - 1) {
         Serial.println(F("[BLE] ERROR: Message too large for TX buffer"));
         return false;
     }
-    memcpy(txBuffer, message, msgLen);
-    txBuffer[msgLen] = EOT_CHAR;
-    size_t totalLen = msgLen + 1;
 
-    // CRITICAL: BLE UART has limited TX buffer (~64-256 bytes depending on config).
-    // Rapid writes can overflow the buffer, causing data loss.
-    // We must write in chunks and wait for buffer space if needed.
-
-    size_t bytesSent = 0;
-    const uint8_t maxRetries = 10;
-    const uint8_t retryDelayMs = 5;
-
-    while (bytesSent < totalLen) {
-        size_t remaining = totalLen - bytesSent;
-        size_t written = 0;
-
-        // For PRIMARY mode, use the peripheral UART service
-        if (_role == DeviceRole::PRIMARY) {
-            written = _uartService.write((const uint8_t*)(txBuffer + bytesSent), remaining);
-        }
-        // For SECONDARY mode, use the client UART
-        else {
-            written = _clientUart.write((const uint8_t*)(txBuffer + bytesSent), remaining);
-        }
-
-        if (written > 0) {
-            bytesSent += written;
-        } else {
-            // Buffer full - wait for BLE stack to transmit, then retry
-            uint8_t retries = 0;
-            while (written == 0 && retries < maxRetries) {
-                delay(retryDelayMs);
-                retries++;
-                if (_role == DeviceRole::PRIMARY) {
-                    written = _uartService.write((const uint8_t*)(txBuffer + bytesSent), remaining);
-                } else {
-                    written = _clientUart.write((const uint8_t*)(txBuffer + bytesSent), remaining);
-                }
-                if (written > 0) {
-                    bytesSent += written;
-                    break;
-                }
-            }
-            if (written == 0) {
-                Serial.printf("[BLE] TX FAILED after %d retries! Sent %d/%d bytes\n",
-                              maxRetries, (int)bytesSent, (int)totalLen);
-                return false;
-            }
-        }
+    // Find free slot
+    TxEntry* entry = &_txQueue[_txTail];
+    if (entry->pending) {
+        // Should not happen if _txCount is accurate
+        Serial.println(F("[BLE] TX queue corruption detected"));
+        return false;
     }
 
-    // CRITICAL: Flush TX buffer to ensure data is transmitted before returning.
-    // Without this, rapid successive sends can overflow the BLE FIFO, causing
-    // the last bytes of each message (including EOT delimiter) to be dropped.
-    // This was causing message concatenation and heartbeat timeout on SECONDARY.
-    if (_role == DeviceRole::PRIMARY) {
-        _uartService.flush();
-    } else {
-        _clientUart.flush();
-    }
+    // Copy message + EOT to entry buffer
+    memcpy(entry->data, message, msgLen);
+    entry->data[msgLen] = EOT_CHAR;
+    entry->length = msgLen + 1;
+    entry->bytesSent = 0;
+    entry->connHandle = connHandle;
+    entry->pending = true;
+
+    // Advance tail
+    _txTail = (_txTail + 1) % TX_QUEUE_SIZE;
+    _txCount++;
 
     return true;
+}
+
+void BLEManager::processTxQueue() {
+    // Process up to 4 queue entries per update for responsiveness
+    for (uint8_t i = 0; i < 4 && _txCount > 0; i++) {
+        TxEntry* entry = &_txQueue[_txHead];
+        if (!entry->pending) {
+            // Advance head if slot is empty (shouldn't happen)
+            _txHead = (_txHead + 1) % TX_QUEUE_SIZE;
+            continue;
+        }
+
+        // Try to write remaining bytes (non-blocking)
+        size_t remaining = entry->length - entry->bytesSent;
+        size_t written = tryWriteImmediate(entry->connHandle,
+                                           (const uint8_t*)(entry->data + entry->bytesSent),
+                                           remaining);
+
+        if (written > 0) {
+            entry->bytesSent += written;
+
+            // Check if complete
+            if (entry->bytesSent >= entry->length) {
+                // Flush to ensure transmission
+                if (_role == DeviceRole::PRIMARY) {
+                    _uartService.flush();
+                } else {
+                    _clientUart.flush();
+                }
+
+                // Mark slot free and advance head
+                entry->pending = false;
+                _txHead = (_txHead + 1) % TX_QUEUE_SIZE;
+                _txCount--;
+            }
+        } else {
+            // Buffer full - stop processing this iteration, will retry next update()
+            break;
+        }
+    }
+}
+
+size_t BLEManager::tryWriteImmediate(uint16_t connHandle, const uint8_t* data, size_t len) {
+    // Non-blocking write attempt
+    if (_role == DeviceRole::PRIMARY) {
+        return _uartService.write(data, len);
+    } else {
+        return _clientUart.write(data, len);
+    }
 }
 
 bool BLEManager::sendToSecondary(const char* message) {

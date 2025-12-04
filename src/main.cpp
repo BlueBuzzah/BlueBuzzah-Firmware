@@ -29,6 +29,9 @@
 #include "menu_controller.h"
 #include "profile_manager.h"
 #include "latency_metrics.h"
+#include "sync_timer.h"
+#include "timer_scheduler.h"
+#include "deferred_queue.h"
 
 // =============================================================================
 // CONFIGURATION
@@ -83,6 +86,10 @@ uint32_t lastHeartbeatReceived = 0; // Tracks last heartbeat from PRIMARY
 // PING/PONG latency measurement (PRIMARY only)
 uint64_t pingStartTime = 0;               // Timestamp when PING was sent (micros)
 
+// Background latency probing (non-blocking, timer-based)
+static uint32_t lastProbeTime = 0;
+static constexpr uint32_t PROBE_INTERVAL_MS = 500;  // Probe every 500ms during therapy
+
 // SECONDARY non-blocking motor deactivation
 int8_t activeMotorFinger = -1;            // Currently active motor (-1 = none)
 uint32_t motorDeactivateTime = 0;         // Time to deactivate motor (millis)
@@ -128,6 +135,13 @@ void onMenuSendResponse(const char *response);
 
 // SECONDARY Heartbeat Timeout
 void handleHeartbeatTimeout();
+
+// Deferred Work Executor
+void executeDeferredWork(DeferredWorkType type, uint8_t p1, uint8_t p2, uint32_t p3);
+
+// Scheduler Callbacks (for deferred haptic sequences)
+void hapticDeactivateCallback(void* ctx);
+void hapticSecondPulseCallback(void* ctx);
 
 // Serial-Only Commands (not available via BLE)
 void handleSerialCommand(const char *command);
@@ -212,7 +226,7 @@ void setup()
     }
 
     // Early debug - print immediately after serial ready
-    Serial.println(F("\n[BOOT] Serial ready"));
+    Serial.printf("\n[BOOT] Serial ready at millis=%lu\n", (unsigned long)millis());
     Serial.flush();
 
     printBanner();
@@ -297,6 +311,10 @@ void setup()
     menu.setSendCallback(onMenuSendResponse);
     Serial.println(F("[SUCCESS] Menu controller initialized"));
 
+    // Initialize Deferred Queue (for ISR-safe callback operations)
+    deferredQueue.setExecutor(executeDeferredWork);
+    Serial.println(F("[SUCCESS] Deferred queue initialized"));
+
     // Initial battery reading
     Serial.println(F("\n--- Battery Status ---"));
     BatteryStatus battStatus = battery.getStatus();
@@ -328,12 +346,22 @@ void setup()
 
 void loop()
 {
+    // CRITICAL: Process hardware timer activation first (microsecond precision sync)
+    // Must be at TOP of loop for minimum latency jitter
+    syncTimer.processPendingActivation();
+
+    // Process millisecond timer callbacks (motor deactivation, deferred sequences)
+    scheduler.update();
+
+    // Process deferred work queue (haptic operations from BLE callbacks)
+    deferredQueue.processOne();
+
     uint32_t now = millis();
 
     // Update LED pattern animation
     led.update();
 
-    // Process BLE events
+    // Process BLE events (includes non-blocking TX queue)
     ble.update();
 
     // SECONDARY: Non-blocking motor deactivation check
@@ -341,6 +369,7 @@ void loop()
     {
         if (now >= motorDeactivateTime)
         {
+            Serial.printf("[DEACTIVATE] F%d (timer)\n", activeMotorFinger);
             haptic.deactivate(activeMotorFinger);
             activeMotorFinger = -1;
         }
@@ -396,14 +425,21 @@ void loop()
     }
 
     // PRIMARY: Check boot window for auto-start therapy
+    // NOTE: Must use fresh millis() here, not cached 'now' from start of loop().
+    // BLE callbacks can fire during loop() and set bootWindowStart to a newer
+    // timestamp than 'now', causing unsigned underflow (now - start = negative = huge).
     if (deviceRole == DeviceRole::PRIMARY && bootWindowActive && !autoStartTriggered)
     {
-        if (now - bootWindowStart >= STARTUP_WINDOW_MS)
+        uint32_t currentTime = millis();
+        uint32_t elapsed = currentTime - bootWindowStart;
+
+        if (elapsed >= STARTUP_WINDOW_MS)
         {
             // Boot window expired without phone connecting
             if (ble.isSecondaryConnected() && !ble.isPhoneConnected())
             {
-                Serial.println(F("[BOOT] 30s window expired without phone - auto-starting therapy"));
+                Serial.printf("[BOOT] 30s window expired (now=%lu, start=%lu, elapsed=%lu) - auto-starting therapy\n",
+                              (unsigned long)currentTime, (unsigned long)bootWindowStart, (unsigned long)elapsed);
                 bootWindowActive = false;
                 autoStartTriggered = true;
                 autoStartTherapy();
@@ -411,6 +447,8 @@ void loop()
             else
             {
                 // SECONDARY disconnected during window, cancel
+                Serial.printf("[BOOT] Window expired but SECONDARY not connected (now=%lu, start=%lu)\n",
+                              (unsigned long)currentTime, (unsigned long)bootWindowStart);
                 bootWindowActive = false;
             }
         }
@@ -460,8 +498,19 @@ void loop()
                       status.voltage, status.percentage, status.statusString());
     }
 
-    // Small delay to prevent busy-looping
-    delay(10);
+    // LOW PRIORITY: Background latency probing (non-blocking)
+    // Runs AFTER all critical work, only during active therapy
+    if (deviceRole == DeviceRole::PRIMARY &&
+        stateMachine.getCurrentState() == TherapyState::RUNNING &&
+        ble.isSecondaryConnected() &&
+        (now - lastProbeTime) >= PROBE_INTERVAL_MS)
+    {
+        sendPing();
+        lastProbeTime = now;
+    }
+
+    // Yield to BLE stack (non-blocking - allows SoftDevice processing)
+    yield();
 }
 
 // =============================================================================
@@ -515,8 +564,17 @@ bool initializeHardware()
     }
     else
     {
+        // Safety: Immediately stop all motors in case they were left on from previous session
+        haptic.emergencyStop();
+
         Serial.printf("Haptic Controller: %d/%d fingers enabled\n",
                       haptic.getEnabledCount(), MAX_ACTUATORS);
+
+        // Initialize hardware timer for sync compensation (PRIMARY only)
+        if (!syncTimer.begin(&haptic))
+        {
+            Serial.println(F("[WARN] SyncTimer initialization failed"));
+        }
     }
 
     // Initialize battery monitor
@@ -712,7 +770,8 @@ void onBLEConnect(uint16_t connHandle, ConnectionType type)
             // SECONDARY connected - start 30-second boot window for phone
             bootWindowStart = millis();
             bootWindowActive = true;
-            Serial.println(F("[BOOT] SECONDARY connected - starting 30s boot window for phone"));
+            Serial.printf("[BOOT] SECONDARY connected at %lu - starting 30s boot window for phone\n",
+                          (unsigned long)bootWindowStart);
         }
         else if (type == ConnectionType::PHONE && bootWindowActive)
         {
@@ -722,12 +781,10 @@ void onBLEConnect(uint16_t connHandle, ConnectionType type)
         }
     }
 
-    // Quick haptic feedback on index finger
+    // Quick haptic feedback on index finger (deferred - not safe in BLE callback)
     if (haptic.isEnabled(FINGER_INDEX))
     {
-        haptic.activate(FINGER_INDEX, 30);
-        delay(50);
-        haptic.deactivate(FINGER_INDEX);
+        deferredQueue.enqueue(DeferredWorkType::HAPTIC_PULSE, FINGER_INDEX, 30, 50);
     }
 }
 
@@ -757,22 +814,137 @@ void onBLEDisconnect(uint16_t connHandle, ConnectionType type, uint8_t reason)
         (deviceRole == DeviceRole::SECONDARY && type == ConnectionType::PRIMARY))
     {
         stateMachine.transition(StateTrigger::DISCONNECTED);
+
+        // PRIMARY: Cancel boot window when SECONDARY disconnects (prevents race condition
+        // where stale bootWindowStart causes immediate auto-start on reconnection)
+        if (deviceRole == DeviceRole::PRIMARY && bootWindowActive)
+        {
+            bootWindowActive = false;
+            Serial.println(F("[BOOT] SECONDARY disconnected - boot window cancelled"));
+        }
+
+        // Clear SECONDARY motor deactivation timer to prevent extended buzz
+        if (deviceRole == DeviceRole::SECONDARY)
+        {
+            activeMotorFinger = -1;
+            motorDeactivateTime = 0;
+        }
+
+        // Cancel PRIMARY pending sync timer activation
+        if (deviceRole == DeviceRole::PRIMARY)
+        {
+            syncTimer.cancel();
+        }
     }
     else if (deviceRole == DeviceRole::PRIMARY && type == ConnectionType::PHONE)
     {
         stateMachine.transition(StateTrigger::PHONE_LOST);
     }
 
-    // Double haptic pulse on index finger
+    // Double haptic pulse on index finger (deferred - not safe in BLE callback)
     if (haptic.isEnabled(FINGER_INDEX))
     {
-        haptic.activate(FINGER_INDEX, 50);
-        delay(50);
-        haptic.deactivate(FINGER_INDEX);
-        delay(100);
-        haptic.activate(FINGER_INDEX, 50);
-        delay(50);
-        haptic.deactivate(FINGER_INDEX);
+        deferredQueue.enqueue(DeferredWorkType::HAPTIC_DOUBLE_PULSE, FINGER_INDEX, 50, 50);
+    }
+}
+
+// =============================================================================
+// DEFERRED WORK EXECUTOR
+// =============================================================================
+
+/**
+ * @brief Execute deferred work from DeferredQueue
+ *
+ * Called from main loop when work is dequeued. Handles haptic operations
+ * that aren't safe in BLE callback context (I2C operations).
+ */
+void executeDeferredWork(DeferredWorkType type, uint8_t p1, uint8_t p2, uint32_t p3)
+{
+    switch (type)
+    {
+    case DeferredWorkType::HAPTIC_PULSE:
+    {
+        // p1=finger, p2=amplitude, p3=duration_ms
+        uint8_t finger = p1;
+        uint8_t amplitude = p2;
+        uint32_t duration = p3;
+
+        if (haptic.isEnabled(finger))
+        {
+            haptic.activate(finger, amplitude);
+            // Schedule deactivation (non-blocking)
+            scheduler.schedule(duration, hapticDeactivateCallback, (void*)(uintptr_t)finger);
+        }
+        break;
+    }
+
+    case DeferredWorkType::HAPTIC_DOUBLE_PULSE:
+    {
+        // p1=finger, p2=amplitude, p3=duration_ms (100ms gap between pulses)
+        uint8_t finger = p1;
+        uint8_t amplitude = p2;
+        uint32_t duration = p3;
+
+        if (haptic.isEnabled(finger))
+        {
+            // First pulse
+            haptic.activate(finger, amplitude);
+            // Schedule deactivation after duration
+            scheduler.schedule(duration, hapticDeactivateCallback, (void*)(uintptr_t)finger);
+            // Schedule second pulse after duration + 100ms gap
+            // Pack finger and amplitude into context (finger in low byte, amplitude in high byte)
+            uint32_t ctx = (uint32_t)finger | ((uint32_t)amplitude << 8) | ((uint32_t)duration << 16);
+            scheduler.schedule(duration + 100, hapticSecondPulseCallback, (void*)(uintptr_t)ctx);
+        }
+        break;
+    }
+
+    case DeferredWorkType::HAPTIC_DEACTIVATE:
+    {
+        uint8_t finger = p1;
+        haptic.deactivate(finger);
+        break;
+    }
+
+    case DeferredWorkType::SCANNER_RESTART:
+    {
+        // Restart BLE scanner after delay (handled by scheduler)
+        if (deviceRole == DeviceRole::SECONDARY)
+        {
+            ble.startScanning();
+        }
+        break;
+    }
+
+    default:
+        break;
+    }
+}
+
+/**
+ * @brief Timer callback to deactivate haptic motor
+ */
+void hapticDeactivateCallback(void* ctx)
+{
+    uint8_t finger = (uint8_t)(uintptr_t)ctx;
+    haptic.deactivate(finger);
+}
+
+/**
+ * @brief Timer callback for second pulse in double-pulse sequence
+ */
+void hapticSecondPulseCallback(void* ctx)
+{
+    uint32_t packed = (uint32_t)(uintptr_t)ctx;
+    uint8_t finger = packed & 0xFF;
+    uint8_t amplitude = (packed >> 8) & 0xFF;
+    uint32_t duration = (packed >> 16) & 0xFFFF;
+
+    if (haptic.isEnabled(finger))
+    {
+        haptic.activate(finger, amplitude);
+        // Schedule final deactivation
+        scheduler.schedule(duration, hapticDeactivateCallback, (void*)(uintptr_t)finger);
     }
 }
 
@@ -830,14 +1002,22 @@ void onBLEMessage(uint16_t connHandle, const char *message)
             break;
 
         case SyncCommandType::PONG:
-            // PRIMARY: Calculate RTT and update measured latency
+            // PRIMARY: Calculate RTT and update measured latency (with EMA smoothing)
             if (deviceRole == DeviceRole::PRIMARY && pingStartTime > 0)
             {
                 uint64_t now = getMicros();
                 uint32_t rtt = (uint32_t)(now - pingStartTime);
+
+                // Update latency with EMA smoothing and outlier rejection
                 syncProtocol.updateLatency(rtt);
-                Serial.printf("[SYNC] RTT=%lu us, one-way=%lu us\n",
-                              (unsigned long)rtt, (unsigned long)(rtt / 2));
+
+                // Enhanced logging: show raw, smoothed, and sample count
+                Serial.printf("[SYNC] RTT=%lu raw=%lu smooth=%lu n=%u\n",
+                              (unsigned long)rtt,
+                              (unsigned long)syncProtocol.getRawLatency(),
+                              (unsigned long)syncProtocol.getMeasuredLatency(),
+                              syncProtocol.getSampleCount());
+
                 pingStartTime = 0;  // Clear for next PING
             }
             break;
@@ -855,10 +1035,12 @@ void onBLEMessage(uint16_t connHandle, const char *message)
                 // Deactivate any previously active motor first
                 if (activeMotorFinger >= 0)
                 {
+                    Serial.printf("[DEACTIVATE] F%d (prev)\n", activeMotorFinger);
                     haptic.deactivate(activeMotorFinger);
                 }
 
                 // Activate immediately
+                Serial.printf("[ACTIVATE] F%d A%d dur=%ldms\n", finger, amplitude, durationMs);
                 haptic.activate(finger, amplitude);
 
                 // Schedule non-blocking deactivation after duration from profile
@@ -910,18 +1092,20 @@ void onSendCommand(const char *commandType, uint8_t leftFinger, uint8_t rightFin
         ble.sendToSecondary(buffer);
     }
 
-    // Wait for measured BLE latency, then activate locally
-    // SECONDARY activates immediately on receive, so waiting here
-    // ensures both devices activate at roughly the same time
+    // Schedule local activation after measured BLE latency (non-blocking)
+    // SECONDARY activates immediately on receive, so PRIMARY delays by one-way latency
+    // to achieve synchronized motor activation between devices
     uint32_t latencyUs = syncProtocol.getMeasuredLatency();
-    if (latencyUs > 0)
+    if (latencyUs > 0 && haptic.isEnabled(leftFinger))
     {
-        delayMicroseconds(latencyUs);
+        // Hardware timer schedules activation with microsecond precision
+        Serial.printf("[ACTIVATE] Scheduled F%d A%d delay=%luus\n", leftFinger, amplitude, latencyUs);
+        syncTimer.scheduleActivation(latencyUs, leftFinger, amplitude);
     }
-
-    // Activate local motor
-    if (haptic.isEnabled(leftFinger))
+    else if (haptic.isEnabled(leftFinger))
     {
+        // No latency measurement yet - activate immediately
+        Serial.printf("[ACTIVATE] Immediate F%d A%d (no latency)\n", leftFinger, amplitude);
         haptic.activate(leftFinger, amplitude);
     }
 }
@@ -947,6 +1131,7 @@ void onDeactivate(uint8_t finger)
     // Deactivate local motor
     if (haptic.isEnabled(finger))
     {
+        Serial.printf("[DEACTIVATE] Finger %d\n", finger);
         haptic.deactivate(finger);
     }
 }
@@ -958,11 +1143,9 @@ void onCycleComplete(uint32_t cycleCount)
 
 void onMacrocycleStart(uint32_t macrocycleCount)
 {
-    // PRIMARY: Send PING to measure BLE latency at start of each macrocycle
-    if (deviceRole == DeviceRole::PRIMARY)
-    {
-        sendPing();
-    }
+    // Latency probing now handled by background timer in loop()
+    // This callback can be used for other macrocycle logic if needed
+    (void)macrocycleCount;  // Suppress unused parameter warning
 }
 
 // =============================================================================
@@ -1024,6 +1207,13 @@ void startTherapyTest()
         {
             ble.sendToSecondary(buffer);
         }
+    }
+
+    // Reset latency probing for fresh measurements
+    if (deviceRole == DeviceRole::PRIMARY)
+    {
+        syncProtocol.resetLatency();  // Clear EMA state for fresh warmup
+        lastProbeTime = millis() - PROBE_INTERVAL_MS + 100;  // First probe in ~100ms
     }
 
     // Start 5-minute test using profile settings (send STOP to end early)
@@ -1134,6 +1324,10 @@ void autoStartTherapy()
             ble.sendToSecondary(buffer);
         }
     }
+
+    // Reset latency probing for fresh measurements
+    syncProtocol.resetLatency();  // Clear EMA state for fresh warmup
+    lastProbeTime = millis() - PROBE_INTERVAL_MS + 100;  // First probe in ~100ms
 
     // Start 30-minute session using profile settings
     therapy.startSession(
@@ -1252,6 +1446,19 @@ void onStateChange(const StateTransition &transition)
             therapy.stop();
             haptic.emergencyStop();
         }
+
+        // Clear SECONDARY motor deactivation timer to prevent stale timer check
+        if (deviceRole == DeviceRole::SECONDARY)
+        {
+            activeMotorFinger = -1;
+            motorDeactivateTime = 0;
+        }
+
+        // Cancel PRIMARY pending sync timer activation
+        if (deviceRole == DeviceRole::PRIMARY)
+        {
+            syncTimer.cancel();
+        }
         break;
 
     case TherapyState::PHONE_DISCONNECTED:
@@ -1329,6 +1536,7 @@ void handleSerialCommand(const char *command)
         {
             profiles.setDeviceRole(DeviceRole::PRIMARY);
             profiles.saveSettings();
+            haptic.emergencyStop();  // Ensure motors off before reset
             Serial.println(F("[CONFIG] Role set to PRIMARY - restarting..."));
             Serial.flush();
             delay(100);
@@ -1338,6 +1546,7 @@ void handleSerialCommand(const char *command)
         {
             profiles.setDeviceRole(DeviceRole::SECONDARY);
             profiles.saveSettings();
+            haptic.emergencyStop();  // Ensure motors off before reset
             Serial.println(F("[CONFIG] Role set to SECONDARY - restarting..."));
             Serial.flush();
             delay(100);
@@ -1482,6 +1691,7 @@ void handleSerialCommand(const char *command)
         {
             Serial.println(F("[CONFIG] No settings file to delete"));
         }
+        haptic.emergencyStop();  // Ensure motors off before reset
         Serial.println(F("[CONFIG] Rebooting..."));
         Serial.flush();
         delay(100);
@@ -1492,6 +1702,7 @@ void handleSerialCommand(const char *command)
     // REBOOT - restart the device
     if (strcmp(command, "REBOOT") == 0)
     {
+        haptic.emergencyStop();  // Ensure motors off before reset
         Serial.println(F("[CONFIG] Rebooting..."));
         Serial.flush();
         delay(100);

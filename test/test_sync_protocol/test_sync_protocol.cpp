@@ -458,19 +458,84 @@ void test_SimpleSyncProtocol_updateLatency(void) {
 
     // RTT = 20000us, one-way = 10000us
     sync.updateLatency(20000);
-    TEST_ASSERT_EQUAL_UINT32(10000, sync.getMeasuredLatency());
+
+    // After 1 sample: raw value stored, but smoothed not available (needs 3 samples)
+    TEST_ASSERT_EQUAL_UINT32(10000, sync.getRawLatency());
+    TEST_ASSERT_EQUAL_UINT32(0, sync.getMeasuredLatency());  // Not enough samples yet
+    TEST_ASSERT_EQUAL_UINT16(1, sync.getSampleCount());
 }
 
 void test_SimpleSyncProtocol_updateLatency_multiple(void) {
     SimpleSyncProtocol sync;
 
-    // First measurement: RTT = 30000us
-    sync.updateLatency(30000);
-    TEST_ASSERT_EQUAL_UINT32(15000, sync.getMeasuredLatency());
+    // First measurement: RTT = 20000us → one-way = 10000us
+    sync.updateLatency(20000);
+    TEST_ASSERT_EQUAL_UINT32(10000, sync.getRawLatency());
+    TEST_ASSERT_EQUAL_UINT32(0, sync.getMeasuredLatency());  // Not enough samples
+    TEST_ASSERT_EQUAL_UINT16(1, sync.getSampleCount());
 
-    // Second measurement: RTT = 20000us (lower, better)
+    // Second measurement: RTT = 20000us → one-way = 10000us
+    sync.updateLatency(20000);
+    TEST_ASSERT_EQUAL_UINT32(10000, sync.getRawLatency());
+    TEST_ASSERT_EQUAL_UINT32(0, sync.getMeasuredLatency());  // Still not enough
+    TEST_ASSERT_EQUAL_UINT16(2, sync.getSampleCount());
+
+    // Third measurement: RTT = 20000us → one-way = 10000us
+    // Now getMeasuredLatency() should return smoothed value
+    sync.updateLatency(20000);
+    TEST_ASSERT_EQUAL_UINT32(10000, sync.getRawLatency());
+    TEST_ASSERT_EQUAL_UINT32(10000, sync.getMeasuredLatency());  // Now available!
+    TEST_ASSERT_EQUAL_UINT16(3, sync.getSampleCount());
+}
+
+void test_SimpleSyncProtocol_updateLatency_ema_smoothing(void) {
+    SimpleSyncProtocol sync;
+
+    // Initialize with 3 samples of 10000us to reach MIN_SAMPLES
+    sync.updateLatency(20000);  // one-way = 10000
+    sync.updateLatency(20000);
     sync.updateLatency(20000);
     TEST_ASSERT_EQUAL_UINT32(10000, sync.getMeasuredLatency());
+
+    // Add a different measurement: RTT = 30000us → one-way = 15000us
+    // EMA: new = 0.3 * 15000 + 0.7 * 10000 = 4500 + 7000 = 11500
+    sync.updateLatency(30000);
+    TEST_ASSERT_EQUAL_UINT32(15000, sync.getRawLatency());
+    TEST_ASSERT_EQUAL_UINT32(11500, sync.getMeasuredLatency());  // EMA smoothed
+}
+
+void test_SimpleSyncProtocol_updateLatency_outlier_rejection(void) {
+    SimpleSyncProtocol sync;
+
+    // Initialize with 3 samples of 10000us
+    sync.updateLatency(20000);  // one-way = 10000
+    sync.updateLatency(20000);
+    sync.updateLatency(20000);
+    TEST_ASSERT_EQUAL_UINT32(10000, sync.getMeasuredLatency());
+
+    // Send outlier: RTT = 50000us → one-way = 25000us (> 2x smoothed)
+    // Should be rejected (smoothed stays at 10000)
+    sync.updateLatency(50000);
+    TEST_ASSERT_EQUAL_UINT32(25000, sync.getRawLatency());  // Raw updated
+    TEST_ASSERT_EQUAL_UINT32(10000, sync.getMeasuredLatency());  // Smoothed unchanged
+    TEST_ASSERT_EQUAL_UINT16(3, sync.getSampleCount());  // Count not incremented
+}
+
+void test_SimpleSyncProtocol_resetLatency(void) {
+    SimpleSyncProtocol sync;
+
+    // Add some samples
+    sync.updateLatency(20000);
+    sync.updateLatency(20000);
+    sync.updateLatency(20000);
+    TEST_ASSERT_EQUAL_UINT32(10000, sync.getMeasuredLatency());
+    TEST_ASSERT_EQUAL_UINT16(3, sync.getSampleCount());
+
+    // Reset
+    sync.resetLatency();
+    TEST_ASSERT_EQUAL_UINT32(0, sync.getMeasuredLatency());
+    TEST_ASSERT_EQUAL_UINT32(0, sync.getRawLatency());
+    TEST_ASSERT_EQUAL_UINT16(0, sync.getSampleCount());
 }
 
 // =============================================================================
@@ -700,10 +765,13 @@ int main(int argc, char **argv) {
     RUN_TEST(test_SimpleSyncProtocol_getTimeSinceSync_after_sync);
     RUN_TEST(test_SimpleSyncProtocol_reset);
 
-    // PING/PONG Latency Measurement Tests
+    // PING/PONG Latency Measurement Tests (with EMA smoothing)
     RUN_TEST(test_SimpleSyncProtocol_getMeasuredLatency_initial_zero);
     RUN_TEST(test_SimpleSyncProtocol_updateLatency);
     RUN_TEST(test_SimpleSyncProtocol_updateLatency_multiple);
+    RUN_TEST(test_SimpleSyncProtocol_updateLatency_ema_smoothing);
+    RUN_TEST(test_SimpleSyncProtocol_updateLatency_outlier_rejection);
+    RUN_TEST(test_SimpleSyncProtocol_resetLatency);
 
     // createBuzz with duration Tests
     RUN_TEST(test_SyncCommand_createBuzz_with_duration);

@@ -19,6 +19,8 @@
 
 const char* INTERNAL_MESSAGES[] = {
     "BUZZ",
+    "PING",
+    "PONG",
     "PARAM_UPDATE",
     "SEED",
     "SEED_ACK",

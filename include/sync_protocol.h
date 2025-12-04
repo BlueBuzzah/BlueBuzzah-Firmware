@@ -361,25 +361,88 @@ public:
     void reset();
 
     // =========================================================================
-    // PING/PONG LATENCY MEASUREMENT
+    // PING/PONG LATENCY MEASUREMENT (with EMA smoothing)
     // =========================================================================
 
     /**
-     * @brief Update measured latency from RTT
+     * @brief Update measured latency from RTT with EMA smoothing
      * @param rttUs Round-trip time in microseconds
+     *
+     * Uses exponential moving average to smooth latency values and
+     * rejects outliers that are > 2x the current smoothed value.
      */
-    void updateLatency(uint32_t rttUs) { _measuredLatencyUs = rttUs / 2; }
+    void updateLatency(uint32_t rttUs) {
+        uint32_t oneWay = rttUs / 2;
+        _measuredLatencyUs = oneWay;  // Store raw for diagnostics
+
+        // First sample - initialize
+        if (_sampleCount == 0) {
+            _smoothedLatencyUs = oneWay;
+            _sampleCount = 1;
+            return;
+        }
+
+        // Outlier rejection: ignore if > 2x current smoothed
+        if (oneWay > OUTLIER_MULT * _smoothedLatencyUs) {
+            // Spike detected - don't update smoothed value
+            return;
+        }
+
+        // EMA: new = α * measured + (1-α) * previous
+        // Using integer math: new = (α_num * measured + (den - α_num) * prev) / den
+        _smoothedLatencyUs = (EMA_ALPHA_NUM * oneWay +
+                              (EMA_ALPHA_DEN - EMA_ALPHA_NUM) * _smoothedLatencyUs)
+                             / EMA_ALPHA_DEN;
+
+        if (_sampleCount < 0xFFFF) _sampleCount++;
+    }
 
     /**
-     * @brief Get measured one-way latency
-     * @return Latency in microseconds (0 if never measured)
+     * @brief Get smoothed one-way latency for sync compensation
+     * @return Smoothed latency in microseconds (0 if not enough samples)
      */
-    uint32_t getMeasuredLatency() const { return _measuredLatencyUs; }
+    uint32_t getMeasuredLatency() const {
+        // Return smoothed value only if we have enough samples
+        if (_sampleCount >= MIN_SAMPLES) {
+            return _smoothedLatencyUs;
+        }
+        return 0;  // Not enough data yet - no compensation
+    }
+
+    /**
+     * @brief Get raw (unsmoothed) latency for diagnostics
+     * @return Raw one-way latency from most recent measurement
+     */
+    uint32_t getRawLatency() const { return _measuredLatencyUs; }
+
+    /**
+     * @brief Get number of valid latency samples collected
+     */
+    uint16_t getSampleCount() const { return _sampleCount; }
+
+    /**
+     * @brief Reset latency measurement state (e.g., on reconnection)
+     */
+    void resetLatency() {
+        _measuredLatencyUs = 0;
+        _smoothedLatencyUs = 0;
+        _sampleCount = 0;
+    }
 
 private:
+    // EMA tuning constants
+    static constexpr uint16_t MIN_SAMPLES = 3;        // Minimum before using smoothed
+    static constexpr uint32_t OUTLIER_MULT = 2;       // Reject if > 2x average
+    static constexpr uint8_t EMA_ALPHA_NUM = 3;       // α = 3/10 = 0.3
+    static constexpr uint8_t EMA_ALPHA_DEN = 10;
+
     int64_t _currentOffset;       // Current clock offset (microseconds)
     uint32_t _lastSyncTime;       // Time of last sync (millis)
-    uint32_t _measuredLatencyUs;  // PING/PONG measured one-way latency (microseconds)
+
+    // Latency measurement with EMA smoothing
+    uint32_t _measuredLatencyUs;  // Raw one-way latency (most recent)
+    uint32_t _smoothedLatencyUs;  // EMA-smoothed latency (used for compensation)
+    uint16_t _sampleCount;        // Number of valid samples received
 };
 
 #endif // SYNC_PROTOCOL_H

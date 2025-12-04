@@ -348,6 +348,45 @@ private:
     BLEDisconnectCallback _disconnectCallback;
     BLEMessageCallback _messageCallback;
 
+    // =========================================================================
+    // TX QUEUE (non-blocking message transmission)
+    // =========================================================================
+
+    static constexpr uint8_t TX_QUEUE_SIZE = 12;
+
+    struct TxEntry {
+        char data[MESSAGE_BUFFER_SIZE];
+        uint16_t length;
+        uint16_t bytesSent;
+        uint16_t connHandle;
+        bool pending;
+    };
+
+    TxEntry _txQueue[TX_QUEUE_SIZE];
+    uint8_t _txHead;
+    uint8_t _txTail;
+    uint8_t _txCount;
+
+    /**
+     * @brief Enqueue message for non-blocking transmission
+     * @param connHandle Target connection
+     * @param message Message to send (EOT will be appended)
+     * @return true if enqueued successfully
+     */
+    bool enqueueTx(uint16_t connHandle, const char* message);
+
+    /**
+     * @brief Process pending TX queue entries
+     * Called from update() to drain the queue incrementally
+     */
+    void processTxQueue();
+
+    /**
+     * @brief Attempt immediate write (non-blocking)
+     * @return Bytes written (0 if buffer full)
+     */
+    size_t tryWriteImmediate(uint16_t connHandle, const uint8_t* data, size_t len);
+
     // Internal methods
     void setupPrimaryMode();
     void setupSecondaryMode();

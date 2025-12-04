@@ -361,7 +361,9 @@ SyncCommand SyncCommand::createPong(uint32_t sequenceId) {
 SimpleSyncProtocol::SimpleSyncProtocol() :
     _currentOffset(0),
     _lastSyncTime(0),
-    _measuredLatencyUs(0)
+    _measuredLatencyUs(0),
+    _smoothedLatencyUs(0),
+    _sampleCount(0)
 {
 }
 
@@ -390,4 +392,6 @@ void SimpleSyncProtocol::reset() {
     _currentOffset = 0;
     _lastSyncTime = 0;
     _measuredLatencyUs = 0;
+    _smoothedLatencyUs = 0;
+    _sampleCount = 0;
 }

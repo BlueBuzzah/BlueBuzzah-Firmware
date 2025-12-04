@@ -706,8 +706,8 @@ public:
 
 private:
     Adafruit_TCA9548A _tca;
-    Adafruit_DRV2605 _drv[5];
-    bool _motorActive[5];
+    Adafruit_DRV2605 _drv[4];
+    bool _motorActive[4];
 
     void configureDRV2605(Adafruit_DRV2605& driver);
 };
