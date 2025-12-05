@@ -191,30 +191,30 @@ Mirroring is controlled by the `mirrorPattern` parameter based on vCR type:
 
 ```cpp
 void TherapyEngine::generateBuzzSequence(uint8_t* sequence, bool mirrorPattern) {
-    // Generate left hand sequence using Fisher-Yates shuffle
-    uint8_t leftSequence[NUM_FINGERS];
+    // Generate PRIMARY device sequence using Fisher-Yates shuffle
+    uint8_t primarySequence[NUM_FINGERS];
     for (uint8_t i = 0; i < NUM_FINGERS; i++) {
-        leftSequence[i] = i;
+        primarySequence[i] = i;
     }
-    shuffleArray(leftSequence, NUM_FINGERS);
+    shuffleArray(primarySequence, NUM_FINGERS);
 
-    // Generate right hand sequence based on mirror setting
-    uint8_t rightSequence[NUM_FINGERS];
+    // Generate SECONDARY device sequence based on mirror setting
+    uint8_t secondarySequence[NUM_FINGERS];
     if (mirrorPattern) {
-        // Mirrored: same finger on both hands (for noisy vCR)
-        memcpy(rightSequence, leftSequence, NUM_FINGERS);
+        // Mirrored: same finger on both devices (for noisy vCR)
+        memcpy(secondarySequence, primarySequence, NUM_FINGERS);
     } else {
         // Non-mirrored: independent random sequence (for regular vCR)
         for (uint8_t i = 0; i < NUM_FINGERS; i++) {
-            rightSequence[i] = i;
+            secondarySequence[i] = i;
         }
-        shuffleArray(rightSequence, NUM_FINGERS);
+        shuffleArray(secondarySequence, NUM_FINGERS);
     }
 
     // Combine into sequence buffer
     for (uint8_t i = 0; i < NUM_FINGERS; i++) {
-        sequence[i * 2] = leftSequence[i];
-        sequence[i * 2 + 1] = rightSequence[i];
+        sequence[i * 2] = primarySequence[i];
+        sequence[i * 2 + 1] = secondarySequence[i];
     }
 }
 

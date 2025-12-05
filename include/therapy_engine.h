@@ -71,8 +71,8 @@ enum class BuzzFlowState : uint8_t {
  *   After all fingers: Wait interBurstIntervalMs (TIME_RELAX = 668ms)
  */
 struct Pattern {
-    uint8_t leftSequence[PATTERN_MAX_FINGERS];
-    uint8_t rightSequence[PATTERN_MAX_FINGERS];
+    uint8_t primarySequence[PATTERN_MAX_FINGERS];
+    uint8_t secondarySequence[PATTERN_MAX_FINGERS];
     float timeOffMs[PATTERN_MAX_FINGERS];   // TIME_OFF + jitter for each finger (v1: 67ms ± jitter)
     uint8_t numFingers;
     float burstDurationMs;                  // TIME_ON (v1: 100ms)
@@ -84,8 +84,8 @@ struct Pattern {
         interBurstIntervalMs(668.0f)
     {
         for (int i = 0; i < PATTERN_MAX_FINGERS; i++) {
-            leftSequence[i] = i;
-            rightSequence[i] = i;
+            primarySequence[i] = i;
+            secondarySequence[i] = i;
             timeOffMs[i] = 67.0f;           // Default TIME_OFF (no jitter)
         }
     }
@@ -104,13 +104,13 @@ struct Pattern {
     /**
      * @brief Get finger pair at specified index
      * @param index Pattern step index
-     * @param leftFinger Output left finger index
-     * @param rightFinger Output right finger index
+     * @param primaryFinger Output PRIMARY device finger index
+     * @param secondaryFinger Output SECONDARY device finger index
      */
-    void getFingerPair(uint8_t index, uint8_t& leftFinger, uint8_t& rightFinger) const {
+    void getFingerPair(uint8_t index, uint8_t& primaryFinger, uint8_t& secondaryFinger) const {
         if (index < numFingers) {
-            leftFinger = leftSequence[index];
-            rightFinger = rightSequence[index];
+            primaryFinger = primarySequence[index];
+            secondaryFinger = secondarySequence[index];
         }
     }
 };
@@ -194,7 +194,7 @@ Pattern generateMirroredPattern(
 // =============================================================================
 
 // Callback for sending sync commands to SECONDARY
-typedef void (*SendCommandCallback)(const char* commandType, uint8_t leftFinger, uint8_t rightFinger, uint8_t amplitude, uint32_t durationMs, uint32_t seq);
+typedef void (*SendCommandCallback)(const char* commandType, uint8_t primaryFinger, uint8_t secondaryFinger, uint8_t amplitude, uint32_t durationMs, uint32_t seq);
 
 // Callback for activating haptic motor
 typedef void (*ActivateCallback)(uint8_t finger, uint8_t amplitude);

@@ -59,7 +59,7 @@ void mockDeactivateCallback(uint8_t finger) {
     g_deactivateCallCount++;
 }
 
-void mockSendCommandCallback(const char* cmd, uint8_t leftFinger, uint8_t rightFinger, uint8_t amp, uint32_t seq) {
+void mockSendCommandCallback(const char* cmd, uint8_t primaryFinger, uint8_t secondaryFinger, uint8_t amp, uint32_t seq) {
     g_sendCommandCallCount++;
 }
 
@@ -144,8 +144,8 @@ void test_Pattern_default_constructor(void) {
 
     // Default sequence is 0,1,2,3
     for (int i = 0; i < 4; i++) {
-        TEST_ASSERT_EQUAL_UINT8(i, p.leftSequence[i]);
-        TEST_ASSERT_EQUAL_UINT8(i, p.rightSequence[i]);
+        TEST_ASSERT_EQUAL_UINT8(i, p.primarySequence[i]);
+        TEST_ASSERT_EQUAL_UINT8(i, p.secondarySequence[i]);
     }
 }
 
@@ -166,20 +166,20 @@ void test_Pattern_getTotalDurationMs(void) {
 void test_Pattern_getFingerPair(void) {
     Pattern p;
     p.numFingers = 4;
-    p.leftSequence[0] = 3;
-    p.leftSequence[1] = 1;
-    p.rightSequence[0] = 2;
-    p.rightSequence[1] = 3;
+    p.primarySequence[0] = 3;
+    p.primarySequence[1] = 1;
+    p.secondarySequence[0] = 2;
+    p.secondarySequence[1] = 3;
 
-    uint8_t left, right;
+    uint8_t primary, secondary;
 
-    p.getFingerPair(0, left, right);
-    TEST_ASSERT_EQUAL_UINT8(3, left);
-    TEST_ASSERT_EQUAL_UINT8(2, right);
+    p.getFingerPair(0, primary, secondary);
+    TEST_ASSERT_EQUAL_UINT8(3, primary);
+    TEST_ASSERT_EQUAL_UINT8(2, secondary);
 
-    p.getFingerPair(1, left, right);
-    TEST_ASSERT_EQUAL_UINT8(1, left);
-    TEST_ASSERT_EQUAL_UINT8(3, right);
+    p.getFingerPair(1, primary, secondary);
+    TEST_ASSERT_EQUAL_UINT8(1, primary);
+    TEST_ASSERT_EQUAL_UINT8(3, secondary);
 }
 
 // =============================================================================
@@ -190,15 +190,15 @@ void test_generateRandomPermutation_produces_valid_pattern(void) {
     Pattern p = generateRandomPermutation(4, 100.0f, 67.0f, 0.0f, true);
 
     TEST_ASSERT_EQUAL_UINT8(4, p.numFingers);
-    TEST_ASSERT_TRUE(isValidPermutation(p.leftSequence, 4));
-    TEST_ASSERT_TRUE(isValidPermutation(p.rightSequence, 4));
+    TEST_ASSERT_TRUE(isValidPermutation(p.primarySequence, 4));
+    TEST_ASSERT_TRUE(isValidPermutation(p.secondarySequence, 4));
 }
 
 void test_generateRandomPermutation_mirrored(void) {
     Pattern p = generateRandomPermutation(4, 100.0f, 67.0f, 0.0f, true);
 
-    // Mirrored: left and right should be identical
-    TEST_ASSERT_TRUE(arraysEqual(p.leftSequence, p.rightSequence, 4));
+    // Mirrored: primary and secondary should be identical
+    TEST_ASSERT_TRUE(arraysEqual(p.primarySequence, p.secondarySequence, 4));
 }
 
 void test_generateRandomPermutation_non_mirrored(void) {
@@ -207,8 +207,8 @@ void test_generateRandomPermutation_non_mirrored(void) {
     Pattern p = generateRandomPermutation(4, 100.0f, 67.0f, 0.0f, false);
 
     // Both should still be valid permutations
-    TEST_ASSERT_TRUE(isValidPermutation(p.leftSequence, 4));
-    TEST_ASSERT_TRUE(isValidPermutation(p.rightSequence, 4));
+    TEST_ASSERT_TRUE(isValidPermutation(p.primarySequence, 4));
+    TEST_ASSERT_TRUE(isValidPermutation(p.secondarySequence, 4));
 
     // Note: They might be equal by chance, but usually won't be
 }
@@ -226,7 +226,7 @@ void test_generateRandomPermutation_partial_fingers(void) {
     Pattern p = generateRandomPermutation(3, 100.0f, 67.0f, 0.0f, true);
 
     TEST_ASSERT_EQUAL_UINT8(3, p.numFingers);
-    TEST_ASSERT_TRUE(isValidPermutation(p.leftSequence, 3));
+    TEST_ASSERT_TRUE(isValidPermutation(p.primarySequence, 3));
 }
 
 void test_generateRandomPermutation_burst_duration(void) {
@@ -251,7 +251,7 @@ void test_generateSequentialPattern_forward(void) {
 
     // Sequential forward: 0, 1, 2, 3
     for (int i = 0; i < 4; i++) {
-        TEST_ASSERT_EQUAL_UINT8(i, p.leftSequence[i]);
+        TEST_ASSERT_EQUAL_UINT8(i, p.primarySequence[i]);
     }
 }
 
@@ -260,25 +260,25 @@ void test_generateSequentialPattern_reverse(void) {
 
     // Sequential reverse: 3, 2, 1, 0
     for (int i = 0; i < 4; i++) {
-        TEST_ASSERT_EQUAL_UINT8(3 - i, p.leftSequence[i]);
+        TEST_ASSERT_EQUAL_UINT8(3 - i, p.primarySequence[i]);
     }
 }
 
 void test_generateSequentialPattern_mirrored(void) {
     Pattern p = generateSequentialPattern(4, 100.0f, 67.0f, 0.0f, true, false);
 
-    // Mirrored: left and right identical
-    TEST_ASSERT_TRUE(arraysEqual(p.leftSequence, p.rightSequence, 4));
+    // Mirrored: primary and secondary identical
+    TEST_ASSERT_TRUE(arraysEqual(p.primarySequence, p.secondarySequence, 4));
 }
 
 void test_generateSequentialPattern_non_mirrored(void) {
     Pattern p = generateSequentialPattern(4, 100.0f, 67.0f, 0.0f, false, false);
 
-    // Non-mirrored: right is opposite order of left
-    // Left: 0,1,2,3  Right: 3,2,1,0
+    // Non-mirrored: secondary is opposite order of primary
+    // Primary: 0,1,2,3  Secondary: 3,2,1,0
     for (int i = 0; i < 4; i++) {
-        TEST_ASSERT_EQUAL_UINT8(i, p.leftSequence[i]);
-        TEST_ASSERT_EQUAL_UINT8(3 - i, p.rightSequence[i]);
+        TEST_ASSERT_EQUAL_UINT8(i, p.primarySequence[i]);
+        TEST_ASSERT_EQUAL_UINT8(3 - i, p.secondarySequence[i]);
     }
 }
 
@@ -291,21 +291,21 @@ void test_generateMirroredPattern_not_randomized(void) {
 
     // Not randomized: sequential
     for (int i = 0; i < 4; i++) {
-        TEST_ASSERT_EQUAL_UINT8(i, p.leftSequence[i]);
+        TEST_ASSERT_EQUAL_UINT8(i, p.primarySequence[i]);
     }
 
     // Always mirrored
-    TEST_ASSERT_TRUE(arraysEqual(p.leftSequence, p.rightSequence, 4));
+    TEST_ASSERT_TRUE(arraysEqual(p.primarySequence, p.secondarySequence, 4));
 }
 
 void test_generateMirroredPattern_randomized(void) {
     Pattern p = generateMirroredPattern(4, 100.0f, 67.0f, 0.0f, true);
 
     // Randomized: valid permutation
-    TEST_ASSERT_TRUE(isValidPermutation(p.leftSequence, 4));
+    TEST_ASSERT_TRUE(isValidPermutation(p.primarySequence, 4));
 
     // Always mirrored
-    TEST_ASSERT_TRUE(arraysEqual(p.leftSequence, p.rightSequence, 4));
+    TEST_ASSERT_TRUE(arraysEqual(p.primarySequence, p.secondarySequence, 4));
 }
 
 // =============================================================================

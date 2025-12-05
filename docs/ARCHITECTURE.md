@@ -587,16 +587,16 @@ void TherapyEngine::executeCycle() {
 
     // Execute with precise timing
     for (uint8_t i = 0; i < _config.burstsPerCycle; i++) {
-        uint8_t leftFinger = _leftSequence[i];
-        uint8_t rightFinger = _rightSequence[i];
+        uint8_t primaryFinger = _primarySequence[i];
+        uint8_t secondaryFinger = _secondarySequence[i];
 
         // Bilateral activation (infrastructure call through interface)
-        activateBilateral(leftFinger, rightFinger, _config.amplitudePercent);
+        activateBilateral(primaryFinger, secondaryFinger, _config.amplitudePercent);
 
         // Timing control (domain logic)
         delay(_config.burstDurationMs);
 
-        deactivateBilateral(leftFinger, rightFinger);
+        deactivateBilateral(primaryFinger, secondaryFinger);
 
         // Apply jitter if configured
         uint16_t interval = _config.interBurstIntervalMs;
@@ -771,31 +771,31 @@ The `mirrorPattern` parameter controls whether both hands receive the same finge
 // src/therapy_engine.cpp
 
 void TherapyEngine::generatePattern() {
-    // Generate left hand sequence using Fisher-Yates shuffle
+    // Generate PRIMARY device sequence using Fisher-Yates shuffle
     for (uint8_t i = 0; i < 4; i++) {
-        _leftSequence[i] = i;
+        _primarySequence[i] = i;
     }
     for (uint8_t i = 3; i > 0; i--) {
         uint8_t j = random(0, i + 1);
-        uint8_t temp = _leftSequence[i];
-        _leftSequence[i] = _leftSequence[j];
-        _leftSequence[j] = temp;
+        uint8_t temp = _primarySequence[i];
+        _primarySequence[i] = _primarySequence[j];
+        _primarySequence[j] = temp;
     }
 
-    // Generate right hand sequence based on mirror setting
+    // Generate SECONDARY device sequence based on mirror setting
     if (_config.mirrorPattern) {
-        // Mirrored: same finger on both hands (noisy vCR)
-        memcpy(_rightSequence, _leftSequence, sizeof(_leftSequence));
+        // Mirrored: same finger on both devices (noisy vCR)
+        memcpy(_secondarySequence, _primarySequence, sizeof(_primarySequence));
     } else {
         // Non-mirrored: independent random sequence (regular vCR)
         for (uint8_t i = 0; i < 4; i++) {
-            _rightSequence[i] = i;
+            _secondarySequence[i] = i;
         }
         for (uint8_t i = 3; i > 0; i--) {
             uint8_t j = random(0, i + 1);
-            uint8_t temp = _rightSequence[i];
-            _rightSequence[i] = _rightSequence[j];
-            _rightSequence[j] = temp;
+            uint8_t temp = _secondarySequence[i];
+            _secondarySequence[i] = _secondarySequence[j];
+            _secondarySequence[j] = temp;
         }
     }
 }
