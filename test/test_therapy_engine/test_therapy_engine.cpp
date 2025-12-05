@@ -59,7 +59,9 @@ void mockDeactivateCallback(uint8_t finger) {
     g_deactivateCallCount++;
 }
 
-void mockSendCommandCallback(const char* cmd, uint8_t primaryFinger, uint8_t secondaryFinger, uint8_t amp, uint32_t seq) {
+void mockSendCommandCallback(const char* cmd, uint8_t primaryFinger, uint8_t secondaryFinger, uint8_t amp, uint32_t durationMs, uint32_t seq, uint16_t frequencyHz) {
+    (void)durationMs;
+    (void)frequencyHz;
     g_sendCommandCallCount++;
 }
 

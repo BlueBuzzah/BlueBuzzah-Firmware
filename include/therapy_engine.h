@@ -194,7 +194,7 @@ Pattern generateMirroredPattern(
 // =============================================================================
 
 // Callback for sending sync commands to SECONDARY
-typedef void (*SendCommandCallback)(const char* commandType, uint8_t primaryFinger, uint8_t secondaryFinger, uint8_t amplitude, uint32_t durationMs, uint32_t seq);
+typedef void (*SendCommandCallback)(const char* commandType, uint8_t primaryFinger, uint8_t secondaryFinger, uint8_t amplitude, uint32_t durationMs, uint32_t seq, uint16_t frequencyHz);
 
 // Callback for activating haptic motor
 typedef void (*ActivateCallback)(uint8_t finger, uint8_t amplitude);
@@ -364,6 +364,15 @@ public:
      */
     uint32_t getDurationSeconds() const { return _sessionDurationSec; }
 
+    /**
+     * @brief Get current frequency for a finger
+     * @param finger Finger index (0-3)
+     * @return Current frequency in Hz
+     */
+    uint16_t getFrequency(uint8_t finger) const {
+        return (finger < MAX_ACTUATORS) ? _currentFrequency[finger] : 235;
+    }
+
 private:
     // State
     bool _isRunning;
@@ -386,6 +395,7 @@ private:
     bool _frequencyRandomization;
     uint16_t _frequencyMin;     // 210 Hz (v1 ACTUATOR_FREQL)
     uint16_t _frequencyMax;     // 260 Hz (v1 ACTUATOR_FREQH)
+    uint16_t _currentFrequency[MAX_ACTUATORS];  // Current frequency per finger (Hz)
 
     // Current pattern execution
     Pattern _currentPattern;

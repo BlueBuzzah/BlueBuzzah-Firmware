@@ -220,6 +220,10 @@ TherapyEngine::TherapyEngine() :
     _setFrequencyCallback(nullptr),
     _macrocycleStartCallback(nullptr)
 {
+    // Initialize frequencies to default (235 Hz = middle of 210-260 range)
+    for (int i = 0; i < MAX_ACTUATORS; i++) {
+        _currentFrequency[i] = 235;
+    }
 }
 
 // =============================================================================
@@ -490,7 +494,8 @@ void TherapyEngine::executePatternStep() {
             // Send sync command to SECONDARY (if PRIMARY with callback)
             if (_sendCommandCallback) {
                 uint32_t durationMs = (uint32_t)_currentPattern.burstDurationMs;
-                _sendCommandCallback("BUZZ", primaryFinger, secondaryFinger, amplitude, durationMs, _buzzSequenceId);
+                uint16_t freq = _currentFrequency[primaryFinger];
+                _sendCommandCallback("BUZZ", primaryFinger, secondaryFinger, amplitude, durationMs, _buzzSequenceId, freq);
                 _buzzSequenceId++;
             }
 
@@ -596,7 +601,7 @@ void TherapyEngine::applyFrequencyRandomization() {
     //   ACTUATOR_FREQUENCY = random.randrange(FREQL, FREQH, 5)
     // Generates: 210, 215, 220, 225, 230, 235, 240, 245, 250, 255, 260 Hz
 
-    if (!_frequencyRandomization || !_setFrequencyCallback) {
+    if (!_frequencyRandomization) {
         return;
     }
 
@@ -608,6 +613,11 @@ void TherapyEngine::applyFrequencyRandomization() {
     for (int finger = 0; finger < _numFingers; finger++) {
         // Generate random frequency in 5 Hz steps (matching v1 behavior)
         uint16_t freq = _frequencyMin + (random(0, steps + 1) * 5);
-        _setFrequencyCallback(finger, freq);
+        _currentFrequency[finger] = freq;
+
+        // Apply locally if callback registered
+        if (_setFrequencyCallback) {
+            _setFrequencyCallback(finger, freq);
+        }
     }
 }
