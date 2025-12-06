@@ -72,8 +72,8 @@ enum class BuzzFlowState : uint8_t {
  *   After all fingers: Wait interBurstIntervalMs (TIME_RELAX = 668ms)
  */
 struct Pattern {
-    uint8_t primarySequence[PATTERN_MAX_FINGERS];
-    uint8_t secondarySequence[PATTERN_MAX_FINGERS];
+    std::array<uint8_t, PATTERN_MAX_FINGERS> primarySequence;
+    std::array<uint8_t, PATTERN_MAX_FINGERS> secondarySequence;
     float timeOffMs[PATTERN_MAX_FINGERS];   // TIME_OFF + jitter for each finger (v1: 67ms ± jitter)
     uint8_t numFingers;
     float burstDurationMs;                  // TIME_ON (v1: 100ms)
