@@ -39,24 +39,24 @@ Pattern generateRandomPermutation(
     float cycleDurationMs = timeOnMs + timeOffMs;
     pattern.interBurstIntervalMs = 4.0f * cycleDurationMs;
 
-    // Generate left hand sequence (random permutation)
+    // Generate PRIMARY device sequence (random permutation)
     for (int i = 0; i < numFingers; i++) {
-        pattern.leftSequence[i] = i;
+        pattern.primarySequence[i] = i;
     }
-    shuffleArray(pattern.leftSequence);
+    shuffleArray(pattern.secondarySequence);
 
-    // Generate right hand sequence based on mirror setting
+    // Generate SECONDARY device sequence based on mirror setting
     if (mirrorPattern) {
-        // Mirrored: same finger on both hands (for noisy vCR)
+        // Mirrored: same finger on both devices (for noisy vCR)
         for (int i = 0; i < numFingers; i++) {
-            pattern.rightSequence[i] = pattern.leftSequence[i];
+            pattern.secondarySequence[i] = pattern.primarySequence[i];
         }
     } else {
         // Non-mirrored: independent random sequence
         for (int i = 0; i < numFingers; i++) {
-            pattern.rightSequence[i] = i;
+            pattern.secondarySequence[i] = i;
         }
-        shuffleArray(pattern.rightSequence);
+        shuffleArray(pattern.primarySequence);
     }
 
     // Calculate jitter amount per v1 formula: (TIME_ON + TIME_OFF) * jitter% / 100 / 2
@@ -98,22 +98,22 @@ Pattern generateSequentialPattern(
     // Generate sequential list
     for (int i = 0; i < numFingers; i++) {
         if (reverse) {
-            pattern.leftSequence[i] = numFingers - 1 - i;
+            pattern.primarySequence[i] = numFingers - 1 - i;
         } else {
-            pattern.leftSequence[i] = i;
+            pattern.primarySequence[i] = i;
         }
     }
 
-    // Generate right sequence based on mirror setting
+    // Generate SECONDARY sequence based on mirror setting
     if (mirrorPattern) {
-        // Mirrored: same as left
+        // Mirrored: same as PRIMARY
         for (int i = 0; i < numFingers; i++) {
-            pattern.rightSequence[i] = pattern.leftSequence[i];
+            pattern.secondarySequence[i] = pattern.primarySequence[i];
         }
     } else {
         // Non-mirrored: opposite order
         for (int i = 0; i < numFingers; i++) {
-            pattern.rightSequence[i] = pattern.leftSequence[numFingers - 1 - i];
+            pattern.secondarySequence[i] = pattern.primarySequence[numFingers - 1 - i];
         }
     }
 
@@ -151,16 +151,16 @@ Pattern generateMirroredPattern(
 
     // Generate base sequence
     for (int i = 0; i < numFingers; i++) {
-        pattern.leftSequence[i] = i;
+        pattern.primarySequence[i] = i;
     }
 
     if (randomize) {
-        shuffleArray(pattern.leftSequence);
+        shuffleArray(pattern.secondarySequence);
     }
 
-    // Mirror to both hands (identical sequences)
+    // Mirror to both devices (identical sequences)
     for (int i = 0; i < numFingers; i++) {
-        pattern.rightSequence[i] = pattern.leftSequence[i];
+        pattern.secondarySequence[i] = pattern.primarySequence[i];
     }
 
     // Calculate jitter amount per v1 formula: (TIME_ON + TIME_OFF) * jitter% / 100 / 2
@@ -219,6 +219,10 @@ TherapyEngine::TherapyEngine() :
     _setFrequencyCallback(nullptr),
     _macrocycleStartCallback(nullptr)
 {
+    // Initialize frequencies to default (235 Hz = middle of 210-260 range)
+    for (int i = 0; i < MAX_ACTUATORS; i++) {
+        _currentFrequency[i] = 235;
+    }
 }
 
 // =============================================================================
@@ -352,10 +356,10 @@ void TherapyEngine::pause() {
 
     // Deactivate any active motors
     if (_motorActive && _deactivateCallback) {
-        uint8_t leftFinger, rightFinger;
-        _currentPattern.getFingerPair(_patternIndex, leftFinger, rightFinger);
-        _deactivateCallback(leftFinger);
-        _deactivateCallback(rightFinger);
+        uint8_t primaryFinger, secondaryFinger;
+        _currentPattern.getFingerPair(_patternIndex, primaryFinger, secondaryFinger);
+        _deactivateCallback(primaryFinger);
+        _deactivateCallback(secondaryFinger);
         _motorActive = false;
     }
 
@@ -373,10 +377,10 @@ void TherapyEngine::stop() {
 
     // Deactivate any active motors
     if (_motorActive && _deactivateCallback) {
-        uint8_t leftFinger, rightFinger;
-        _currentPattern.getFingerPair(_patternIndex, leftFinger, rightFinger);
-        _deactivateCallback(leftFinger);
-        _deactivateCallback(rightFinger);
+        uint8_t primaryFinger, secondaryFinger;
+        _currentPattern.getFingerPair(_patternIndex, primaryFinger, secondaryFinger);
+        _deactivateCallback(primaryFinger);
+        _deactivateCallback(secondaryFinger);
         _motorActive = false;
     }
 
@@ -478,8 +482,8 @@ void TherapyEngine::executePatternStep() {
     switch (_buzzFlowState) {
         case BuzzFlowState::IDLE: {
             // Ready to send BUZZ - no wait state, immediately activate
-            uint8_t leftFinger, rightFinger;
-            _currentPattern.getFingerPair(_patternIndex, leftFinger, rightFinger);
+            uint8_t primaryFinger, secondaryFinger;
+            _currentPattern.getFingerPair(_patternIndex, primaryFinger, secondaryFinger);
 
             // Calculate random amplitude within configured range
             uint8_t amplitude = (_amplitudeMin == _amplitudeMax)
@@ -489,13 +493,14 @@ void TherapyEngine::executePatternStep() {
             // Send sync command to SECONDARY (if PRIMARY with callback)
             if (_sendCommandCallback) {
                 uint32_t durationMs = (uint32_t)_currentPattern.burstDurationMs;
-                _sendCommandCallback("BUZZ", leftFinger, rightFinger, amplitude, durationMs, _buzzSequenceId);
+                uint16_t freq = _currentFrequency[primaryFinger];
+                _sendCommandCallback("BUZZ", primaryFinger, secondaryFinger, amplitude, durationMs, _buzzSequenceId, freq);
                 _buzzSequenceId++;
             }
 
             // Activate local motors
             if (_activateCallback) {
-                _activateCallback(leftFinger, amplitude);
+                _activateCallback(primaryFinger, amplitude);
             }
 
             // Use fresh timestamp AFTER callbacks complete - BLE send in
@@ -514,11 +519,11 @@ void TherapyEngine::executePatternStep() {
             // Motor is ON - wait for TIME_ON (burstDurationMs = 100ms)
             if ((now - _activationStartTime) >= (uint32_t)_currentPattern.burstDurationMs) {
                 // TIME_ON elapsed - deactivate motor
-                uint8_t leftFinger, rightFinger;
-                _currentPattern.getFingerPair(_patternIndex, leftFinger, rightFinger);
+                uint8_t primaryFinger, secondaryFinger;
+                _currentPattern.getFingerPair(_patternIndex, primaryFinger, secondaryFinger);
 
                 if (_deactivateCallback) {
-                    _deactivateCallback(leftFinger);
+                    _deactivateCallback(primaryFinger);
                 }
 
                 _motorActive = false;
@@ -595,7 +600,7 @@ void TherapyEngine::applyFrequencyRandomization() {
     //   ACTUATOR_FREQUENCY = random.randrange(FREQL, FREQH, 5)
     // Generates: 210, 215, 220, 225, 230, 235, 240, 245, 250, 255, 260 Hz
 
-    if (!_frequencyRandomization || !_setFrequencyCallback) {
+    if (!_frequencyRandomization) {
         return;
     }
 
@@ -607,6 +612,11 @@ void TherapyEngine::applyFrequencyRandomization() {
     for (int finger = 0; finger < _numFingers; finger++) {
         // Generate random frequency in 5 Hz steps (matching v1 behavior)
         uint16_t freq = _frequencyMin + (random(0, steps + 1) * 5);
-        _setFrequencyCallback(finger, freq);
+        _currentFrequency[finger] = freq;
+
+        // Apply locally if callback registered
+        if (_setFrequencyCallback) {
+            _setFrequencyCallback(finger, freq);
+        }
     }
 }

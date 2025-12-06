@@ -334,11 +334,12 @@ SyncCommand SyncCommand::createStopSession(uint32_t sequenceId) {
     return SyncCommand(SyncCommandType::STOP_SESSION, sequenceId);
 }
 
-SyncCommand SyncCommand::createBuzz(uint32_t sequenceId, uint8_t finger, uint8_t amplitude, uint32_t durationMs) {
+SyncCommand SyncCommand::createBuzz(uint32_t sequenceId, uint8_t finger, uint8_t amplitude, uint32_t durationMs, uint16_t frequencyHz) {
     SyncCommand cmd(SyncCommandType::BUZZ, sequenceId);
     cmd.setData("0", (int32_t)finger);
     cmd.setData("1", (int32_t)amplitude);
     cmd.setData("2", (int32_t)durationMs);
+    cmd.setData("3", (int32_t)frequencyHz);
     return cmd;
 }
 

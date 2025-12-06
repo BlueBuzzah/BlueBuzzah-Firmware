@@ -1002,8 +1002,8 @@ private:
     uint32_t _pauseStartTime;
     uint32_t _totalPauseTime;
 
-    uint8_t _leftSequence[4];
-    uint8_t _rightSequence[4];
+    uint8_t _primarySequence[4];
+    uint8_t _secondarySequence[4];
     uint8_t _currentBurst;
 
     void generatePattern();
@@ -1053,32 +1053,32 @@ Pattern generation for bilateral therapy.
 // include/therapy_engine.h (private implementation)
 
 void TherapyEngine::generatePattern() {
-    // Generate random permutation for left hand
+    // Generate random permutation for PRIMARY device
     for (uint8_t i = 0; i < 4; i++) {
-        _leftSequence[i] = i;
+        _primarySequence[i] = i;
     }
 
     // Fisher-Yates shuffle
     for (uint8_t i = 3; i > 0; i--) {
         uint8_t j = random(0, i + 1);
-        uint8_t temp = _leftSequence[i];
-        _leftSequence[i] = _leftSequence[j];
-        _leftSequence[j] = temp;
+        uint8_t temp = _primarySequence[i];
+        _primarySequence[i] = _primarySequence[j];
+        _primarySequence[j] = temp;
     }
 
     if (_config.mirrorPattern) {
-        // Same finger on both hands (noisy vCR)
-        memcpy(_rightSequence, _leftSequence, sizeof(_leftSequence));
+        // Same finger on both devices (noisy vCR)
+        memcpy(_secondarySequence, _primarySequence, sizeof(_primarySequence));
     } else {
         // Independent sequences (regular vCR)
         for (uint8_t i = 0; i < 4; i++) {
-            _rightSequence[i] = i;
+            _secondarySequence[i] = i;
         }
         for (uint8_t i = 3; i > 0; i--) {
             uint8_t j = random(0, i + 1);
-            uint8_t temp = _rightSequence[i];
-            _rightSequence[i] = _rightSequence[j];
-            _rightSequence[j] = temp;
+            uint8_t temp = _secondarySequence[i];
+            _secondarySequence[i] = _secondarySequence[j];
+            _secondarySequence[j] = temp;
         }
     }
 }

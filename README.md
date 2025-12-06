@@ -4,6 +4,7 @@
 [![Test Suite Status](https://img.shields.io/github/actions/workflow/status/BlueBuzzah/BlueBuzzah-Firmware/test.yml?branch=main&label=tests)](https://github.com/BlueBuzzah/BlueBuzzah-Firmware/actions/workflows/test.yml)
 [![Test Coverage](https://img.shields.io/codecov/c/github/BlueBuzzah/BlueBuzzah-Firmware)](https://app.codecov.io/gh/BlueBuzzah/BlueBuzzah-Firmware/)
 [![PlatformIO](https://img.shields.io/badge/PlatformIO-Arduino-orange.svg)](https://platformio.org/)
+[![Snyk Security](https://snyk.io/test/github/buzzahbuddy/bluebuzzah-firmware/badge.svg)](https://app.snyk.io/org/rbonestell/project/29618332-cdb9-45be-ba57-41da82771ad0)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
 BlueBuzzah is a medical device research platform implementing vibrotactile Coordinated Reset (vCR) therapy for Parkinson's disease treatment. The system consists of two synchronized haptic gloves that deliver precisely timed vibration patterns to fingers, based on research showing therapeutic benefits from desynchronization of pathological neural oscillations.

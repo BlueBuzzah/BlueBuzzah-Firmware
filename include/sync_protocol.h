@@ -216,13 +216,14 @@ public:
     static SyncCommand createStopSession(uint32_t sequenceId = 0);
 
     /**
-     * @brief Create BUZZ command with motor activation duration
+     * @brief Create BUZZ command with motor activation duration and frequency
      * @param sequenceId Sequence ID for the command
      * @param finger Finger index (0-3)
      * @param amplitude Amplitude percentage (0-100)
      * @param durationMs How long motor should stay active (TIME_ON from profile)
+     * @param frequencyHz Motor frequency in Hz (210-260 for Custom vCR)
      */
-    static SyncCommand createBuzz(uint32_t sequenceId, uint8_t finger, uint8_t amplitude, uint32_t durationMs);
+    static SyncCommand createBuzz(uint32_t sequenceId, uint8_t finger, uint8_t amplitude, uint32_t durationMs, uint16_t frequencyHz);
 
     /**
      * @brief Create DEACTIVATE command

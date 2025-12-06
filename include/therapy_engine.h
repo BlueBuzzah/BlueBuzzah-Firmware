@@ -72,9 +72,9 @@ enum class BuzzFlowState : uint8_t {
  *   After all fingers: Wait interBurstIntervalMs (TIME_RELAX = 668ms)
  */
 struct Pattern {
-    std::array<uint8_t, PATTERN_MAX_FINGERS> leftSequence;
-    std::array<uint8_t, PATTERN_MAX_FINGERS> rightSequence;
-    std::array<float, PATTERN_MAX_FINGERS> timeOffMs;   // TIME_OFF + jitter for each finger (v1: 67ms ± jitter)
+    uint8_t primarySequence[PATTERN_MAX_FINGERS];
+    uint8_t secondarySequence[PATTERN_MAX_FINGERS];
+    float timeOffMs[PATTERN_MAX_FINGERS];   // TIME_OFF + jitter for each finger (v1: 67ms ± jitter)
     uint8_t numFingers;
     float burstDurationMs;                  // TIME_ON (v1: 100ms)
     float interBurstIntervalMs;             // TIME_RELAX after pattern cycle (v1: 668ms fixed)
@@ -84,9 +84,9 @@ struct Pattern {
         burstDurationMs(100.0f),
         interBurstIntervalMs(668.0f)
     {
-        for (uint8_t i = 0; i < PATTERN_MAX_FINGERS; i++) {
-            leftSequence[i] = i;
-            rightSequence[i] = i;
+        for (int i = 0; i < PATTERN_MAX_FINGERS; i++) {
+            primarySequence[i] = i;
+            secondarySequence[i] = i;
             timeOffMs[i] = 67.0f;           // Default TIME_OFF (no jitter)
         }
     }
@@ -105,13 +105,13 @@ struct Pattern {
     /**
      * @brief Get finger pair at specified index
      * @param index Pattern step index
-     * @param leftFinger Output left finger index
-     * @param rightFinger Output right finger index
+     * @param primaryFinger Output PRIMARY device finger index
+     * @param secondaryFinger Output SECONDARY device finger index
      */
-    void getFingerPair(uint8_t index, uint8_t& leftFinger, uint8_t& rightFinger) const {
+    void getFingerPair(uint8_t index, uint8_t& primaryFinger, uint8_t& secondaryFinger) const {
         if (index < numFingers) {
-            leftFinger = leftSequence[index];
-            rightFinger = rightSequence[index];
+            primaryFinger = primarySequence[index];
+            secondaryFinger = secondarySequence[index];
         }
     }
 };
@@ -194,7 +194,7 @@ Pattern generateMirroredPattern(
 // =============================================================================
 
 // Callback for sending sync commands to SECONDARY
-typedef void (*SendCommandCallback)(const char* commandType, uint8_t leftFinger, uint8_t rightFinger, uint8_t amplitude, uint32_t durationMs, uint32_t seq);
+typedef void (*SendCommandCallback)(const char* commandType, uint8_t primaryFinger, uint8_t secondaryFinger, uint8_t amplitude, uint32_t durationMs, uint32_t seq, uint16_t frequencyHz);
 
 // Callback for activating haptic motor
 typedef void (*ActivateCallback)(uint8_t finger, uint8_t amplitude);
@@ -364,6 +364,15 @@ public:
      */
     uint32_t getDurationSeconds() const { return _sessionDurationSec; }
 
+    /**
+     * @brief Get current frequency for a finger
+     * @param finger Finger index (0-3)
+     * @return Current frequency in Hz
+     */
+    uint16_t getFrequency(uint8_t finger) const {
+        return (finger < MAX_ACTUATORS) ? _currentFrequency[finger] : 235;
+    }
+
 private:
     // State
     bool _isRunning;
@@ -386,6 +395,7 @@ private:
     bool _frequencyRandomization;
     uint16_t _frequencyMin;     // 210 Hz (v1 ACTUATOR_FREQL)
     uint16_t _frequencyMax;     // 260 Hz (v1 ACTUATOR_FREQH)
+    uint16_t _currentFrequency[MAX_ACTUATORS];  // Current frequency per finger (Hz)
 
     // Current pattern execution
     Pattern _currentPattern;

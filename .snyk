@@ -1,0 +1,10 @@
+version: v1.25.0
+
+# Exclude directories from Snyk Code static analysis
+exclude:
+  global:
+    - .pio/**
+    - test/**
+
+# Vulnerability ignores (add as needed)
+ignore:

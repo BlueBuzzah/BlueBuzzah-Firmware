@@ -128,7 +128,8 @@ void onBLEDisconnect(uint16_t connHandle, ConnectionType type, uint8_t reason);
 void onBLEMessage(uint16_t connHandle, const char *message);
 
 // Therapy Callbacks
-void onSendCommand(const char *commandType, uint8_t leftFinger, uint8_t rightFinger, uint8_t amplitude, uint32_t durationMs, uint32_t seq);
+void onSendCommand(const char *commandType, uint8_t primaryFinger, uint8_t secondaryFinger, uint8_t amplitude, uint32_t durationMs, uint32_t seq, uint16_t frequencyHz);
+void onSetFrequency(uint8_t finger, uint16_t frequencyHz);
 void onActivate(uint8_t finger, uint8_t amplitude);
 void onDeactivate(uint8_t finger);
 void onCycleComplete(uint32_t cycleCount);
@@ -715,6 +716,8 @@ bool initializeTherapy()
         therapy.setSendCommandCallback(onSendCommand);
         // Set macrocycle start callback for PING/PONG latency measurement
         therapy.setMacrocycleStartCallback(onMacrocycleStart);
+        // Set frequency callback for Custom vCR frequency randomization
+        therapy.setSetFrequencyCallback(onSetFrequency);
     }
     return true;
 }
@@ -1114,6 +1117,7 @@ void onBLEMessage(uint16_t connHandle, const char *message)
             int32_t finger = cmd.getDataInt("0", -1);
             int32_t amplitude = cmd.getDataInt("1", 50);
             int32_t durationMs = cmd.getDataInt("2", 100);  // Default 100ms if not specified
+            int32_t freqHz = cmd.getDataInt("3", 235);      // Default 235Hz (middle of range)
 
             if (finger >= 0 && finger < MAX_ACTUATORS && haptic.isEnabled(finger))
             {
@@ -1124,8 +1128,11 @@ void onBLEMessage(uint16_t connHandle, const char *message)
                     haptic.deactivate(activeMotorFinger);
                 }
 
+                // Apply frequency before activation
+                haptic.setFrequency(finger, (uint16_t)freqHz);
+
                 // Activate immediately
-                Serial.printf("[ACTIVATE] F%d A%d dur=%ldms\n", finger, amplitude, durationMs);
+                Serial.printf("[ACTIVATE] F%d A%d dur=%ldms freq=%ldHz\n", finger, amplitude, durationMs, freqHz);
                 haptic.activate(finger, amplitude);
 
                 // Schedule non-blocking deactivation after duration from profile
@@ -1166,10 +1173,10 @@ void onBLEMessage(uint16_t connHandle, const char *message)
 // THERAPY CALLBACKS
 // =============================================================================
 
-void onSendCommand(const char *commandType, uint8_t leftFinger, uint8_t rightFinger, uint8_t amplitude, uint32_t durationMs, uint32_t seq)
+void onSendCommand(const char *commandType, uint8_t primaryFinger, uint8_t secondaryFinger, uint8_t amplitude, uint32_t durationMs, uint32_t seq, uint16_t frequencyHz)
 {
-    // Create BUZZ command with duration for SECONDARY motor deactivation
-    SyncCommand cmd = SyncCommand::createBuzz(seq, leftFinger, amplitude, durationMs);
+    // Create BUZZ command for SECONDARY device - send secondaryFinger (the finger SECONDARY should activate)
+    SyncCommand cmd = SyncCommand::createBuzz(seq, secondaryFinger, amplitude, durationMs, frequencyHz);
 
     char buffer[128];
     if (cmd.serialize(buffer, sizeof(buffer)))
@@ -1181,17 +1188,17 @@ void onSendCommand(const char *commandType, uint8_t leftFinger, uint8_t rightFin
     // SECONDARY activates immediately on receive, so PRIMARY delays by one-way latency
     // to achieve synchronized motor activation between devices
     uint32_t latencyUs = syncProtocol.getMeasuredLatency();
-    if (latencyUs > 0 && haptic.isEnabled(leftFinger))
+    if (latencyUs > 0 && haptic.isEnabled(primaryFinger))
     {
         // Hardware timer schedules activation with microsecond precision
-        Serial.printf("[ACTIVATE] Scheduled F%d A%d delay=%luus\n", leftFinger, amplitude, latencyUs);
-        syncTimer.scheduleActivation(latencyUs, leftFinger, amplitude);
+        Serial.printf("[ACTIVATE] Scheduled F%d A%d delay=%luus\n", primaryFinger, amplitude, latencyUs);
+        syncTimer.scheduleActivation(latencyUs, primaryFinger, amplitude);
     }
-    else if (haptic.isEnabled(leftFinger))
+    else if (haptic.isEnabled(primaryFinger))
     {
         // No latency measurement yet - activate immediately
-        Serial.printf("[ACTIVATE] Immediate F%d A%d (no latency)\n", leftFinger, amplitude);
-        haptic.activate(leftFinger, amplitude);
+        Serial.printf("[ACTIVATE] Immediate F%d A%d (no latency)\n", primaryFinger, amplitude);
+        haptic.activate(primaryFinger, amplitude);
     }
 }
 
@@ -1218,6 +1225,15 @@ void onDeactivate(uint8_t finger)
     {
         Serial.printf("[DEACTIVATE] Finger %d\n", finger);
         haptic.deactivate(finger);
+    }
+}
+
+void onSetFrequency(uint8_t finger, uint16_t frequencyHz)
+{
+    // Set frequency for local motor (PRIMARY only - SECONDARY gets frequency in BUZZ command)
+    if (haptic.isEnabled(finger))
+    {
+        haptic.setFrequency(finger, frequencyHz);
     }
 }
 
