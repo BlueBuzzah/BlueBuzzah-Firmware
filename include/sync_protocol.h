@@ -295,7 +295,7 @@ public:
     void reset() { _nextId = 1; }
 
 private:
-    uint32_t _nextId;
+    volatile uint32_t _nextId;
 };
 
 // Global sequence generator
