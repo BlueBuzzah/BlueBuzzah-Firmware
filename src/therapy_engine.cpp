@@ -43,7 +43,7 @@ Pattern generateRandomPermutation(
     for (int i = 0; i < numFingers; i++) {
         pattern.primarySequence[i] = i;
     }
-    shuffleArray(pattern.secondarySequence);
+    shuffleArray(pattern.primarySequence);
 
     // Generate SECONDARY device sequence based on mirror setting
     if (mirrorPattern) {
@@ -56,7 +56,7 @@ Pattern generateRandomPermutation(
         for (int i = 0; i < numFingers; i++) {
             pattern.secondarySequence[i] = i;
         }
-        shuffleArray(pattern.primarySequence);
+        shuffleArray(pattern.secondarySequence);
     }
 
     // Calculate jitter amount per v1 formula: (TIME_ON + TIME_OFF) * jitter% / 100 / 2
