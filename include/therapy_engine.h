@@ -74,7 +74,7 @@ constexpr const static size_t DEFAULT_NUM_FINGERS = 4;
  *   For each finger: MOTOR_ON(burstDurationMs) → MOTOR_OFF(timeOffMs[i] with jitter)
  *   After all fingers: Wait interBurstIntervalMs (TIME_RELAX = 668ms)
  */
-struct Pattern {
+struct [[nodiscard]] Pattern {
     std::vector<uint8_t> primarySequence;
     std::vector<uint8_t> secondarySequence;
     std::vector<float> timeOffMs;   // TIME_OFF + jitter for each finger (v1: 67ms ± jitter)
@@ -82,11 +82,11 @@ struct Pattern {
     float burstDurationMs;                  // TIME_ON (v1: 100ms)
     float interBurstIntervalMs;             // TIME_RELAX after pattern cycle (v1: 668ms fixed)
 
-    Pattern() :
-        primarySequence(std::vector<uint8_t>(DEFAULT_NUM_FINGERS)),
-        secondarySequence(std::vector<uint8_t>(DEFAULT_NUM_FINGERS)),
-        timeOffMs(std::vector<float>(DEFAULT_NUM_FINGERS)),
-        numFingers(DEFAULT_NUM_FINGERS), // To become dynamic later
+    Pattern(uint8_t _numFingers = DEFAULT_NUM_FINGERS) :
+        primarySequence(std::vector<uint8_t>(_numFingers)),
+        secondarySequence(std::vector<uint8_t>(_numFingers)),
+        timeOffMs(std::vector<float>(_numFingers, 67.0f)),
+        numFingers(_numFingers),
         burstDurationMs(100.0f),
         interBurstIntervalMs(668.0f)
     {
@@ -94,7 +94,6 @@ struct Pattern {
         for (uint8_t i = 0; i < primarySequence.size(); i++) {
             primarySequence[i] = i;
             secondarySequence[i] = i;
-            timeOffMs[i] = 67.0f;           // Default TIME_OFF (no jitter)
         }
     }
 

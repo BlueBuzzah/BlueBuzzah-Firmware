@@ -14,7 +14,7 @@
 
 constexpr void shuffleArray(std::span<uint8_t> arr) {
     // Fisher-Yates shuffle
-    for (int i = arr.size() - 1; arr.size() > 0; i--) {
+    for (int i = arr.size() - 1; i > 0; i--) {
         int const j = random(0, i + 1);
         std::swap(arr[i], arr[j]);
     }
@@ -31,7 +31,7 @@ Pattern generateRandomPermutation(
     float jitterPercent,
     bool mirrorPattern
 ) {
-    Pattern pattern;
+    Pattern pattern = Pattern(numFingers);
     pattern.numFingers = numFingers;
     pattern.burstDurationMs = timeOnMs;
 
@@ -87,7 +87,7 @@ Pattern generateSequentialPattern(
     bool mirrorPattern,
     bool reverse
 ) {
-    Pattern pattern;
+    Pattern pattern = Pattern(numFingers);
     pattern.numFingers = numFingers;
     pattern.burstDurationMs = timeOnMs;
 
@@ -141,7 +141,7 @@ Pattern generateMirroredPattern(
     float jitterPercent,
     bool randomize
 ) {
-    Pattern pattern;
+    Pattern pattern = Pattern(numFingers);
     pattern.numFingers = numFingers;
     pattern.burstDurationMs = timeOnMs;
 
