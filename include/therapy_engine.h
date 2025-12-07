@@ -21,7 +21,6 @@
 #include <vector>
 #include <ranges>
 #include <cassert>
-#include <chrono>
 #include <cstdint>
 
 // =============================================================================
@@ -304,7 +303,7 @@ public:
      * @param amplitudeMax Maximum motor amplitude (0-100)
      */
     void startSession(
-        std::chrono::seconds durationSec,
+        uint32_t durationSec,
         PatternType patternType = PatternType::RNDP,
         float timeOnMs = 100.0f,
         float timeOffMs = 67.0f,
@@ -362,17 +361,17 @@ public:
     /**
      * @brief Get elapsed session time in seconds
      */
-    std::chrono::seconds getElapsedSeconds() const;
+    uint32_t getElapsedSeconds() const;
 
     /**
      * @brief Get remaining session time in seconds
      */
-    std::chrono::seconds getRemainingSeconds() const;
+   uint32_t getRemainingSeconds() const;
 
     /**
      * @brief Get total session duration in seconds
      */
-    std::chrono::seconds getDurationSeconds() const { return _sessionDurationSec; }
+    uint32_t getDurationSeconds() const { return _sessionDurationSec; }
 
     /**
      * @brief Get current frequency for a finger
@@ -390,8 +389,8 @@ private:
     bool _shouldStop;
 
     // Session parameters
-    std::chrono::time_point<uint32_t> _sessionStartTime;
-    std::chrono::duration<uint32_t> _sessionDurationSec;
+    uint32_t _sessionStartTime;
+    uint32_t _sessionDurationSec;
     PatternType _patternType;
     float _timeOnMs;
     float _timeOffMs;

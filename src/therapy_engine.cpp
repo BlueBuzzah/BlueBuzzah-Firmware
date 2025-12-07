@@ -8,6 +8,8 @@
 #include "therapy_engine.h"
 #include <span>
 
+using namespace std::literals;
+
 // =============================================================================
 // UTILITY FUNCTIONS
 // =============================================================================
@@ -264,7 +266,7 @@ void TherapyEngine::setFrequencyRandomization(bool enabled, uint16_t minHz, uint
 // =============================================================================
 
 void TherapyEngine::startSession(
-    std::chrono::duration<uint32_t> durationSec,
+    uint32_t durationSec,
     PatternType patternType,
     float timeOnMs,
     float timeOffMs,
@@ -339,7 +341,7 @@ void TherapyEngine::update() {
 
     // Check session timeout
     if (_sessionDurationSec > 0) {
-        uint32_t elapsed = (millis() - _sessionStartTime) / 1000;
+        auto elapsed = uint32_t((millis() - _sessionStartTime) / 1000);
         if (elapsed >= _sessionDurationSec) {
             Serial.println(F("[THERAPY] Session duration reached"));
             stop();
@@ -392,20 +394,20 @@ void TherapyEngine::stop() {
 // THERAPY ENGINE - STATUS
 // =============================================================================
 
-std::chrono::duration<uint32_t> TherapyEngine::getElapsedSeconds() const {
+uint32_t TherapyEngine::getElapsedSeconds() const {
     if (!_isRunning || _sessionStartTime == 0) {
         return 0;
     }
-    return (millis() - _sessionStartTime) / 1000;
+    return uint32_t((millis() - _sessionStartTime) / 1000);
 }
 
-std::chrono::duration<uint32_t> TherapyEngine::getRemainingSeconds() const {
-    if (!_isRunning || _sessionDurationSec == 0s) {
-        return 0s;
+uint32_t TherapyEngine::getRemainingSeconds() const {
+    if (!_isRunning || _sessionDurationSec == 0) {
+        return 0;
     }
-    std::chrono::duration<uint32_t> elapsed = getElapsedSeconds();
+    uint32_t elapsed = getElapsedSeconds();
     if (elapsed >= _sessionDurationSec) {
-        return 0s;
+        return 0;
     }
     return _sessionDurationSec - elapsed;
 }
