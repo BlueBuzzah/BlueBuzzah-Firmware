@@ -190,7 +190,7 @@ TherapyEngine::TherapyEngine() :
     _shouldStop(false),
     _sessionStartTime(0),
     _sessionDurationSec(0),
-    _patternType(PATTERN_TYPE_RNDP),
+    _patternType(PatternType::RNDP),
     _timeOnMs(100.0f),
     _timeOffMs(67.0f),
     _jitterPercent(0.0f),
@@ -264,8 +264,8 @@ void TherapyEngine::setFrequencyRandomization(bool enabled, uint16_t minHz, uint
 // =============================================================================
 
 void TherapyEngine::startSession(
-    uint32_t durationSec,
-    uint8_t patternType,
+    std::chrono::duration<uint32_t> durationSec,
+    PatternType patternType,
     float timeOnMs,
     float timeOffMs,
     float jitterPercent,
@@ -392,20 +392,20 @@ void TherapyEngine::stop() {
 // THERAPY ENGINE - STATUS
 // =============================================================================
 
-uint32_t TherapyEngine::getElapsedSeconds() const {
+std::chrono::duration<uint32_t> TherapyEngine::getElapsedSeconds() const {
     if (!_isRunning || _sessionStartTime == 0) {
         return 0;
     }
     return (millis() - _sessionStartTime) / 1000;
 }
 
-uint32_t TherapyEngine::getRemainingSeconds() const {
-    if (!_isRunning || _sessionDurationSec == 0) {
-        return 0;
+std::chrono::duration<uint32_t> TherapyEngine::getRemainingSeconds() const {
+    if (!_isRunning || _sessionDurationSec == 0s) {
+        return 0s;
     }
-    uint32_t elapsed = getElapsedSeconds();
+    std::chrono::duration<uint32_t> elapsed = getElapsedSeconds();
     if (elapsed >= _sessionDurationSec) {
-        return 0;
+        return 0s;
     }
     return _sessionDurationSec - elapsed;
 }
@@ -416,7 +416,7 @@ uint32_t TherapyEngine::getRemainingSeconds() const {
 
 void TherapyEngine::generateNextPattern() {
     switch (_patternType) {
-        case PATTERN_TYPE_RNDP:
+        case PatternType::RNDP:
             _currentPattern = generateRandomPermutation(
                 _numFingers,
                 _timeOnMs,
@@ -426,7 +426,7 @@ void TherapyEngine::generateNextPattern() {
             );
             break;
 
-        case PATTERN_TYPE_SEQUENTIAL:
+        case PatternType::SEQUENTIAL:
             _currentPattern = generateSequentialPattern(
                 _numFingers,
                 _timeOnMs,
@@ -437,7 +437,7 @@ void TherapyEngine::generateNextPattern() {
             );
             break;
 
-        case PATTERN_TYPE_MIRRORED:
+        case PatternType::MIRRORED:
             _currentPattern = generateMirroredPattern(
                 _numFingers,
                 _timeOnMs,
