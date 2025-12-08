@@ -68,6 +68,16 @@
 #define SYNC_TIMEOUT_MS 2000         // Sync command timeout
 #define COMMAND_TIMEOUT_MS 5000      // General BLE command timeout
 
+// PTP-style clock synchronization
+#define SYNC_BURST_COUNT 10          // Number of PING/PONGs in initial sync burst
+#define SYNC_BURST_INTERVAL_MS 15    // Interval between burst PINGs
+#define SYNC_LEAD_TIME_US 50000      // 50ms lead time for scheduled activations (default)
+#define SYNC_MIN_VALID_SAMPLES 5     // Minimum samples before clock sync is valid
+#define SYNC_OFFSET_EMA_ALPHA_NUM 1  // Slow EMA α = 1/10 = 0.1 for continuous updates
+#define SYNC_OFFSET_EMA_ALPHA_DEN 10
+#define SYNC_MAINTENANCE_INTERVAL_MS 500  // Periodic sync interval during therapy (reduces drift)
+#define SYNC_RTT_QUALITY_THRESHOLD_US 30000  // 30ms - reject samples with RTT above this
+
 // Heartbeat
 #define HEARTBEAT_INTERVAL_MS 2000   // 2 seconds between heartbeats
 #define HEARTBEAT_TIMEOUT_MS 6000    // 6 seconds = 3 missed heartbeats

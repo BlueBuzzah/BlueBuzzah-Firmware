@@ -53,6 +53,20 @@ public:
     void scheduleActivation(uint32_t delayUs, uint8_t finger, uint8_t amplitude);
 
     /**
+     * @brief Schedule motor activation at an absolute time
+     *
+     * Calculates delay from current time to target time and schedules
+     * using hardware timer. If target time has already passed, activates
+     * immediately (sets pending flag for next processPendingActivation call).
+     *
+     * @param absoluteTimeUs Target activation time in microseconds (local clock)
+     * @param finger Finger index (0-3)
+     * @param amplitude Activation amplitude (0-100)
+     * @return true if scheduled for future, false if immediate activation
+     */
+    bool scheduleAbsoluteActivation(uint64_t absoluteTimeUs, uint8_t finger, uint8_t amplitude);
+
+    /**
      * @brief Check and execute pending activation
      *
      * Call this at the TOP of loop() for minimum latency.

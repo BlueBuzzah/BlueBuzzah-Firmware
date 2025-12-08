@@ -216,7 +216,7 @@ public:
     static SyncCommand createStopSession(uint32_t sequenceId = 0);
 
     /**
-     * @brief Create BUZZ command with motor activation duration and frequency
+     * @brief Create BUZZ command with motor activation duration and frequency (legacy)
      * @param sequenceId Sequence ID for the command
      * @param finger Finger index (0-3)
      * @param amplitude Amplitude percentage (0-100)
@@ -226,27 +226,60 @@ public:
     static SyncCommand createBuzz(uint32_t sequenceId, uint8_t finger, uint8_t amplitude, uint32_t durationMs, uint16_t frequencyHz);
 
     /**
+     * @brief Create BUZZ command with scheduled activation time (PTP sync)
+     * @param sequenceId Sequence ID for the command
+     * @param finger Finger index (0-3)
+     * @param amplitude Amplitude percentage (0-100)
+     * @param durationMs How long motor should stay active (TIME_ON from profile)
+     * @param frequencyHz Motor frequency in Hz (210-260 for Custom vCR)
+     * @param activateTime Absolute time to activate (in PRIMARY clock, microseconds)
+     */
+    static SyncCommand createBuzzWithTime(uint32_t sequenceId, uint8_t finger, uint8_t amplitude, uint32_t durationMs, uint16_t frequencyHz, uint64_t activateTime);
+
+    /**
      * @brief Create DEACTIVATE command
      */
     static SyncCommand createDeactivate(uint32_t sequenceId = 0);
 
     /**
-     * @brief Create PING command for latency measurement
+     * @brief Create PING command for latency measurement (legacy)
      * @param sequenceId Sequence ID for the command
      */
     static SyncCommand createPing(uint32_t sequenceId);
 
     /**
-     * @brief Create PONG response to PING
+     * @brief Create PING command with explicit T1 timestamp for PTP sync
+     * @param sequenceId Sequence ID for the command
+     * @param t1 PRIMARY's send timestamp in microseconds
+     */
+    static SyncCommand createPingWithT1(uint32_t sequenceId, uint64_t t1);
+
+    /**
+     * @brief Create PONG response to PING (legacy)
      * @param sequenceId Sequence ID (echoes the PING's sequence ID)
      */
     static SyncCommand createPong(uint32_t sequenceId);
+
+    /**
+     * @brief Create PONG response with T2 and T3 timestamps for PTP sync
+     * @param sequenceId Sequence ID (echoes the PING's sequence ID)
+     * @param t2 SECONDARY's receive timestamp in microseconds
+     * @param t3 SECONDARY's send timestamp in microseconds
+     */
+    static SyncCommand createPongWithTimestamps(uint32_t sequenceId, uint64_t t2, uint64_t t3);
 
     /**
      * @brief Create DEBUG_FLASH command for synchronized LED flash
      * @param sequenceId Sequence ID for the command
      */
     static SyncCommand createDebugFlash(uint32_t sequenceId);
+
+    /**
+     * @brief Create DEBUG_FLASH command with scheduled activation time
+     * @param sequenceId Sequence ID for the command
+     * @param flashTime Absolute time to trigger flash (in PRIMARY clock, microseconds)
+     */
+    static SyncCommand createDebugFlashWithTime(uint32_t sequenceId, uint64_t flashTime);
 
 private:
     SyncCommandType _type;
@@ -358,6 +391,11 @@ public:
     bool isSynced() const { return _lastSyncTime != 0; }
 
     /**
+     * @brief Get the time of last sync measurement (millis)
+     */
+    uint32_t getLastSyncTime() const { return _lastSyncTime; }
+
+    /**
      * @brief Get time since last sync in milliseconds
      */
     uint32_t getTimeSinceSync() const;
@@ -377,6 +415,7 @@ public:
      *
      * Uses exponential moving average to smooth latency values and
      * rejects outliers that are > 2x the current smoothed value.
+     * Also tracks RTT variance for adaptive lead time calculation.
      */
     void updateLatency(uint32_t rttUs) {
         uint32_t oneWay = rttUs / 2;
@@ -385,6 +424,7 @@ public:
         // First sample - initialize
         if (_sampleCount == 0) {
             _smoothedLatencyUs = oneWay;
+            _rttVariance = 0;
             _sampleCount = 1;
             return;
         }
@@ -394,6 +434,17 @@ public:
             // Spike detected - don't update smoothed value
             return;
         }
+
+        // Track variance (deviation from smoothed mean)
+        // variance = |current - smoothed|
+        uint32_t deviation = (oneWay > _smoothedLatencyUs) ?
+                             (oneWay - _smoothedLatencyUs) :
+                             (_smoothedLatencyUs - oneWay);
+
+        // EMA smooth the variance (same alpha as latency)
+        _rttVariance = (EMA_ALPHA_NUM * deviation +
+                        (EMA_ALPHA_DEN - EMA_ALPHA_NUM) * _rttVariance)
+                       / EMA_ALPHA_DEN;
 
         // EMA: new = α * measured + (1-α) * previous
         // Using integer math: new = (α_num * measured + (den - α_num) * prev) / den
@@ -436,6 +487,128 @@ public:
         _sampleCount = 0;
     }
 
+    // =========================================================================
+    // PTP-STYLE CLOCK SYNCHRONIZATION
+    // =========================================================================
+
+    /**
+     * @brief Calculate clock offset using IEEE 1588 PTP formula
+     *
+     * Uses 4 timestamps to calculate offset independent of network asymmetry:
+     *   offset = ((T2 - T1) + (T3 - T4)) / 2
+     *
+     * @param t1 PRIMARY send timestamp (PRIMARY clock)
+     * @param t2 SECONDARY receive timestamp (SECONDARY clock)
+     * @param t3 SECONDARY send timestamp (SECONDARY clock)
+     * @param t4 PRIMARY receive timestamp (PRIMARY clock)
+     * @return Clock offset in microseconds (positive = SECONDARY ahead)
+     */
+    int64_t calculatePTPOffset(uint64_t t1, uint64_t t2, uint64_t t3, uint64_t t4);
+
+    /**
+     * @brief Add a clock offset sample for median filtering
+     * @param offset Clock offset sample in microseconds
+     */
+    void addOffsetSample(int64_t offset);
+
+    /**
+     * @brief Add a clock offset sample with RTT-based quality filtering
+     *
+     * Samples with high RTT (indicating retransmissions or asymmetric delay)
+     * are rejected to improve offset accuracy.
+     *
+     * @param offset Clock offset sample in microseconds
+     * @param rttUs Round-trip time in microseconds
+     * @return true if sample was accepted, false if rejected due to high RTT
+     */
+    bool addOffsetSampleWithQuality(int64_t offset, uint32_t rttUs);
+
+    /**
+     * @brief Get the median clock offset from collected samples
+     * @return Median offset in microseconds (0 if not enough samples)
+     */
+    int64_t getMedianOffset() const;
+
+    /**
+     * @brief Check if clock synchronization is valid (enough stable samples)
+     * @return true if sync is valid and can be used for scheduling
+     */
+    bool isClockSyncValid() const { return _clockSyncValid; }
+
+    /**
+     * @brief Get number of clock offset samples collected
+     */
+    uint8_t getOffsetSampleCount() const { return _offsetSampleCount; }
+
+    /**
+     * @brief Update clock offset using slow EMA (for continuous maintenance)
+     * @param offset New offset measurement in microseconds
+     */
+    void updateOffsetEMA(int64_t offset);
+
+    /**
+     * @brief Reset clock synchronization state
+     */
+    void resetClockSync();
+
+    /**
+     * @brief Get drift-corrected clock offset
+     *
+     * Returns the median offset plus compensation for estimated crystal drift
+     * since the last measurement. This provides more accurate offset between
+     * sync events.
+     *
+     * @return Corrected offset in microseconds
+     */
+    int64_t getCorrectedOffset() const;
+
+    /**
+     * @brief Get estimated drift rate
+     * @return Drift rate in microseconds per millisecond
+     */
+    float getDriftRate() const { return _driftRateUsPerMs; }
+
+    /**
+     * @brief Get average RTT in microseconds
+     */
+    uint32_t getAverageRTT() const { return _smoothedLatencyUs * 2; }
+
+    /**
+     * @brief Get RTT variance estimate
+     * @return Variance estimate in microseconds
+     */
+    uint32_t getRTTVariance() const { return _rttVariance; }
+
+    /**
+     * @brief Calculate adaptive lead time based on RTT statistics
+     *
+     * Returns a lead time that's 2x average RTT + 3-sigma safety margin,
+     * clamped to reasonable bounds (20-100ms).
+     *
+     * @return Adaptive lead time in microseconds
+     */
+    uint32_t calculateAdaptiveLeadTime() const;
+
+    /**
+     * @brief Convert PRIMARY clock time to SECONDARY local time
+     * @param primaryTime Timestamp in PRIMARY clock (microseconds)
+     * @return Equivalent time in SECONDARY clock (microseconds)
+     */
+    uint64_t primaryToLocalTime(uint64_t primaryTime) const {
+        // offset = SECONDARY - PRIMARY, so local = primary + offset
+        // Use drift-corrected offset for better accuracy
+        return primaryTime + getCorrectedOffset();
+    }
+
+    /**
+     * @brief Convert SECONDARY local time to PRIMARY clock time
+     * @param localTime Timestamp in SECONDARY clock (microseconds)
+     * @return Equivalent time in PRIMARY clock (microseconds)
+     */
+    uint64_t localToPrimaryTime(uint64_t localTime) const {
+        return localTime - getCorrectedOffset();
+    }
+
 private:
     // EMA tuning constants
     static constexpr uint16_t MIN_SAMPLES = 3;        // Minimum before using smoothed
@@ -443,13 +616,29 @@ private:
     static constexpr uint8_t EMA_ALPHA_NUM = 3;       // α = 3/10 = 0.3
     static constexpr uint8_t EMA_ALPHA_DEN = 10;
 
+    // PTP clock sync constants
+    static constexpr uint8_t OFFSET_SAMPLE_COUNT = 10;
+
     int64_t _currentOffset;       // Current clock offset (microseconds)
     uint32_t _lastSyncTime;       // Time of last sync (millis)
 
     // Latency measurement with EMA smoothing
     uint32_t _measuredLatencyUs;  // Raw one-way latency (most recent)
     uint32_t _smoothedLatencyUs;  // EMA-smoothed latency (used for compensation)
+    uint32_t _rttVariance;        // EMA-smoothed RTT variance (for adaptive lead time)
     uint16_t _sampleCount;        // Number of valid samples received
+
+    // PTP clock synchronization
+    int64_t _offsetSamples[OFFSET_SAMPLE_COUNT];  // Circular buffer of offset samples
+    uint8_t _offsetSampleIndex;   // Next write position in circular buffer
+    uint8_t _offsetSampleCount;   // Number of valid samples (0 to OFFSET_SAMPLE_COUNT)
+    int64_t _medianOffset;        // Computed median offset
+    bool _clockSyncValid;         // True when enough stable samples collected
+
+    // Drift rate compensation
+    int64_t _lastMeasuredOffset;  // Previous offset measurement for drift calculation
+    uint32_t _lastOffsetTime;     // Time of last offset measurement (millis)
+    float _driftRateUsPerMs;      // Estimated drift rate (microseconds per millisecond)
 };
 
 #endif // SYNC_PROTOCOL_H

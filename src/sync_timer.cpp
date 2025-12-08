@@ -4,6 +4,7 @@
  */
 
 #include "sync_timer.h"
+#include "sync_protocol.h"  // For getMicros()
 #include "hardware.h"
 #include "profile_manager.h"
 
@@ -81,6 +82,50 @@ void SyncTimer::scheduleActivation(uint32_t delayUs, uint8_t finger, uint8_t amp
         // Fallback: activate immediately if timer fails
         _activationPending = true;
     }
+}
+
+bool SyncTimer::scheduleAbsoluteActivation(uint64_t absoluteTimeUs, uint8_t finger, uint8_t amplitude) {
+    if (!_initialized) {
+        return false;
+    }
+
+    uint64_t now = getMicros();
+
+    // Check if target time has already passed
+    if (absoluteTimeUs <= now) {
+        // Already past - set pending for immediate activation
+        // Cancel any existing timer first
+        ITimer2.stopTimer();
+
+        _finger = finger;
+        _amplitude = amplitude;
+        _activationPending = true;
+
+        if (profiles.getDebugMode()) {
+            Serial.printf("[SYNC_TIMER] Immediate (late by %lu us)\n",
+                          (unsigned long)(now - absoluteTimeUs));
+        }
+        return false;  // Indicate immediate, not scheduled
+    }
+
+    // Calculate delay from now to target time
+    uint64_t delayUs64 = absoluteTimeUs - now;
+
+    // Clamp to 32-bit max (hardware timer limit ~71 minutes)
+    uint32_t delayUs;
+    if (delayUs64 > UINT32_MAX) {
+        delayUs = UINT32_MAX;
+    } else {
+        delayUs = (uint32_t)delayUs64;
+    }
+
+    if (profiles.getDebugMode()) {
+        Serial.printf("[SYNC_TIMER] Scheduled in %lu us\n", (unsigned long)delayUs);
+    }
+
+    // Use existing scheduling method
+    scheduleActivation(delayUs, finger, amplitude);
+    return true;  // Indicate scheduled for future
 }
 
 bool SyncTimer::processPendingActivation() {

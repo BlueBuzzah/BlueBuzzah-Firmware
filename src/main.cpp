@@ -81,22 +81,27 @@ bool bootWindowActive = false;   // Whether we're waiting for phone
 bool autoStartTriggered = false; // Prevent repeated auto-starts
 
 // Heartbeat monitoring (bidirectional)
-uint32_t lastHeartbeatReceived = 0;      // SECONDARY: Tracks last heartbeat from PRIMARY
-uint32_t lastSecondaryHeartbeat = 0;     // PRIMARY: Tracks last heartbeat from SECONDARY
+uint32_t lastHeartbeatReceived = 0;  // SECONDARY: Tracks last heartbeat from PRIMARY
+uint32_t lastSecondaryHeartbeat = 0; // PRIMARY: Tracks last heartbeat from SECONDARY
 
 // PRIMARY-side heartbeat timeout (must be < BLE supervision timeout ~4s)
-static constexpr uint32_t PRIMARY_HEARTBEAT_TIMEOUT_MS = 2500;  // 2.5 seconds
+static constexpr uint32_t PRIMARY_HEARTBEAT_TIMEOUT_MS = 2500; // 2.5 seconds
 
 // PING/PONG latency measurement (PRIMARY only)
-uint64_t pingStartTime = 0;               // Timestamp when PING was sent (micros)
+uint64_t pingStartTime = 0; // Timestamp when PING was sent (micros)
+uint64_t pingT1 = 0;        // T1 for PTP offset calculation
+
+// PTP clock sync burst (PRIMARY only, at SECONDARY connect)
+uint8_t syncBurstPending = 0;   // Number of PINGs remaining in burst
+uint32_t syncBurstNextTime = 0; // Time to send next burst PING (millis)
 
 // Background latency probing (non-blocking, timer-based)
 static uint32_t lastProbeTime = 0;
-static constexpr uint32_t PROBE_INTERVAL_MS = 500;  // Probe every 500ms during therapy
+static constexpr uint32_t PROBE_INTERVAL_MS = 500; // Probe every 500ms during therapy
 
 // SECONDARY non-blocking motor deactivation
-int8_t activeMotorFinger = -1;            // Currently active motor (-1 = none)
-uint32_t motorDeactivateTime = 0;         // Time to deactivate motor (millis)
+int8_t activeMotorFinger = -1;    // Currently active motor (-1 = none)
+uint32_t motorDeactivateTime = 0; // Time to deactivate motor (millis)
 
 // Safety shutdown flag - set by BLE callback (ISR context), processed by loop
 volatile bool safetyShutdownPending = false;
@@ -157,8 +162,8 @@ void triggerDebugFlash();
 void executeDeferredWork(DeferredWorkType type, uint8_t p1, uint8_t p2, uint32_t p3);
 
 // Scheduler Callbacks (for deferred haptic sequences)
-void hapticDeactivateCallback(void* ctx);
-void hapticSecondPulseCallback(void* ctx);
+void hapticDeactivateCallback(void *ctx);
+void hapticSecondPulseCallback(void *ctx);
 
 // Serial-Only Commands (not available via BLE)
 void handleSerialCommand(const char *command);
@@ -250,12 +255,14 @@ void safeMotorShutdown()
     deferredQueue.clear();
 
     // 4. Cancel PRIMARY sync timer
-    if (deviceRole == DeviceRole::PRIMARY) {
+    if (deviceRole == DeviceRole::PRIMARY)
+    {
         syncTimer.cancel();
     }
 
     // 5. SECONDARY: Deactivate active motor before clearing state
-    if (deviceRole == DeviceRole::SECONDARY && activeMotorFinger >= 0) {
+    if (deviceRole == DeviceRole::SECONDARY && activeMotorFinger >= 0)
+    {
         haptic.deactivate(activeMotorFinger);
         activeMotorFinger = -1;
         motorDeactivateTime = 0;
@@ -411,7 +418,8 @@ void loop()
 {
     // SAFETY FIRST: Check for pending shutdown from BLE disconnect callback
     // Must be at VERY TOP before any motor operations to prevent post-disconnect buzz
-    if (safetyShutdownPending) {
+    if (safetyShutdownPending)
+    {
         safetyShutdownPending = false;
         safeMotorShutdown();
         Serial.println(F("[SAFETY] Emergency motor shutdown complete"));
@@ -510,7 +518,7 @@ void loop()
         {
             Serial.println(F("[WARN] SECONDARY heartbeat timeout - stopping therapy"));
             safeMotorShutdown();
-            lastSecondaryHeartbeat = 0;  // Reset to prevent repeated triggers
+            lastSecondaryHeartbeat = 0; // Reset to prevent repeated triggers
         }
     }
 
@@ -586,6 +594,26 @@ void loop()
         BatteryStatus status = battery.getStatus();
         Serial.printf("[BATTERY] %.2fV | %d%% | Status: %s\n",
                       status.voltage, status.percentage, status.statusString());
+    }
+
+    // PTP CLOCK SYNC BURST (PRIMARY only, at SECONDARY connect)
+    // Higher priority than background probing - establishes clock sync quickly
+    if (deviceRole == DeviceRole::PRIMARY &&
+        syncBurstPending > 0 &&
+        ble.isSecondaryConnected() &&
+        now >= syncBurstNextTime)
+    {
+        sendPing();
+        syncBurstPending--;
+        syncBurstNextTime = now + SYNC_BURST_INTERVAL_MS;
+
+        // Log when burst completes
+        if (syncBurstPending == 0)
+        {
+            Serial.printf("[SYNC] Burst complete. Valid=%d median=%ld us\n",
+                          syncProtocol.isClockSyncValid() ? 1 : 0,
+                          (long)syncProtocol.getMedianOffset());
+        }
     }
 
     // LOW PRIORITY: Background latency probing (non-blocking)
@@ -866,6 +894,12 @@ void onBLEConnect(uint16_t connHandle, ConnectionType type)
             lastSecondaryHeartbeat = millis();
             Serial.printf("[BOOT] SECONDARY connected at %lu - starting 30s boot window for phone\n",
                           (unsigned long)bootWindowStart);
+
+            // Start PTP clock synchronization burst
+            syncProtocol.resetClockSync(); // Clear any stale sync data
+            syncBurstPending = SYNC_BURST_COUNT;
+            syncBurstNextTime = millis(); // Start immediately
+            Serial.printf("[SYNC] Starting clock sync burst (%d PINGs)\n", SYNC_BURST_COUNT);
         }
         else if (type == ConnectionType::PHONE && bootWindowActive)
         {
@@ -973,7 +1007,7 @@ void executeDeferredWork(DeferredWorkType type, uint8_t p1, uint8_t p2, uint32_t
         {
             haptic.activate(finger, amplitude);
             // Schedule deactivation (non-blocking)
-            scheduler.schedule(duration, hapticDeactivateCallback, (void*)(uintptr_t)finger);
+            scheduler.schedule(duration, hapticDeactivateCallback, (void *)(uintptr_t)finger);
         }
         break;
     }
@@ -990,11 +1024,11 @@ void executeDeferredWork(DeferredWorkType type, uint8_t p1, uint8_t p2, uint32_t
             // First pulse
             haptic.activate(finger, amplitude);
             // Schedule deactivation after duration
-            scheduler.schedule(duration, hapticDeactivateCallback, (void*)(uintptr_t)finger);
+            scheduler.schedule(duration, hapticDeactivateCallback, (void *)(uintptr_t)finger);
             // Schedule second pulse after duration + 100ms gap
             // Pack finger and amplitude into context (finger in low byte, amplitude in high byte)
             uint32_t ctx = (uint32_t)finger | ((uint32_t)amplitude << 8) | ((uint32_t)duration << 16);
-            scheduler.schedule(duration + 100, hapticSecondPulseCallback, (void*)(uintptr_t)ctx);
+            scheduler.schedule(duration + 100, hapticSecondPulseCallback, (void *)(uintptr_t)ctx);
         }
         break;
     }
@@ -1024,7 +1058,7 @@ void executeDeferredWork(DeferredWorkType type, uint8_t p1, uint8_t p2, uint32_t
 /**
  * @brief Timer callback to deactivate haptic motor
  */
-void hapticDeactivateCallback(void* ctx)
+void hapticDeactivateCallback(void *ctx)
 {
     uint8_t finger = (uint8_t)(uintptr_t)ctx;
     haptic.deactivate(finger);
@@ -1033,7 +1067,7 @@ void hapticDeactivateCallback(void* ctx)
 /**
  * @brief Timer callback for second pulse in double-pulse sequence
  */
-void hapticSecondPulseCallback(void* ctx)
+void hapticSecondPulseCallback(void *ctx)
 {
     uint32_t packed = (uint32_t)(uintptr_t)ctx;
     uint8_t finger = packed & 0xFF;
@@ -1044,12 +1078,16 @@ void hapticSecondPulseCallback(void* ctx)
     {
         haptic.activate(finger, amplitude);
         // Schedule final deactivation
-        scheduler.schedule(duration, hapticDeactivateCallback, (void*)(uintptr_t)finger);
+        scheduler.schedule(duration, hapticDeactivateCallback, (void *)(uintptr_t)finger);
     }
 }
 
 void onBLEMessage(uint16_t connHandle, const char *message)
 {
+    // CRITICAL: Capture receive timestamp FIRST, before any parsing
+    // This minimizes jitter for PTP clock synchronization
+    uint64_t rxTimestamp = getMicros();
+
     // Check for simple text commands first (for testing)
     // Both PRIMARY and SECONDARY can run standalone tests for hardware verification
     if (strcmp(message, "TEST") == 0 || strcmp(message, "test") == 0)
@@ -1126,11 +1164,22 @@ void onBLEMessage(uint16_t connHandle, const char *message)
             break;
 
         case SyncCommandType::PING:
-            // SECONDARY: Immediately reply with PONG
+            // SECONDARY: Reply with PONG including T2 (early capture), T3 (just before send)
             if (deviceRole == DeviceRole::SECONDARY)
             {
-                SyncCommand pong = SyncCommand::createPong(cmd.getSequenceId());
+                // T2 = rxTimestamp captured at callback entry (before parsing)
+                // This gives us the most accurate receive timestamp
+                uint64_t t2 = rxTimestamp;
+
+                // Prepare buffer first, then capture T3 right before send
                 char buffer[64];
+                uint32_t seqId = cmd.getSequenceId();
+
+                // Capture T3 as late as possible before sending
+                // Note: T3 must be captured BEFORE send since it goes in the message
+                // Best we can do is minimize work between T3 capture and send call
+                uint64_t t3 = getMicros();
+                SyncCommand pong = SyncCommand::createPongWithTimestamps(seqId, t2, t3);
                 if (pong.serialize(buffer, sizeof(buffer)))
                 {
                     ble.sendToPrimary(buffer);
@@ -1139,37 +1188,81 @@ void onBLEMessage(uint16_t connHandle, const char *message)
             break;
 
         case SyncCommandType::PONG:
-            // PRIMARY: Calculate RTT and update measured latency (with EMA smoothing)
-            if (deviceRole == DeviceRole::PRIMARY && pingStartTime > 0)
+            // PRIMARY: Calculate RTT and PTP clock offset
+            if (deviceRole == DeviceRole::PRIMARY && pingT1 > 0)
             {
-                uint64_t now = getMicros();
-                uint32_t rtt = (uint32_t)(now - pingStartTime);
+                // T4 = rxTimestamp captured at callback entry (before parsing)
+                // This gives us the most accurate receive timestamp
+                uint64_t t4 = rxTimestamp;
+                uint64_t t1 = pingT1;
 
-                // Update latency with EMA smoothing and outlier rejection
-                syncProtocol.updateLatency(rtt);
-
-                // Enhanced logging: show raw, smoothed, and sample count (DEBUG only)
-                if (profiles.getDebugMode())
+                // Parse T2 and T3 from PONG data
+                // Format depends on whether high bits are used (see createPongWithTimestamps)
+                uint64_t t2, t3;
+                if (cmd.hasData("2"))
                 {
-                    Serial.printf("[SYNC] RTT=%lu raw=%lu smooth=%lu n=%u\n",
-                                  (unsigned long)rtt,
-                                  (unsigned long)syncProtocol.getRawLatency(),
-                                  (unsigned long)syncProtocol.getMeasuredLatency(),
-                                  syncProtocol.getSampleCount());
+                    // Full 64-bit: T2High|T2Low|T3High|T3Low
+                    uint32_t t2High = (uint32_t)cmd.getDataInt("0", 0);
+                    uint32_t t2Low = (uint32_t)cmd.getDataInt("1", 0);
+                    uint32_t t3High = (uint32_t)cmd.getDataInt("2", 0);
+                    uint32_t t3Low = (uint32_t)cmd.getDataInt("3", 0);
+                    t2 = ((uint64_t)t2High << 32) | t2Low;
+                    t3 = ((uint64_t)t3High << 32) | t3Low;
+                }
+                else
+                {
+                    // Simple 32-bit: T2|T3
+                    t2 = (uint64_t)(uint32_t)cmd.getDataInt("0", 0);
+                    t3 = (uint64_t)(uint32_t)cmd.getDataInt("1", 0);
                 }
 
-                pingStartTime = 0;  // Clear for next PING
+                // Calculate RTT first (needed for quality filtering)
+                uint32_t rtt = (uint32_t)(t4 - t1);
+
+                // Calculate PTP clock offset
+                int64_t offset = syncProtocol.calculatePTPOffset(t1, t2, t3, t4);
+
+                // Add sample with RTT-based quality filtering
+                // High-RTT samples are rejected as they likely have asymmetric delays
+                bool sampleAccepted = false;
+                if (syncProtocol.isClockSyncValid())
+                {
+                    // Already synced - use EMA update (no RTT filtering for maintenance)
+                    syncProtocol.updateOffsetEMA(offset);
+                    sampleAccepted = true;
+                }
+                else
+                {
+                    // Building initial sync - use quality filtering
+                    sampleAccepted = syncProtocol.addOffsetSampleWithQuality(offset, rtt);
+                }
+
+                // Also update RTT-based latency for backward compatibility
+                syncProtocol.updateLatency(rtt);
+
+                // Enhanced logging (DEBUG only)
+                if (profiles.getDebugMode())
+                {
+                    Serial.printf("[SYNC] RTT=%lu offset=%ld valid=%d samples=%u %s\n",
+                                  (unsigned long)rtt,
+                                  (long)offset,
+                                  syncProtocol.isClockSyncValid() ? 1 : 0,
+                                  syncProtocol.getOffsetSampleCount(),
+                                  sampleAccepted ? "" : "(rejected)");
+                }
+
+                pingT1 = 0; // Clear for next PING
+                pingStartTime = 0;
             }
             break;
 
         case SyncCommandType::BUZZ:
         {
-            // SECONDARY: Activate motor immediately (no scheduled execution)
-            // PRIMARY has already compensated for BLE latency before sending
+            // SECONDARY: Motor activation
             int32_t finger = cmd.getDataInt("0", -1);
             int32_t amplitude = cmd.getDataInt("1", 50);
-            int32_t durationMs = cmd.getDataInt("2", 100);  // Default 100ms if not specified
-            int32_t freqHz = cmd.getDataInt("3", 235);      // Default 235Hz (middle of range)
+            int32_t durationMs = cmd.getDataInt("2", 100); // Default 100ms if not specified
+            int32_t freqHz = cmd.getDataInt("3", 235);     // Default 235Hz (middle of range)
 
             if (finger >= 0 && finger < MAX_ACTUATORS && haptic.isEnabled(finger))
             {
@@ -1183,13 +1276,60 @@ void onBLEMessage(uint16_t connHandle, const char *message)
                 // Apply frequency before activation
                 haptic.setFrequency(finger, (uint16_t)freqHz);
 
-                // Activate immediately
-                Serial.printf("[ACTIVATE] F%d A%d dur=%ldms freq=%ldHz\n", finger, amplitude, durationMs, freqHz);
-                haptic.activate(finger, amplitude);
+                // Check if this is a PTP sync command with scheduled activation time
+                bool hasPTPTime = cmd.hasData("4");
+                if (hasPTPTime && syncProtocol.isClockSyncValid())
+                {
+                    // Parse activation time from command
+                    uint64_t activateTime;
+                    if (cmd.hasData("5"))
+                    {
+                        // Full 64-bit: timeHigh|timeLow
+                        uint32_t timeHigh = (uint32_t)cmd.getDataInt("4", 0);
+                        uint32_t timeLow = (uint32_t)cmd.getDataInt("5", 0);
+                        activateTime = ((uint64_t)timeHigh << 32) | timeLow;
+                    }
+                    else
+                    {
+                        // Simple 32-bit
+                        activateTime = (uint64_t)(uint32_t)cmd.getDataInt("4", 0);
+                    }
 
-                // Schedule non-blocking deactivation after duration from profile
-                activeMotorFinger = finger;
-                motorDeactivateTime = millis() + durationMs;
+                    // Convert PRIMARY clock time to local (SECONDARY) clock time
+                    // Use drift-corrected offset for better accuracy between sync events
+                    int64_t offset = syncProtocol.getCorrectedOffset();
+                    uint64_t localActivateTime = activateTime + offset; // offset = SECONDARY - PRIMARY
+
+                    if (profiles.getDebugMode())
+                    {
+                        Serial.printf("[ACTIVATE] PTP F%d A%d offset=%ld\n",
+                                      finger, amplitude, (long)offset);
+                    }
+
+                    // Schedule activation using hardware timer
+                    syncTimer.scheduleAbsoluteActivation(localActivateTime, finger, amplitude);
+
+                    // Schedule non-blocking deactivation
+                    // Note: deactivation time based on when activation will fire
+                    activeMotorFinger = finger;
+                    uint64_t now = getMicros();
+                    uint32_t delayMs = 0;
+                    if (localActivateTime > now)
+                    {
+                        delayMs = (uint32_t)((localActivateTime - now) / 1000);
+                    }
+                    motorDeactivateTime = millis() + delayMs + durationMs;
+                }
+                else
+                {
+                    // Legacy mode: activate immediately
+                    Serial.printf("[ACTIVATE] F%d A%d dur=%ldms freq=%ldHz\n", finger, amplitude, durationMs, freqHz);
+                    haptic.activate(finger, amplitude);
+
+                    // Schedule non-blocking deactivation after duration from profile
+                    activeMotorFinger = finger;
+                    motorDeactivateTime = millis() + durationMs;
+                }
             }
         }
         break;
@@ -1216,10 +1356,46 @@ void onBLEMessage(uint16_t connHandle, const char *message)
             break;
 
         case SyncCommandType::DEBUG_FLASH:
-            // SECONDARY: Flash LED immediately (PRIMARY has compensated for latency)
+            // SECONDARY: Flash LED (with PTP scheduling if available)
             if (deviceRole == DeviceRole::SECONDARY && profiles.getDebugMode())
             {
-                triggerDebugFlash();
+                // Check if this is a PTP sync command with scheduled flash time
+                bool hasPTPTime = cmd.hasData("0");
+                if (hasPTPTime && syncProtocol.isClockSyncValid())
+                {
+                    // Parse flash time from command
+                    uint64_t flashTime;
+                    if (cmd.hasData("1"))
+                    {
+                        // Full 64-bit: timeHigh|timeLow
+                        uint32_t timeHigh = (uint32_t)cmd.getDataInt("0", 0);
+                        uint32_t timeLow = (uint32_t)cmd.getDataInt("1", 0);
+                        flashTime = ((uint64_t)timeHigh << 32) | timeLow;
+                    }
+                    else
+                    {
+                        // Simple 32-bit
+                        flashTime = (uint64_t)(uint32_t)cmd.getDataInt("0", 0);
+                    }
+
+                    // Convert PRIMARY clock time to local (SECONDARY) clock time
+                    // Use drift-corrected offset for better accuracy between sync events
+                    int64_t offset = syncProtocol.getCorrectedOffset();
+                    uint64_t localFlashTime = flashTime + offset;
+
+                    // Wait until scheduled time and flash
+                    uint64_t now = getMicros();
+                    if (localFlashTime > now)
+                    {
+                        delayMicroseconds((uint32_t)(localFlashTime - now));
+                    }
+                    triggerDebugFlash();
+                }
+                else
+                {
+                    // Legacy mode: flash immediately
+                    triggerDebugFlash();
+                }
             }
             break;
 
@@ -1235,36 +1411,68 @@ void onBLEMessage(uint16_t connHandle, const char *message)
 
 void onSendCommand(const char *commandType, uint8_t primaryFinger, uint8_t secondaryFinger, uint8_t amplitude, uint32_t durationMs, uint32_t seq, uint16_t frequencyHz)
 {
-    // Create BUZZ command for SECONDARY device - send secondaryFinger (the finger SECONDARY should activate)
-    SyncCommand cmd = SyncCommand::createBuzz(seq, secondaryFinger, amplitude, durationMs, frequencyHz);
-
     char buffer[128];
-    if (cmd.serialize(buffer, sizeof(buffer)))
-    {
-        ble.sendToSecondary(buffer);
-    }
 
-    // Schedule local activation after measured BLE latency (non-blocking)
-    // SECONDARY activates immediately on receive, so PRIMARY delays by one-way latency
-    // to achieve synchronized motor activation between devices
-    uint32_t latencyUs = syncProtocol.getMeasuredLatency();
-    if (latencyUs > 0 && haptic.isEnabled(primaryFinger))
+    // Check if PTP clock sync is valid for absolute time scheduling
+    if (syncProtocol.isClockSyncValid())
     {
-        // Hardware timer schedules activation with microsecond precision
-        if (profiles.getDebugMode())
+        // PTP SYNC MODE: Schedule activation at absolute time on both devices
+        // This achieves sub-millisecond synchronization accuracy
+
+        // Use adaptive lead time based on current RTT statistics
+        uint32_t leadTimeUs = syncProtocol.calculateAdaptiveLeadTime();
+        uint64_t activateTime = getMicros() + leadTimeUs;
+
+        // Create BUZZ command with scheduled activation time
+        SyncCommand cmd = SyncCommand::createBuzzWithTime(seq, secondaryFinger, amplitude, durationMs, frequencyHz, activateTime);
+        if (cmd.serialize(buffer, sizeof(buffer)))
         {
-            Serial.printf("[ACTIVATE] Scheduled F%d A%d delay=%luus\n", primaryFinger, amplitude, latencyUs);
+            ble.sendToSecondary(buffer);
         }
-        syncTimer.scheduleActivation(latencyUs, primaryFinger, amplitude);
+
+        // Schedule PRIMARY motor activation at the same absolute time
+        if (haptic.isEnabled(primaryFinger))
+        {
+            if (profiles.getDebugMode())
+            {
+                Serial.printf("[ACTIVATE] PTP sync F%d A%d at T+%luus\n",
+                              primaryFinger, amplitude, (unsigned long)leadTimeUs);
+            }
+            syncTimer.scheduleAbsoluteActivation(activateTime, primaryFinger, amplitude);
+        }
     }
-    else if (haptic.isEnabled(primaryFinger))
+    else
     {
-        // No latency measurement yet - activate immediately
-        if (profiles.getDebugMode())
+        // LEGACY MODE: Use RTT/2 latency estimation
+        // Less accurate but works without clock synchronization
+
+        // Create legacy BUZZ command (SECONDARY activates immediately on receipt)
+        SyncCommand cmd = SyncCommand::createBuzz(seq, secondaryFinger, amplitude, durationMs, frequencyHz);
+        if (cmd.serialize(buffer, sizeof(buffer)))
         {
-            Serial.printf("[ACTIVATE] Immediate F%d A%d (no latency)\n", primaryFinger, amplitude);
+            ble.sendToSecondary(buffer);
         }
-        haptic.activate(primaryFinger, amplitude);
+
+        // Schedule local activation after measured BLE latency (non-blocking)
+        uint32_t latencyUs = syncProtocol.getMeasuredLatency();
+        if (latencyUs > 0 && haptic.isEnabled(primaryFinger))
+        {
+            // Hardware timer schedules activation with microsecond precision
+            if (profiles.getDebugMode())
+            {
+                Serial.printf("[ACTIVATE] Legacy F%d A%d delay=%luus\n", primaryFinger, amplitude, latencyUs);
+            }
+            syncTimer.scheduleActivation(latencyUs, primaryFinger, amplitude);
+        }
+        else if (haptic.isEnabled(primaryFinger))
+        {
+            // No latency measurement yet - activate immediately
+            if (profiles.getDebugMode())
+            {
+                Serial.printf("[ACTIVATE] Immediate F%d A%d (no latency)\n", primaryFinger, amplitude);
+            }
+            haptic.activate(primaryFinger, amplitude);
+        }
     }
 }
 
@@ -1315,27 +1523,57 @@ void onMacrocycleStart(uint32_t macrocycleCount)
     {
         if (deviceRole == DeviceRole::PRIMARY && ble.isSecondaryConnected())
         {
-            // Send DEBUG_FLASH command to SECONDARY
-            SyncCommand cmd = SyncCommand::createDebugFlash(g_sequenceGenerator.next());
             char buffer[64];
-            if (cmd.serialize(buffer, sizeof(buffer)))
-            {
-                ble.sendToSecondary(buffer);
-            }
 
-            // Delay local flash by measured BLE latency for synchronization
-            // SECONDARY flashes immediately on receive; PRIMARY delays to match
-            uint32_t latencyUs = syncProtocol.getMeasuredLatency();
-            if (latencyUs > 0)
+            if (syncProtocol.isClockSyncValid())
             {
-                delayMicroseconds(latencyUs);
+                // PTP SYNC MODE: Schedule flash at absolute time
+                // Use adaptive lead time based on current RTT statistics
+                uint32_t leadTimeUs = syncProtocol.calculateAdaptiveLeadTime();
+                uint64_t flashTime = getMicros() + leadTimeUs;
+
+                SyncCommand cmd = SyncCommand::createDebugFlashWithTime(g_sequenceGenerator.next(), flashTime);
+                if (cmd.serialize(buffer, sizeof(buffer)))
+                {
+                    ble.sendToSecondary(buffer);
+                }
+
+                // Schedule local flash at the same absolute time
+                // Note: We can't use hardware timer for LED, so we use delay
+                // This blocks briefly but ensures visual accuracy for sync testing
+                uint64_t now = getMicros();
+                if (flashTime > now)
+                {
+                    delayMicroseconds((uint32_t)(flashTime - now));
+                }
+                triggerDebugFlash();
+            }
+            else
+            {
+                // LEGACY MODE: Use RTT/2 latency estimation
+                SyncCommand cmd = SyncCommand::createDebugFlash(g_sequenceGenerator.next());
+                if (cmd.serialize(buffer, sizeof(buffer)))
+                {
+                    ble.sendToSecondary(buffer);
+                }
+
+                // Delay local flash by measured BLE latency for synchronization
+                uint32_t latencyUs = syncProtocol.getMeasuredLatency();
+                if (latencyUs > 0)
+                {
+                    delayMicroseconds(latencyUs);
+                }
+                triggerDebugFlash();
             }
         }
-        // Trigger local flash (both PRIMARY and SECONDARY)
-        triggerDebugFlash();
+        else
+        {
+            // Standalone or SECONDARY (for fallback debug testing)
+            triggerDebugFlash();
+        }
     }
 
-    (void)macrocycleCount;  // Suppress unused parameter warning
+    (void)macrocycleCount; // Suppress unused parameter warning
 }
 
 // =============================================================================
@@ -1402,8 +1640,8 @@ void startTherapyTest()
     // Reset latency probing for fresh measurements
     if (deviceRole == DeviceRole::PRIMARY)
     {
-        syncProtocol.resetLatency();  // Clear EMA state for fresh warmup
-        lastProbeTime = millis() - PROBE_INTERVAL_MS + 100;  // First probe in ~100ms
+        syncProtocol.resetLatency();                        // Clear EMA state for fresh warmup
+        lastProbeTime = millis() - PROBE_INTERVAL_MS + 100; // First probe in ~100ms
     }
 
     // Start 5-minute test using profile settings (send STOP to end early)
@@ -1516,8 +1754,8 @@ void autoStartTherapy()
     }
 
     // Reset latency probing for fresh measurements
-    syncProtocol.resetLatency();  // Clear EMA state for fresh warmup
-    lastProbeTime = millis() - PROBE_INTERVAL_MS + 100;  // First probe in ~100ms
+    syncProtocol.resetLatency();                        // Clear EMA state for fresh warmup
+    lastProbeTime = millis() - PROBE_INTERVAL_MS + 100; // First probe in ~100ms
 
     // Start 30-minute session using profile settings
     therapy.startSession(
@@ -1552,8 +1790,8 @@ void triggerDebugFlash()
     // Flash WHITE (overrides THERAPY_LED_OFF)
     led.setPattern(Colors::WHITE, LEDPattern::SOLID);
 
-    // Schedule restoration after 200ms (handled in loop())
-    debugFlashEndTime = millis() + 200;
+    // Schedule restoration after 50ms (handled in loop())
+    debugFlashEndTime = millis() + 50;
     debugFlashActive = true;
 
     if (profiles.getDebugMode())
@@ -1567,10 +1805,13 @@ void triggerDebugFlash()
 // =============================================================================
 
 /**
- * @brief Send PING to SECONDARY to measure BLE latency
+ * @brief Send PING to SECONDARY to measure BLE latency and clock offset
  *
- * Called at the start of each macrocycle. SECONDARY immediately replies
- * with PONG, allowing PRIMARY to calculate RTT and one-way latency.
+ * Uses PTP-style 4-timestamp protocol:
+ * - T1: PRIMARY send time (stored in pingT1, included in PING)
+ * - T2: SECONDARY receive time (returned in PONG)
+ * - T3: SECONDARY send time (returned in PONG)
+ * - T4: PRIMARY receive time (recorded on PONG receipt)
  */
 void sendPing()
 {
@@ -1579,8 +1820,11 @@ void sendPing()
         return;
     }
 
-    pingStartTime = getMicros();
-    SyncCommand cmd = SyncCommand::createPing(g_sequenceGenerator.next());
+    // Record T1 for PTP offset calculation
+    pingT1 = getMicros();
+    pingStartTime = pingT1; // Keep for backward compat
+
+    SyncCommand cmd = SyncCommand::createPingWithT1(g_sequenceGenerator.next(), pingT1);
 
     char buffer[64];
     if (cmd.serialize(buffer, sizeof(buffer)))
@@ -1630,9 +1874,12 @@ void onStateChange(const StateTransition &transition)
 
     case TherapyState::RUNNING:
         // Check if LED should be off during therapy
-        if (profiles.getTherapyLedOff()) {
+        if (profiles.getTherapyLedOff())
+        {
             led.setPattern(Colors::GREEN, LEDPattern::OFF);
-        } else {
+        }
+        else
+        {
             led.setPattern(Colors::GREEN, LEDPattern::PULSE_SLOW);
         }
         break;
@@ -1752,7 +1999,7 @@ void handleSerialCommand(const char *command)
         {
             profiles.setDeviceRole(DeviceRole::PRIMARY);
             profiles.saveSettings();
-            safeMotorShutdown();  // Ensure motors off before reset
+            safeMotorShutdown(); // Ensure motors off before reset
             Serial.println(F("[CONFIG] Role set to PRIMARY - restarting..."));
             Serial.flush();
             delay(100);
@@ -1762,7 +2009,7 @@ void handleSerialCommand(const char *command)
         {
             profiles.setDeviceRole(DeviceRole::SECONDARY);
             profiles.saveSettings();
-            safeMotorShutdown();  // Ensure motors off before reset
+            safeMotorShutdown(); // Ensure motors off before reset
             Serial.println(F("[CONFIG] Role set to SECONDARY - restarting..."));
             Serial.flush();
             delay(100);
@@ -1893,6 +2140,45 @@ void handleSerialCommand(const char *command)
         return;
     }
 
+    // GET_CLOCK_SYNC - Print PTP clock synchronization status
+    if (strcmp(command, "GET_CLOCK_SYNC") == 0)
+    {
+        Serial.println(F("=== PTP Clock Synchronization Status ==="));
+        Serial.printf("Valid: %s\n", syncProtocol.isClockSyncValid() ? "YES" : "NO");
+        Serial.printf("Offset samples: %u\n", syncProtocol.getOffsetSampleCount());
+        Serial.printf("Median offset: %ld us\n", (long)syncProtocol.getMedianOffset());
+        Serial.printf("Corrected offset: %ld us\n", (long)syncProtocol.getCorrectedOffset());
+        Serial.printf("Drift rate: %.3f us/ms\n", syncProtocol.getDriftRate());
+        Serial.printf("RTT samples: %u\n", syncProtocol.getSampleCount());
+        Serial.printf("RTT smoothed: %lu us (avg RTT %lu us)\n",
+                      (unsigned long)syncProtocol.getMeasuredLatency(),
+                      (unsigned long)syncProtocol.getAverageRTT());
+        Serial.printf("RTT variance: %lu us\n", (unsigned long)syncProtocol.getRTTVariance());
+        Serial.printf("RTT raw: %lu us\n", (unsigned long)syncProtocol.getRawLatency());
+        Serial.printf("Adaptive lead time: %lu us\n", (unsigned long)syncProtocol.calculateAdaptiveLeadTime());
+        Serial.printf("Time since sync: %lu ms\n", (unsigned long)syncProtocol.getTimeSinceSync());
+        Serial.println(F("========================================="));
+        return;
+    }
+
+    // RESET_CLOCK_SYNC - Reset PTP clock synchronization and trigger new burst
+    if (strcmp(command, "RESET_CLOCK_SYNC") == 0)
+    {
+        syncProtocol.resetClockSync();
+        syncProtocol.resetLatency();
+        if (deviceRole == DeviceRole::PRIMARY && ble.isSecondaryConnected())
+        {
+            syncBurstPending = SYNC_BURST_COUNT;
+            syncBurstNextTime = millis();
+            Serial.printf("[SYNC] Reset. Starting new burst (%d PINGs)\n", SYNC_BURST_COUNT);
+        }
+        else
+        {
+            Serial.println(F("[SYNC] Clock sync reset"));
+        }
+        return;
+    }
+
     // =========================================================================
 
     // FACTORY_RESET - delete settings file and reboot
@@ -1907,7 +2193,7 @@ void handleSerialCommand(const char *command)
         {
             Serial.println(F("[CONFIG] No settings file to delete"));
         }
-        safeMotorShutdown();  // Ensure motors off before reset
+        safeMotorShutdown(); // Ensure motors off before reset
         Serial.println(F("[CONFIG] Rebooting..."));
         Serial.flush();
         delay(100);
@@ -1918,7 +2204,7 @@ void handleSerialCommand(const char *command)
     // REBOOT - restart the device
     if (strcmp(command, "REBOOT") == 0)
     {
-        safeMotorShutdown();  // Ensure motors off before reset
+        safeMotorShutdown(); // Ensure motors off before reset
         Serial.println(F("[CONFIG] Rebooting..."));
         Serial.flush();
         delay(100);
