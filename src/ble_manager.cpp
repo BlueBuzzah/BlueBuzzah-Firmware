@@ -442,13 +442,13 @@ bool BLEManager::enqueueTx(uint16_t connHandle, const char* message) {
     // Copy message + EOT to entry buffer
     memcpy(entry->data, message, msgLen);
     entry->data[msgLen] = EOT_CHAR;
-    entry->length = msgLen + 1;
+    entry->length = static_cast<uint16_t>(msgLen + 1);
     entry->bytesSent = 0;
     entry->connHandle = connHandle;
     entry->pending = true;
 
     // Advance tail
-    _txTail = (_txTail + 1) % TX_QUEUE_SIZE;
+    _txTail = static_cast<uint8_t>((_txTail + 1) % TX_QUEUE_SIZE);
     _txCount++;
 
     return true;
@@ -460,7 +460,7 @@ void BLEManager::processTxQueue() {
         TxEntry* entry = &_txQueue[_txHead];
         if (!entry->pending) {
             // Advance head if slot is empty (shouldn't happen)
-            _txHead = (_txHead + 1) % TX_QUEUE_SIZE;
+            _txHead = static_cast<uint8_t>((_txHead + 1) % TX_QUEUE_SIZE);
             continue;
         }
 
@@ -471,7 +471,7 @@ void BLEManager::processTxQueue() {
                                            remaining);
 
         if (written > 0) {
-            entry->bytesSent += written;
+            entry->bytesSent = static_cast<uint16_t>(entry->bytesSent + written);
 
             // Check if complete
             if (entry->bytesSent >= entry->length) {
@@ -484,7 +484,7 @@ void BLEManager::processTxQueue() {
 
                 // Mark slot free and advance head
                 entry->pending = false;
-                _txHead = (_txHead + 1) % TX_QUEUE_SIZE;
+                _txHead = static_cast<uint8_t>((_txHead + 1) % TX_QUEUE_SIZE);
                 _txCount--;
             }
         } else {
@@ -494,7 +494,7 @@ void BLEManager::processTxQueue() {
     }
 }
 
-size_t BLEManager::tryWriteImmediate(uint16_t connHandle, const uint8_t* data, size_t len) {
+size_t BLEManager::tryWriteImmediate(uint16_t connHandle [[maybe_unused]], const uint8_t* data, size_t len) {
     // Non-blocking write attempt
     if (_role == DeviceRole::PRIMARY) {
         return _uartService.write(data, len);
@@ -589,7 +589,7 @@ BBConnection* BLEManager::findFreeConnection() {
     return nullptr;
 }
 
-ConnectionType BLEManager::identifyConnectionType(uint16_t connHandle) {
+ConnectionType BLEManager::identifyConnectionType(uint16_t connHandle [[maybe_unused]]) {
     // In PRIMARY mode, we need to identify if connection is from phone or SECONDARY
     // Currently using simple heuristic: first connection is SECONDARY, second is phone
     // A more robust approach would check device name or use a handshake protocol
@@ -610,8 +610,6 @@ void BLEManager::processIncomingData(uint16_t connHandleParam, const uint8_t* da
     BBConnection* conn = findConnection(connHandleParam);
     if (!conn) return;
 
-    bool messageDelivered = false;
-
     // Append data to buffer
     for (uint16_t i = 0; i < len && conn->rxIndex < RX_BUFFER_SIZE - 1; i++) {
         uint8_t c = data[i];
@@ -628,7 +626,6 @@ void BLEManager::processIncomingData(uint16_t connHandleParam, const uint8_t* da
 
             if (conn->rxIndex > 0) {
                 deliverMessage(conn, connHandleParam);
-                messageDelivered = true;
             }
 
             // Reset buffer for next message
@@ -868,7 +865,7 @@ void BLEManager::_onUartRx(uint16_t connHandle) {
     int len = g_bleManager->_uartService.read(buf, sizeof(buf));
 
     if (len > 0) {
-        g_bleManager->processIncomingData(connHandle, buf, len);
+        g_bleManager->processIncomingData(connHandle, buf, static_cast<uint16_t>(len));
     }
 }
 
@@ -880,6 +877,6 @@ void BLEManager::_onClientUartRx(BLEClientUart& clientUart) {
     int len = clientUart.read(buf, sizeof(buf));
 
     if (len > 0) {
-        g_bleManager->processClientIncomingData(buf, len);
+        g_bleManager->processClientIncomingData(buf, static_cast<uint16_t>(len));
     }
 }

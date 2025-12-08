@@ -611,7 +611,7 @@ float LEDController::calculateBreatheBrightness(uint32_t cycleMs) const {
     // sin goes from -1 to 1, we want 0 to 1
     // Position 0 = brightness 0.5, position 0.25 = brightness 1.0
     // position 0.5 = brightness 0.5, position 0.75 = brightness 0.0
-    float brightness = (sin(position * 2.0f * PI - PI / 2.0f) + 1.0f) / 2.0f;
+    float brightness = (sinf(position * 2.0f * static_cast<float>(PI) - static_cast<float>(PI) / 2.0f) + 1.0f) / 2.0f;
 
     // Clamp to ensure we don't go below a minimum visibility threshold
     const float MIN_BRIGHTNESS = 0.1f;

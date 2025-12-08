@@ -507,7 +507,7 @@ int64_t SimpleSyncProtocol::calculatePTPOffset(uint64_t t1, uint64_t t2, uint64_
 void SimpleSyncProtocol::addOffsetSample(int64_t offset) {
     // Add sample to circular buffer
     _offsetSamples[_offsetSampleIndex] = offset;
-    _offsetSampleIndex = (_offsetSampleIndex + 1) % OFFSET_SAMPLE_COUNT;
+    _offsetSampleIndex = static_cast<uint8_t>((_offsetSampleIndex + 1) % OFFSET_SAMPLE_COUNT);
 
     if (_offsetSampleCount < OFFSET_SAMPLE_COUNT) {
         _offsetSampleCount++;
@@ -524,7 +524,7 @@ void SimpleSyncProtocol::addOffsetSample(int64_t offset) {
         // Simple insertion sort (small array, O(n^2) is fine)
         for (uint8_t i = 1; i < _offsetSampleCount; i++) {
             int64_t key = sorted[i];
-            int8_t j = i - 1;
+            int8_t j = static_cast<int8_t>(i - 1);
             while (j >= 0 && sorted[j] > key) {
                 sorted[j + 1] = sorted[j];
                 j--;

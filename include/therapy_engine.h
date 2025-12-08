@@ -115,6 +115,8 @@ struct [[nodiscard]] Pattern {
      * @param secondaryFinger Output SECONDARY device finger index
      */
     void getFingerPair(uint8_t index, uint8_t& primaryFinger, uint8_t& secondaryFinger) const {
+        primaryFinger = 0;      // Safe default
+        secondaryFinger = 0;    // Safe default
         if (index < numFingers) {
             primaryFinger = primarySequence[index];
             secondaryFinger = secondarySequence[index];

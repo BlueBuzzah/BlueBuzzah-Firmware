@@ -1082,7 +1082,7 @@ void hapticSecondPulseCallback(void *ctx)
     }
 }
 
-void onBLEMessage(uint16_t connHandle, const char *message)
+void onBLEMessage(uint16_t connHandle [[maybe_unused]], const char *message)
 {
     // CRITICAL: Capture receive timestamp FIRST, before any parsing
     // This minimizes jitter for PTP clock synchronization
@@ -1259,22 +1259,25 @@ void onBLEMessage(uint16_t connHandle, const char *message)
         case SyncCommandType::BUZZ:
         {
             // SECONDARY: Motor activation
-            int32_t finger = cmd.getDataInt("0", -1);
-            int32_t amplitude = cmd.getDataInt("1", 50);
+            int32_t fingerVal = cmd.getDataInt("0", -1);
+            int32_t amplitudeVal = cmd.getDataInt("1", 50);
             int32_t durationMs = cmd.getDataInt("2", 100); // Default 100ms if not specified
             int32_t freqHz = cmd.getDataInt("3", 250);     // Default 250Hz (v1 ACTUATOR_FREQUENCY)
 
-            if (finger >= 0 && finger < MAX_ACTUATORS && haptic.isEnabled(finger))
+            if (fingerVal >= 0 && fingerVal < MAX_ACTUATORS && haptic.isEnabled(static_cast<uint8_t>(fingerVal)))
             {
+                uint8_t finger = static_cast<uint8_t>(fingerVal);
+                uint8_t amplitude = static_cast<uint8_t>(amplitudeVal);
+
                 // Deactivate any previously active motor first
                 if (activeMotorFinger >= 0)
                 {
                     Serial.printf("[DEACTIVATE] F%d (prev)\n", activeMotorFinger);
-                    haptic.deactivate(activeMotorFinger);
+                    haptic.deactivate(static_cast<uint8_t>(activeMotorFinger));
                 }
 
                 // Apply frequency before activation
-                haptic.setFrequency(finger, (uint16_t)freqHz);
+                haptic.setFrequency(finger, static_cast<uint16_t>(freqHz));
 
                 // Check if this is a PTP sync command with scheduled activation time
                 bool hasPTPTime = cmd.hasData("4");
@@ -1285,14 +1288,14 @@ void onBLEMessage(uint16_t connHandle, const char *message)
                     if (cmd.hasData("5"))
                     {
                         // Full 64-bit: timeHigh|timeLow
-                        uint32_t timeHigh = (uint32_t)cmd.getDataInt("4", 0);
-                        uint32_t timeLow = (uint32_t)cmd.getDataInt("5", 0);
+                        uint32_t timeHigh = static_cast<uint32_t>(cmd.getDataInt("4", 0));
+                        uint32_t timeLow = static_cast<uint32_t>(cmd.getDataInt("5", 0));
                         activateTime = ((uint64_t)timeHigh << 32) | timeLow;
                     }
                     else
                     {
                         // Simple 32-bit
-                        activateTime = (uint64_t)(uint32_t)cmd.getDataInt("4", 0);
+                        activateTime = static_cast<uint64_t>(static_cast<uint32_t>(cmd.getDataInt("4", 0)));
                     }
 
                     // Convert PRIMARY clock time to local (SECONDARY) clock time
@@ -1311,7 +1314,7 @@ void onBLEMessage(uint16_t connHandle, const char *message)
 
                     // Schedule non-blocking deactivation
                     // Note: deactivation time based on when activation will fire
-                    activeMotorFinger = finger;
+                    activeMotorFinger = static_cast<int8_t>(finger);
                     uint64_t now = getMicros();
                     uint32_t delayMs = 0;
                     if (localActivateTime > now)
@@ -1323,11 +1326,11 @@ void onBLEMessage(uint16_t connHandle, const char *message)
                 else
                 {
                     // Legacy mode: activate immediately
-                    Serial.printf("[ACTIVATE] F%d A%d dur=%ldms freq=%ldHz\n", finger, amplitude, durationMs, freqHz);
+                    Serial.printf("[ACTIVATE] F%d A%d dur=%ldms freq=%ldHz\n", (int)finger, (int)amplitude, (long)durationMs, (long)freqHz);
                     haptic.activate(finger, amplitude);
 
                     // Schedule non-blocking deactivation after duration from profile
-                    activeMotorFinger = finger;
+                    activeMotorFinger = static_cast<int8_t>(finger);
                     motorDeactivateTime = millis() + durationMs;
                 }
             }
@@ -1409,7 +1412,7 @@ void onBLEMessage(uint16_t connHandle, const char *message)
 // THERAPY CALLBACKS
 // =============================================================================
 
-void onSendCommand(const char *commandType, uint8_t primaryFinger, uint8_t secondaryFinger, uint8_t amplitude, uint32_t durationMs, uint32_t seq, uint16_t frequencyHz)
+void onSendCommand(const char *commandType [[maybe_unused]], uint8_t primaryFinger, uint8_t secondaryFinger, uint8_t amplitude, uint32_t durationMs, uint32_t seq, uint16_t frequencyHz)
 {
     char buffer[128];
 

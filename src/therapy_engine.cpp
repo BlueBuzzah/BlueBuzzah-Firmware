@@ -14,8 +14,8 @@
 
 constexpr void shuffleArray(std::span<uint8_t> arr) {
     // Fisher-Yates shuffle
-    for (int i = arr.size() - 1; i > 0; i--) {
-        int const j = random(0, i + 1);
+    for (size_t i = arr.size() - 1; i > 0; i--) {
+        size_t const j = static_cast<size_t>(random(0, static_cast<long>(i + 1)));
         std::swap(arr[i], arr[j]);
     }
 }
@@ -40,7 +40,7 @@ Pattern generateRandomPermutation(
     pattern.interBurstIntervalMs = 4.0f * cycleDurationMs;
 
     // Generate PRIMARY device sequence (random permutation)
-    for (int i = 0; i < numFingers; i++) {
+    for (uint8_t i = 0; i < numFingers; i++) {
         pattern.primarySequence[i] = i;
     }
     shuffleArray(pattern.primarySequence);
@@ -48,12 +48,12 @@ Pattern generateRandomPermutation(
     // Generate SECONDARY device sequence based on mirror setting
     if (mirrorPattern) {
         // Mirrored: same finger on both devices (for noisy vCR)
-        for (int i = 0; i < numFingers; i++) {
+        for (uint8_t i = 0; i < numFingers; i++) {
             pattern.secondarySequence[i] = pattern.primarySequence[i];
         }
     } else {
         // Non-mirrored: independent random sequence
-        for (int i = 0; i < numFingers; i++) {
+        for (uint8_t i = 0; i < numFingers; i++) {
             pattern.secondarySequence[i] = i;
         }
         shuffleArray(pattern.secondarySequence);
@@ -65,11 +65,11 @@ Pattern generateRandomPermutation(
 
     // Apply jitter to TIME_OFF (67ms), NOT the inter-burst interval
     // v1 behavior: TIME_OFF_actual = TIME_OFF ± jitter (range: 47-87ms with 23.5% jitter)
-    for (int i = 0; i < numFingers; i++) {
+    for (uint8_t i = 0; i < numFingers; i++) {
         float offTime = timeOffMs;
         if (jitterPercent > 0) {
             // Add random jitter to TIME_OFF
-            float jitter = random(-1000, 1001) / 1000.0f * jitterAmount;
+            float jitter = static_cast<float>(random(-1000, 1001)) / 1000.0f * jitterAmount;
             offTime += jitter;
             if (offTime < 0) offTime = 0;
         }
@@ -96,9 +96,9 @@ Pattern generateSequentialPattern(
     pattern.interBurstIntervalMs = 4.0f * cycleDurationMs;
 
     // Generate sequential list
-    for (int i = 0; i < numFingers; i++) {
+    for (uint8_t i = 0; i < numFingers; i++) {
         if (reverse) {
-            pattern.primarySequence[i] = numFingers - 1 - i;
+            pattern.primarySequence[i] = static_cast<uint8_t>(numFingers - 1 - i);
         } else {
             pattern.primarySequence[i] = i;
         }
@@ -107,12 +107,12 @@ Pattern generateSequentialPattern(
     // Generate SECONDARY sequence based on mirror setting
     if (mirrorPattern) {
         // Mirrored: same as PRIMARY
-        for (int i = 0; i < numFingers; i++) {
+        for (uint8_t i = 0; i < numFingers; i++) {
             pattern.secondarySequence[i] = pattern.primarySequence[i];
         }
     } else {
         // Non-mirrored: opposite order
-        for (int i = 0; i < numFingers; i++) {
+        for (uint8_t i = 0; i < numFingers; i++) {
             pattern.secondarySequence[i] = pattern.primarySequence[numFingers - 1 - i];
         }
     }
@@ -121,10 +121,10 @@ Pattern generateSequentialPattern(
     float jitterAmount = cycleDurationMs * (jitterPercent / 100.0f) / 2.0f;
 
     // Apply jitter to TIME_OFF, NOT the inter-burst interval
-    for (int i = 0; i < numFingers; i++) {
+    for (uint8_t i = 0; i < numFingers; i++) {
         float offTime = timeOffMs;
         if (jitterPercent > 0) {
-            float jitter = random(-1000, 1001) / 1000.0f * jitterAmount;
+            float jitter = static_cast<float>(random(-1000, 1001)) / 1000.0f * jitterAmount;
             offTime += jitter;
             if (offTime < 0) offTime = 0;
         }
@@ -150,7 +150,7 @@ Pattern generateMirroredPattern(
     pattern.interBurstIntervalMs = 4.0f * cycleDurationMs;
 
     // Generate base sequence
-    for (int i = 0; i < numFingers; i++) {
+    for (uint8_t i = 0; i < numFingers; i++) {
         pattern.primarySequence[i] = i;
     }
 
@@ -159,7 +159,7 @@ Pattern generateMirroredPattern(
     }
 
     // Mirror to both devices (identical sequences)
-    for (int i = 0; i < numFingers; i++) {
+    for (uint8_t i = 0; i < numFingers; i++) {
         pattern.secondarySequence[i] = pattern.primarySequence[i];
     }
 
@@ -167,10 +167,10 @@ Pattern generateMirroredPattern(
     float jitterAmount = cycleDurationMs * (jitterPercent / 100.0f) / 2.0f;
 
     // Apply jitter to TIME_OFF, NOT the inter-burst interval
-    for (int i = 0; i < numFingers; i++) {
+    for (uint8_t i = 0; i < numFingers; i++) {
         float offTime = timeOffMs;
         if (jitterPercent > 0) {
-            float jitter = random(-1000, 1001) / 1000.0f * jitterAmount;
+            float jitter = static_cast<float>(random(-1000, 1001)) / 1000.0f * jitterAmount;
             offTime += jitter;
             if (offTime < 0) offTime = 0;
         }
@@ -220,7 +220,7 @@ TherapyEngine::TherapyEngine() :
     _macrocycleStartCallback(nullptr)
 {
     // Initialize frequencies to default (250 Hz per v1 ACTUATOR_FREQUENCY)
-    for (int i = 0; i < MAX_ACTUATORS; i++) {
+    for (uint8_t i = 0; i < MAX_ACTUATORS; i++) {
         _currentFrequency[i] = 250;
     }
 }
@@ -609,9 +609,9 @@ void TherapyEngine::applyFrequencyRandomization() {
     uint16_t steps = range / 5;
 
     // Apply randomized frequency to each finger's motor
-    for (int finger = 0; finger < _numFingers; finger++) {
+    for (uint8_t finger = 0; finger < _numFingers; finger++) {
         // Generate random frequency in 5 Hz steps (matching v1 behavior)
-        uint16_t freq = _frequencyMin + (random(0, steps + 1) * 5);
+        uint16_t freq = _frequencyMin + static_cast<uint16_t>(random(0, steps + 1) * 5);
         _currentFrequency[finger] = freq;
 
         // Apply locally if callback registered

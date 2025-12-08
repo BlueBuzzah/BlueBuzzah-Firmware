@@ -23,7 +23,7 @@ DeferredQueue::DeferredQueue()
 
 bool DeferredQueue::enqueue(DeferredWorkType type, uint8_t param1, uint8_t param2, uint32_t param3) {
     // Calculate next head position
-    uint8_t nextHead = (_head + 1) % MAX_WORK;
+    uint8_t nextHead = static_cast<uint8_t>((_head + 1) % MAX_WORK);
 
     // Check if queue is full
     if (nextHead == _tail) {
@@ -61,7 +61,7 @@ bool DeferredQueue::processOne() {
     __DMB();
 
     // Advance tail (frees slot)
-    _tail = (_tail + 1) % MAX_WORK;
+    _tail = static_cast<uint8_t>((_tail + 1) % MAX_WORK);
 
     // Execute work through callback
     if (_executor && type != DeferredWorkType::NONE) {
@@ -82,7 +82,7 @@ uint8_t DeferredQueue::getPendingCount() const {
     if (head >= tail) {
         return head - tail;
     } else {
-        return MAX_WORK - tail + head;
+        return static_cast<uint8_t>(MAX_WORK - tail + head);
     }
 }
 
