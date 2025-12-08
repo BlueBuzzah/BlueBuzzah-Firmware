@@ -5,6 +5,9 @@
 
 #include <unity.h>
 #include "therapy_engine.h"
+#include <ranges>
+#include <algorithm>
+#include <vector>
 
 // Include source file directly for native testing
 // (excluded from build_src_filter to avoid conflicts with other tests)
@@ -17,23 +20,13 @@
 /**
  * @brief Check if array is a valid permutation of 0 to n-1
  */
-bool isValidPermutation(uint8_t* arr, uint8_t n) {
-    bool seen[PATTERN_MAX_FINGERS] = {false};
-    for (uint8_t i = 0; i < n; i++) {
-        if (arr[i] >= n || seen[arr[i]]) {
+bool isValidPermutation(std::span<uint8_t> arr) {
+    std::vector<bool> seen = std::vector<bool>(arr.size(), false);
+    for (size_t i = 0; i < arr.size(); i++) {
+        if (arr[i] >= arr.size() || seen[arr[i]]) {
             return false;
         }
         seen[arr[i]] = true;
-    }
-    return true;
-}
-
-/**
- * @brief Check if two arrays are equal
- */
-bool arraysEqual(uint8_t* a, uint8_t* b, uint8_t n) {
-    for (uint8_t i = 0; i < n; i++) {
-        if (a[i] != b[i]) return false;
     }
     return true;
 }
@@ -97,30 +90,30 @@ void tearDown(void) {
 
 void test_shuffleArray_produces_valid_permutation(void) {
     uint8_t arr[4] = {0, 1, 2, 3};
-    shuffleArray(arr, 4);
+    shuffleArray(arr);
 
-    TEST_ASSERT_TRUE(isValidPermutation(arr, 4));
+    TEST_ASSERT_TRUE(isValidPermutation(arr));
 }
 
 void test_shuffleArray_single_element(void) {
     uint8_t arr[1] = {0};
-    shuffleArray(arr, 1);
+    shuffleArray(arr);
 
     TEST_ASSERT_EQUAL_UINT8(0, arr[0]);
 }
 
 void test_shuffleArray_two_elements(void) {
     uint8_t arr[2] = {0, 1};
-    shuffleArray(arr, 2);
+    shuffleArray(arr);
 
-    TEST_ASSERT_TRUE(isValidPermutation(arr, 2));
+    TEST_ASSERT_TRUE(isValidPermutation(arr));
 }
 
 void test_shuffleArray_maintains_all_elements(void) {
     randomSeed(12345);  // Different seed
 
     uint8_t arr[4] = {0, 1, 2, 3};
-    shuffleArray(arr, 4);
+    shuffleArray(arr);
 
     // Count each element - should appear exactly once
     int counts[4] = {0};
@@ -192,15 +185,15 @@ void test_generateRandomPermutation_produces_valid_pattern(void) {
     Pattern p = generateRandomPermutation(4, 100.0f, 67.0f, 0.0f, true);
 
     TEST_ASSERT_EQUAL_UINT8(4, p.numFingers);
-    TEST_ASSERT_TRUE(isValidPermutation(p.primarySequence, 4));
-    TEST_ASSERT_TRUE(isValidPermutation(p.secondarySequence, 4));
+    TEST_ASSERT_TRUE(isValidPermutation(p.primarySequence));
+    TEST_ASSERT_TRUE(isValidPermutation(p.secondarySequence));
 }
 
 void test_generateRandomPermutation_mirrored(void) {
     Pattern p = generateRandomPermutation(4, 100.0f, 67.0f, 0.0f, true);
 
     // Mirrored: primary and secondary should be identical
-    TEST_ASSERT_TRUE(arraysEqual(p.primarySequence, p.secondarySequence, 4));
+    TEST_ASSERT_TRUE(std::ranges::equal(p.primarySequence, p.secondarySequence));
 }
 
 void test_generateRandomPermutation_non_mirrored(void) {
@@ -209,8 +202,8 @@ void test_generateRandomPermutation_non_mirrored(void) {
     Pattern p = generateRandomPermutation(4, 100.0f, 67.0f, 0.0f, false);
 
     // Both should still be valid permutations
-    TEST_ASSERT_TRUE(isValidPermutation(p.primarySequence, 4));
-    TEST_ASSERT_TRUE(isValidPermutation(p.secondarySequence, 4));
+    TEST_ASSERT_TRUE(isValidPermutation(p.primarySequence));
+    TEST_ASSERT_TRUE(isValidPermutation(p.secondarySequence));
 
     // Note: They might be equal by chance, but usually won't be
 }
@@ -228,7 +221,7 @@ void test_generateRandomPermutation_partial_fingers(void) {
     Pattern p = generateRandomPermutation(3, 100.0f, 67.0f, 0.0f, true);
 
     TEST_ASSERT_EQUAL_UINT8(3, p.numFingers);
-    TEST_ASSERT_TRUE(isValidPermutation(p.primarySequence, 3));
+    TEST_ASSERT_TRUE(isValidPermutation(p.primarySequence));
 }
 
 void test_generateRandomPermutation_burst_duration(void) {
@@ -270,7 +263,7 @@ void test_generateSequentialPattern_mirrored(void) {
     Pattern p = generateSequentialPattern(4, 100.0f, 67.0f, 0.0f, true, false);
 
     // Mirrored: primary and secondary identical
-    TEST_ASSERT_TRUE(arraysEqual(p.primarySequence, p.secondarySequence, 4));
+    TEST_ASSERT_TRUE(std::ranges::equal(p.primarySequence, p.secondarySequence));
 }
 
 void test_generateSequentialPattern_non_mirrored(void) {
@@ -297,17 +290,17 @@ void test_generateMirroredPattern_not_randomized(void) {
     }
 
     // Always mirrored
-    TEST_ASSERT_TRUE(arraysEqual(p.primarySequence, p.secondarySequence, 4));
+    TEST_ASSERT_TRUE(std::ranges::equal(p.primarySequence, p.secondarySequence));
 }
 
 void test_generateMirroredPattern_randomized(void) {
     Pattern p = generateMirroredPattern(4, 100.0f, 67.0f, 0.0f, true);
 
     // Randomized: valid permutation
-    TEST_ASSERT_TRUE(isValidPermutation(p.primarySequence, 4));
+    TEST_ASSERT_TRUE(isValidPermutation(p.primarySequence));
 
     // Always mirrored
-    TEST_ASSERT_TRUE(arraysEqual(p.primarySequence, p.secondarySequence, 4));
+    TEST_ASSERT_TRUE(std::ranges::equal(p.primarySequence, p.secondarySequence));
 }
 
 // =============================================================================
