@@ -6,18 +6,17 @@
  */
 
 #include "therapy_engine.h"
+#include <span>
 
 // =============================================================================
 // UTILITY FUNCTIONS
 // =============================================================================
 
-void shuffleArray(uint8_t* arr, uint8_t n) {
+constexpr void shuffleArray(std::span<uint8_t> arr) {
     // Fisher-Yates shuffle
-    for (int i = n - 1; i > 0; i--) {
-        int j = random(0, i + 1);
-        uint8_t temp = arr[i];
-        arr[i] = arr[j];
-        arr[j] = temp;
+    for (int i = arr.size() - 1; i > 0; i--) {
+        int const j = random(0, i + 1);
+        std::swap(arr[i], arr[j]);
     }
 }
 
@@ -32,7 +31,7 @@ Pattern generateRandomPermutation(
     float jitterPercent,
     bool mirrorPattern
 ) {
-    Pattern pattern;
+    Pattern pattern = Pattern(numFingers);
     pattern.numFingers = numFingers;
     pattern.burstDurationMs = timeOnMs;
 
@@ -44,7 +43,7 @@ Pattern generateRandomPermutation(
     for (int i = 0; i < numFingers; i++) {
         pattern.primarySequence[i] = i;
     }
-    shuffleArray(pattern.primarySequence, numFingers);
+    shuffleArray(pattern.primarySequence);
 
     // Generate SECONDARY device sequence based on mirror setting
     if (mirrorPattern) {
@@ -57,7 +56,7 @@ Pattern generateRandomPermutation(
         for (int i = 0; i < numFingers; i++) {
             pattern.secondarySequence[i] = i;
         }
-        shuffleArray(pattern.secondarySequence, numFingers);
+        shuffleArray(pattern.secondarySequence);
     }
 
     // Calculate jitter amount per v1 formula: (TIME_ON + TIME_OFF) * jitter% / 100 / 2
@@ -88,7 +87,7 @@ Pattern generateSequentialPattern(
     bool mirrorPattern,
     bool reverse
 ) {
-    Pattern pattern;
+    Pattern pattern = Pattern(numFingers);
     pattern.numFingers = numFingers;
     pattern.burstDurationMs = timeOnMs;
 
@@ -142,7 +141,7 @@ Pattern generateMirroredPattern(
     float jitterPercent,
     bool randomize
 ) {
-    Pattern pattern;
+    Pattern pattern = Pattern(numFingers);
     pattern.numFingers = numFingers;
     pattern.burstDurationMs = timeOnMs;
 
@@ -156,7 +155,7 @@ Pattern generateMirroredPattern(
     }
 
     if (randomize) {
-        shuffleArray(pattern.primarySequence, numFingers);
+        shuffleArray(pattern.primarySequence);
     }
 
     // Mirror to both devices (identical sequences)
