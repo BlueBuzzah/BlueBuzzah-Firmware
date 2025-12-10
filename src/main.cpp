@@ -1597,14 +1597,14 @@ void startTherapyTest()
     }
 
     // Convert pattern type string to constant
-    uint8_t patternType = PATTERN_TYPE_RNDP;
+    PatternType patternType = PatternType::RNDP;
     if (strcmp(profile->patternType, "sequential") == 0)
     {
-        patternType = PATTERN_TYPE_SEQUENTIAL;
+        patternType = PatternType::SEQUENTIAL;
     }
     else if (strcmp(profile->patternType, "mirrored") == 0)
     {
-        patternType = PATTERN_TYPE_MIRRORED;
+        patternType = PatternType::MIRRORED;
     }
 
     // Stop scanning during standalone test (SECONDARY only)
@@ -1724,14 +1724,14 @@ void autoStartTherapy()
     }
 
     // Convert pattern type string to constant
-    uint8_t patternType = PATTERN_TYPE_RNDP;
+    PatternType patternType = PatternType::RNDP;
     if (strcmp(profile->patternType, "sequential") == 0)
     {
-        patternType = PATTERN_TYPE_SEQUENTIAL;
+        patternType = PatternType::SEQUENTIAL;
     }
     else if (strcmp(profile->patternType, "mirrored") == 0)
     {
-        patternType = PATTERN_TYPE_MIRRORED;
+        patternType = PatternType::MIRRORED;
     }
 
     uint32_t durationSec = profile->sessionDurationMin * 60;

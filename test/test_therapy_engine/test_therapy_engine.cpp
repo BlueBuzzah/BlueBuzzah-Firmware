@@ -16,6 +16,7 @@
 // =============================================================================
 // TEST HELPERS
 // =============================================================================
+using namespace std::literals;
 
 /**
  * @brief Check if array is a valid permutation of 0 to n-1
@@ -323,16 +324,16 @@ void test_TherapyEngine_default_state(void) {
 void test_TherapyEngine_startSession(void) {
     TherapyEngine engine;
 
-    engine.startSession(7200, PATTERN_TYPE_RNDP, 100.0f, 67.0f, 23.5f, 4, true);
+    engine.startSession(7200, PatternType::RNDP, 100.0f, 67.0f, 23.5f, 4, true);
 
     TEST_ASSERT_TRUE(engine.isRunning());
     TEST_ASSERT_FALSE(engine.isPaused());
-    TEST_ASSERT_EQUAL_UINT32(7200, engine.getDurationSeconds());
+    TEST_ASSERT_EQUAL(7200, engine.getDurationSeconds());
 }
 
 void test_TherapyEngine_pause(void) {
     TherapyEngine engine;
-    engine.startSession(7200, PATTERN_TYPE_RNDP, 100.0f, 67.0f, 23.5f, 4, true);
+    engine.startSession(7200, PatternType::RNDP, 100.0f, 67.0f, 23.5f, 4, true);
 
     engine.pause();
 
@@ -342,7 +343,7 @@ void test_TherapyEngine_pause(void) {
 
 void test_TherapyEngine_resume(void) {
     TherapyEngine engine;
-    engine.startSession(7200, PATTERN_TYPE_RNDP, 100.0f, 67.0f, 23.5f, 4, true);
+    engine.startSession(7200, PatternType::RNDP, 100.0f, 67.0f, 23.5f, 4, true);
     engine.pause();
 
     engine.resume();
@@ -353,7 +354,7 @@ void test_TherapyEngine_resume(void) {
 
 void test_TherapyEngine_stop(void) {
     TherapyEngine engine;
-    engine.startSession(7200, PATTERN_TYPE_RNDP, 100.0f, 67.0f, 23.5f, 4, true);
+    engine.startSession(7200, PatternType::RNDP, 100.0f, 67.0f, 23.5f, 4, true);
 
     engine.stop();
 
@@ -362,11 +363,11 @@ void test_TherapyEngine_stop(void) {
 
 void test_TherapyEngine_resets_stats_on_start(void) {
     TherapyEngine engine;
-    engine.startSession(100, PATTERN_TYPE_RNDP, 100.0f, 67.0f, 0.0f, 4, true);
+    engine.startSession(100, PatternType::RNDP, 100.0f, 67.0f, 0.0f, 4, true);
     engine.stop();
 
     // Start new session
-    engine.startSession(200, PATTERN_TYPE_RNDP, 100.0f, 67.0f, 0.0f, 4, true);
+    engine.startSession(200, PatternType::RNDP, 100.0f, 67.0f, 0.0f, 4, true);
 
     TEST_ASSERT_EQUAL_UINT32(0, engine.getCyclesCompleted());
     TEST_ASSERT_EQUAL_UINT32(0, engine.getTotalActivations());
@@ -381,12 +382,12 @@ void test_TherapyEngine_getElapsedSeconds(void) {
     // Start with non-zero time (startTime == 0 is a guard condition in the code)
     mockSetMillis(1000);
 
-    engine.startSession(7200, PATTERN_TYPE_RNDP, 100.0f, 67.0f, 0.0f, 4, true);
+    engine.startSession(7200, PatternType::RNDP, 100.0f, 67.0f, 0.0f, 4, true);
 
     // Advance time by 5000ms (5 seconds)
     mockAdvanceMillis(5000);
 
-    TEST_ASSERT_EQUAL_UINT32(5, engine.getElapsedSeconds());
+    TEST_ASSERT_EQUAL(5, engine.getElapsedSeconds());
 }
 
 void test_TherapyEngine_getRemainingSeconds(void) {
@@ -394,24 +395,23 @@ void test_TherapyEngine_getRemainingSeconds(void) {
     // Start with non-zero time (startTime == 0 is a guard condition in the code)
     mockSetMillis(1000);
 
-    engine.startSession(100, PATTERN_TYPE_RNDP, 100.0f, 67.0f, 0.0f, 4, true);
+    engine.startSession(100, PatternType::RNDP, 100.0f, 67.0f, 0.0f, 4, true);
 
     // Advance time by 30 seconds
     mockAdvanceMillis(30000);
 
-    TEST_ASSERT_EQUAL_UINT32(70, engine.getRemainingSeconds());
+    TEST_ASSERT_EQUAL(70, engine.getRemainingSeconds());
 }
 
 void test_TherapyEngine_elapsed_zero_when_not_running(void) {
     TherapyEngine engine;
 
-    TEST_ASSERT_EQUAL_UINT32(0, engine.getElapsedSeconds());
+    TEST_ASSERT_EQUAL(0, engine.getElapsedSeconds());
 }
 
 void test_TherapyEngine_remaining_zero_when_not_running(void) {
     TherapyEngine engine;
-
-    TEST_ASSERT_EQUAL_UINT32(0, engine.getRemainingSeconds());
+    TEST_ASSERT_EQUAL(0, engine.getRemainingSeconds());
 }
 
 // =============================================================================
@@ -422,7 +422,7 @@ void test_TherapyEngine_setActivateCallback(void) {
     TherapyEngine engine;
     engine.setActivateCallback(mockActivateCallback);
 
-    engine.startSession(7200, PATTERN_TYPE_RNDP, 100.0f, 67.0f, 0.0f, 4, true);
+    engine.startSession(7200, PatternType::RNDP, 100.0f, 67.0f, 0.0f, 4, true);
     engine.update();  // Should trigger activation
 
     TEST_ASSERT_TRUE(g_activateCallCount > 0);
@@ -433,7 +433,7 @@ void test_TherapyEngine_setDeactivateCallback(void) {
     engine.setActivateCallback(mockActivateCallback);
     engine.setDeactivateCallback(mockDeactivateCallback);
 
-    engine.startSession(7200, PATTERN_TYPE_RNDP, 100.0f, 67.0f, 0.0f, 4, true);
+    engine.startSession(7200, PatternType::RNDP, 100.0f, 67.0f, 0.0f, 4, true);
     engine.update();  // Activate
 
     // Advance past burst duration to trigger deactivation
@@ -448,7 +448,7 @@ void test_TherapyEngine_pause_deactivates_motors(void) {
     engine.setActivateCallback(mockActivateCallback);
     engine.setDeactivateCallback(mockDeactivateCallback);
 
-    engine.startSession(7200, PATTERN_TYPE_RNDP, 100.0f, 67.0f, 0.0f, 4, true);
+    engine.startSession(7200, PatternType::RNDP, 100.0f, 67.0f, 0.0f, 4, true);
     engine.update();  // Activate motors
 
     int deactivateCountBefore = g_deactivateCallCount;
@@ -462,7 +462,7 @@ void test_TherapyEngine_stop_deactivates_motors(void) {
     engine.setActivateCallback(mockActivateCallback);
     engine.setDeactivateCallback(mockDeactivateCallback);
 
-    engine.startSession(7200, PATTERN_TYPE_RNDP, 100.0f, 67.0f, 0.0f, 4, true);
+    engine.startSession(7200, PatternType::RNDP, 100.0f, 67.0f, 0.0f, 4, true);
     engine.update();  // Activate motors
 
     int deactivateCountBefore = g_deactivateCallCount;
@@ -488,7 +488,7 @@ void test_TherapyEngine_update_does_nothing_when_paused(void) {
     TherapyEngine engine;
     engine.setActivateCallback(mockActivateCallback);
 
-    engine.startSession(7200, PATTERN_TYPE_RNDP, 100.0f, 67.0f, 0.0f, 4, true);
+    engine.startSession(7200, PatternType::RNDP, 100.0f, 67.0f, 0.0f, 4, true);
     engine.pause();
 
     int countBefore = g_activateCallCount;
@@ -501,7 +501,7 @@ void test_TherapyEngine_session_timeout(void) {
     TherapyEngine engine;
     mockSetMillis(0);
 
-    engine.startSession(10, PATTERN_TYPE_RNDP, 100.0f, 67.0f, 0.0f, 4, true);  // 10 second session
+    engine.startSession(10, PatternType::RNDP, 100.0f, 67.0f, 0.0f, 4, true);  // 10 second session
 
     // Advance past session duration
     mockAdvanceMillis(11000);
@@ -518,7 +518,7 @@ void test_TherapyEngine_pattern_type_rndp(void) {
     TherapyEngine engine;
     engine.setActivateCallback(mockActivateCallback);
 
-    engine.startSession(7200, PATTERN_TYPE_RNDP, 100.0f, 67.0f, 0.0f, 4, true);
+    engine.startSession(7200, PatternType::RNDP, 100.0f, 67.0f, 0.0f, 4, true);
     engine.update();
 
     // Should have activated (RNDP pattern generated)
@@ -528,8 +528,7 @@ void test_TherapyEngine_pattern_type_rndp(void) {
 void test_TherapyEngine_pattern_type_sequential(void) {
     TherapyEngine engine;
     engine.setActivateCallback(mockActivateCallback);
-
-    engine.startSession(7200, PATTERN_TYPE_SEQUENTIAL, 100.0f, 67.0f, 0.0f, 4, true);
+    engine.startSession(7200, PatternType::SEQUENTIAL, 100.0f, 67.0f, 0.0f, 4, true);
     engine.update();
 
     TEST_ASSERT_TRUE(g_activateCallCount > 0);
@@ -539,7 +538,7 @@ void test_TherapyEngine_pattern_type_mirrored(void) {
     TherapyEngine engine;
     engine.setActivateCallback(mockActivateCallback);
 
-    engine.startSession(7200, PATTERN_TYPE_MIRRORED, 100.0f, 67.0f, 0.0f, 4, true);
+    engine.startSession(7200, PatternType::MIRRORED, 100.0f, 67.0f, 0.0f, 4, true);
     engine.update();
 
     TEST_ASSERT_TRUE(g_activateCallCount > 0);

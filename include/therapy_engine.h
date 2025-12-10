@@ -21,6 +21,7 @@
 #include <vector>
 #include <ranges>
 #include <cassert>
+#include <cstdint>
 
 // =============================================================================
 // BUZZ FLOW STATE
@@ -57,9 +58,11 @@ enum class BuzzFlowState : uint8_t {
 
 constexpr const static size_t PATTERN_MAX_FINGERS = 5; // v1 uses 4 fingers per hand (no pinky)
 constexpr const static size_t DEFAULT_NUM_FINGERS = 4;
-#define PATTERN_TYPE_RNDP 0
-#define PATTERN_TYPE_SEQUENTIAL 1
-#define PATTERN_TYPE_MIRRORED 2
+enum class PatternType{
+    RNDP = 0,
+    SEQUENTIAL = 1,
+    MIRRORED  = 2,
+};
 
 // =============================================================================
 // PATTERN STRUCTURE
@@ -232,7 +235,7 @@ typedef void (*MacrocycleStartCallback)(uint32_t macrocycleCount);
  *   TherapyEngine engine;
  *   engine.setActivateCallback(onActivate);
  *   engine.setDeactivateCallback(onDeactivate);
- *   engine.startSession(7200, PATTERN_TYPE_RNDP, 100.0f, 67.0f, 23.5f);
+ *   engine.startSession(7200, PatternType::RNDP, 100.0f, 67.0f, 23.5f);
  *
  *   // In loop:
  *   engine.update();
@@ -290,7 +293,7 @@ public:
     /**
      * @brief Start therapy session
      * @param durationSec Total session duration in seconds
-     * @param patternType Pattern type (PATTERN_TYPE_RNDP, etc.)
+     * @param patternType Pattern type (PatternType::RNDP, etc.)
      * @param timeOnMs Vibration burst duration
      * @param timeOffMs Time between bursts
      * @param jitterPercent Timing jitter percentage
@@ -301,7 +304,7 @@ public:
      */
     void startSession(
         uint32_t durationSec,
-        uint8_t patternType = PATTERN_TYPE_RNDP,
+        PatternType patternType = PatternType::RNDP,
         float timeOnMs = 100.0f,
         float timeOffMs = 67.0f,
         float jitterPercent = 0.0f,
@@ -363,7 +366,7 @@ public:
     /**
      * @brief Get remaining session time in seconds
      */
-    uint32_t getRemainingSeconds() const;
+   uint32_t getRemainingSeconds() const;
 
     /**
      * @brief Get total session duration in seconds
@@ -388,7 +391,7 @@ private:
     // Session parameters
     uint32_t _sessionStartTime;
     uint32_t _sessionDurationSec;
-    uint8_t _patternType;
+    PatternType _patternType;
     float _timeOnMs;
     float _timeOffMs;
     float _jitterPercent;
