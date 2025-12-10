@@ -332,7 +332,7 @@ PRIMARY supports **simultaneous connections** to:
 2. **Accept connections** from smartphone + SECONDARY
 3. **Execute boot sequence**: Wait for SECONDARY, optionally phone
 4. **Orchestrate therapy**: Send BUZZ commands
-5. **Send heartbeats** to SECONDARY during therapy
+5. **Send PING/PONG** for keepalive + clock sync (every 1s, all states)
 6. **Broadcast parameters** to SECONDARY on profile changes
 7. **Process smartphone commands** via MenuController
 
@@ -358,7 +358,7 @@ PRIMARY supports **simultaneous connections** to:
 | `secondaryBootSequence()`  | `main.cpp`          | Scan and connect to PRIMARY |
 | `runSecondaryLoop()`       | `main.cpp`          | Wait for SYNC commands      |
 | `handleSyncCommand()`      | `sync_protocol.cpp` | Process SYNC messages       |
-| `handleHeartbeatTimeout()` | `main.cpp`          | Connection recovery         |
+| `handleKeepaliveTimeout()` | `main.cpp`          | Connection recovery         |
 
 ## Entry Point Flow
 
@@ -897,25 +897,32 @@ uint32_t SyncProtocol::applyCompensation(uint32_t timestamp, int32_t offset) {
 }
 ```
 
-### Heartbeat Protocol
+### Keepalive Protocol (PING/PONG)
 
-The heartbeat protocol ensures continuous connection monitoring between PRIMARY and SECONDARY devices:
+Connection monitoring uses a unified PING/PONG mechanism that provides both keepalive and clock synchronization:
 
 | Parameter         | Value     | Description                           |
 | ----------------- | --------- | ------------------------------------- |
-| Interval          | 2 seconds | Time between heartbeat messages       |
-| Timeout           | 6 seconds | 3 missed heartbeats = connection lost |
+| Interval          | 1 second  | PING/PONG every 1s (all states)       |
+| Timeout (SECONDARY) | 6 seconds | 6 missed PINGs = connection lost    |
+| Timeout (PRIMARY)   | 4 seconds | During therapy (emergency shutdown) |
 | Recovery attempts | 3         | Number of reconnection attempts       |
 | Recovery delay    | 2 seconds | Delay between reconnection attempts   |
+
+**Unified Mechanism:**
+- **PING** (PRIMARY → SECONDARY): Proves PRIMARY alive + carries T1 timestamp
+- **PONG** (SECONDARY → PRIMARY): Proves SECONDARY alive + carries T2, T3 timestamps
+- Same mechanism in idle and therapy states — no separate keepalive messages
+- Continuous clock synchronization prevents drift during long therapy sessions
 
 **Connection Recovery Flow**:
 
 ```mermaid
 stateDiagram-v2
     [*] --> Connected
-    Connected --> HeartbeatMissed: No response
-    HeartbeatMissed --> Connected: Response received
-    HeartbeatMissed --> ConnectionLost: 3 missed (6s timeout)
+    Connected --> KeepaliveMissed: No PONG response
+    KeepaliveMissed --> Connected: PONG received
+    KeepaliveMissed --> ConnectionLost: Timeout (4-6s)
     ConnectionLost --> Reconnecting: Start recovery
     Reconnecting --> Connected: Success
     Reconnecting --> Failed: 3 attempts failed
@@ -925,39 +932,27 @@ stateDiagram-v2
 **Implementation**:
 
 ```cpp
-// src/main.cpp
+// include/config.h
+#define KEEPALIVE_INTERVAL_MS 1000  // PING every 1 second (unified keepalive + sync)
+#define KEEPALIVE_TIMEOUT_MS 6000   // SECONDARY: 6 missed = connection lost
 
-#define HEARTBEAT_INTERVAL_MS 2000  // Keepalive PING interval (idle)
-#define HEARTBEAT_TIMEOUT_MS 6000   // Connection lost timeout
-#define RECONNECT_ATTEMPTS 3
-#define RECONNECT_DELAY_MS 2000
-
-void checkKeepalive() {
-    // PING/PONG and BUZZ both update lastHeartbeatReceived
-    uint32_t elapsed = millis() - lastHeartbeatReceived;
-
-    if (elapsed > HEARTBEAT_TIMEOUT_MS) {
-        handleConnectionLost();
-    }
+// src/main.cpp - PRIMARY keepalive (unified mechanism)
+if (deviceRole == DeviceRole::PRIMARY &&
+    isConnected &&
+    (now - lastKeepalive >= KEEPALIVE_INTERVAL_MS))
+{
+    lastKeepalive = now;
+    sendPing();  // PING provides both keepalive and clock sync
 }
 
-void handleConnectionLost() {
-    hardware.stopAllMotors();
-    stateMachine.forceState(TherapyState::CONNECTION_LOST);
-    ledController.indicateConnectionLost();
+// src/main.cpp - SECONDARY timeout detection
+void checkKeepalive() {
+    // PING, BUZZ, and MACROCYCLE all update lastKeepaliveReceived
+    uint32_t elapsed = millis() - lastKeepaliveReceived;
 
-    // Attempt recovery
-    for (uint8_t attempt = 0; attempt < RECONNECT_ATTEMPTS; attempt++) {
-        delay(RECONNECT_DELAY_MS);
-        if (bleManager.reconnectToPrimary()) {
-            stateMachine.forceState(TherapyState::READY);
-            lastHeartbeatReceived = millis();
-            return;
-        }
+    if (elapsed > KEEPALIVE_TIMEOUT_MS) {
+        handleKeepaliveTimeout();
     }
-
-    // Recovery failed
-    stateMachine.forceState(TherapyState::IDLE);
 }
 ```
 
@@ -1404,7 +1399,7 @@ void sendErrorResponse(const char* error) {
 | -------------------- | ------------ | ----------------- | ------------------- |
 | Boot sequence        | 30s          | Red LED, halt     | `main.cpp`          |
 | BLE scan (SECONDARY) | 30s          | Red LED, halt     | `ble_manager.cpp`   |
-| Heartbeat            | 6s           | Reconnect attempt | `main.cpp`          |
+| Keepalive (PING/PONG)| 6s           | Reconnect attempt | `main.cpp`          |
 | SYNC command         | 10s          | Log warning       | `sync_protocol.cpp` |
 | BLE receive          | Non-blocking | Callback-based    | `ble_manager.cpp`   |
 
@@ -1731,7 +1726,7 @@ Before committing changes:
 - [ ] **BLE commands verified**: Test phone commands via nRF Connect app
 - [ ] **Memory stable**: No crashes during 5-minute test
 - [ ] **Synchronization accurate**: PRIMARY/SECONDARY buzz within 20ms (serial logs)
-- [ ] **Heartbeat working**: Verify 2s heartbeat, 6s timeout detection
+- [ ] **Keepalive working**: Verify 1s PING/PONG, 6s timeout detection
 - [ ] **Error handling**: Test disconnection, invalid commands, low battery
 
 ### C++ Embedded Best Practices
@@ -1911,8 +1906,8 @@ The architecture enables confident refactoring, easy testing, and straightforwar
 | Constant | Value | Description |
 |----------|-------|-------------|
 | Boot timeout | 30s | Max boot sequence time |
-| Keepalive interval | 2s | Between heartbeat messages |
-| Keepalive timeout | 6s | 3 missed = connection lost |
+| Keepalive interval | 1s | PING/PONG (unified keepalive + sync) |
+| Keepalive timeout | 6s | SECONDARY: 6 missed PINGs |
 | BLE connection interval | 7.5ms | Minimum latency |
 | BLE supervision timeout | 4s | Disconnect detection |
 | Therapy default ON | 100ms | Burst duration |

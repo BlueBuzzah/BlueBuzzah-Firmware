@@ -9,8 +9,9 @@
 #include <algorithm>
 #include <vector>
 
-// Include source file directly for native testing
+// Include source files directly for native testing
 // (excluded from build_src_filter to avoid conflicts with other tests)
+#include "../../src/sync_protocol.cpp"  // For getMicros() - needed by therapy_engine
 #include "../../src/therapy_engine.cpp"
 
 // =============================================================================
@@ -70,6 +71,8 @@ void setUp(void) {
     // Seed random for reproducibility
     randomSeed(42);
     mockResetTime();
+    // Reset getMicros() overflow tracking state (must be after mockResetTime)
+    resetMicrosOverflow();
 
     // Reset callback counters
     g_activateCallCount = 0;

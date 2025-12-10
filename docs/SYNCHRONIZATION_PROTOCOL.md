@@ -1,7 +1,7 @@
 # BlueBuzzah Synchronization Protocol
 
-**Version:** 2.1.0
-**Last Updated:** 2025-12-08
+**Version:** 2.4.0
+**Last Updated:** 2025-12-09
 
 ---
 
@@ -40,12 +40,13 @@ sequenceDiagram
     end
 
     rect rgb(255, 245, 230)
-        Note over P,S: Phase 2: Clock Synchronization
-        loop 10 exchanges @ 15ms
+        Note over P,S: Phase 2: Idle Clock Synchronization
+        loop Every 1s (keepalive)
             P->>S: PING (T1)
             S->>P: PONG (T2, T3)
+            Note over P: Compute clock offset
         end
-        Note over P: Compute clock offset
+        Note over P: 5+ valid samples = sync ready (~5s)
     end
 
     rect rgb(230, 255, 230)
@@ -55,9 +56,10 @@ sequenceDiagram
             P->>S: BUZZ (activation time)
             Note over P,S: Both activate at scheduled time
         end
-        loop Every 500ms
-            P->>S: PING (maintenance sync + keepalive)
-            S->>P: PONG
+        loop Every 1s (unified keepalive + sync)
+            P->>S: PING (T1)
+            S->>P: PONG (T2, T3)
+            Note over P: Continuous clock offset maintenance
         end
     end
 
@@ -118,10 +120,10 @@ A positive offset means SECONDARY's clock is ahead of PRIMARY.
 
 ### Filtering and Maintenance
 
-- **Initial sync:** 10 PING/PONG exchanges, median offset selected
+- **Initial sync:** Idle keepalive (1s) accumulates samples, median offset selected
 - **Quality filter:** Exchanges with RTT > 30ms are discarded
-- **Minimum valid:** At least 5 good samples required
-- **Drift compensation:** Ongoing sync every 500ms corrects for crystal drift
+- **Minimum valid:** At least 5 good samples required (~5s after connect)
+- **Drift compensation:** Ongoing sync every 1s corrects for crystal drift
 - **Smoothing:** Exponential moving average prevents sudden jumps
 
 ---
@@ -202,15 +204,29 @@ flowchart TD
 
 ### Macrocycle Structure
 
-One therapy macrocycle consists of buzz and relax periods:
+One therapy macrocycle consists of 3 patterns (12 buzz events total) followed by a relax period:
 
 | Component | Duration |
 |-----------|----------|
 | Motor ON time | 100ms (configurable) |
 | Motor OFF time | 67ms (configurable) |
-| Buzzes per cycle | 3 |
-| Relax periods | 2 |
-| **Total cycle** | **~1.8 seconds** |
+| Fingers per pattern | 4 |
+| Patterns per macrocycle | 3 |
+| Events per macrocycle | 12 (3 patterns × 4 fingers) |
+| Pattern duration | ~668ms |
+| Inter-macrocycle relax | ~1336ms (2× pattern duration) |
+| **Total macrocycle** | **~3.3 seconds** |
+
+### Macrocycle Batching Mode
+
+When enabled, PRIMARY sends all 12 events in a single MACROCYCLE message instead of 12 individual BUZZ messages. Benefits:
+
+- **~4× reduction in BLE traffic** (~200 bytes vs ~720 bytes)
+- **Zero BLE during motor activity** — all commands sent before first buzz
+- **Single clock offset application** — less computation, fewer rounding errors
+- **Cleaner architecture** — macrocycle as atomic unit
+
+SECONDARY's `ActivationQueue` schedules all 12 events with their local activation times, then processes them as time elapses.
 
 ---
 
@@ -245,7 +261,6 @@ stateDiagram-v2
 |-------|---------|--------|
 | No SECONDARY found | 15s | Abort startup |
 | No READY received | 8s | Abort startup |
-| Sync burst failed | 2s | Retry (max 3) |
 | No BUZZ received | 10s | Emergency stop |
 | No PING/PONG | 6s | Emergency stop + reconnect |
 
@@ -280,13 +295,28 @@ COMMAND:field1|field2|field3|...
 | `PING` | P → S | seq, T1 | `PING:42\|1000000` |
 | `PONG` | S → P | seq, 0, T2, T3 | `PONG:42\|0\|1000500\|1000600` |
 
-**Note:** PING/PONG provides both clock synchronization AND connection keepalive. No separate HEARTBEAT message is needed.
+**Unified Keepalive + Clock Sync:**
+
+The protocol uses a single unified mechanism for both keepalive and clock synchronization:
+
+| State | Mechanism | Interval | Purpose |
+|-------|-----------|----------|---------|
+| All states | PING/PONG | 1 second | Clock sync + keepalive (unified) |
+
+- **PING** provides: Clock sync timestamp (T1) + proof PRIMARY is alive
+- **PONG** provides: Clock sync response (T2, T3) + proof SECONDARY is alive
+- **Continuous sync:** Clock offset is maintained every second, even during therapy
+- **No separate keepalive:** PING/PONG serves both purposes efficiently
+
+This unified approach provides continuous clock synchronization (max 1s between samples) throughout all session states, eliminating clock drift during therapy.
 
 ### Therapy Messages
 
 | Message | Direction | Fields | Example |
 |---------|-----------|--------|---------|
 | `BUZZ` | P → S | seq, ts, finger, amp, dur, freq, activate_time | `BUZZ:42\|5000000\|0\|100\|100\|235\|5050000` |
+| `MACROCYCLE` | P → S | seq, baseTime, count, events... | See below |
+| `MACROCYCLE_ACK` | S → P | seq | `MC_ACK:42` |
 | `DEACTIVATE` | P → S | seq, timestamp | `DEACTIVATE:43\|5100000` |
 
 **BUZZ fields:**
@@ -298,6 +328,31 @@ COMMAND:field1|field2|field3|...
 | dur | ON duration in milliseconds |
 | freq | Motor frequency in Hz |
 | activate_time | Scheduled activation (PRIMARY clock, µs) |
+
+**MACROCYCLE format:**
+
+```text
+MC:seq|baseTime|count|d,f,a,dur,fo|d,f,a,dur,fo|...
+```
+
+| Field | Description |
+|-------|-------------|
+| seq | Sequence number for ACK matching |
+| baseTime | Absolute activation time of event 0 (PRIMARY clock, µs) |
+| count | Number of events (typically 12: 3 patterns × 4 fingers) |
+| d | Delta time from baseTime (ms) |
+| f | Finger index (0-3) |
+| a | Amplitude percentage (0-100) |
+| dur | ON duration (ms) |
+| fo | Frequency offset: `(freq - 200) / 5` for 200-455 Hz range |
+
+**Example MACROCYCLE:**
+
+```text
+MC:1|5050000|12|0,0,100,100,10|167,1,100,100,10|334,2,100,100,10|...
+```
+
+SECONDARY applies clock offset once to baseTime, then schedules all 12 events via an activation queue. This reduces BLE traffic from 12 messages to 1 per macrocycle (~200 bytes vs ~720 bytes).
 
 ### Parameter Messages
 
@@ -320,15 +375,13 @@ COMMAND:field1|field2|field3|...
 
 | Parameter | Value | Description |
 |-----------|-------|-------------|
-| Sync burst count | 10 | PING/PONG exchanges at startup |
-| Sync burst interval | 15ms | Time between burst messages |
-| RTT quality threshold | 30ms | Discard samples with higher RTT |
-| Minimum valid samples | 5 | Required for valid sync |
-| Maintenance sync interval | 500ms | Ongoing clock correction |
-| Keepalive interval | 2s | Connection monitoring |
-| Keepalive timeout | 6s | 3 missed = connection lost |
+| RTT quality threshold | 80ms | Discard samples with higher RTT |
+| Minimum valid samples | 5 | Required for valid sync (~5s from connect) |
+| PING/PONG interval | 1s | Unified keepalive + clock sync (all states) |
+| Keepalive timeout (SECONDARY) | 6s | 6 missed PINGs = connection lost |
+| Keepalive timeout (PRIMARY) | 4s | During therapy (emergency shutdown) |
 | BUZZ timeout | 10s | SECONDARY safety halt |
-| Lead time range | 15-50ms | Scheduling window |
+| Lead time range | 15-100ms | Adaptive scheduling window |
 | BLE connection interval | 7.5ms | Low-latency communication |
 
 ---

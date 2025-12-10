@@ -6,6 +6,7 @@
  */
 
 #include "therapy_engine.h"
+#include "sync_protocol.h"  // For getMicros() - overflow-safe 64-bit timestamp
 #include <span>
 
 // =============================================================================
@@ -217,7 +218,16 @@ TherapyEngine::TherapyEngine() :
     _deactivateCallback(nullptr),
     _cycleCompleteCallback(nullptr),
     _setFrequencyCallback(nullptr),
-    _macrocycleStartCallback(nullptr)
+    _macrocycleStartCallback(nullptr),
+    _sendMacrocycleCallback(nullptr),
+    _scheduleActivationCallback(nullptr),
+    _startSchedulingCallback(nullptr),
+    _isSchedulingCompleteCallback(nullptr),
+    _getLeadTimeCallback(nullptr),
+    _macrocycleBatching(false),
+    _macrocycleSequenceId(0),
+    _macrocycleEventIndex(0),
+    _macrocycleBaseTime(0)
 {
     // Initialize frequencies to default (250 Hz per v1 ACTUATOR_FREQUENCY)
     for (uint8_t i = 0; i < MAX_ACTUATORS; i++) {
@@ -251,6 +261,26 @@ void TherapyEngine::setSetFrequencyCallback(SetFrequencyCallback callback) {
 
 void TherapyEngine::setMacrocycleStartCallback(MacrocycleStartCallback callback) {
     _macrocycleStartCallback = callback;
+}
+
+void TherapyEngine::setSendMacrocycleCallback(SendMacrocycleCallback callback) {
+    _sendMacrocycleCallback = callback;
+}
+
+void TherapyEngine::setSchedulingCallbacks(ScheduleActivationCallback scheduleCallback,
+                                           StartSchedulingCallback startCallback,
+                                           IsSchedulingCompleteCallback isCompleteCallback) {
+    _scheduleActivationCallback = scheduleCallback;
+    _startSchedulingCallback = startCallback;
+    _isSchedulingCompleteCallback = isCompleteCallback;
+}
+
+void TherapyEngine::setGetLeadTimeCallback(GetLeadTimeCallback callback) {
+    _getLeadTimeCallback = callback;
+}
+
+void TherapyEngine::setMacrocycleBatching(bool enabled) {
+    _macrocycleBatching = enabled;
 }
 
 void TherapyEngine::setFrequencyRandomization(bool enabled, uint16_t minHz, uint16_t maxHz) {
@@ -349,8 +379,12 @@ void TherapyEngine::update() {
         }
     }
 
-    // Execute current pattern
-    executePatternStep();
+    // Execute based on mode
+    if (_macrocycleBatching) {
+        executeMacrocycleStep();
+    } else {
+        executePatternStep();
+    }
 }
 
 void TherapyEngine::pause() {
@@ -619,6 +653,184 @@ void TherapyEngine::applyFrequencyRandomization() {
         // Apply locally if callback registered
         if (_setFrequencyCallback) {
             _setFrequencyCallback(finger, freq);
+        }
+    }
+}
+
+// =============================================================================
+// THERAPY ENGINE - MACROCYCLE BATCHING
+// =============================================================================
+
+Macrocycle TherapyEngine::generateMacrocycle() {
+    // Generate 3 patterns × 4 fingers = 12 events
+    // Each event has a delta time relative to baseTime
+
+    Macrocycle mc;
+    mc.sequenceId = _macrocycleSequenceId++;
+    mc.durationMs = (uint8_t)_timeOnMs;  // Common duration for all events (V2 format)
+    mc.clockOffset = 0;  // Will be set by PRIMARY before sending (V2 format)
+    mc.eventCount = 0;
+
+    uint16_t cumulativeTimeMs = 0;  // Running time offset from base
+
+    // Generate 3 patterns
+    for (uint8_t patternNum = 0; patternNum < PATTERNS_PER_MACROCYCLE; patternNum++) {
+        // Generate pattern based on type
+        Pattern pattern;
+        switch (_patternType) {
+            case PATTERN_TYPE_RNDP:
+                pattern = generateRandomPermutation(_numFingers, _timeOnMs, _timeOffMs, _jitterPercent, _mirrorPattern);
+                break;
+            case PATTERN_TYPE_SEQUENTIAL:
+                pattern = generateSequentialPattern(_numFingers, _timeOnMs, _timeOffMs, _jitterPercent, _mirrorPattern, false);
+                break;
+            case PATTERN_TYPE_MIRRORED:
+                pattern = generateMirroredPattern(_numFingers, _timeOnMs, _timeOffMs, _jitterPercent, true);
+                break;
+            default:
+                pattern = generateRandomPermutation(_numFingers, _timeOnMs, _timeOffMs, _jitterPercent, _mirrorPattern);
+                break;
+        }
+
+        // Apply frequency randomization if enabled
+        if (_frequencyRandomization) {
+            uint16_t range = _frequencyMax - _frequencyMin;
+            uint16_t steps = range / 5;
+            for (uint8_t finger = 0; finger < _numFingers; finger++) {
+                _currentFrequency[finger] = _frequencyMin + static_cast<uint16_t>(random(0, steps + 1) * 5);
+            }
+        }
+
+        // Add events for each finger in this pattern
+        for (uint8_t fingerIdx = 0; fingerIdx < pattern.numFingers; fingerIdx++) {
+            if (mc.eventCount >= MACROCYCLE_MAX_EVENTS) break;
+
+            uint8_t primaryFinger = pattern.primarySequence[fingerIdx];
+            uint8_t secondaryFinger = pattern.secondarySequence[fingerIdx];
+            uint8_t amplitude = (_amplitudeMin == _amplitudeMax)
+                ? _amplitudeMin
+                : (uint8_t)random(_amplitudeMin, _amplitudeMax + 1);
+
+            // Create event with both finger indices:
+            // - secondaryFinger: transmitted over BLE to SECONDARY device
+            // - primaryFinger: used locally on PRIMARY device
+            // In mirrored mode these are identical; in non-mirrored mode they differ
+            MacrocycleEvent evt(
+                cumulativeTimeMs,
+                secondaryFinger,   // For SECONDARY (BLE transmission)
+                primaryFinger,     // For PRIMARY (local scheduling)
+                amplitude,
+                (uint8_t)pattern.burstDurationMs,
+                _currentFrequency[primaryFinger]  // Use PRIMARY finger for frequency lookup
+            );
+
+            mc.events[mc.eventCount++] = evt;
+
+            // Advance time: TIME_ON + TIME_OFF (with jitter)
+            cumulativeTimeMs += (uint16_t)pattern.burstDurationMs;
+            cumulativeTimeMs += (uint16_t)pattern.timeOffMs[fingerIdx];
+        }
+
+        // NO extra time between patterns within a macrocycle
+        // (v1 behavior: patterns are back-to-back)
+    }
+
+    return mc;
+}
+
+void TherapyEngine::executeMacrocycleStep() {
+    uint32_t now = millis();
+    uint64_t nowUs = getMicros();  // Use overflow-safe 64-bit micros (raw micros() wraps at 71 min)
+
+    // State machine for macrocycle batching with hardware timer scheduling
+    switch (_buzzFlowState) {
+        case BuzzFlowState::IDLE: {
+            // Generate and send a new macrocycle
+            _currentMacrocycle = generateMacrocycle();
+            _macrocycleEventIndex = 0;
+
+            // Notify macrocycle start
+            if (_macrocycleStartCallback) {
+                _macrocycleStartCallback(_cyclesCompleted);
+            }
+
+            // Calculate lead time for scheduling using adaptive RTT-based calculation
+            // Falls back to 50ms if no callback registered
+            uint32_t leadTimeUs = _getLeadTimeCallback ? _getLeadTimeCallback() : 50000;
+            _macrocycleBaseTime = nowUs + leadTimeUs;
+            _currentMacrocycle.baseTime = _macrocycleBaseTime;
+
+            // Send macrocycle to SECONDARY
+            if (_sendMacrocycleCallback) {
+                _sendMacrocycleCallback(_currentMacrocycle);
+            }
+
+            // Schedule all PRIMARY activations locally via ActivationQueue
+            // This uses hardware timer chain scheduling for <100us precision
+            // Note: Use primaryFinger for local PRIMARY scheduling (finger is for SECONDARY)
+            if (_scheduleActivationCallback) {
+                for (uint8_t i = 0; i < _currentMacrocycle.eventCount; i++) {
+                    const MacrocycleEvent& evt = _currentMacrocycle.events[i];
+                    uint64_t activateTime = _macrocycleBaseTime + (evt.deltaTimeMs * 1000ULL);
+
+                    // Enqueue to ActivationQueue using PRIMARY's finger index
+                    // Frequency is set by SyncTimer just before activation for precise timing
+                    _scheduleActivationCallback(activateTime, evt.primaryFinger, evt.amplitude,
+                                                evt.durationMs, evt.getFrequencyHz());
+                    _totalActivations++;
+                }
+
+                // Start chain scheduling - arms hardware timer for first event
+                if (_startSchedulingCallback) {
+                    _startSchedulingCallback();
+                }
+            }
+
+            // Record send time for tracking
+            _buzzSendTime = now;
+
+            // Transition to ACTIVE - waiting for all events to complete
+            _buzzFlowState = BuzzFlowState::ACTIVE;
+            break;
+        }
+
+        case BuzzFlowState::ACTIVE: {
+            // Check if all activations have completed via ActivationQueue
+            // The queue handles both activations (hardware timer) and deactivations (software polling)
+            bool queueComplete = true;
+            if (_isSchedulingCompleteCallback) {
+                queueComplete = _isSchedulingCompleteCallback();
+            }
+
+            if (queueComplete) {
+                // Macrocycle execution complete on PRIMARY side
+                // Wait for 2x TIME_RELAX before starting next macrocycle
+                _buzzSendTime = now;
+                _buzzFlowState = BuzzFlowState::WAITING_RELAX;
+            }
+            break;
+        }
+
+        case BuzzFlowState::WAITING_OFF:
+            // Not used in macrocycle batching mode
+            break;
+
+        case BuzzFlowState::WAITING_RELAX: {
+            // Wait for 2x TIME_RELAX (1336ms with default timing)
+            float doubleRelaxMs = 2.0f * 4.0f * (_timeOnMs + _timeOffMs);  // TIME_RELAX = 4 * (ON + OFF)
+
+            if ((now - _buzzSendTime) >= (uint32_t)doubleRelaxMs) {
+                // Double TIME_RELAX elapsed - macrocycle complete
+                _cyclesCompleted++;
+
+                if (_cycleCompleteCallback) {
+                    _cycleCompleteCallback(_cyclesCompleted);
+                }
+
+                // Ready for next macrocycle
+                _buzzFlowState = BuzzFlowState::IDLE;
+            }
+            break;
         }
     }
 }

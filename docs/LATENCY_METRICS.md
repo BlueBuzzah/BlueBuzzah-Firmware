@@ -121,11 +121,12 @@ During initial connection, PRIMARY sends multiple RTT probes to measure BLE late
 
 ### Ongoing RTT (PRIMARY Only)
 
-Tracks BLE round-trip time during therapy via `SYNC_ADJ`/`ACK_SYNC_ADJ` exchanges.
+Tracks BLE round-trip time continuously via PING/PONG exchanges (every 1 second).
 
 - Monitors BLE latency changes over time
 - High variance may indicate degrading sync quality
-- Only available on PRIMARY (initiates sync messages)
+- Only available on PRIMARY (initiates PING messages)
+- Used for adaptive lead time calculation
 
 ## Interpreting Results
 
@@ -164,9 +165,9 @@ Estimated sync error:    ~215 us (SECONDARY later)
 | Symptom | Possible Cause | Solution |
 |---------|----------------|----------|
 | No sync probing data | Devices connected before firmware update | Power cycle both devices |
-| SECONDARY shows 0 buzzes | `isSynced()` returning false | Ensure FIRST_SYNC received |
+| SECONDARY shows 0 buzzes | `isClockSyncValid()` returning false | Wait ~5s for sync samples |
 | High jitter | System interrupts, BLE callbacks | Check for blocking operations |
-| HIGH drift values | Missed scheduled times | Reduce `SYNC_EXECUTION_BUFFER_MS` |
+| HIGH drift values | Missed scheduled times | Verify lead time calculation |
 | LOW confidence | BLE interference | Move devices closer, reduce interference |
 
 ## Technical Details
@@ -181,7 +182,7 @@ Estimated sync error:    ~215 us (SECONDARY later)
 │    └─► syncProtocol.waitUntil(executeAt)                    │
 │    └─► latencyMetrics.recordExecution(drift)                │
 │                                                             │
-│  onBLEMessage(ACK_SYNC_ADJ)                                 │
+│  onBLEMessage(PONG)                                         │
 │    └─► latencyMetrics.recordRtt(rtt)                        │
 │                                                             │
 │  RTT Probing (on connection)                                │
@@ -214,10 +215,12 @@ localExecTime = syncProtocol.toLocalTime(executeAt);
 // Internally: return executeAt + _currentOffset;
 ```
 
-The offset is calculated when SECONDARY receives `FIRST_SYNC` or `SYNC_ADJ`:
+The offset is calculated using PTP 4-timestamp protocol via PING/PONG exchanges:
 
 ```cpp
-offset = localTime - primaryTime;
+// IEEE 1588-inspired calculation
+offset = ((T2 - T1) + (T3 - T4)) / 2;
+// Where T1=PING sent, T2=PING received, T3=PONG sent, T4=PONG received
 ```
 
 ### Configuration Constants
@@ -261,8 +264,8 @@ The system cannot measure inter-device latency more precisely than the clock syn
 
 | Sync Method | Accuracy |
 |-------------|----------|
-| RTT probing (10 samples) | ±2-3ms |
-| Single FIRST_SYNC | ±10-15ms |
+| PTP PING/PONG (5+ samples) | ±1-2ms |
+| Initial sync (3 samples) | ±3-5ms |
 | No sync | Undefined |
 
 ### Ground Truth Measurement

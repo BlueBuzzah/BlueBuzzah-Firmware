@@ -10,6 +10,31 @@
 #include <stdlib.h>
 
 // =============================================================================
+// 64-BIT MICROSECOND TIMESTAMP WITH OVERFLOW TRACKING
+// =============================================================================
+
+// Overflow tracking state (file-scope, single instance)
+// volatile as defensive measure, though all callers are main loop context
+static volatile uint32_t s_lastMicros = 0;
+static volatile uint32_t s_overflowCount = 0;
+
+uint64_t getMicros() {
+    uint32_t now = micros();
+    // Detect overflow: if current value is less than last, we wrapped
+    if (now < s_lastMicros) {
+        s_overflowCount++;
+    }
+    s_lastMicros = now;
+    // Combine overflow count (upper 32 bits) with current micros (lower 32 bits)
+    return ((uint64_t)s_overflowCount << 32) | now;
+}
+
+void resetMicrosOverflow() {
+    s_lastMicros = 0;
+    s_overflowCount = 0;
+}
+
+// =============================================================================
 // GLOBAL SEQUENCE GENERATOR
 // =============================================================================
 
@@ -33,7 +58,9 @@ static const CommandTypeMapping COMMAND_MAPPINGS[] = {
     { SyncCommandType::DEACTIVATE,     "DEACTIVATE" },
     { SyncCommandType::PING,           "PING" },
     { SyncCommandType::PONG,           "PONG" },
-    { SyncCommandType::DEBUG_FLASH,    "DEBUG_FLASH" }
+    { SyncCommandType::DEBUG_FLASH,    "DEBUG_FLASH" },
+    { SyncCommandType::MACROCYCLE,     "MC" },
+    { SyncCommandType::MACROCYCLE_ACK, "MC_ACK" }
 };
 
 static const size_t COMMAND_MAPPINGS_COUNT = sizeof(COMMAND_MAPPINGS) / sizeof(COMMAND_MAPPINGS[0]);
@@ -287,6 +314,12 @@ bool SyncCommand::setData(const char* key, int32_t value) {
     return setData(key, valueStr);
 }
 
+bool SyncCommand::setDataUnsigned(const char* key, uint32_t value) {
+    char valueStr[16];
+    snprintf(valueStr, sizeof(valueStr), "%lu", (unsigned long)value);
+    return setData(key, valueStr);
+}
+
 const char* SyncCommand::getData(const char* key) const {
     for (uint8_t i = 0; i < _dataCount; i++) {
         if (strcmp(_data[i].key, key) == 0) {
@@ -353,16 +386,18 @@ SyncCommand SyncCommand::createBuzzWithTime(uint32_t sequenceId, uint8_t finger,
     cmd.setData("3", (int32_t)frequencyHz);
 
     // Store activation time (for <71 minute uptime, only low 32 bits needed)
+    // CRITICAL: Use setDataUnsigned() - timestamps are never negative
+    // Using signed setData() causes sign inversion when bit 31 is set (uptime > 35 min)
     uint32_t timeHigh = (uint32_t)(activateTime >> 32);
     uint32_t timeLow = (uint32_t)(activateTime & 0xFFFFFFFF);
 
     if (timeHigh == 0) {
         // Simple format: finger|amp|dur|freq|activateTimeLow
-        cmd.setData("4", (int32_t)timeLow);
+        cmd.setDataUnsigned("4", timeLow);
     } else {
         // Full 64-bit: finger|amp|dur|freq|timeHigh|timeLow
-        cmd.setData("4", (int32_t)timeHigh);
-        cmd.setData("5", (int32_t)timeLow);
+        cmd.setDataUnsigned("4", timeHigh);
+        cmd.setDataUnsigned("5", timeLow);
     }
     return cmd;
 }
@@ -388,22 +423,24 @@ SyncCommand SyncCommand::createPong(uint32_t sequenceId) {
 SyncCommand SyncCommand::createPongWithTimestamps(uint32_t sequenceId, uint64_t t2, uint64_t t3) {
     SyncCommand cmd(SyncCommandType::PONG, sequenceId);
     // Store T2 and T3 as data payload (ARM can't handle %llu, so split into high/low)
+    // CRITICAL: Use setDataUnsigned() for all parts - timestamps are never negative
+    // Using signed setData() causes sign inversion when bit 31 is set (uptime > 35 min)
     uint32_t t2High = (uint32_t)(t2 >> 32);
     uint32_t t2Low = (uint32_t)(t2 & 0xFFFFFFFF);
     uint32_t t3High = (uint32_t)(t3 >> 32);
     uint32_t t3Low = (uint32_t)(t3 & 0xFFFFFFFF);
 
     // For simplicity, if high bits are 0 (typical for <71 minute uptime), just use low bits
-    // Format: T2Low|T3Low (or T2High:T2Low|T3High:T3Low if high bits needed)
+    // Format: T2Low|T3Low (or T2High|T2Low|T3High|T3Low if high bits needed)
     if (t2High == 0 && t3High == 0) {
-        cmd.setData("0", (int32_t)t2Low);
-        cmd.setData("1", (int32_t)t3Low);
+        cmd.setDataUnsigned("0", t2Low);
+        cmd.setDataUnsigned("1", t3Low);
     } else {
         // Full 64-bit encoding: T2High|T2Low|T3High|T3Low
-        cmd.setData("0", (int32_t)t2High);
-        cmd.setData("1", (int32_t)t2Low);
-        cmd.setData("2", (int32_t)t3High);
-        cmd.setData("3", (int32_t)t3Low);
+        cmd.setDataUnsigned("0", t2High);
+        cmd.setDataUnsigned("1", t2Low);
+        cmd.setDataUnsigned("2", t3High);
+        cmd.setDataUnsigned("3", t3Low);
     }
     return cmd;
 }
@@ -415,16 +452,184 @@ SyncCommand SyncCommand::createDebugFlash(uint32_t sequenceId) {
 SyncCommand SyncCommand::createDebugFlashWithTime(uint32_t sequenceId, uint64_t flashTime) {
     SyncCommand cmd(SyncCommandType::DEBUG_FLASH, sequenceId);
     // Store activation time in data payload
+    // CRITICAL: Use setDataUnsigned() - timestamps are never negative
+    // Using signed setData() causes sign inversion when bit 31 is set (uptime > 35 min)
     uint32_t timeHigh = (uint32_t)(flashTime >> 32);
     uint32_t timeLow = (uint32_t)(flashTime & 0xFFFFFFFF);
 
     if (timeHigh == 0) {
-        cmd.setData("0", (int32_t)timeLow);
+        cmd.setDataUnsigned("0", timeLow);
     } else {
-        cmd.setData("0", (int32_t)timeHigh);
-        cmd.setData("1", (int32_t)timeLow);
+        cmd.setDataUnsigned("0", timeHigh);
+        cmd.setDataUnsigned("1", timeLow);
     }
     return cmd;
+}
+
+SyncCommand SyncCommand::createMacrocycleAck(uint32_t sequenceId) {
+    return SyncCommand(SyncCommandType::MACROCYCLE_ACK, sequenceId);
+}
+
+// =============================================================================
+// MACROCYCLE SERIALIZATION (all-text format for BLE compatibility)
+// =============================================================================
+
+bool SyncCommand::serializeMacrocycle(char* buffer, size_t bufferSize, const Macrocycle& macrocycle) {
+    if (!buffer || bufferSize < 200) {
+        return false;
+    }
+
+    // Compact format V4: MC:seq|baseMs|offHigh|offLow|dur|count|d,f,a[,fo]|...
+    // - baseMs: baseTime in MILLISECONDS (uint32, fits 49 days)
+    // - offHigh/offLow: clockOffset split into two 32-bit parts (supports any uptime diff)
+    // This avoids 64-bit printf issues on ARM and keeps message short
+
+    // Convert baseTime from microseconds to milliseconds for transmission
+    uint32_t baseMs = (uint32_t)(macrocycle.baseTime / 1000);
+
+    // Split 64-bit offset into high/low 32-bit parts for ARM compatibility
+    // Offset can exceed ±35 minutes when devices have different uptimes
+    int32_t offHigh = (int32_t)(macrocycle.clockOffset >> 32);
+    uint32_t offLow = (uint32_t)(macrocycle.clockOffset & 0xFFFFFFFF);
+
+    // Format: MC:seq|baseMs|offHigh|offLow|dur|count
+    int written = snprintf(buffer, bufferSize, "MC:%lu|%lu|%ld|%lu|%u|%u",
+                           (unsigned long)macrocycle.sequenceId,
+                           (unsigned long)baseMs,
+                           (long)offHigh,
+                           (unsigned long)offLow,
+                           macrocycle.durationMs,
+                           macrocycle.eventCount);
+
+    if (written < 0 || (size_t)written >= bufferSize) {
+        return false;
+    }
+
+    // Append events: |deltaTimeMs,finger,amplitude[,freqOffset]
+    // Omit freqOffset when 0 for compression
+    for (uint8_t i = 0; i < macrocycle.eventCount && (size_t)written < bufferSize - 15; i++) {
+        const MacrocycleEvent& evt = macrocycle.events[i];
+        int evtWritten;
+
+        if (evt.freqOffset != 0) {
+            evtWritten = snprintf(buffer + written, bufferSize - written,
+                                  "|%u,%u,%u,%u",
+                                  evt.deltaTimeMs, evt.finger, evt.amplitude, evt.freqOffset);
+        } else {
+            evtWritten = snprintf(buffer + written, bufferSize - written,
+                                  "|%u,%u,%u",
+                                  evt.deltaTimeMs, evt.finger, evt.amplitude);
+        }
+
+        if (evtWritten < 0) {
+            return false;
+        }
+        written += evtWritten;
+    }
+
+    return true;
+}
+
+size_t SyncCommand::getMacrocycleSerializedSize(const Macrocycle& macrocycle) {
+    // Header: "MC:seq|baseTime|offset|dur|count" = ~50 bytes
+    // Each event: "|d,f,a" or "|d,f,a,fo" = ~10-12 bytes
+    return 50 + (macrocycle.eventCount * 12);
+}
+
+bool SyncCommand::deserializeMacrocycle(const char* message, size_t messageLen, Macrocycle& macrocycle) {
+    (void)messageLen;  // Not needed for text format
+
+    if (!message || strlen(message) < 20) {
+        return false;
+    }
+
+    // Clean format V4: MC:seq|baseMs|offHigh|offLow|dur|count|d,f,a[,fo]|...
+    // - baseMs: baseTime in milliseconds (convert to microseconds)
+    // - offHigh/offLow: clockOffset split into two 32-bit parts
+    const char* ptr = message;
+
+    // Skip "MC:"
+    if (strncmp(ptr, "MC:", 3) != 0) {
+        return false;
+    }
+    ptr += 3;
+
+    char* endptr;
+
+    // Parse sequence ID
+    macrocycle.sequenceId = strtoul(ptr, &endptr, 10);
+    if (*endptr != '|') return false;
+    ptr = endptr + 1;
+
+    // Parse baseMs and convert to microseconds
+    uint32_t baseMs = strtoul(ptr, &endptr, 10);
+    macrocycle.baseTime = (uint64_t)baseMs * 1000;  // ms → μs
+    if (*endptr != '|') return false;
+    ptr = endptr + 1;
+
+    // Parse clockOffset high 32 bits (signed)
+    int32_t offHigh = strtol(ptr, &endptr, 10);
+    if (*endptr != '|') return false;
+    ptr = endptr + 1;
+
+    // Parse clockOffset low 32 bits (unsigned)
+    uint32_t offLow = strtoul(ptr, &endptr, 10);
+    if (*endptr != '|') return false;
+    ptr = endptr + 1;
+
+    // Reconstruct 64-bit signed offset
+    macrocycle.clockOffset = ((int64_t)offHigh << 32) | offLow;
+
+    // Parse durationMs
+    macrocycle.durationMs = (uint16_t)strtoul(ptr, &endptr, 10);
+    if (*endptr != '|') return false;
+    ptr = endptr + 1;
+
+    // Parse event count
+    macrocycle.eventCount = (uint8_t)strtoul(ptr, &endptr, 10);
+    if (macrocycle.eventCount > MACROCYCLE_MAX_EVENTS) {
+        macrocycle.eventCount = MACROCYCLE_MAX_EVENTS;
+    }
+
+    // Parse events: |deltaTimeMs,finger,amplitude[,freqOffset]
+    // freqOffset is optional (defaults to 0 if not present)
+    for (uint8_t i = 0; i < macrocycle.eventCount; i++) {
+        // Skip to next pipe delimiter
+        if (*endptr != '|') {
+            macrocycle.eventCount = i;  // Truncate to parsed events
+            break;
+        }
+        ptr = endptr + 1;
+
+        MacrocycleEvent& evt = macrocycle.events[i];
+
+        // Parse deltaTimeMs
+        evt.deltaTimeMs = (uint16_t)strtoul(ptr, &endptr, 10);
+        if (*endptr != ',') { macrocycle.eventCount = i; break; }
+        ptr = endptr + 1;
+
+        // Parse finger
+        evt.finger = (uint8_t)strtoul(ptr, &endptr, 10);
+        if (*endptr != ',') { macrocycle.eventCount = i; break; }
+        ptr = endptr + 1;
+
+        // Parse amplitude
+        evt.amplitude = (uint8_t)strtoul(ptr, &endptr, 10);
+
+        // Use duration from header
+        evt.durationMs = macrocycle.durationMs;
+
+        // freqOffset is optional - check if present
+        if (*endptr == ',') {
+            ptr = endptr + 1;
+            evt.freqOffset = (uint8_t)strtoul(ptr, &endptr, 10);
+        } else {
+            evt.freqOffset = 0;  // Default when omitted
+        }
+        // Note: endptr now points to '|' or end of string for next iteration
+    }
+
+    return macrocycle.eventCount > 0;
 }
 
 // =============================================================================
@@ -641,12 +846,12 @@ uint32_t SimpleSyncProtocol::calculateAdaptiveLeadTime() const {
 
     // Clamp to reasonable bounds:
     // - Minimum 15ms: ensures enough time for BLE connection event + transmission
-    // - Maximum 50ms: MUST be less than TIME_ON (100ms) to prevent deactivation
-    //   before activation. Using 50ms gives 50ms buffer for activation timing.
+    // - Maximum 100ms: should not exceed TIME_ON (100ms) to prevent deactivation
+    //   timing issues. SECONDARY handles this correctly; PRIMARY is borderline safe.
     if (leadTime < 15000) {
         leadTime = 15000;
-    } else if (leadTime > 50000) {
-        leadTime = 50000;
+    } else if (leadTime > 100000) {
+        leadTime = 100000;
     }
 
     return leadTime;

@@ -69,18 +69,16 @@
 #define COMMAND_TIMEOUT_MS 5000      // General BLE command timeout
 
 // PTP-style clock synchronization
-#define SYNC_BURST_COUNT 10          // Number of PING/PONGs in initial sync burst
-#define SYNC_BURST_INTERVAL_MS 15    // Interval between burst PINGs
-#define SYNC_LEAD_TIME_US 50000      // 50ms lead time for scheduled activations (default)
+#define SYNC_LEAD_TIME_US 50000      // 50ms default lead time, adaptive max is 100ms
 #define SYNC_MIN_VALID_SAMPLES 5     // Minimum samples before clock sync is valid
 #define SYNC_OFFSET_EMA_ALPHA_NUM 1  // Slow EMA α = 1/10 = 0.1 for continuous updates
 #define SYNC_OFFSET_EMA_ALPHA_DEN 10
 #define SYNC_MAINTENANCE_INTERVAL_MS 500  // Periodic sync interval during therapy (reduces drift)
-#define SYNC_RTT_QUALITY_THRESHOLD_US 30000  // 30ms - reject samples with RTT above this
+#define SYNC_RTT_QUALITY_THRESHOLD_US 80000  // 80ms - reject samples with RTT above this
 
-// Keepalive (PING/PONG)
-#define KEEPALIVE_INTERVAL_MS 2000   // 2 seconds between keepalive PINGs
-#define KEEPALIVE_TIMEOUT_MS 6000    // 6 seconds = 3 missed keepalives
+// Unified keepalive + clock sync (PING/PONG)
+#define KEEPALIVE_INTERVAL_MS 1000   // 1 second between PING messages (unified keepalive + clock sync)
+#define KEEPALIVE_TIMEOUT_MS 6000    // 6 seconds = 6 missed keepalives
 
 // Battery monitoring
 #define BATTERY_CHECK_INTERVAL_MS 60000  // 60 seconds between checks
@@ -211,6 +209,6 @@ constexpr uint32_t TEST_DURATION_SEC = 120;  // 2 minutes
 // Buffer sizes for static allocation
 #define RX_BUFFER_SIZE 256              // BLE receive buffer
 #define TX_BUFFER_SIZE 256              // BLE transmit buffer
-#define MESSAGE_BUFFER_SIZE 128         // General message buffer
+#define MESSAGE_BUFFER_SIZE 256         // General message buffer (increased for MACROCYCLE batching)
 
 #endif // CONFIG_H

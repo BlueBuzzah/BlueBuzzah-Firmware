@@ -331,11 +331,11 @@ Current firmware version following semantic versioning.
 #define COMMAND_TIMEOUT_MS 5000
 // General BLE command timeout in milliseconds
 
-#define KEEPALIVE_INTERVAL_MS 2000
-// Keepalive PING interval in milliseconds (idle state)
+#define KEEPALIVE_INTERVAL_MS 1000
+// PING/PONG interval in milliseconds (unified keepalive + clock sync, all states)
 
 #define KEEPALIVE_TIMEOUT_MS 6000
-// Keepalive timeout (3 missed PINGs = connection lost)
+// SECONDARY keepalive timeout (6 missed PINGs = connection lost)
 ```
 
 ---
@@ -1115,7 +1115,7 @@ public:
     bool sendStopSession();
     bool sendBuzz(uint8_t finger, uint8_t amplitude);
     bool sendDeactivate();
-    bool sendHeartbeat();
+    bool sendPing();  // Unified keepalive + clock sync
 
     // Command receiving (SECONDARY)
     bool hasCommand() const;
@@ -1126,13 +1126,13 @@ public:
     void setCommandCallback(CommandCallback cb);
 
     // Status
-    uint32_t getLastHeartbeatTime() const;
-    bool isHeartbeatTimeout() const;
+    uint32_t getLastKeepaliveTime() const;
+    bool isKeepaliveTimeout() const;
 
 private:
     BLEManager& _bleManager;
     DeviceRole _role;
-    uint32_t _lastHeartbeat;
+    uint32_t _lastKeepalive;
     CommandCallback _callback;
 
     void formatMessage(char* buffer, size_t size,
@@ -1183,11 +1183,11 @@ sync.setCommandCallback(onSyncCommand);
 // Send execute command (PRIMARY)
 sync.sendBuzz(2, 100);  // Finger 2, amplitude 100
 
-// Send heartbeat (PRIMARY, call every 2 seconds)
-sync.sendHeartbeat();
+// Send PING for keepalive + clock sync (PRIMARY, call every 1 second)
+sync.sendPing();
 
-// Check heartbeat timeout (SECONDARY)
-if (sync.isHeartbeatTimeout()) {
+// Check keepalive timeout (SECONDARY)
+if (sync.isKeepaliveTimeout()) {
     handleConnectionLost();
 }
 ```
@@ -1477,11 +1477,9 @@ void runPrimaryLoop() {
     // Update therapy engine
     therapyEngine->update();
 
-    // Send keepalive PING (every 2s idle, 500ms during therapy)
-    uint32_t pingInterval = (stateMachine.currentState() == TherapyState::RUNNING)
-        ? PROBE_INTERVAL_MS : HEARTBEAT_INTERVAL_MS;
-    if (millis() - lastPing >= pingInterval) {
-        sendPing();  // Triggers clock sync + keepalive
+    // Send unified keepalive + clock sync PING (every 1s, all states)
+    if (millis() - lastPing >= KEEPALIVE_INTERVAL_MS) {
+        sendPing();  // PING provides both keepalive and clock sync
         lastPing = millis();
     }
 
@@ -1491,8 +1489,8 @@ void runPrimaryLoop() {
 }
 
 void runSecondaryLoop() {
-    // Check heartbeat timeout
-    if (syncProtocol->isHeartbeatTimeout()) {
+    // Check keepalive timeout (6s without PING/BUZZ/MACROCYCLE)
+    if (syncProtocol->isKeepaliveTimeout()) {
         hardware.stopAllMotors();
         stateMachine.forceState(TherapyState::CONNECTION_LOST);
         ledController.indicateConnectionLost();

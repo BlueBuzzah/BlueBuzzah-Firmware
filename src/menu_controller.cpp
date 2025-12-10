@@ -37,7 +37,9 @@ const char* INTERNAL_MESSAGES[] = {
     "IDENTIFY:",
     "LED_OFF_SYNC",
     "DEBUG_FLASH",
-    "DEBUG_SYNC"
+    "DEBUG_SYNC",
+    "MC:",             // Macrocycle batch message
+    "MC_ACK:"          // Macrocycle acknowledgment
 };
 
 const uint8_t INTERNAL_MESSAGE_COUNT = sizeof(INTERNAL_MESSAGES) / sizeof(INTERNAL_MESSAGES[0]);

@@ -310,6 +310,84 @@ uint8_t HapticController::getEnabledCount() const {
 }
 
 // =============================================================================
+// PRE-SELECTION OPTIMIZATION METHODS
+// =============================================================================
+
+bool HapticController::selectChannelPersistent(uint8_t finger) {
+    if (finger >= MAX_ACTUATORS) {
+        return false;
+    }
+    // Open channel and leave it open (no closeChannels call)
+    _tca.openChannel(finger);
+    return true;
+}
+
+Result HapticController::setFrequencyDirect(uint8_t finger, uint16_t frequencyHz) {
+    // Validate finger index
+    if (finger >= MAX_ACTUATORS) {
+        return Result::ERROR_INVALID_PARAM;
+    }
+
+    // Validate frequency range
+    if (frequencyHz < MIN_FREQUENCY_HZ || frequencyHz > MAX_FREQUENCY_HZ) {
+        return Result::ERROR_INVALID_PARAM;
+    }
+
+    // Check if finger is enabled
+    if (!_fingerEnabled[finger]) {
+        return Result::ERROR_DISABLED;
+    }
+
+    // PRECONDITION: Channel must already be selected
+    // Write directly to DRV2605 without mux operations
+
+    // Calculate drive time for LRA frequency (same formula as setFrequency)
+    uint8_t driveTime = (uint8_t)((5000 / frequencyHz) & 0x1F);
+
+    // Write to CONTROL1 register (0x1B)
+    _drv[finger].writeRegister8(DRV2605_REG_CONTROL1, driveTime);
+
+    return Result::OK;
+}
+
+Result HapticController::activatePreSelected(uint8_t finger, uint8_t amplitude) {
+    // Validate finger index
+    if (finger >= MAX_ACTUATORS) {
+        return Result::ERROR_INVALID_PARAM;
+    }
+
+    // Check if finger is enabled
+    if (!_fingerEnabled[finger]) {
+        return Result::ERROR_DISABLED;
+    }
+
+    // Validate amplitude
+    if (amplitude > MAX_AMPLITUDE) {
+        amplitude = MAX_AMPLITUDE;
+    }
+
+    // CRITICAL: Always select channel before I2C write
+    // Pre-selection may have been invalidated by deactivations of other motors
+    // which close ALL mux channels (race condition fix)
+    if (!selectChannel(finger)) {
+        return Result::ERROR_HARDWARE;
+    }
+
+    // Write RTP value (frequency was already set during pre-selection)
+    uint8_t rtpValue = amplitudeToRTP(amplitude);
+    _drv[finger].setRealtimeValue(rtpValue);
+
+    // Update state
+    _fingerActive[finger] = (amplitude > 0);
+
+    return Result::OK;
+}
+
+void HapticController::closeAllChannels() {
+    _tca.closeAll();
+}
+
+// =============================================================================
 // BATTERY MONITOR - Implementation
 // =============================================================================
 

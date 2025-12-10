@@ -766,19 +766,20 @@ Query SECONDARY battery voltage.
 
 ### SYNC Messages
 
-During therapy, PRIMARY sends synchronization messages to SECONDARY:
+PRIMARY and SECONDARY exchange synchronization messages for therapy and keepalive:
 
 | Message | Format | Purpose |
 |---------|--------|---------|
-| BUZZ | `SYNC:BUZZ:seq\|ts\|finger\|amplitude` | Execute motor activation |
-| PING | `PING:seq\|T1` | Keepalive + clock sync request (every 2s idle, 500ms therapy) |
+| PING | `PING:seq\|T1` | Unified keepalive + clock sync (every 1s, all states) |
 | PONG | `PONG:seq\|0\|T2\|T3` | Keepalive + clock sync response |
+| BUZZ | `SYNC:BUZZ:seq\|ts\|finger\|amplitude` | Execute motor activation |
+| MACROCYCLE | `MC:seq\|baseTime\|count\|events...` | Batch of 12 buzz events |
+| MACROCYCLE_ACK | `MC_ACK:seq` | Macrocycle acknowledgment |
 | START_SESSION | `SYNC:START_SESSION:seq\|ts` | Start therapy |
 | STOP_SESSION | `SYNC:STOP_SESSION:seq\|ts` | Stop therapy |
 | PAUSE_SESSION | `SYNC:PAUSE_SESSION:seq\|ts` | Pause therapy |
 | RESUME_SESSION | `SYNC:RESUME_SESSION:seq\|ts` | Resume therapy |
-| SEED | `SEED:N` | Random seed for jitter sync |
-| SEED_ACK | `SEED_ACK` | Seed acknowledgment |
+| DEBUG_FLASH | `DEBUG_FLASH:seq\|flashTime` | Synchronized LED flash (debug mode) |
 
 ---
 

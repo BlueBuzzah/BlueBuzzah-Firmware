@@ -72,14 +72,26 @@ bool BLEManager::begin(DeviceRole role, const char* deviceName) {
     // Fix: Larger MTU (messages fit in ONE notification) + larger queue
     // ==========================================================================
 
-    // MTU 67 = 64 bytes payload (ATT header is 3 bytes)
-    // Our largest message is ~30 bytes, so 64 payload is plenty of headroom
-    // HVN queue of 8 allows bursting without overflow
-    // Event length 6 allows more data per connection event (in 1.25ms units)
-    const uint16_t BLE_MTU = 67;           // 64 byte payload + 3 byte ATT header
-    const uint16_t BLE_EVENT_LEN = 6;      // Connection event length (in 1.25ms units)
-    const uint8_t  BLE_HVN_QSIZE = 8;      // Handle Value Notification queue size
-    const uint8_t  BLE_WRCMD_QSIZE = 8;    // Write Command queue size
+    // ==========================================================================
+    // Connection parameters - balance features vs SRAM usage
+    // ==========================================================================
+    // SRAM usage increases dramatically with:
+    //   - Number of connections
+    //   - MTU size (per connection)
+    //   - Queue sizes (per connection)
+    //
+    // PRIMARY needs 2 peripheral connections (phone + SECONDARY)
+    // Using moderate settings to stay within SRAM budget
+    // ==========================================================================
+
+    // Proper BLE configuration for reliable large message transmission
+    // MACROCYCLE messages are ~160 bytes - MTU must exceed this to avoid fragmentation
+    // EVENT_LEN and queue sizes must also be increased to prevent SoftDevice instability
+    // See: https://github.com/adafruit/Adafruit_nRF52_Arduino/issues/721
+    const uint16_t BLE_MTU = 200;          // Fits MACROCYCLE (~160 bytes) with headroom
+    const uint16_t BLE_EVENT_LEN = 10;     // 12.5ms - sufficient for full packet + 2 connections
+    const uint8_t  BLE_HVN_QSIZE = 8;      // Handle notification bursts without overflow
+    const uint8_t  BLE_WRCMD_QSIZE = 8;    // Match for write commands
 
     // API: configPrphConn(mtu_max, event_len, hvn_qsize, wrcmd_qsize)
     if (role == DeviceRole::PRIMARY) {
@@ -98,6 +110,7 @@ bool BLEManager::begin(DeviceRole role, const char* deviceName) {
     if (role == DeviceRole::PRIMARY) {
         // PRIMARY: 2 peripheral connections (phone + SECONDARY), 0 central
         Bluefruit.begin(2, 0);
+        Serial.println(F("[BLE] PRIMARY mode: 2 peripheral connections enabled"));
     } else {
         // SECONDARY: 0 peripheral, 1 central connection (to PRIMARY)
         Bluefruit.begin(0, 1);
@@ -170,7 +183,9 @@ void BLEManager::setupAdvertising() {
     Bluefruit.Advertising.addTxPower();
 
     // Add service UUID - check if it succeeds (packet may be full)
-    if (!Bluefruit.Advertising.addService(_uartService)) {
+    bool serviceAdded = Bluefruit.Advertising.addService(_uartService);
+
+    if (!serviceAdded) {
         Serial.println(F("[BLE] WARNING: Failed to add service to advertising!"));
         // Try adding to scan response instead
         Bluefruit.ScanResponse.addService(_uartService);
@@ -186,7 +201,9 @@ void BLEManager::setupAdvertising() {
     Bluefruit.Advertising.restartOnDisconnect(true);
     Bluefruit.Advertising.setInterval(32, 244);  // 20ms - 152.5ms (in 0.625ms units)
     Bluefruit.Advertising.setFastTimeout(30);    // Fast mode for 30 seconds
+
     Bluefruit.Advertising.start(0);              // 0 = Don't stop advertising
+    Serial.println(F("[BLE] Advertising started"));
 }
 
 // =============================================================================
@@ -273,11 +290,8 @@ bool BLEManager::startScanning(const char* targetName) {
     Serial.printf("[BLE] Starting scan for '%s'...\n", _targetName);
 
     // Configure scanner
-    Serial.println(F("[BLE] Configuring scanner..."));
     Bluefruit.Scanner.setRxCallback(_onScanCallback);
-    Serial.println(F("[BLE]   - Callback registered"));
     Bluefruit.Scanner.restartOnDisconnect(true);
-    Serial.println(F("[BLE]   - Restart on disconnect: ON"));
 
     // CRITICAL: Filter to prevent callback flood in busy BLE environments
     // Note: Service UUID filtering doesn't work reliably because:
@@ -285,22 +299,19 @@ bool BLEManager::startScanning(const char* targetName) {
     // - UUID may be in scan response, which filters don't check
     // Solution: Use RSSI filter + name matching in callback
     Bluefruit.Scanner.clearFilters();
-
-    // RSSI filter: Only nearby devices (reduces callback volume significantly)
-    Bluefruit.Scanner.filterRssi(-80);
-    Serial.println(F("[BLE]   - Filter: RSSI >= -80 dBm (name matching in callback)"));
+    Bluefruit.Scanner.filterRssi(-80);  // Only nearby devices
 
     // Use longer interval with shorter window to reduce CPU load
     Bluefruit.Scanner.setInterval(320, 60);  // 200ms interval, 37.5ms window (19% duty)
-    Serial.println(F("[BLE]   - Interval: 200ms/37.5ms"));
     Bluefruit.Scanner.useActiveScan(true);   // Request scan response for name
-    Serial.println(F("[BLE]   - Active scan: ON"));
 
     // Start scanning
-    Serial.println(F("[BLE] Calling Scanner.start(0)..."));
     bool started = Bluefruit.Scanner.start(0);  // 0 = Don't stop
-    Serial.printf("[BLE] Scanner.start() returned: %s\n", started ? "true" : "false");
-    Serial.printf("[BLE] Scanner.isRunning(): %s\n", Bluefruit.Scanner.isRunning() ? "true" : "false");
+    if (started) {
+        Serial.println(F("[BLE] Scanner started"));
+    } else {
+        Serial.println(F("[BLE] ERROR: Failed to start scanner"));
+    }
 
     return started;
 }

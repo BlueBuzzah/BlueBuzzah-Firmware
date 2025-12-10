@@ -149,12 +149,22 @@ public:
     bool setData(const char* key, const char* value);
 
     /**
-     * @brief Set integer data
+     * @brief Set integer data (signed)
      * @param key Key string
      * @param value Integer value
      * @return true if added successfully
      */
     bool setData(const char* key, int32_t value);
+
+    /**
+     * @brief Set unsigned integer data
+     * @param key Key string
+     * @param value Unsigned integer value
+     * @return true if added successfully
+     * @note Use this for timestamp low-bits and other unsigned 32-bit values
+     *       to avoid sign extension when values exceed 2^31
+     */
+    bool setDataUnsigned(const char* key, uint32_t value);
 
     /**
      * @brief Get data value by key
@@ -276,6 +286,46 @@ public:
      */
     static SyncCommand createDebugFlashWithTime(uint32_t sequenceId, uint64_t flashTime);
 
+    /**
+     * @brief Create MACROCYCLE_ACK response
+     * @param sequenceId Sequence ID (should match received MACROCYCLE)
+     */
+    static SyncCommand createMacrocycleAck(uint32_t sequenceId);
+
+    // =========================================================================
+    // MACROCYCLE SERIALIZATION (hybrid text header + binary payload)
+    // =========================================================================
+
+    /**
+     * @brief Serialize a macrocycle to buffer with hybrid format
+     *
+     * Format: MC:seq|baseTime|count|<binary_payload>
+     * Binary payload is MacrocycleEvent array (6 bytes per event).
+     *
+     * @param buffer Output buffer (must be at least 120 bytes for 12 events)
+     * @param bufferSize Size of output buffer
+     * @param macrocycle Macrocycle to serialize
+     * @return true if serialization successful
+     */
+    static bool serializeMacrocycle(char* buffer, size_t bufferSize, const Macrocycle& macrocycle);
+
+    /**
+     * @brief Calculate serialized size of a macrocycle
+     * @param macrocycle Macrocycle to measure
+     * @return Total serialized size in bytes
+     */
+    static size_t getMacrocycleSerializedSize(const Macrocycle& macrocycle);
+
+    /**
+     * @brief Deserialize a macrocycle from hybrid format message
+     *
+     * @param message Input message (text header + binary payload)
+     * @param messageLen Total message length (including binary)
+     * @param macrocycle Output macrocycle struct
+     * @return true if deserialization successful
+     */
+    static bool deserializeMacrocycle(const char* message, size_t messageLen, Macrocycle& macrocycle);
+
 private:
     SyncCommandType _type;
     uint32_t _sequenceId;
@@ -295,11 +345,22 @@ private:
 // =============================================================================
 
 /**
- * @brief Get current time in microseconds
+ * @brief Get current time in microseconds (64-bit, overflow-safe)
+ *
+ * Tracks overflow of the 32-bit micros() counter to provide a true 64-bit
+ * timestamp. Must be called at least once per 71 minutes to detect overflow.
+ * Safe for main loop context only (not ISR-safe).
  */
-inline uint64_t getMicros() {
-    return (uint64_t)micros();
-}
+uint64_t getMicros();
+
+/**
+ * @brief Reset getMicros() overflow tracking state
+ *
+ * Resets internal state used for tracking 32-bit micros() overflow.
+ * Required for unit tests where mock time may be set to arbitrary values.
+ * Should NOT be called in production code.
+ */
+void resetMicrosOverflow();
 
 /**
  * @brief Get current time in milliseconds (high precision)
@@ -424,8 +485,9 @@ public:
             return;
         }
 
-        // Outlier rejection: ignore if > 2x current smoothed
-        if (oneWay > OUTLIER_MULT * _smoothedLatencyUs) {
+        // Outlier rejection: ignore if > 3x current smoothed (only after stable baseline)
+        // Don't reject during initial sampling - need to build up _sampleCount first
+        if (_sampleCount >= MIN_SAMPLES && oneWay > OUTLIER_MULT * _smoothedLatencyUs) {
             // Spike detected - don't update smoothed value
             return;
         }
@@ -611,7 +673,7 @@ public:
 private:
     // EMA tuning constants
     static constexpr uint16_t MIN_SAMPLES = 3;        // Minimum before using smoothed
-    static constexpr uint32_t OUTLIER_MULT = 2;       // Reject if > 2x average
+    static constexpr uint32_t OUTLIER_MULT = 3;       // Reject if > 3x average
     static constexpr uint8_t EMA_ALPHA_NUM = 3;       // α = 3/10 = 0.3
     static constexpr uint8_t EMA_ALPHA_DEN = 10;
 

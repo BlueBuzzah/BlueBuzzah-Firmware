@@ -221,6 +221,26 @@ typedef void (*SetFrequencyCallback)(uint8_t finger, uint16_t frequencyHz);
 // Called at the start of each macrocycle before the first pattern
 typedef void (*MacrocycleStartCallback)(uint32_t macrocycleCount);
 
+// Callback for sending entire macrocycle (batch of 12 events)
+// Called when a new macrocycle is generated, sends all events to SECONDARY
+typedef void (*SendMacrocycleCallback)(const Macrocycle& macrocycle);
+
+// Callback for scheduling PRIMARY motor activation via hardware timer
+// Parameters: activateTimeUs, finger, amplitude, durationMs, frequencyHz
+// Called for each event in macrocycle to enqueue to ActivationQueue
+typedef void (*ScheduleActivationCallback)(uint64_t activateTimeUs, uint8_t finger,
+                                           uint8_t amplitude, uint16_t durationMs, uint16_t frequencyHz);
+
+// Callback to start chain scheduling after all events are enqueued
+typedef void (*StartSchedulingCallback)();
+
+// Callback to check if activation queue execution is complete
+typedef bool (*IsSchedulingCompleteCallback)();
+
+// Callback to get adaptive lead time from sync protocol (microseconds)
+// Returns RTT + 3σ margin, clamped to reasonable bounds
+typedef uint32_t (*GetLeadTimeCallback)();
+
 // =============================================================================
 // THERAPY ENGINE CLASS
 // =============================================================================
@@ -276,6 +296,49 @@ public:
      * @brief Set callback for macrocycle start (PING/PONG latency measurement)
      */
     void setMacrocycleStartCallback(MacrocycleStartCallback callback);
+
+    /**
+     * @brief Set callback for sending macrocycle batch
+     */
+    void setSendMacrocycleCallback(SendMacrocycleCallback callback);
+
+    /**
+     * @brief Set callbacks for hardware timer scheduling on PRIMARY
+     *
+     * These callbacks allow TherapyEngine to use the ActivationQueue
+     * for hardware timer-based motor scheduling (same as SECONDARY).
+     *
+     * @param scheduleCallback Called for each event to enqueue
+     * @param startCallback Called after all events enqueued to start chain
+     * @param isCompleteCallback Called to check if queue execution complete
+     */
+    void setSchedulingCallbacks(ScheduleActivationCallback scheduleCallback,
+                                StartSchedulingCallback startCallback,
+                                IsSchedulingCompleteCallback isCompleteCallback);
+
+    /**
+     * @brief Set callback to get adaptive lead time
+     *
+     * When set, TherapyEngine uses this callback to determine lead time
+     * for macrocycle scheduling instead of hardcoded 50ms. The callback
+     * should return syncProtocol.calculateAdaptiveLeadTime().
+     *
+     * @param callback Function returning lead time in microseconds
+     */
+    void setGetLeadTimeCallback(GetLeadTimeCallback callback);
+
+    /**
+     * @brief Enable/disable macrocycle batching mode
+     * When enabled, all 12 events are sent in a single MACROCYCLE message.
+     * When disabled, individual BUZZ messages are sent (legacy mode).
+     * @param enabled Enable macrocycle batching
+     */
+    void setMacrocycleBatching(bool enabled);
+
+    /**
+     * @brief Check if macrocycle batching is enabled
+     */
+    bool isMacrocycleBatchingEnabled() const { return _macrocycleBatching; }
 
     /**
      * @brief Enable/disable frequency randomization (Custom vCR feature)
@@ -443,11 +506,27 @@ private:
     CycleCompleteCallback _cycleCompleteCallback;
     SetFrequencyCallback _setFrequencyCallback;
     MacrocycleStartCallback _macrocycleStartCallback;
+    SendMacrocycleCallback _sendMacrocycleCallback;
+
+    // Hardware timer scheduling callbacks (PRIMARY uses ActivationQueue)
+    ScheduleActivationCallback _scheduleActivationCallback;
+    StartSchedulingCallback _startSchedulingCallback;
+    IsSchedulingCompleteCallback _isSchedulingCompleteCallback;
+    GetLeadTimeCallback _getLeadTimeCallback;
+
+    // Macrocycle batching mode
+    bool _macrocycleBatching;            // When true, send all 12 events as one MACROCYCLE message
+    uint32_t _macrocycleSequenceId;      // Sequence ID for MACROCYCLE messages
+    Macrocycle _currentMacrocycle;       // Current macrocycle being executed
+    uint8_t _macrocycleEventIndex;       // Current event index within macrocycle (0-11)
+    uint64_t _macrocycleBaseTime;        // Base activation time for current macrocycle
 
     // Internal methods
     void generateNextPattern();
     void executePatternStep();
     void applyFrequencyRandomization();  // Called at start of each pattern cycle
+    Macrocycle generateMacrocycle();     // Generate all 12 events for a macrocycle
+    void executeMacrocycleStep();        // State machine for macrocycle batching mode
 };
 
 #endif // THERAPY_ENGINE_H

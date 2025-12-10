@@ -16,6 +16,8 @@
 void setUp(void) {
     // Reset mock time before each test
     mockResetTime();
+    // Reset getMicros() overflow tracking state (must be after mockResetTime)
+    resetMicrosOverflow();
     // Reset global sequence generator
     g_sequenceGenerator.reset();
 }
@@ -483,10 +485,10 @@ void test_SimpleSyncProtocol_updateLatency_outlier_rejection(void) {
     sync.updateLatency(20000);
     TEST_ASSERT_EQUAL_UINT32(10000, sync.getMeasuredLatency());
 
-    // Send outlier: RTT = 50000us → one-way = 25000us (> 2x smoothed)
-    // Should be rejected (smoothed stays at 10000)
-    sync.updateLatency(50000);
-    TEST_ASSERT_EQUAL_UINT32(25000, sync.getRawLatency());  // Raw updated
+    // Send outlier: RTT = 70000us → one-way = 35000us (> 3x smoothed = 30000)
+    // Should be rejected (smoothed stays at 10000) per OUTLIER_MULT = 3
+    sync.updateLatency(70000);
+    TEST_ASSERT_EQUAL_UINT32(35000, sync.getRawLatency());  // Raw updated
     TEST_ASSERT_EQUAL_UINT32(10000, sync.getMeasuredLatency());  // Smoothed unchanged
     TEST_ASSERT_EQUAL_UINT16(3, sync.getSampleCount());  // Count not incremented
 }
@@ -843,7 +845,7 @@ void test_SimpleSyncProtocol_resetClockSync(void) {
 void test_SimpleSyncProtocol_addOffsetSampleWithQuality_accepts_good_rtt(void) {
     SimpleSyncProtocol sync;
 
-    // RTT = 10000us (10ms) - well below threshold of 30000us
+    // RTT = 10000us (10ms) - well below threshold of 80000us (SYNC_RTT_QUALITY_THRESHOLD_US)
     bool accepted = sync.addOffsetSampleWithQuality(5000, 10000);
 
     TEST_ASSERT_TRUE(accepted);
@@ -853,8 +855,8 @@ void test_SimpleSyncProtocol_addOffsetSampleWithQuality_accepts_good_rtt(void) {
 void test_SimpleSyncProtocol_addOffsetSampleWithQuality_rejects_high_rtt(void) {
     SimpleSyncProtocol sync;
 
-    // RTT = 40000us (40ms) - above threshold of 30000us
-    bool accepted = sync.addOffsetSampleWithQuality(5000, 40000);
+    // RTT = 100000us (100ms) - above threshold of 80000us (SYNC_RTT_QUALITY_THRESHOLD_US)
+    bool accepted = sync.addOffsetSampleWithQuality(5000, 100000);
 
     TEST_ASSERT_FALSE(accepted);
     TEST_ASSERT_EQUAL_UINT8(0, sync.getOffsetSampleCount());
@@ -863,12 +865,12 @@ void test_SimpleSyncProtocol_addOffsetSampleWithQuality_rejects_high_rtt(void) {
 void test_SimpleSyncProtocol_addOffsetSampleWithQuality_boundary(void) {
     SimpleSyncProtocol sync;
 
-    // RTT = 30000us - exactly at threshold (should be rejected, > not >=)
-    bool accepted1 = sync.addOffsetSampleWithQuality(5000, 30000);
+    // RTT = 80000us - exactly at threshold (should be accepted, using <= comparison)
+    bool accepted1 = sync.addOffsetSampleWithQuality(5000, 80000);
     TEST_ASSERT_TRUE(accepted1);  // Exactly at threshold is accepted
 
-    // RTT = 30001us - just above threshold
-    bool accepted2 = sync.addOffsetSampleWithQuality(5000, 30001);
+    // RTT = 80001us - just above threshold of 80000us (SYNC_RTT_QUALITY_THRESHOLD_US)
+    bool accepted2 = sync.addOffsetSampleWithQuality(5000, 80001);
     TEST_ASSERT_FALSE(accepted2);
 }
 
@@ -980,16 +982,16 @@ void test_SimpleSyncProtocol_calculateAdaptiveLeadTime_minimum_clamp(void) {
 void test_SimpleSyncProtocol_calculateAdaptiveLeadTime_maximum_clamp(void) {
     SimpleSyncProtocol sync;
 
-    // Add 3 very high latency samples (RTT = 80000us = 40ms one-way)
-    // This ensures the calculated lead time exceeds 50ms and gets clamped
-    sync.updateLatency(80000);
-    sync.updateLatency(80000);
-    sync.updateLatency(80000);
+    // Add 3 very high latency samples (RTT = 200000us = 100ms one-way)
+    // This ensures the calculated lead time exceeds 100ms and gets clamped
+    sync.updateLatency(200000);
+    sync.updateLatency(200000);
+    sync.updateLatency(200000);
 
-    // With very high RTT, lead time should clamp to maximum 50000us (50ms)
-    // avgRTT = 40000 * 2 = 80000, leadTime = 80000 + margin > 50000, clamped to 50000
+    // With very high RTT, lead time should clamp to maximum 100000us (100ms)
+    // avgRTT = 100000 * 2 = 200000, leadTime > 100000, clamped to 100000
     uint32_t leadTime = sync.calculateAdaptiveLeadTime();
-    TEST_ASSERT_EQUAL_UINT32(50000, leadTime);
+    TEST_ASSERT_EQUAL_UINT32(100000, leadTime);
 }
 
 void test_SimpleSyncProtocol_calculateAdaptiveLeadTime_normal_calculation(void) {
