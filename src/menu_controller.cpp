@@ -529,7 +529,7 @@ void MenuController::handleSessionStart() {
 
     // Get profile parameters
     uint32_t durationSec = 7200;  // Default 2 hours
-    uint8_t patternType = PATTERN_TYPE_RNDP;
+    PatternType patternType = PatternType::RNDP;
     float timeOnMs = 100.0f;
     float timeOffMs = 67.0f;
     float jitterPercent = 23.5f;
@@ -546,9 +546,9 @@ void MenuController::handleSessionStart() {
             mirror = profile->mirrorPattern;
 
             if (strcmp(profile->patternType, "rndp") == 0) {
-                patternType = PATTERN_TYPE_RNDP;
+                patternType = PatternType::RNDP;
             } else if (strcmp(profile->patternType, "sequential") == 0) {
-                patternType = PATTERN_TYPE_SEQUENTIAL;
+                patternType = PatternType::SEQUENTIAL;
             }
         }
     }
