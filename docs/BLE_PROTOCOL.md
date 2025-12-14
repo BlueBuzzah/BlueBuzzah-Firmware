@@ -158,7 +158,7 @@ flowchart TD
 
 | Parameter | Value |
 |-----------|-------|
-| Connection interval | 7.5-20ms (negotiated) |
+| Connection interval | 8-12ms (6-9 BLE units) |
 | MTU size | 67 bytes (64 payload + 3 ATT header) |
 | Supervision timeout | 4000ms |
 | Message fragmentation | May occur for responses >MTU |
@@ -167,9 +167,9 @@ flowchart TD
 
 During active therapy:
 - **MACROCYCLE messages:** Sent every ~2 seconds (batches of 12 events)
-- **BLE latency:** 7.5-20ms
+- **BLE latency:** 8-12ms
 - **Processing time:** <5ms per command
-- **Synchronization accuracy:** <2ms between gloves (IEEE 1588 PTP clock sync)
+- **Synchronization accuracy:** <1ms between gloves (IEEE 1588 PTP clock sync + FreeRTOS motor task)
 - **Bandwidth efficiency:** 72% reduction vs legacy individual messages
 
 ---

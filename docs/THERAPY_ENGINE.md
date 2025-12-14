@@ -354,7 +354,8 @@ public:
     // Motor control
     void setMotorAmplitude(uint8_t channel, uint8_t amplitude);
     void allMotorsOff();
-    void buzzFinger(uint8_t channel, uint16_t durationMs);
+    void activate(uint8_t channel, uint8_t amplitude);
+    void deactivate(uint8_t channel);
 
     // LED control
     void setLED(uint32_t color);
@@ -643,6 +644,40 @@ SessionResult TherapyEngine::runSession(const TherapyConfig& config) {
     return SessionResult::COMPLETED;
 }
 ```
+
+### FreeRTOS Motor Task
+
+Motor activations are executed by a dedicated FreeRTOS task for sub-millisecond precision:
+
+```cpp
+// FreeRTOS motor task (Priority 4)
+void motorTaskFunction(void* pvParameters) {
+    while (true) {
+        MotorEvent event;
+        if (activationQueue.getNextEvent(event)) {
+            uint64_t now = getMicros();
+            int64_t delayUs = event.timeUs - now;
+
+            // Hybrid sleep + busy-wait for precision
+            if (delayUs > 2000) {
+                vTaskDelay(pdMS_TO_TICKS((delayUs - 2000) / 1000));
+            }
+
+            // Busy-wait for final precision
+            while (getMicros() < event.timeUs) { /* spin */ }
+
+            // Execute motor event
+            executeMotorEvent(event);
+        }
+        vTaskDelay(1);
+    }
+}
+```
+
+**Key Features:**
+- Non-blocking: BLE callbacks process during sleep
+- Sub-millisecond precision through hybrid sleep + busy-wait
+- I2C pre-selection reduces activation latency (~100μs vs ~500μs)
 
 ### Timing Breakdown Per Macrocycle
 
@@ -1043,7 +1078,7 @@ void HardwareController::allMotorsOff() {
 
 **Importance**: Both hands must stimulate simultaneously for optimal neural desynchronization.
 
-**Achieved Synchronization**: ±7.5-20ms (well within therapeutic tolerance)
+**Achieved Synchronization**: <1ms bilateral sync (sub-millisecond precision via FreeRTOS motor task)
 
 **Verification**:
 

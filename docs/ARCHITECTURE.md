@@ -186,7 +186,9 @@ BlueBuzzah-Firmware/
 │   ├── profile_manager.h             # Profile handling
 │   ├── led_controller.h              # LED animations
 │   ├── session_manager.h             # Session lifecycle
-│   └── calibration_controller.h      # Calibration workflows
+│   ├── calibration_controller.h      # Calibration workflows
+│   ├── activation_queue.h            # Motor event scheduling queue
+│   └── motor_event_buffer.h          # Motor event ring buffer
 ├── src/
 │   ├── main.cpp                      # Entry point: setup() + loop()
 │   ├── hardware.cpp                  # Hardware implementations
@@ -198,7 +200,9 @@ BlueBuzzah-Firmware/
 │   ├── profile_manager.cpp           # Profile implementations
 │   ├── led_controller.cpp            # LED implementations
 │   ├── session_manager.cpp           # Session implementations
-│   └── calibration_controller.cpp    # Calibration implementations
+│   ├── calibration_controller.cpp    # Calibration implementations
+│   ├── activation_queue.cpp          # Motor event queue implementations
+│   └── motor_event_buffer.cpp        # Motor event buffer implementations
 └── data/
     └── settings.json                 # Device configuration (uploaded via LittleFS)
 ```
@@ -218,6 +222,8 @@ BlueBuzzah-Firmware/
 | `led_controller.h/.cpp`         | LED animations                   | NeoPixel                        |
 | `session_manager.h/.cpp`        | Session lifecycle                | `state_machine.h`               |
 | `calibration_controller.h/.cpp` | Motor testing                    | `hardware.h`                    |
+| `activation_queue.h/.cpp`       | Motor event scheduling queue     | `types.h`                       |
+| `motor_event_buffer.h/.cpp`     | Motor event ring buffer          | `types.h`                       |
 
 ### Architecture Layers
 
@@ -633,7 +639,7 @@ void TherapyEngine::executeCycle() {
 ```cpp
 // src/hardware.cpp
 
-void HardwareController::buzzFinger(uint8_t finger, uint8_t amplitude) {
+void HardwareController::activate(uint8_t finger, uint8_t amplitude) {
     // Infrastructure-level details
     _tca.select(finger);
 
@@ -644,7 +650,7 @@ void HardwareController::buzzFinger(uint8_t finger, uint8_t amplitude) {
     _motorActive[finger] = true;
 }
 
-void HardwareController::stopFinger(uint8_t finger) {
+void HardwareController::deactivate(uint8_t finger) {
     _tca.select(finger);
     _drv[finger].setRealtimeValue(0);
     _motorActive[finger] = false;
@@ -652,6 +658,53 @@ void HardwareController::stopFinger(uint8_t finger) {
 ```
 
 ## Component Details
+
+### FreeRTOS Motor Task
+
+A dedicated FreeRTOS task handles motor activation with sub-millisecond precision:
+
+```cpp
+// Motor task runs at Priority 4 (above normal, below BLE)
+void motorTaskFunction(void* pvParameters) {
+    while (true) {
+        MotorEvent event;
+        if (activationQueue.getNextEvent(event)) {
+            uint64_t now = getMicros();
+            int64_t delayUs = event.timeUs - now;
+
+            // Hybrid sleep + busy-wait for precision
+            if (delayUs > 2000) {
+                // Sleep until ~2ms before event
+                vTaskDelay(pdMS_TO_TICKS((delayUs - 2000) / 1000));
+            }
+
+            // Busy-wait for final precision
+            while (getMicros() < event.timeUs) { /* spin */ }
+
+            // Execute motor event
+            executeMotorEvent(event);
+        }
+        vTaskDelay(1);  // Yield if queue empty
+    }
+}
+```
+
+**Key Features:**
+- **Non-blocking**: Allows BLE callbacks to process during sleep
+- **Sub-millisecond precision**: Busy-waits only the final 2ms
+- **I2C pre-selection**: Moves mux selection off critical path (~100μs vs ~500μs)
+- **Queue-based**: Events scheduled via ActivationQueue
+
+**I2C Pre-Selection Optimization:**
+
+```cpp
+// Fast path when channel is pre-selected
+if (haptic.getPreSelectedFinger() == event.finger) {
+    haptic.activatePreSelected(event.finger, event.amplitude);  // ~100μs
+} else {
+    haptic.activate(event.finger, event.amplitude);  // ~500μs
+}
+```
 
 ### State Management
 
@@ -1315,9 +1368,9 @@ sequenceDiagram
     loop Until Session Complete
         TE->>TE: Generate pattern
         loop For each finger pair
-            TE->>H: buzzFinger(finger, amplitude)
+            TE->>H: activate(finger, amplitude)
             TE->>TE: Wait burst_duration
-            TE->>H: stopFinger(finger)
+            TE->>H: deactivate(finger)
             TE->>TE: Wait inter_burst_interval
         end
         TE->>SM: Cycle complete
@@ -1420,7 +1473,7 @@ enum class Result : uint8_t {
     ERROR_HARDWARE
 };
 
-Result HardwareController::buzzFinger(uint8_t finger, uint8_t amplitude) {
+Result HardwareController::activate(uint8_t finger, uint8_t amplitude) {
     if (finger > 4) return Result::ERROR_INVALID_PARAM;
     if (amplitude > 127) return Result::ERROR_INVALID_PARAM;
 
@@ -1550,7 +1603,7 @@ void HardwareController::selectChannel(uint8_t channel) {
     Wire.endTransmission();
 }
 
-void HardwareController::buzzFinger(uint8_t finger, uint8_t amplitude) {
+void HardwareController::activate(uint8_t finger, uint8_t amplitude) {
     // Select multiplexer channel for this finger
     selectChannel(finger);
 
@@ -1914,7 +1967,7 @@ The architecture enables confident refactoring, easy testing, and straightforwar
 | Boot timeout | 30s | Max boot sequence time |
 | Keepalive interval | 1s | PING/PONG (unified keepalive + sync) |
 | Keepalive timeout | 6s | SECONDARY: 6 missed PINGs |
-| BLE connection interval | 7.5ms | Minimum latency |
+| BLE connection interval | 8-12ms | Low-latency (6-9 BLE units) |
 | BLE supervision timeout | 4s | Disconnect detection |
 | Therapy default ON | 100ms | Burst duration |
 | Therapy default OFF | 67ms | Inter-burst interval |

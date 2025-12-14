@@ -140,10 +140,21 @@ Excluding processing time provides:
 ### Filtering and Maintenance
 
 - **Initial sync:** Idle keepalive (1s) accumulates samples, median offset selected
-- **Quality filter:** Exchanges with RTT > 80ms are discarded (network latency only)
+- **Quality filter:** Exchanges with RTT > 120ms are discarded (network latency only)
 - **Minimum valid:** At least 5 good samples required (~5s after connect)
 - **Drift compensation:** Ongoing sync every 1s corrects for crystal drift
 - **Smoothing:** Exponential moving average prevents sudden jumps
+
+### Outlier Rejection
+
+The clock sync algorithm uses MAD (Median Absolute Deviation) to filter outliers before computing the final offset:
+
+1. Compute preliminary median from all offset samples
+2. Filter samples with deviation > 5ms from preliminary median
+3. Compute final median from filtered samples only
+4. Require minimum 5 valid samples after filtering
+
+This improves robustness against BLE retransmissions and RF interference that cause anomalous RTT measurements.
 
 ---
 
@@ -388,14 +399,14 @@ SECONDARY applies clock offset once to baseTime, then schedules all 12 events vi
 
 | Parameter | Value | Description |
 |-----------|-------|-------------|
-| RTT quality threshold | 80ms | Discard samples with higher RTT |
+| RTT quality threshold | 120ms | Discard samples with higher RTT |
 | Minimum valid samples | 5 | Required for valid sync (~5s from connect) |
 | PING/PONG interval | 1s | Unified keepalive + clock sync (all states) |
 | Keepalive timeout (SECONDARY) | 6s | 6 missed PINGs = connection lost |
 | Keepalive timeout (PRIMARY) | 4s | During therapy (emergency shutdown) |
 | MACROCYCLE timeout | 10s | SECONDARY safety halt |
 | Lead time range | 15-100ms | Adaptive scheduling window |
-| BLE connection interval | 7.5ms | Low-latency communication |
+| BLE connection interval | 8-12ms | Low-latency communication (6-9 BLE units) |
 
 ---
 

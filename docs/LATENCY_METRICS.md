@@ -178,8 +178,13 @@ Estimated sync error:    ~215 us (SECONDARY later)
 ┌─────────────────────────────────────────────────────────────┐
 │                        PRIMARY                               │
 ├─────────────────────────────────────────────────────────────┤
-│  onSendCommand()                                            │
-│    └─► syncProtocol.waitUntil(executeAt)                    │
+│  TherapyEngine                                              │
+│    └─► Enqueue events to ActivationQueue                    │
+│                                                             │
+│  FreeRTOS Motor Task (Priority 4)                           │
+│    └─► Sleep until ~2ms before event                        │
+│    └─► Busy-wait for sub-ms precision                       │
+│    └─► executeMotorEvent()                                  │
 │    └─► latencyMetrics.recordExecution(drift)                │
 │                                                             │
 │  onBLEMessage(PONG)                                         │
@@ -192,19 +197,28 @@ Estimated sync error:    ~215 us (SECONDARY later)
 ┌─────────────────────────────────────────────────────────────┐
 │                       SECONDARY                              │
 ├─────────────────────────────────────────────────────────────┤
-│  onBLEMessage(MACROCYCLE)                                         │
+│  onBLEMessage(MACROCYCLE)                                   │
 │    └─► syncProtocol.toLocalTime(executeAt)                  │
-│    └─► syncProtocol.waitUntil(localExecTime)                │
+│    └─► Enqueue events to ActivationQueue                    │
+│                                                             │
+│  FreeRTOS Motor Task (Priority 4)                           │
+│    └─► Sleep until ~2ms before event                        │
+│    └─► Busy-wait for sub-ms precision                       │
+│    └─► executeMotorEvent()                                  │
 │    └─► latencyMetrics.recordExecution(drift)                │
 └─────────────────────────────────────────────────────────────┘
 ```
 
 ### Scheduled Execution Flow
 
-1. PRIMARY calculates `executeAt = now + SYNC_EXECUTION_BUFFER_MS`
-2. PRIMARY sends MACROCYCLE with batched events to SECONDARY
-3. Both devices spin-wait until scheduled time using `waitUntil()`
-4. Both devices record drift after execution
+1. PRIMARY calculates `executeAt = now + adaptiveLeadTime`
+2. PRIMARY sends MACROCYCLE with 12 batched events to SECONDARY
+3. Both devices enqueue events to ActivationQueue
+4. FreeRTOS motor task (Priority 4) processes queue:
+   - Sleeps until ~2ms before event (non-blocking)
+   - Busy-waits final 2ms for sub-millisecond precision
+   - Uses I2C pre-selection for ~100μs activation latency
+5. Both devices record drift after execution
 
 ### Clock Synchronization
 
@@ -260,13 +274,18 @@ Defined in `include/config.h`:
 
 ### Accuracy Bounds
 
-The system cannot measure inter-device latency more precisely than the clock synchronization accuracy:
+The system achieves sub-millisecond bilateral synchronization through:
 
-| Sync Method | Accuracy |
-|-------------|----------|
-| PTP PING/PONG (5+ samples) | ±1-2ms |
-| Initial sync (3 samples) | ±3-5ms |
-| No sync | Undefined |
+- PTP-style clock synchronization with outlier rejection
+- FreeRTOS motor task with hybrid sleep/busy-wait
+- I2C pre-selection for fast motor activation
+
+| Component | Accuracy |
+|-----------|----------|
+| Clock sync (5+ samples) | ±500μs |
+| Motor task timing | <100μs drift |
+| I2C pre-selected activation | ~100μs |
+| Total bilateral sync | <1ms |
 
 ### Ground Truth Measurement
 

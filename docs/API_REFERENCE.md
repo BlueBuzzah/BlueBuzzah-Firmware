@@ -322,8 +322,9 @@ Current firmware version following semantic versioning.
 #define CONNECTION_TIMEOUT_SEC 30
 // BLE connection establishment timeout in seconds
 
-#define BLE_INTERVAL_MS 7.5f
-// BLE connection interval in milliseconds for sub-10ms synchronization
+#define BLE_INTERVAL_MIN_MS 8
+#define BLE_INTERVAL_MAX_MS 12
+// BLE connection interval range (6-9 BLE units, 8-12ms)
 
 #define SYNC_INTERVAL_MS 1000
 // Periodic synchronization interval in milliseconds (SYNC_ADJ messages)
@@ -684,14 +685,21 @@ public:
     bool begin();
 
     // Motor control
-    void buzzFinger(uint8_t finger, uint8_t amplitude);
-    void stopFinger(uint8_t finger);
+    void activate(uint8_t finger, uint8_t amplitude);
+    void deactivate(uint8_t finger);
     void stopAllMotors();
     bool isMotorActive(uint8_t finger) const;
 
     // DRV2605 configuration
     void setFrequency(uint8_t finger, uint16_t frequencyHz);
     void setActuatorType(bool useLRA);
+
+    // I2C Pre-Selection (Latency Optimization)
+    // Moves mux selection off critical path for ~100μs vs ~500μs activation
+    bool selectChannelPersistent(uint8_t finger);  // Opens mux channel, keeps it open
+    void setFrequencyDirect(uint8_t finger, uint16_t frequencyHz);  // Sets freq on pre-selected channel
+    void activatePreSelected(uint8_t finger, uint8_t amplitude);  // Fast activation (~100μs)
+    int8_t getPreSelectedFinger() const;  // Returns currently pre-selected finger (-1 if none)
 
     // Battery monitoring
     float getBatteryVoltage();
@@ -708,6 +716,7 @@ private:
     Adafruit_TCA9548A _tca;
     Adafruit_DRV2605 _drv[4];
     bool _motorActive[4];
+    int8_t _preSelectedFinger;  // Currently pre-selected finger (-1 if none)
 
     void configureDRV2605(Adafruit_DRV2605& driver);
 };
@@ -725,10 +734,16 @@ if (!hardware.begin()) {
     while (true) { delay(1000); }
 }
 
-// Activate motor
-hardware.buzzFinger(0, 100);  // Index finger at ~78% (100/127)
+// Activate motor (standard path)
+hardware.activate(0, 100);  // Index finger at ~78% (100/127)
 delay(100);
-hardware.stopFinger(0);
+hardware.deactivate(0);
+
+// Fast path using I2C pre-selection (for FreeRTOS motor task)
+hardware.selectChannelPersistent(0);  // Pre-select channel
+hardware.setFrequencyDirect(0, 250);  // Set frequency
+// ... later, when event is due:
+hardware.activatePreSelected(0, 100);  // ~100μs vs ~500μs
 
 // Stop all motors
 hardware.stopAllMotors();
@@ -1633,9 +1648,9 @@ enum class Result : uint8_t {
 };
 
 // Example usage
-Result result = hardware.buzzFinger(finger, amplitude);
+Result result = hardware.activate(finger, amplitude);
 if (result != Result::OK) {
-    Serial.printf("[ERROR] buzzFinger failed: %d\n", (int)result);
+    Serial.printf("[ERROR] activate failed: %d\n", (int)result);
 }
 
 // BLE error response format
