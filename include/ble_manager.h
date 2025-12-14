@@ -58,11 +58,14 @@ enum class ConnectionType : uint8_t {
  * @brief Information about a BLE connection (BlueBuzzah-specific)
  */
 struct BBConnection {
+    // SP-C6 fix: Mark connection state fields as volatile since they are accessed
+    // from both main loop (reads) and BLE callbacks (writes)
+    // This prevents stale cached values but doesn't provide full atomicity
     uint16_t connHandle;
-    ConnectionType type;
-    bool isConnected;
+    volatile ConnectionType type;
+    volatile bool isConnected;
     uint32_t connectedAt;
-    bool pendingIdentify;       // Waiting for IDENTIFY message
+    volatile bool pendingIdentify;       // Waiting for IDENTIFY message
     uint32_t identifyStartTime; // When identification period started
 
     // Message receive buffer

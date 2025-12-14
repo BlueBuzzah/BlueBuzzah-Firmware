@@ -59,7 +59,8 @@
 #define CONNECTION_TIMEOUT_MS 30000  // 30 seconds connection timeout
 
 // BLE parameters
-#define BLE_INTERVAL_MS 8            // Connection interval (rounded from 7.5ms)
+#define BLE_INTERVAL_MIN_MS 8        // Minimum connection interval (7.5ms = 6 units is BLE spec min)
+#define BLE_INTERVAL_MAX_MS 12       // Maximum connection interval (tighter than default 15ms)
 #define BLE_TIMEOUT_MS 4000          // Supervision timeout (4 seconds)
 #define BLE_ADV_INTERVAL_MS 500      // Advertising interval
 
@@ -69,12 +70,21 @@
 #define COMMAND_TIMEOUT_MS 5000      // General BLE command timeout
 
 // PTP-style clock synchronization
-#define SYNC_LEAD_TIME_US 50000      // 50ms default lead time, adaptive max is 100ms
+#define SYNC_LEAD_TIME_US 50000      // 50ms default lead time for PING-based RTT calculation
+                                      // Actual lead time is adaptive based on measured RTT + margin
+#define SYNC_PROCESSING_OVERHEAD_US 20000  // 20ms overhead for processing on SECONDARY
+                                            // Accounts for: BLE callback (~5ms), deserialization (~5ms),
+                                            // event staging (~5ms), queue forwarding (~5ms)
+// NOTE: MACROCYCLE_TRANSMISSION_OVERHEAD_US was removed after fixing the DEBUG_FLASH
+// blocking bug. The old code's delayMicroseconds() blocked BLE callbacks for ~300ms,
+// making it appear that MACROCYCLE transmission took much longer than it actually does.
+// Actual MACROCYCLE BLE transmission is ~40-50ms (included in RTT-based calculation).
 #define SYNC_MIN_VALID_SAMPLES 5     // Minimum samples before clock sync is valid
 #define SYNC_OFFSET_EMA_ALPHA_NUM 1  // Slow EMA α = 1/10 = 0.1 for continuous updates
 #define SYNC_OFFSET_EMA_ALPHA_DEN 10
 #define SYNC_MAINTENANCE_INTERVAL_MS 500  // Periodic sync interval during therapy (reduces drift)
-#define SYNC_RTT_QUALITY_THRESHOLD_US 80000  // 80ms - reject samples with RTT above this
+#define SYNC_RTT_QUALITY_THRESHOLD_US 120000 // 120ms network RTT threshold (Phase 5A)
+                                              // Accepts more samples while still rejecting very poor BLE conditions
 
 // Unified keepalive + clock sync (PING/PONG)
 #define KEEPALIVE_INTERVAL_MS 1000   // 1 second between PING messages (unified keepalive + clock sync)

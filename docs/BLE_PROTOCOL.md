@@ -166,11 +166,11 @@ flowchart TD
 ### Internal Synchronization Timing
 
 During active therapy:
-- **BUZZ messages:** Sent every ~200ms
+- **MACROCYCLE messages:** Sent every ~2 seconds (batches of 12 events)
 - **BLE latency:** 7.5-20ms
 - **Processing time:** <5ms per command
-- **Synchronization accuracy:** ±20ms between gloves
-- **Drift:** Zero (command-driven, not time-based)
+- **Synchronization accuracy:** <2ms between gloves (IEEE 1588 PTP clock sync)
+- **Bandwidth efficiency:** 72% reduction vs legacy individual messages
 
 ---
 
@@ -772,8 +772,7 @@ PRIMARY and SECONDARY exchange synchronization messages for therapy and keepaliv
 |---------|--------|---------|
 | PING | `PING:seq\|T1` | Unified keepalive + clock sync (every 1s, all states) |
 | PONG | `PONG:seq\|0\|T2\|T3` | Keepalive + clock sync response |
-| BUZZ | `SYNC:BUZZ:seq\|ts\|finger\|amplitude` | Execute motor activation |
-| MACROCYCLE | `MC:seq\|baseTime\|count\|events...` | Batch of 12 buzz events |
+| MACROCYCLE | `MC:seq\|baseTime\|count\|events...` | Batch of 12 motor activation events |
 | MACROCYCLE_ACK | `MC_ACK:seq` | Macrocycle acknowledgment |
 | START_SESSION | `SYNC:START_SESSION:seq\|ts` | Start therapy |
 | STOP_SESSION | `SYNC:STOP_SESSION:seq\|ts` | Stop therapy |
@@ -869,7 +868,7 @@ During active therapy sessions, PRIMARY sends internal synchronization messages 
 Messages that should be ignored (no `\x04` terminator):
 
 - `SYNC:*` - All internal sync messages
-- `BUZZ:*` - Motor activation commands
+- `MC:*` - MACROCYCLE messages (motor activation batches)
 - `PARAM_UPDATE:*` - Parameter broadcasts
 - `SEED:*` / `SEED_ACK` - Jitter synchronization
 - `GET_BATTERY` / `BATRESPONSE:*` - Battery queries
@@ -882,9 +881,9 @@ Messages that should be ignored (no `\x04` terminator):
 ```
 // Example RX stream during therapy:
 PONG\x04                             ← Response to PING (process)
-SYNC:BUZZ:42|5000000|0|100           ← Internal (ignore - no EOT)
+MC:42|5000000|12|...                 ← Internal MACROCYCLE (ignore - no EOT)
 BATP:3.72\nBATS:3.68\x04             ← Response to BATTERY (process)
-SYNC:BUZZ:43|5200000|1|100           ← Internal (ignore - no EOT)
+SYNC:START_SESSION:1|5200000         ← Internal (ignore - no EOT)
 ```
 
 ---

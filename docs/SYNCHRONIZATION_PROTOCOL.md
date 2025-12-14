@@ -52,9 +52,10 @@ sequenceDiagram
     rect rgb(230, 255, 230)
         Note over P,S: Phase 3: Therapy Session
         P->>S: START_SESSION
-        loop Every buzz event
-            P->>S: BUZZ (activation time)
-            Note over P,S: Both activate at scheduled time
+        loop Every ~2s
+            P->>S: MACROCYCLE (batch of 12 events)
+            S->>P: MACROCYCLE_ACK
+            Note over P,S: Both gloves execute 12 events with <2ms sync
         end
         loop Every 1s (unified keepalive + sync)
             P->>S: PING (T1)
@@ -118,10 +119,28 @@ offset = ((T2 - T1) + (T3 - T4)) / 2
 
 A positive offset means SECONDARY's clock is ahead of PRIMARY.
 
+### RTT Measurement
+
+Round-Trip Time (RTT) is calculated using the IEEE 1588 PTP formula:
+
+```text
+RTT = (T4 - T1) - (T3 - T2)
+```
+
+This formula isolates network latency from SECONDARY processing time:
+- `(T4 - T1)` = total round trip including processing
+- `(T3 - T2)` = SECONDARY processing time
+- Result = pure network latency (BLE transmission delays only)
+
+Excluding processing time provides:
+- More accurate network latency estimates (5-20ms typical)
+- Better quality filtering (rejects poor BLE conditions, not slow processing)
+- Improved lead time precision (adapts to actual network conditions)
+
 ### Filtering and Maintenance
 
 - **Initial sync:** Idle keepalive (1s) accumulates samples, median offset selected
-- **Quality filter:** Exchanges with RTT > 30ms are discarded
+- **Quality filter:** Exchanges with RTT > 80ms are discarded (network latency only)
 - **Minimum valid:** At least 5 good samples required (~5s after connect)
 - **Drift compensation:** Ongoing sync every 1s corrects for crystal drift
 - **Smoothing:** Exponential moving average prevents sudden jumps
@@ -130,28 +149,30 @@ A positive offset means SECONDARY's clock is ahead of PRIMARY.
 
 ## Synchronized Execution
 
-### BUZZ Command Flow
+### MACROCYCLE Command Flow
 
 ```mermaid
 flowchart LR
     subgraph PRIMARY
-        A[Generate event] --> B[Calculate activate_time]
-        B --> C[Send BUZZ]
-        C --> D[Schedule local timer]
+        A[Generate 3 patterns<br/>12 events total] --> B[Calculate base time]
+        B --> C[Send MACROCYCLE]
+        C --> D[Enqueue all 12 events]
+        D --> E[FreeRTOS motor task<br/>executes chain]
     end
 
     subgraph BLE
-        C -.->|3-15ms latency| E
+        C -.->|3-15ms latency| F
     end
 
     subgraph SECONDARY
-        E[Receive BUZZ] --> F[Convert to local time]
-        F --> G[Schedule local timer]
+        F[Receive MACROCYCLE] --> G[Convert to local time]
+        G --> H[Enqueue all 12 events]
+        H --> I[FreeRTOS motor task<br/>executes chain]
     end
 
-    D --> H((Timer fires))
-    G --> H
-    H --> I[Motors activate simultaneously]
+    E --> J((Events fire))
+    I --> J
+    J --> K[Motors activate with <2ms sync]
 ```
 
 ### Lead Time Calculation
@@ -166,7 +187,7 @@ lead_time = average_RTT + safety_margin
 | Parameter | Value | Purpose |
 |-----------|-------|---------|
 | Minimum lead time | 15ms | Accounts for BLE latency |
-| Maximum lead time | 50ms | Must be less than motor ON time |
+| Maximum lead time | 100ms | Adaptive ceiling (default 50ms) |
 | Safety margin | 3× latency variance | Handles jitter |
 
 ### Time Conversion
@@ -183,23 +204,26 @@ local_time = primary_time + clock_offset
 
 ```mermaid
 flowchart TD
-    A[Therapy Pattern Generator] --> B{Next event?}
-    B -->|Buzz| C[Select finger + amplitude]
-    B -->|Relax| D[Wait period]
-
-    C --> E[Create BUZZ command]
-    E --> F[Set activate_time = now + lead_time]
-    F --> G[Send to SECONDARY]
-    G --> H[Schedule PRIMARY activation]
-
-    H --> I{Time reached?}
-    I -->|No| I
-    I -->|Yes| J[Activate motor]
-    J --> K[Motor ON for duration]
-    K --> L[Deactivate motor]
-    L --> B
-
+    A[Therapy Pattern Generator] --> B{Macrocycle ready?}
+    B -->|Yes| C[Generate 3 patterns<br/>12 events total]
+    B -->|No| D[Wait for completion]
     D --> B
+
+    C --> E[Calculate base time<br/>now + lead_time]
+    E --> F[Create MACROCYCLE message]
+    F --> G[Send to SECONDARY]
+    G --> H[Await MACROCYCLE_ACK]
+    H --> I[Enqueue all 12 events]
+
+    I --> J{Next event time?}
+    J -->|Wait| J
+    J -->|Ready| K[FreeRTOS motor task<br/>activates motor]
+    K --> L[Motor ON for duration]
+    L --> M[Auto-deactivate]
+    M --> N{More events?}
+    N -->|Yes| J
+    N -->|No| O[Relax period]
+    O --> B
 ```
 
 ### Macrocycle Structure
@@ -217,9 +241,9 @@ One therapy macrocycle consists of 3 patterns (12 buzz events total) followed by
 | Inter-macrocycle relax | ~1336ms (2× pattern duration) |
 | **Total macrocycle** | **~3.3 seconds** |
 
-### Macrocycle Batching Mode
+### Macrocycle Batching Architecture
 
-When enabled, PRIMARY sends all 12 events in a single MACROCYCLE message instead of 12 individual BUZZ messages. Benefits:
+PRIMARY sends all 12 events in a single MACROCYCLE message. This batching approach provides:
 
 - **~4× reduction in BLE traffic** (~200 bytes vs ~720 bytes)
 - **Zero BLE during motor activity** — all commands sent before first buzz
@@ -261,7 +285,7 @@ stateDiagram-v2
 |-------|---------|--------|
 | No SECONDARY found | 15s | Abort startup |
 | No READY received | 8s | Abort startup |
-| No BUZZ received | 10s | Emergency stop |
+| No MACROCYCLE received | 10s | Emergency stop |
 | No PING/PONG | 6s | Emergency stop + reconnect |
 
 ---
@@ -314,20 +338,9 @@ This unified approach provides continuous clock synchronization (max 1s between 
 
 | Message | Direction | Fields | Example |
 |---------|-----------|--------|---------|
-| `BUZZ` | P → S | seq, ts, finger, amp, dur, freq, activate_time | `BUZZ:42\|5000000\|0\|100\|100\|235\|5050000` |
 | `MACROCYCLE` | P → S | seq, baseTime, count, events... | See below |
 | `MACROCYCLE_ACK` | S → P | seq | `MC_ACK:42` |
 | `DEACTIVATE` | P → S | seq, timestamp | `DEACTIVATE:43\|5100000` |
-
-**BUZZ fields:**
-
-| Field | Description |
-|-------|-------------|
-| finger | Motor index (0-3: index, middle, ring, pinky) |
-| amp | Intensity percentage (0-100) |
-| dur | ON duration in milliseconds |
-| freq | Motor frequency in Hz |
-| activate_time | Scheduled activation (PRIMARY clock, µs) |
 
 **MACROCYCLE format:**
 
@@ -380,7 +393,7 @@ SECONDARY applies clock offset once to baseTime, then schedules all 12 events vi
 | PING/PONG interval | 1s | Unified keepalive + clock sync (all states) |
 | Keepalive timeout (SECONDARY) | 6s | 6 missed PINGs = connection lost |
 | Keepalive timeout (PRIMARY) | 4s | During therapy (emergency shutdown) |
-| BUZZ timeout | 10s | SECONDARY safety halt |
+| MACROCYCLE timeout | 10s | SECONDARY safety halt |
 | Lead time range | 15-100ms | Adaptive scheduling window |
 | BLE connection interval | 7.5ms | Low-latency communication |
 

@@ -12,7 +12,7 @@
 // =============================================================================
 
 TherapyStateMachine::TherapyStateMachine() :
-    _currentState(TherapyState::IDLE),
+    _currentState(TherapyState::IDLE),  // std::atomic supports direct initialization
     _previousState(TherapyState::IDLE),
     _callbackCount(0)
 {
@@ -26,9 +26,9 @@ TherapyStateMachine::TherapyStateMachine() :
 // =============================================================================
 
 void TherapyStateMachine::begin(TherapyState initialState) {
-    _currentState = initialState;
-    _previousState = initialState;
-    Serial.printf("[STATE] Initialized: %s\n", therapyStateToString(_currentState));
+    _currentState.store(initialState, std::memory_order_release);
+    _previousState.store(initialState, std::memory_order_release);
+    Serial.printf("[STATE] Initialized: %s\n", therapyStateToString(initialState));
 }
 
 // =============================================================================
@@ -36,36 +36,50 @@ void TherapyStateMachine::begin(TherapyState initialState) {
 // =============================================================================
 
 bool TherapyStateMachine::transition(StateTrigger trigger) {
-    TherapyState newState = determineNextState(trigger);
+    // TP-2: Thread-safe transition using atomic compare-and-swap
+    // Load current state ONCE and pass to determineNextState to avoid TOCTOU race
+    TherapyState expected = _currentState.load(std::memory_order_acquire);
+    TherapyState newState = determineNextState(expected, trigger);
 
-    if (newState == _currentState) {
+    if (newState == expected) {
         // No state change
         return false;
     }
 
-    // Update state
-    _previousState = _currentState;
-    _currentState = newState;
+    // Atomic compare-and-swap: only update if state hasn't changed
+    // If another thread changed state, we fail and return false
+    if (!_currentState.compare_exchange_strong(expected, newState,
+                                               std::memory_order_acq_rel,
+                                               std::memory_order_acquire)) {
+        // State was changed by another thread - transition failed
+        return false;
+    }
+
+    // Update previous state (safe after successful CAS)
+    _previousState.store(expected, std::memory_order_release);
 
     Serial.printf("[STATE] %s -> %s [%s]\n",
-        therapyStateToString(_previousState),
-        therapyStateToString(_currentState),
+        therapyStateToString(expected),
+        therapyStateToString(newState),
         stateTriggerToString(trigger));
 
     // Notify callbacks
-    StateTransition trans(_previousState, _currentState, trigger);
+    StateTransition trans(expected, newState, trigger);
     notifyCallbacks(trans);
 
     return true;
 }
 
 void TherapyStateMachine::forceState(TherapyState state, const char* reason) {
-    _previousState = _currentState;
-    _currentState = state;
+    // TP-2: Force is intentionally non-atomic (emergency override)
+    // Capture previous before storing new
+    TherapyState previous = _currentState.load(std::memory_order_acquire);
+    _previousState.store(previous, std::memory_order_release);
+    _currentState.store(state, std::memory_order_release);
 
     Serial.printf("[STATE] FORCED: %s -> %s",
-        therapyStateToString(_previousState),
-        therapyStateToString(_currentState));
+        therapyStateToString(previous),
+        therapyStateToString(state));
 
     if (reason) {
         Serial.printf(" (%s)", reason);
@@ -73,17 +87,19 @@ void TherapyStateMachine::forceState(TherapyState state, const char* reason) {
     Serial.println();
 
     // Notify callbacks with special trigger
-    StateTransition trans(_previousState, _currentState, StateTrigger::FORCED_SHUTDOWN, reason);
+    StateTransition trans(previous, state, StateTrigger::FORCED_SHUTDOWN, reason);
     notifyCallbacks(trans);
 }
 
 void TherapyStateMachine::reset() {
-    _previousState = _currentState;
-    _currentState = TherapyState::IDLE;
+    // TP-2: Capture previous before storing new
+    TherapyState previous = _currentState.load(std::memory_order_acquire);
+    _previousState.store(previous, std::memory_order_release);
+    _currentState.store(TherapyState::IDLE, std::memory_order_release);
 
     Serial.println(F("[STATE] Reset to IDLE"));
 
-    StateTransition trans(_previousState, _currentState, StateTrigger::RESET);
+    StateTransition trans(previous, TherapyState::IDLE, StateTrigger::RESET);
     notifyCallbacks(trans);
 }
 
@@ -127,8 +143,9 @@ void TherapyStateMachine::notifyCallbacks(const StateTransition& transition) {
 // STATE TRANSITION LOGIC
 // =============================================================================
 
-TherapyState TherapyStateMachine::determineNextState(StateTrigger trigger) {
-    TherapyState current = _currentState;
+TherapyState TherapyStateMachine::determineNextState(TherapyState current, StateTrigger trigger) {
+    // TP-2: State passed in from caller to avoid TOCTOU race
+    // (caller already loaded it atomically)
 
     switch (trigger) {
         // =====================================================================
@@ -231,14 +248,16 @@ TherapyState TherapyStateMachine::determineNextState(StateTrigger trigger) {
 
         case StateTrigger::PHONE_RECONNECTED:
             if (current == TherapyState::PHONE_DISCONNECTED) {
-                return _previousState;  // Return to previous state
+                // TP-2: Use atomic load for thread-safe read of previous state
+                return _previousState.load(std::memory_order_acquire);
             }
             break;
 
         case StateTrigger::PHONE_TIMEOUT:
             if (current == TherapyState::PHONE_DISCONNECTED) {
                 // Timeout waiting for phone - continue without
-                return _previousState;
+                // TP-2: Use atomic load for thread-safe read of previous state
+                return _previousState.load(std::memory_order_acquire);
             }
             break;
 

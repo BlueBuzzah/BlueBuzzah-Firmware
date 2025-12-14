@@ -123,16 +123,19 @@ bool BLEManager::begin(DeviceRole role, const char* deviceName) {
     Bluefruit.setTxPower(0);
 
     // Configure connection parameters for low-latency communication
-    // Values in 1.25ms units: 6 = 7.5ms, 12 = 15ms
+    // Phase 3: Reduced from 7.5ms to 5ms minimum for lower jitter
+    // Values in 1.25ms units (BLE spec): N * 1.25ms = actual interval
     // Both roles need this for proper PTP clock sync (RTT < 30ms required)
+    constexpr uint16_t connIntervalMin = (BLE_INTERVAL_MIN_MS * 1000) / 1250;  // 5ms -> 4 units
+    constexpr uint16_t connIntervalMax = (BLE_INTERVAL_MAX_MS * 1000) / 1250;  // 10ms -> 8 units
     if (role == DeviceRole::PRIMARY) {
         // PRIMARY is peripheral - phone/SECONDARY connect to us
-        Bluefruit.Periph.setConnInterval(6, 12);  // 7.5ms - 15ms
+        Bluefruit.Periph.setConnInterval(connIntervalMin, connIntervalMax);
     } else {
         // SECONDARY is central - we connect to PRIMARY
         // Without this, SoftDevice uses default ~30-50ms interval,
         // causing RTT > 30ms and clock sync failures
-        Bluefruit.Central.setConnInterval(6, 12);  // 7.5ms - 15ms
+        Bluefruit.Central.setConnInterval(connIntervalMin, connIntervalMax);
     }
 
     // Setup role-specific configuration
@@ -232,11 +235,13 @@ void BLEManager::update() {
     }
 
     // Check for identification timeout on pending connections
+    // SP-H3 fix: Use fresh millis() for timeout check to avoid stale timestamp
+    uint32_t timeoutNow = millis();
     for (int i = 0; i < MAX_CONNECTIONS; i++) {
         BBConnection* conn = &_connections[i];
         if (conn->isConnected && conn->pendingIdentify) {
             // Check if timeout elapsed
-            if (now - conn->identifyStartTime >= IDENTIFY_TIMEOUT_MS) {
+            if (timeoutNow - conn->identifyStartTime >= IDENTIFY_TIMEOUT_MS) {
                 // No IDENTIFY message received - classify as PHONE
                 Serial.println(F("[BLE] IDENTIFY timeout - classifying as PHONE"));
                 conn->type = ConnectionType::PHONE;

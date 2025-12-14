@@ -1153,7 +1153,8 @@ SYNC:<command>:<key1>|<val1>|<key2>|<val2>|...
 | PAUSE_SESSION  | P->S      | Pause current session     |
 | RESUME_SESSION | P->S      | Resume paused session     |
 | STOP_SESSION   | P->S      | Stop session              |
-| BUZZ           | P->S      | Trigger motor activation  |
+| MACROCYCLE     | P->S      | Batch of 12 motor events  |
+| MACROCYCLE_ACK | S->P      | Macrocycle acknowledgment |
 | DEACTIVATE     | P->S      | Stop motor activation     |
 | PING           | P->S      | Keepalive + clock sync    |
 | PONG           | S->P      | Keepalive + clock sync    |
@@ -1161,9 +1162,10 @@ SYNC:<command>:<key1>|<val1>|<key2>|<val2>|...
 **Examples:**
 ```
 START_SESSION:1|1234567890
-BUZZ:42|1234567890|2|100
+MC:42|5000000|12|100,0,100,100,235|67,1,100,100,235|...
 PING:1|1234567890
 PONG:1|0|1234567900|1234567950
+MC_ACK:42
 ```
 
 **Usage:**
@@ -1174,8 +1176,8 @@ SyncProtocol sync(bleManager, DeviceRole::PRIMARY);
 
 // Callback for received commands (SECONDARY)
 void onSyncCommand(const char* command, const char* params) {
-    if (strcmp(command, "BUZZ") == 0) {
-        // Parse params and execute buzz
+    if (strcmp(command, "MACROCYCLE") == 0) {
+        // Parse params and execute macrocycle batch
     }
 }
 sync.setCommandCallback(onSyncCommand);
@@ -1489,7 +1491,7 @@ void runPrimaryLoop() {
 }
 
 void runSecondaryLoop() {
-    // Check keepalive timeout (6s without PING/BUZZ/MACROCYCLE)
+    // Check keepalive timeout (6s without PING/MACROCYCLE)
     if (syncProtocol->isKeepaliveTimeout()) {
         hardware.stopAllMotors();
         stateMachine.forceState(TherapyState::CONNECTION_LOST);

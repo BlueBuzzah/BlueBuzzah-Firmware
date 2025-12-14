@@ -591,7 +591,7 @@ SessionResult TherapyEngine::runSession(const TherapyConfig& config) {
         for (uint8_t seqIdx = 0; seqIdx < 3; seqIdx++) {
 
             if (role_ == DeviceRole::PRIMARY) {
-                // PRIMARY: Send BUZZ command with scheduled execution time
+                // PRIMARY: Send MACROCYCLE with all 12 events
                 sendBuzz(seqIdx);
 
                 // PRIMARY executes its own buzz sequence
@@ -599,12 +599,12 @@ SessionResult TherapyEngine::runSession(const TherapyConfig& config) {
                 executeBuzzSequence(leftPattern_);
 
             } else {  // SECONDARY
-                // SECONDARY: Wait for BUZZ command (BLOCKING)
+                // SECONDARY: Wait for MACROCYCLE command (BLOCKING)
                 int8_t receivedIdx = receiveBuzz(10000);
 
                 if (receivedIdx < 0) {
                     // Timeout - PRIMARY disconnected
-                    Serial.println(F("[SECONDARY] ERROR: BUZZ timeout!"));
+                    Serial.println(F("[SECONDARY] ERROR: MACROCYCLE timeout!"));
                     hardware_.allMotorsOff();
                     indicateError();
                     return SessionResult::ERROR_DISCONNECTED;
@@ -1095,15 +1095,15 @@ config.syncLed = true;  // Flash LED at end of each macrocycle
 
 **Causes**:
 1. BLE connection interval >7.5ms
-2. BUZZ timeout (check SECONDARY serial logs)
+2. MACROCYCLE timeout (check SECONDARY serial logs)
 3. Pattern desync (check SEED_ACK received)
 
 **Fix**:
 ```
 Restart both gloves
 Monitor serial output for:
-"[PRIMARY] Sent BUZZ:0"
-"[SECONDARY] Received BUZZ:0"
+"[PRIMARY] Sent MACROCYCLE:0"
+"[SECONDARY] Received MACROCYCLE:0"
 Time delta should be <20ms
 ```
 
@@ -1146,7 +1146,7 @@ uint32_t sessionDurationMs = config_.sessionMinutes * 60UL * 1000UL;
 
 ## See Also
 
-- **[SYNCHRONIZATION_PROTOCOL.md](SYNCHRONIZATION_PROTOCOL.md)** - PRIMARY ↔ SECONDARY BUZZ command coordination
+- **[SYNCHRONIZATION_PROTOCOL.md](SYNCHRONIZATION_PROTOCOL.md)** - PRIMARY ↔ SECONDARY MACROCYCLE coordination
 - **[CALIBRATION_GUIDE.md](CALIBRATION_GUIDE.md)** - Motor intensity calibration workflow
 - **[ARCHITECTURE.md](ARCHITECTURE.md)** - Hardware reference and DRV2605 specs
 - **[BLE_PROTOCOL.md](BLE_PROTOCOL.md)** - Session control and parameter adjustment commands

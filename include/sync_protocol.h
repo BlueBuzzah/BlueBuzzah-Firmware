@@ -59,12 +59,12 @@ struct SyncDataPair {
  *
  * Usage:
  *   // Create command
- *   SyncCommand cmd = SyncCommand::createBuzz(42, 0, 100);
+ *   SyncCommand cmd = SyncCommand::createPing(42, micros());
  *
  *   // Serialize
  *   char buffer[128];
  *   cmd.serialize(buffer, sizeof(buffer));
- *   // Result: "BUZZ:42|1234567890|0|100"
+ *   // Result: "PING:42|1234567890"
  *
  *   // Parse received message
  *   SyncCommand received;
@@ -182,6 +182,17 @@ public:
     int32_t getDataInt(const char* key, int32_t defaultValue = 0) const;
 
     /**
+     * @brief Get unsigned integer data value by key
+     * @param key Key to look up
+     * @param defaultValue Value to return if key not found
+     * @return Unsigned integer value or defaultValue
+     *
+     * NOTE: Use this for timestamp high/low values to avoid sign extension
+     * issues when values exceed 2^31 (after ~35 minutes uptime).
+     */
+    uint32_t getDataUnsigned(const char* key, uint32_t defaultValue = 0) const;
+
+    /**
      * @brief Check if data key exists
      */
     bool hasData(const char* key) const;
@@ -219,27 +230,6 @@ public:
      * @brief Create STOP_SESSION command
      */
     static SyncCommand createStopSession(uint32_t sequenceId = 0);
-
-    /**
-     * @brief Create BUZZ command with motor activation duration and frequency (legacy)
-     * @param sequenceId Sequence ID for the command
-     * @param finger Finger index (0-3)
-     * @param amplitude Amplitude percentage (0-100)
-     * @param durationMs How long motor should stay active (TIME_ON from profile)
-     * @param frequencyHz Motor frequency in Hz (210-260 for Custom vCR)
-     */
-    static SyncCommand createBuzz(uint32_t sequenceId, uint8_t finger, uint8_t amplitude, uint32_t durationMs, uint16_t frequencyHz);
-
-    /**
-     * @brief Create BUZZ command with scheduled activation time (PTP sync)
-     * @param sequenceId Sequence ID for the command
-     * @param finger Finger index (0-3)
-     * @param amplitude Amplitude percentage (0-100)
-     * @param durationMs How long motor should stay active (TIME_ON from profile)
-     * @param frequencyHz Motor frequency in Hz (210-260 for Custom vCR)
-     * @param activateTime Absolute time to activate (in PRIMARY clock, microseconds)
-     */
-    static SyncCommand createBuzzWithTime(uint32_t sequenceId, uint8_t finger, uint8_t amplitude, uint32_t durationMs, uint16_t frequencyHz, uint64_t activateTime);
 
     /**
      * @brief Create DEACTIVATE command
@@ -368,6 +358,15 @@ void resetMicrosOverflow();
 inline uint32_t getMillis() {
     return millis();
 }
+
+/**
+ * @brief Get current time in milliseconds (64-bit, overflow-safe)
+ *
+ * Tracks overflow of the 32-bit millis() counter to provide a true 64-bit
+ * timestamp. Must be called at least once per 49.7 days to detect overflow.
+ * Interrupt-safe (uses same protection pattern as getMicros()).
+ */
+uint64_t getMillis64();
 
 // =============================================================================
 // SEQUENCE ID GENERATOR

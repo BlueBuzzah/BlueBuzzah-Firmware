@@ -14,24 +14,83 @@
 // =============================================================================
 
 // Overflow tracking state (file-scope, single instance)
-// volatile as defensive measure, though all callers are main loop context
+// volatile for ISR visibility
 static volatile uint32_t s_lastMicros = 0;
 static volatile uint32_t s_overflowCount = 0;
 
 uint64_t getMicros() {
+    // CRITICAL: This function is called from both main loop and BLE callback context.
+    // Must be interrupt-safe to prevent race conditions that cause false overflow detection.
+    //
+    // Race condition without protection:
+    // 1. Main loop: now = micros() → 1,000,000
+    // 2. ISR fires, calls getMicros(), sets s_lastMicros = 1,000,100
+    // 3. Main loop: 1,000,000 < 1,000,100? YES → false overflow!
+    // 4. s_overflowCount++ → timestamp jumps 71 minutes!
+
+    // Disable interrupts for atomic read-modify-write
+    uint32_t primask = __get_PRIMASK();
+    __disable_irq();
+
     uint32_t now = micros();
+
     // Detect overflow: if current value is less than last, we wrapped
     if (now < s_lastMicros) {
         s_overflowCount++;
     }
     s_lastMicros = now;
+
+    // Capture values before re-enabling interrupts
+    uint32_t overflows = s_overflowCount;
+
+    // Restore interrupt state (only re-enable if they were enabled before)
+    __set_PRIMASK(primask);
+
     // Combine overflow count (upper 32 bits) with current micros (lower 32 bits)
-    return ((uint64_t)s_overflowCount << 32) | now;
+    return ((uint64_t)overflows << 32) | now;
 }
 
 void resetMicrosOverflow() {
+    uint32_t primask = __get_PRIMASK();
+    __disable_irq();
+
     s_lastMicros = 0;
     s_overflowCount = 0;
+
+    __set_PRIMASK(primask);
+}
+
+// =============================================================================
+// 64-BIT MILLISECOND TIMESTAMP WITH OVERFLOW TRACKING
+// =============================================================================
+
+// Separate overflow tracking state for millis (independent of micros)
+// volatile for ISR visibility
+static volatile uint32_t s_lastMillis = 0;
+static volatile uint32_t s_millisOverflowCount = 0;
+
+uint64_t getMillis64() {
+    // Interrupt-safe 64-bit millis - same pattern as getMicros()
+    // millis() wraps every 49.7 days; this tracks wraps for true 64-bit timestamp
+    uint32_t primask = __get_PRIMASK();
+    __disable_irq();
+
+    uint32_t now = millis();
+
+    // Detect overflow: if current value is less than last, we wrapped
+    if (now < s_lastMillis) {
+        s_millisOverflowCount++;
+    }
+    s_lastMillis = now;
+
+    // Capture values before re-enabling interrupts
+    uint32_t overflows = s_millisOverflowCount;
+
+    // Restore interrupt state
+    __set_PRIMASK(primask);
+
+    // Combine overflow count (upper 32 bits) with current millis (lower 32 bits)
+    return ((uint64_t)overflows << 32) | now;
 }
 
 // =============================================================================
@@ -337,6 +396,15 @@ int32_t SyncCommand::getDataInt(const char* key, int32_t defaultValue) const {
     return strtol(value, nullptr, 10);
 }
 
+uint32_t SyncCommand::getDataUnsigned(const char* key, uint32_t defaultValue) const {
+    const char* value = getData(key);
+    if (!value) {
+        return defaultValue;
+    }
+    // Use strtoul for unsigned parsing - avoids sign extension when values > 2^31
+    return static_cast<uint32_t>(strtoul(value, nullptr, 10));
+}
+
 bool SyncCommand::hasData(const char* key) const {
     return getData(key) != nullptr;
 }
@@ -367,39 +435,6 @@ SyncCommand SyncCommand::createResumeSession(uint32_t sequenceId) {
 
 SyncCommand SyncCommand::createStopSession(uint32_t sequenceId) {
     return SyncCommand(SyncCommandType::STOP_SESSION, sequenceId);
-}
-
-SyncCommand SyncCommand::createBuzz(uint32_t sequenceId, uint8_t finger, uint8_t amplitude, uint32_t durationMs, uint16_t frequencyHz) {
-    SyncCommand cmd(SyncCommandType::BUZZ, sequenceId);
-    cmd.setData("0", (int32_t)finger);
-    cmd.setData("1", (int32_t)amplitude);
-    cmd.setData("2", (int32_t)durationMs);
-    cmd.setData("3", (int32_t)frequencyHz);
-    return cmd;
-}
-
-SyncCommand SyncCommand::createBuzzWithTime(uint32_t sequenceId, uint8_t finger, uint8_t amplitude, uint32_t durationMs, uint16_t frequencyHz, uint64_t activateTime) {
-    SyncCommand cmd(SyncCommandType::BUZZ, sequenceId);
-    cmd.setData("0", (int32_t)finger);
-    cmd.setData("1", (int32_t)amplitude);
-    cmd.setData("2", (int32_t)durationMs);
-    cmd.setData("3", (int32_t)frequencyHz);
-
-    // Store activation time (for <71 minute uptime, only low 32 bits needed)
-    // CRITICAL: Use setDataUnsigned() - timestamps are never negative
-    // Using signed setData() causes sign inversion when bit 31 is set (uptime > 35 min)
-    uint32_t timeHigh = (uint32_t)(activateTime >> 32);
-    uint32_t timeLow = (uint32_t)(activateTime & 0xFFFFFFFF);
-
-    if (timeHigh == 0) {
-        // Simple format: finger|amp|dur|freq|activateTimeLow
-        cmd.setDataUnsigned("4", timeLow);
-    } else {
-        // Full 64-bit: finger|amp|dur|freq|timeHigh|timeLow
-        cmd.setDataUnsigned("4", timeHigh);
-        cmd.setDataUnsigned("5", timeLow);
-    }
-    return cmd;
 }
 
 SyncCommand SyncCommand::createDeactivate(uint32_t sequenceId) {
@@ -578,7 +613,8 @@ bool SyncCommand::deserializeMacrocycle(const char* message, size_t messageLen, 
     ptr = endptr + 1;
 
     // Reconstruct 64-bit signed offset
-    macrocycle.clockOffset = ((int64_t)offHigh << 32) | offLow;
+    // SP-C2 fix: Explicit cast to uint64_t for clean bit operations with signed offset
+    macrocycle.clockOffset = ((int64_t)offHigh << 32) | static_cast<uint64_t>(offLow);
 
     // Parse durationMs
     macrocycle.durationMs = (uint16_t)strtoul(ptr, &endptr, 10);
@@ -715,7 +751,8 @@ void SimpleSyncProtocol::addOffsetSample(int64_t offset) {
 
     // Compute median when we have enough samples
     if (_offsetSampleCount >= SYNC_MIN_VALID_SAMPLES) {
-        // Copy samples to temp array for sorting
+        // Phase 5B: Outlier rejection using MAD (Median Absolute Deviation)
+        // Step 1: Compute preliminary median from all samples
         int64_t sorted[OFFSET_SAMPLE_COUNT];
         for (uint8_t i = 0; i < _offsetSampleCount; i++) {
             sorted[i] = _offsetSamples[i];
@@ -732,14 +769,53 @@ void SimpleSyncProtocol::addOffsetSample(int64_t offset) {
             sorted[j + 1] = key;
         }
 
-        // Get median
+        // Get preliminary median
+        int64_t prelimMedian;
         if (_offsetSampleCount % 2 == 0) {
-            // Even count: average of two middle values
             uint8_t mid = _offsetSampleCount / 2;
-            _medianOffset = (sorted[mid - 1] + sorted[mid]) / 2;
+            prelimMedian = (sorted[mid - 1] + sorted[mid]) / 2;
         } else {
-            // Odd count: middle value
-            _medianOffset = sorted[_offsetSampleCount / 2];
+            prelimMedian = sorted[_offsetSampleCount / 2];
+        }
+
+        // Step 2: Filter outliers (deviation > 5ms from preliminary median)
+        // This removes samples affected by BLE retransmissions or interference
+        constexpr int64_t OUTLIER_THRESHOLD_US = 5000;  // 5ms
+        int64_t filtered[OFFSET_SAMPLE_COUNT];
+        uint8_t filteredCount = 0;
+
+        for (uint8_t i = 0; i < _offsetSampleCount; i++) {
+            int64_t deviation = _offsetSamples[i] - prelimMedian;
+            if (deviation < 0) deviation = -deviation;  // abs()
+
+            if (deviation <= OUTLIER_THRESHOLD_US) {
+                filtered[filteredCount++] = _offsetSamples[i];
+            }
+        }
+
+        // Step 3: Compute final median from filtered samples
+        if (filteredCount >= SYNC_MIN_VALID_SAMPLES) {
+            // Sort filtered samples
+            for (uint8_t i = 1; i < filteredCount; i++) {
+                int64_t key = filtered[i];
+                int8_t j = static_cast<int8_t>(i - 1);
+                while (j >= 0 && filtered[j] > key) {
+                    filtered[j + 1] = filtered[j];
+                    j--;
+                }
+                filtered[j + 1] = key;
+            }
+
+            // Get final median from filtered samples
+            if (filteredCount % 2 == 0) {
+                uint8_t mid = filteredCount / 2;
+                _medianOffset = (filtered[mid - 1] + filtered[mid]) / 2;
+            } else {
+                _medianOffset = filtered[filteredCount / 2];
+            }
+        } else {
+            // Not enough non-outlier samples, use preliminary median
+            _medianOffset = prelimMedian;
         }
 
         _clockSyncValid = true;
@@ -778,7 +854,9 @@ void SimpleSyncProtocol::updateOffsetEMA(int64_t offset) {
 
     // Store for next drift calculation
     _lastMeasuredOffset = offset;
-    _lastOffsetTime = now;
+    // SP-C4 fix: Capture fresh millis() just before storing to avoid stale timestamp
+    // (original captured 'now' at function start, creating time gap that causes drift errors)
+    _lastOffsetTime = millis();
 
     // EMA: new = α * measured + (1-α) * previous
     _medianOffset = (SYNC_OFFSET_EMA_ALPHA_NUM * offset +
@@ -796,8 +874,29 @@ int64_t SimpleSyncProtocol::getCorrectedOffset() const {
     // Apply drift compensation based on time since last measurement
     if (_lastOffsetTime > 0) {
         uint32_t elapsed = millis() - _lastOffsetTime;
-        int64_t driftCorrection = (int64_t)(_driftRateUsPerMs * (float)elapsed);
-        return _medianOffset + driftCorrection;
+
+        // SAFETY: Cap elapsed time to prevent runaway drift correction
+        // If we haven't had a sync update in >10s, something is wrong
+        // Limit to 10 seconds max to prevent overflow
+        if (elapsed > 10000) {
+            elapsed = 10000;
+        }
+
+        // SAFETY: Cap drift rate to reasonable bounds (±100 ppm = ±0.1 µs/ms)
+        // Crystal oscillators typically drift ±20-50 ppm
+        // Anything larger indicates bad measurements
+        float cappedDriftRate = _driftRateUsPerMs;
+        if (cappedDriftRate > 0.1f) cappedDriftRate = 0.1f;
+        if (cappedDriftRate < -0.1f) cappedDriftRate = -0.1f;
+
+        int64_t driftCorrection = (int64_t)(cappedDriftRate * (float)elapsed);
+
+        // Note: Offset can be large when devices boot at different times
+        // The MACROCYCLE handler validates ±30 second reasonableness
+        // We only apply drift correction, no artificial cap here
+        int64_t result = _medianOffset + driftCorrection;
+
+        return result;
     }
 
     return _medianOffset;
@@ -830,28 +929,41 @@ bool SimpleSyncProtocol::addOffsetSampleWithQuality(int64_t offset, uint32_t rtt
 uint32_t SimpleSyncProtocol::calculateAdaptiveLeadTime() const {
     // If not enough samples, use conservative default
     if (_sampleCount < MIN_SAMPLES) {
-        return SYNC_LEAD_TIME_US;  // Default 50ms
+        return SYNC_LEAD_TIME_US + SYNC_PROCESSING_OVERHEAD_US;
+        // Default 50ms + 20ms processing = 70ms
     }
 
-    // Calculate lead time based on RTT statistics:
-    // Lead time = RTT + 3σ margin (ensures message arrives before target time)
+    // Calculate lead time based on RTT statistics + processing overhead:
+    // Lead time = RTT + 3σ margin + processing overhead
+    //
+    // Processing overhead accounts for:
+    // - BLE callback processing (~5ms)
+    // - Message deserialization (~5ms)
+    // - Event staging in motorEventBuffer (~5ms)
+    // - Queue forwarding to activationQueue (~5ms)
+    // Total: ~20ms typical
+    //
+    // Note: MACROCYCLE_TRANSMISSION_OVERHEAD was removed after fixing the
+    // DEBUG_FLASH blocking bug. The old delayMicroseconds() call blocked
+    // BLE callback processing for ~300ms, making MACROCYCLE appear to take
+    // much longer to transmit than it actually does. Actual MACROCYCLE BLE
+    // transmission is similar to PING (~40-50ms one-way).
     //
     // Note: _smoothedLatencyUs is one-way latency, so RTT = 2 * _smoothedLatencyUs
     // _rttVariance is already one-way variance, so RTT variance scale = 2 * _rttVariance
     uint32_t avgRTT = _smoothedLatencyUs * 2;  // RTT = 2 * one-way
     uint32_t margin = _rttVariance * 6;        // 3-sigma * 2 (one-way to RTT scale)
 
-    // Lead time = RTT + margin (NOT 2x RTT - that was a bug!)
-    uint32_t leadTime = avgRTT + margin;
+    // Lead time = RTT + margin + processing overhead
+    uint32_t leadTime = avgRTT + margin + SYNC_PROCESSING_OVERHEAD_US;
 
     // Clamp to reasonable bounds:
-    // - Minimum 15ms: ensures enough time for BLE connection event + transmission
-    // - Maximum 100ms: should not exceed TIME_ON (100ms) to prevent deactivation
-    //   timing issues. SECONDARY handles this correctly; PRIMARY is borderline safe.
-    if (leadTime < 15000) {
-        leadTime = 15000;
-    } else if (leadTime > 100000) {
-        leadTime = 100000;
+    // - Minimum 65ms: Covers RTT (~40ms) + variance (~5ms) + processing (20ms)
+    // - Maximum 150ms: Conservative upper bound for worst-case BLE conditions
+    if (leadTime < 65000) {
+        leadTime = 65000;
+    } else if (leadTime > 150000) {
+        leadTime = 150000;
     }
 
     return leadTime;

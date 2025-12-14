@@ -30,10 +30,9 @@
 #include "menu_controller.h"
 #include "profile_manager.h"
 #include "latency_metrics.h"
-#include "sync_timer.h"
-#include "timer_scheduler.h"
 #include "deferred_queue.h"
 #include "activation_queue.h"
+#include "motor_event_buffer.h"
 
 // =============================================================================
 // CONFIGURATION
@@ -77,9 +76,10 @@ bool wasTherapyRunning = false;
 
 // Boot window auto-start tracking (PRIMARY only)
 // When SECONDARY connects but phone doesn't within 30s, auto-start therapy
-uint32_t bootWindowStart = 0;    // When SECONDARY connected (starts countdown)
-bool bootWindowActive = false;   // Whether we're waiting for phone
-bool autoStartTriggered = false; // Prevent repeated auto-starts
+// SP-H1 fix: Mark as volatile since written in BLE callback, read in loop
+volatile uint32_t bootWindowStart = 0;    // When SECONDARY connected (starts countdown)
+volatile bool bootWindowActive = false;   // Whether we're waiting for phone
+bool autoStartTriggered = false; // Prevent repeated auto-starts (only accessed from main loop)
 
 // Keepalive monitoring (bidirectional via PING/PONG)
 // MUST be volatile: updated in BLE callback context, read in main loop
@@ -96,12 +96,9 @@ static constexpr uint32_t PRIMARY_KEEPALIVE_TIMEOUT_MS = 6000; // 6 seconds
 volatile uint64_t pingStartTime = 0; // Timestamp when PING was sent (micros)
 volatile uint64_t pingT1 = 0;        // T1 for PTP offset calculation
 
-// SECONDARY non-blocking motor deactivation
-int8_t activeMotorFinger = -1;    // Currently active motor (-1 = none)
-uint32_t motorDeactivateTime = 0; // Time to deactivate motor (millis)
-
-// Safety shutdown flag - set by BLE callback (ISR context), processed by loop
-volatile bool safetyShutdownPending = false;
+// SP-C5 fix: Use binary semaphore instead of volatile bool to prevent missed signals
+// Old pattern had race: callback sets true, loop reads+clears, callback sets again, signal lost
+SemaphoreHandle_t safetyShutdownSema = nullptr;
 
 // Debug flash state (synchronized LED flash at macrocycle start)
 bool debugFlashActive = false;
@@ -109,37 +106,203 @@ uint32_t debugFlashEndTime = 0;
 RGBColor savedLedColor;
 LEDPattern savedLedPattern = LEDPattern::SOLID;
 
+// Pending PTP-scheduled flash (non-blocking - checked in loop())
+// These must be volatile: written in BLE callback, read in main loop
+static volatile bool g_pendingFlashActive = false;
+static volatile uint64_t g_pendingFlashTime = 0;
+
 // Finger names for display (4 fingers per hand - index through pinky, no thumb per v1)
 const char *FINGER_NAMES[] = {"Index", "Middle", "Ring", "Pinky"};
 
 // =============================================================================
 // FREERTOS MOTOR TASK
 // =============================================================================
-// High-priority task (Priority 4/HIGHEST) for motor activations.
-// Timer ISR notifies this task via vTaskNotifyGiveFromISR().
-// Task preempts main loop to ensure motor timing isn't blocked by Serial/BLE.
+// High-priority task (Priority 4/HIGHEST) for motor events.
+// Uses FreeRTOS timing + busy-wait for sub-millisecond precision.
+// Handles BOTH activations AND deactivations from unified event queue.
 
 static TaskHandle_t motorTaskHandle = nullptr;
 
 /**
- * @brief High-priority motor task for timer-triggered activations
+ * @brief Pre-select the next activation's I2C channel
+ *
+ * Called after a DEACTIVATE to prepare for the next ACTIVATE.
+ * This moves the mux selection and frequency setup OFF the critical path,
+ * reducing activation latency from ~500μs to ~100μs.
+ */
+static void preSelectNextActivation() {
+    MotorEvent nextEvent;
+    if (activationQueue.peekNextEvent(nextEvent) &&
+        nextEvent.type == MotorEventType::ACTIVATE &&
+        haptic.isEnabled(nextEvent.finger)) {
+        // Pre-select channel and set frequency (non-critical path)
+        if (haptic.selectChannelPersistent(nextEvent.finger)) {
+            haptic.setFrequencyDirect(nextEvent.finger, nextEvent.frequencyHz);
+        }
+    }
+}
+
+/**
+ * @brief Execute a motor event (activation or deactivation)
+ * @param event The motor event to execute
+ *
+ * M1 fix: Captures lateness AFTER motor I2C operations for accurate timing.
+ * H6 fix: Handles 64-bit lateness values correctly in printf.
+ * Phase 2: Uses I2C pre-selection for faster activation when available.
+ */
+static void executeMotorEvent(const MotorEvent& event) {
+    uint64_t beforeOp = getMicros();
+
+    if (event.type == MotorEventType::ACTIVATE) {
+        if (haptic.isEnabled(event.finger)) {
+            // Phase 2: Check if this finger is pre-selected for fast-path activation
+            bool usedFastPath = false;
+            if (haptic.getPreSelectedFinger() == static_cast<int8_t>(event.finger)) {
+                // Fast path: Channel already selected, frequency already set
+                // Just write RTP value (~100μs vs ~500μs for full path)
+                haptic.activatePreSelected(event.finger, event.amplitude);
+                haptic.closeAllChannels();  // Close after activation for bus safety
+                usedFastPath = true;
+            } else {
+                // Slow path: Full mux selection + frequency set + activate
+                haptic.setFrequency(event.finger, event.frequencyHz);
+                haptic.activate(event.finger, event.amplitude);
+            }
+
+            // M1 fix: Capture time AFTER I2C ops for true lateness
+            uint64_t afterOp = getMicros();
+            int64_t drift_us = static_cast<int64_t>(afterOp - event.timeUs);
+
+            // Record latency metrics (if enabled)
+            if (latencyMetrics.enabled) {
+                latencyMetrics.recordExecution(static_cast<int32_t>(drift_us));
+            }
+
+            if (profiles.getDebugMode()) {
+                // H6 fix: Handle 64-bit lateness (split into seconds + microseconds if large)
+                if (drift_us >= 0 && drift_us < 1000000) {
+                    Serial.printf("[MOTOR_TASK] ACTIVATE F%d A%d @%dHz (drift: %ldus)%s\n",
+                                  event.finger, event.amplitude, event.frequencyHz,
+                                  static_cast<long>(drift_us),
+                                  usedFastPath ? " [FAST]" : "");
+                } else {
+                    // Large or negative drift - print with more precision
+                    Serial.printf("[MOTOR_TASK] ACTIVATE F%d A%d @%dHz (drift: %ld.%06ldus)%s\n",
+                                  event.finger, event.amplitude, event.frequencyHz,
+                                  static_cast<long>(drift_us / 1000000),
+                                  static_cast<long>(drift_us % 1000000),
+                                  usedFastPath ? " [FAST]" : "");
+                }
+            }
+        }
+    } else {
+        haptic.deactivate(event.finger);
+
+        // M1 fix: Capture time AFTER I2C ops for true drift measurement
+        uint64_t afterOp = getMicros();
+        int64_t drift_us = static_cast<int64_t>(afterOp - event.timeUs);
+
+        // Record latency metrics for deactivation (if enabled)
+        // Note: Deactivation timing is less critical than activation for bilateral sync,
+        // but we record it for completeness and to track overall timing precision
+        if (latencyMetrics.enabled) {
+            latencyMetrics.recordExecution(static_cast<int32_t>(drift_us));
+        }
+
+        if (profiles.getDebugMode()) {
+            // H6 fix: Handle 64-bit drift
+            if (drift_us >= 0 && drift_us < 1000000) {
+                Serial.printf("[MOTOR_TASK] DEACTIVATE F%d (drift: %ldus)\n",
+                              event.finger, static_cast<long>(drift_us));
+            } else {
+                Serial.printf("[MOTOR_TASK] DEACTIVATE F%d (drift: %ld.%06ldus)\n",
+                              event.finger,
+                              static_cast<long>(drift_us / 1000000),
+                              static_cast<long>(drift_us % 1000000));
+            }
+        }
+
+        // Phase 2: Pre-select next activation's channel while we have time
+        // This moves mux selection OFF the critical path for the next ACTIVATE
+        preSelectNextActivation();
+    }
+    (void)beforeOp;  // Suppress unused warning if debug mode off
+}
+
+/**
+ * @brief High-priority motor task for event-driven activations/deactivations
  *
  * Runs at Priority 4 (HIGHEST) to preempt main loop (Priority 1).
- * Blocks on task notification until ISR signals an activation is pending.
- * Executes I2C motor activation sequence with microsecond precision.
+ * Uses FreeRTOS timing for coarse delays, busy-wait for final precision.
+ * Processes events from unified ActivationQueue.
+ *
+ * Bug fixes applied:
+ * - C5: Fixed integer underflow in time calculation
+ * - H1: Re-capture timestamp after FreeRTOS sleep
+ * - H2: Re-check queue before busy-wait for earlier events
  */
 static void motorTask(void* pvParameters) {
     (void)pvParameters;
 
-    Serial.println(F("[MOTOR_TASK] Started at Priority 4 (HIGHEST)"));
+    // TP-4: Wait for initialization signal before processing events
+    // This ensures activationQueue.begin() has completed before we access the queue
+    ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+    Serial.println(F("[MOTOR_TASK] Initialization complete, entering main loop"));
 
     for (;;) {
-        // Block until ISR sends notification
-        // ulTaskNotifyTake clears notification value on exit
-        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        MotorEvent event;
 
-        // Process the pending activation (I2C operations)
-        syncTimer.processPendingActivationFromTask();
+        // Check if there are any events in the queue
+        if (!activationQueue.peekNextEvent(event)) {
+            // No events - block until notified of new event
+            ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+            continue;
+        }
+
+        // Calculate time until event
+        // C5 fix: Subtract in uint64_t space first, then cast to int64_t
+        // This correctly handles both future (positive) and past (negative) events
+        uint64_t now = getMicros();
+        int64_t delayUs = static_cast<int64_t>(event.timeUs - now);
+
+        if (delayUs <= 0) {
+            // Event time already passed - execute immediately
+            if (activationQueue.dequeueNextEvent(event)) {
+                executeMotorEvent(event);
+            }
+            continue;
+        }
+
+        if (delayUs > 2000) {
+            // Event is far away (>2ms) - use FreeRTOS sleep
+            // Sleep until 1ms before event, then busy-wait
+            TickType_t ticks = pdMS_TO_TICKS((delayUs - 1000) / 1000);
+            if (ticks > 0) {
+                // Wake early if new event is enqueued (may be earlier than current)
+                ulTaskNotifyTake(pdTRUE, ticks);
+                // H1 fix: Re-capture time after sleep - original `now` is stale
+                continue;  // Re-check queue in case new event is earlier
+            }
+        }
+
+        // H2 fix: Re-check queue before busy-wait to ensure this is still earliest event
+        // A new, earlier event may have been enqueued while we were checking timing
+        MotorEvent recheckEvent;
+        if (activationQueue.peekNextEvent(recheckEvent) &&
+            recheckEvent.timeUs < event.timeUs) {
+            // Earlier event exists - restart loop to process it first
+            continue;
+        }
+
+        // Event is close (<2ms) - busy-wait for precision
+        while (getMicros() < event.timeUs) {
+            taskYIELD();  // Allow other tasks to run briefly
+        }
+
+        // Execute event - dequeue first to ensure we get the same event we peeked
+        if (activationQueue.dequeueNextEvent(event)) {
+            executeMotorEvent(event);
+        }
     }
 }
 
@@ -166,7 +329,6 @@ void onBLEDisconnect(uint16_t connHandle, ConnectionType type, uint8_t reason);
 void onBLEMessage(uint16_t connHandle, const char *message);
 
 // Therapy Callbacks
-void onSendCommand(const char *commandType, uint8_t primaryFinger, uint8_t secondaryFinger, uint8_t amplitude, uint32_t durationMs, uint32_t seq, uint16_t frequencyHz);
 void onSendMacrocycle(const Macrocycle& macrocycle);
 void onSetFrequency(uint8_t finger, uint16_t frequencyHz);
 void onActivate(uint8_t finger, uint8_t amplitude);
@@ -174,7 +336,7 @@ void onDeactivate(uint8_t finger);
 void onCycleComplete(uint32_t cycleCount);
 void onMacrocycleStart(uint32_t macrocycleCount);
 
-// PRIMARY scheduling callbacks (for hardware timer chain scheduling)
+// PRIMARY scheduling callbacks (FreeRTOS motor task)
 void onScheduleActivation(uint64_t activateTimeUs, uint8_t finger, uint8_t amplitude, uint16_t durationMs, uint16_t frequencyHz);
 void onStartScheduling();
 bool onIsSchedulingComplete();
@@ -194,10 +356,6 @@ void triggerDebugFlash();
 
 // Deferred Work Executor
 void executeDeferredWork(DeferredWorkType type, uint8_t p1, uint8_t p2, uint32_t p3);
-
-// Scheduler Callbacks (for deferred haptic sequences)
-void hapticDeactivateCallback(void *ctx);
-void hapticSecondPulseCallback(void *ctx);
 
 // Serial-Only Commands (not available via BLE)
 void handleSerialCommand(const char *command);
@@ -271,42 +429,22 @@ void waitForRoleConfiguration()
  * Called from safety shutdown handler and other stop paths.
  * Order of operations is critical for safety:
  * 1. Stop therapy engine (prevents new motor activations from being generated)
- * 2. Cancel scheduler callbacks (prevents pending motor ops)
- * 3. Clear deferred queue (prevents queued activations)
- * 4. Clear activation queue (prevents scheduled macrocycle events)
- * 5. Cancel sync timer (PRIMARY only)
- * 6. Deactivate active motor (SECONDARY - before clearing state)
- * 7. Emergency stop all motors (final safety net)
+ * 2. Clear deferred queue (prevents queued activations)
+ * 3. Clear activation queue (prevents scheduled macrocycle events)
+ * 4. Emergency stop all motors (final safety net)
  */
 void safeMotorShutdown()
 {
     // 1. Stop therapy engine FIRST - prevents new motor activations
     therapy.stop();
 
-    // 2. Cancel all pending scheduler callbacks
-    scheduler.cancelAll();
-
-    // 3. Clear deferred work queue
+    // 2. Clear deferred work queue
     deferredQueue.clear();
 
-    // 4. Clear activation queue (macrocycle scheduled events)
+    // 3. Clear activation queue (macrocycle scheduled events)
     activationQueue.clear();
 
-    // 5. Cancel PRIMARY sync timer
-    if (deviceRole == DeviceRole::PRIMARY)
-    {
-        syncTimer.cancel();
-    }
-
-    // 6. SECONDARY: Deactivate active motor before clearing state
-    if (deviceRole == DeviceRole::SECONDARY && activeMotorFinger >= 0)
-    {
-        haptic.deactivate(activeMotorFinger);
-        activeMotorFinger = -1;
-        motorDeactivateTime = 0;
-    }
-
-    // 7. Emergency stop all motors
+    // 4. Emergency stop all motors
     haptic.emergencyStop();
 }
 
@@ -336,6 +474,13 @@ void setup()
     // Early debug - print immediately after serial ready
     Serial.printf("\n[BOOT] Serial ready at millis=%lu\n", (unsigned long)millis());
     Serial.flush();
+
+    // SP-C5 fix: Create safety shutdown semaphore (binary semaphore for ISR signaling)
+    safetyShutdownSema = xSemaphoreCreateBinary();
+    if (!safetyShutdownSema)
+    {
+        Serial.println(F("[WARN] Failed to create safety semaphore - operating without ISR protection"));
+    }
 
     printBanner();
 
@@ -423,9 +568,8 @@ void setup()
     deferredQueue.setExecutor(executeDeferredWork);
     Serial.println(F("[SUCCESS] Deferred queue initialized"));
 
-    // Initialize Activation Queue (for macrocycle event scheduling with hardware timer)
-    activationQueue.begin(&haptic, &syncTimer);
-    Serial.println(F("[SUCCESS] Activation queue initialized with hardware timer"));
+    // NOTE: Activation queue is initialized later in Hardware Init section
+    // after motor task is created (needs valid motorTaskHandle for notifications)
 
     // Initial battery reading
     Serial.println(F("\n--- Battery Status ---"));
@@ -464,27 +608,67 @@ void loop()
 {
     // SAFETY FIRST: Check for pending shutdown from BLE disconnect callback
     // Must be at VERY TOP before any motor operations to prevent post-disconnect buzz
-    if (safetyShutdownPending)
+    // SP-C5 fix: Use semaphore take (non-blocking) instead of volatile bool
+    // Semaphore handles multiple signals correctly - each give results in a take
+    if (safetyShutdownSema && xSemaphoreTake(safetyShutdownSema, 0) == pdTRUE)
     {
-        safetyShutdownPending = false;
         safeMotorShutdown();
         Serial.println(F("[SAFETY] Emergency motor shutdown complete"));
     }
 
-    // Process hardware timer activation (microsecond precision sync)
-    syncTimer.processPendingActivation();
+    // Motor events (activations AND deactivations) handled by motor task
+    // No polling needed - motor task uses FreeRTOS timing
 
-    // Process macrocycle deactivations (both PRIMARY and SECONDARY: motor OFF via software polling)
-    // Activations are handled by hardware timer chain scheduling
-    activationQueue.processDeactivations(getMicros());
+    // TP-1: Process staged motor events from BLE callbacks
+    // Forward from lock-free staging buffer to mutex-protected activationQueue
+    // Defensive check: only process if motor task is initialized
+    if (motorTaskHandle != nullptr && motorEventBuffer.hasPending()) {
+        // Check if this is a macrocycle batch (needs queue clear first)
+        bool isMacrocycleBatch = motorEventBuffer.isMacrocyclePending();
+        if (isMacrocycleBatch) {
+            activationQueue.clear();  // Start fresh for macrocycle
+        }
 
-    // Process millisecond timer callbacks (motor deactivation, deferred sequences)
-    scheduler.update();
+        uint8_t eventsForwarded = 0;
+        StagedMotorEvent staged;
+        while (motorEventBuffer.unstage(staged)) {
+            activationQueue.enqueue(staged.activateTimeUs, staged.finger, staged.amplitude,
+                                   staged.durationMs, staged.frequencyHz);
+            eventsForwarded++;
+
+            // If this was the last event in a macrocycle, start scheduling
+            if (staged.isMacrocycleLast) {
+                activationQueue.scheduleNext();
+                if (profiles.getDebugMode()) {
+                    Serial.printf("[MACROCYCLE] Forwarded %u events, scheduling started\n",
+                                  eventsForwarded);
+                }
+            }
+        }
+
+        // For single ACTIVATE events (not macrocycle), log if debug enabled
+        if (!isMacrocycleBatch && eventsForwarded > 0 && profiles.getDebugMode()) {
+            Serial.printf("[ACTIVATE] Forwarded %u event(s) from staging buffer\n",
+                          eventsForwarded);
+        }
+    }
 
     // Process deferred work queue (haptic operations from BLE callbacks)
     deferredQueue.processOne();
 
     uint32_t now = millis();
+
+    // Check for pending PTP-scheduled flash (SECONDARY only)
+    // This is the non-blocking replacement for the old delayMicroseconds() approach
+    if (g_pendingFlashActive)
+    {
+        uint64_t nowUs = getMicros();
+        if (nowUs >= g_pendingFlashTime)
+        {
+            g_pendingFlashActive = false;
+            triggerDebugFlash();
+        }
+    }
 
     // Debug flash restoration check
     if (debugFlashActive && now >= debugFlashEndTime)
@@ -499,20 +683,7 @@ void loop()
     // Process BLE events (includes non-blocking TX queue)
     ble.update();
 
-    // Process any activations that became ready during BLE processing
-    // Reduces latency for newly received "immediate" events by one loop iteration
-    syncTimer.processPendingActivation();
-
-    // SECONDARY: Non-blocking motor deactivation check
-    if (deviceRole == DeviceRole::SECONDARY && activeMotorFinger >= 0)
-    {
-        if (now >= motorDeactivateTime)
-        {
-            Serial.printf("[DEACTIVATE] F%d (timer)\n", activeMotorFinger);
-            haptic.deactivate(activeMotorFinger);
-            activeMotorFinger = -1;
-        }
-    }
+    // Motor events handled by motor task - no polling needed
 
     // Process Serial commands (uses serial-only handler for SET_ROLE, GET_ROLE)
     if (Serial.available())
@@ -601,13 +772,13 @@ void loop()
     }
 
     // PRIMARY: Check boot window for auto-start therapy
-    // NOTE: Must use fresh millis() here, not cached 'now' from start of loop().
-    // BLE callbacks can fire during loop() and set bootWindowStart to a newer
-    // timestamp than 'now', causing unsigned underflow (now - start = negative = huge).
+    // SP-H1 fix: Capture bootWindowStart once atomically before comparison
+    // This prevents race where callback updates it between read and arithmetic
     if (deviceRole == DeviceRole::PRIMARY && bootWindowActive && !autoStartTriggered)
     {
+        uint32_t startSnapshot = bootWindowStart;  // SP-H1: Capture volatile once
         uint32_t currentTime = millis();
-        uint32_t elapsed = currentTime - bootWindowStart;
+        uint32_t elapsed = currentTime - startSnapshot;
 
         if (elapsed >= STARTUP_WINDOW_MS)
         {
@@ -615,7 +786,7 @@ void loop()
             if (ble.isSecondaryConnected() && !ble.isPhoneConnected())
             {
                 Serial.printf("[BOOT] 30s window expired (now=%lu, start=%lu, elapsed=%lu) - auto-starting therapy\n",
-                              (unsigned long)currentTime, (unsigned long)bootWindowStart, (unsigned long)elapsed);
+                              (unsigned long)currentTime, (unsigned long)startSnapshot, (unsigned long)elapsed);
                 bootWindowActive = false;
                 autoStartTriggered = true;
                 autoStartTherapy();
@@ -624,7 +795,7 @@ void loop()
             {
                 // SECONDARY disconnected during window, cancel
                 Serial.printf("[BOOT] Window expired but SECONDARY not connected (now=%lu, start=%lu)\n",
-                              (unsigned long)currentTime, (unsigned long)bootWindowStart);
+                              (unsigned long)currentTime, (unsigned long)startSnapshot);
                 bootWindowActive = false;
             }
         }
@@ -739,12 +910,6 @@ bool initializeHardware()
         Serial.printf("Haptic Controller: %d/%d fingers enabled\n",
                       haptic.getEnabledCount(), MAX_ACTUATORS);
 
-        // Initialize hardware timer for sync compensation (PRIMARY only)
-        if (!syncTimer.begin(&haptic))
-        {
-            Serial.println(F("[WARN] SyncTimer initialization failed"));
-        }
-
         // Create high-priority motor task for preemptive activations
         // Priority 4 (HIGHEST) ensures motor timing isn't blocked by Serial/BLE
         // Stack size: 512 words (2KB) - increased from 256 to prevent stack overflow
@@ -759,10 +924,13 @@ bool initializeHardware()
         );
 
         if (taskCreated == pdPASS && motorTaskHandle != nullptr) {
-            syncTimer.setMotorTaskHandle(motorTaskHandle);
-            Serial.println(F("[SUCCESS] Motor task created at Priority 4 (HIGHEST)"));
+            // Set motor task handle for queue notifications
+            activationQueue.begin(&haptic, motorTaskHandle);
+            // TP-4: Release motor task to run now that queue is initialized
+            xTaskNotifyGive(motorTaskHandle);
+            Serial.println(F("[SUCCESS] Motor task created and released at Priority 4 (FreeRTOS timing)"));
         } else {
-            Serial.println(F("[WARN] Motor task creation failed - using main loop fallback"));
+            Serial.println(F("[WARN] Motor task creation failed - motors will not function"));
         }
     }
 
@@ -820,15 +988,12 @@ bool initializeTherapy()
     // Set BLE sync callback (PRIMARY only - sends commands to SECONDARY)
     if (deviceRole == DeviceRole::PRIMARY)
     {
-        therapy.setSendCommandCallback(onSendCommand);
         therapy.setSendMacrocycleCallback(onSendMacrocycle);
-        // Enable macrocycle batching mode (sends all 12 events in one message)
-        therapy.setMacrocycleBatching(true);
         // Set macrocycle start callback for PING/PONG latency measurement
         therapy.setMacrocycleStartCallback(onMacrocycleStart);
         // Set frequency callback for Custom vCR frequency randomization
         therapy.setSetFrequencyCallback(onSetFrequency);
-        // Set scheduling callbacks for hardware timer chain scheduling
+        // Set scheduling callbacks for FreeRTOS motor task
         therapy.setSchedulingCallbacks(onScheduleActivation, onStartScheduling, onIsSchedulingComplete);
         // Set adaptive lead time callback for RTT-based scheduling
         therapy.setGetLeadTimeCallback(onGetLeadTime);
@@ -982,9 +1147,15 @@ void onBLEDisconnect(uint16_t connHandle, ConnectionType type, uint8_t reason)
     {
         stateMachine.transition(StateTrigger::DISCONNECTED);
 
-        // SAFETY: Set flag for main loop to execute motor shutdown
+        // SAFETY: Signal main loop to execute motor shutdown
         // Cannot call safeMotorShutdown() directly here (BLE callback = ISR context, no I2C)
-        safetyShutdownPending = true;
+        // SP-C5 fix: Use semaphore instead of volatile bool to prevent missed signals
+        if (safetyShutdownSema)
+        {
+            BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+            xSemaphoreGiveFromISR(safetyShutdownSema, &xHigherPriorityTaskWoken);
+            portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
+        }
 
         // PRIMARY: Cancel boot window when SECONDARY disconnects (prevents race condition
         // where stale bootWindowStart causes immediate auto-start on reconnection)
@@ -1020,7 +1191,7 @@ void executeDeferredWork(DeferredWorkType type, uint8_t p1, uint8_t p2, uint32_t
 {
     // SAFETY: Skip haptic operations in critical error states
     // Note: CONNECTION_LOST is intentionally NOT blocked - disconnect feedback pulses
-    // (queued AFTER safetyShutdownPending is set) should still execute for user feedback
+    // (queued AFTER safety shutdown semaphore is signaled) should still execute for user feedback
     if (type == DeferredWorkType::HAPTIC_PULSE ||
         type == DeferredWorkType::HAPTIC_DOUBLE_PULSE)
     {
@@ -1044,9 +1215,9 @@ void executeDeferredWork(DeferredWorkType type, uint8_t p1, uint8_t p2, uint32_t
 
         if (haptic.isEnabled(finger))
         {
-            haptic.activate(finger, amplitude);
-            // Schedule deactivation (non-blocking)
-            scheduler.schedule(duration, hapticDeactivateCallback, (void *)(uintptr_t)finger);
+            // Use ActivationQueue for proper timing - motor task handles deactivation
+            uint64_t now = getMicros();
+            activationQueue.enqueue(now, finger, amplitude, duration, 250);  // 250Hz default
         }
         break;
     }
@@ -1060,14 +1231,13 @@ void executeDeferredWork(DeferredWorkType type, uint8_t p1, uint8_t p2, uint32_t
 
         if (haptic.isEnabled(finger))
         {
+            // Use ActivationQueue for both pulses - motor task handles timing
+            uint64_t now = getMicros();
             // First pulse
-            haptic.activate(finger, amplitude);
-            // Schedule deactivation after duration
-            scheduler.schedule(duration, hapticDeactivateCallback, (void *)(uintptr_t)finger);
-            // Schedule second pulse after duration + 100ms gap
-            // Pack finger and amplitude into context (finger in low byte, amplitude in high byte)
-            uint32_t ctx = (uint32_t)finger | ((uint32_t)amplitude << 8) | ((uint32_t)duration << 16);
-            scheduler.schedule(duration + 100, hapticSecondPulseCallback, (void *)(uintptr_t)ctx);
+            activationQueue.enqueue(now, finger, amplitude, duration, 250);
+            // Second pulse after duration + 100ms gap
+            uint64_t secondPulseTime = now + ((uint64_t)(duration + 100) * 1000ULL);
+            activationQueue.enqueue(secondPulseTime, finger, amplitude, duration, 250);
         }
         break;
     }
@@ -1081,7 +1251,7 @@ void executeDeferredWork(DeferredWorkType type, uint8_t p1, uint8_t p2, uint32_t
 
     case DeferredWorkType::SCANNER_RESTART:
     {
-        // Restart BLE scanner after delay (handled by scheduler)
+        // Restart BLE scanner
         if (deviceRole == DeviceRole::SECONDARY)
         {
             ble.startScanning();
@@ -1091,33 +1261,6 @@ void executeDeferredWork(DeferredWorkType type, uint8_t p1, uint8_t p2, uint32_t
 
     default:
         break;
-    }
-}
-
-/**
- * @brief Timer callback to deactivate haptic motor
- */
-void hapticDeactivateCallback(void *ctx)
-{
-    uint8_t finger = (uint8_t)(uintptr_t)ctx;
-    haptic.deactivate(finger);
-}
-
-/**
- * @brief Timer callback for second pulse in double-pulse sequence
- */
-void hapticSecondPulseCallback(void *ctx)
-{
-    uint32_t packed = (uint32_t)(uintptr_t)ctx;
-    uint8_t finger = packed & 0xFF;
-    uint8_t amplitude = (packed >> 8) & 0xFF;
-    uint32_t duration = (packed >> 16) & 0xFFFF;
-
-    if (haptic.isEnabled(finger))
-    {
-        haptic.activate(finger, amplitude);
-        // Schedule final deactivation
-        scheduler.schedule(duration, hapticDeactivateCallback, (void *)(uintptr_t)finger);
     }
 }
 
@@ -1201,42 +1344,104 @@ void onBLEMessage(uint16_t connHandle [[maybe_unused]], const char *message)
                 // CRITICAL: Cast baseTime to signed before adding signed offset,
                 // otherwise negative offset becomes large positive when implicitly converted
                 int64_t offset = mc.clockOffset;
+
+                // SAFETY: Reject obviously invalid offsets
+                // Valid offset should be within ±35 seconds (35,000,000 µs)
+                // SECONDARY can connect up to 30s after PRIMARY boot, plus 5s margin
+                constexpr int64_t MAX_VALID_OFFSET = 35000000LL;  // 35 seconds in microseconds
+                if (offset > MAX_VALID_OFFSET || offset < -MAX_VALID_OFFSET)
+                {
+                    // SP-C3 fix: Use split print for 64-bit value (ARM long is 32-bit)
+                    int64_t offsetSec = offset / 1000000;
+                    int64_t offsetUs = offset % 1000000;
+                    if (offset < 0 && offsetUs != 0) offsetUs = -offsetUs;  // Handle negative correctly
+                    Serial.printf("[ERROR] MACROCYCLE rejected: invalid offset %ld.%06ldus (exceeds ±35s)\n",
+                                  (long)offsetSec, (long)offsetUs);
+                    // Still send ACK to avoid retry storms, but don't execute
+                    SyncCommand ackCmd = SyncCommand::createMacrocycleAck(mc.sequenceId);
+                    char ackBuffer[32];
+                    if (ackCmd.serialize(ackBuffer, sizeof(ackBuffer)))
+                    {
+                        ble.sendToPrimary(ackBuffer);
+                    }
+                    return;
+                }
+
                 uint64_t localBaseTime = static_cast<uint64_t>(static_cast<int64_t>(mc.baseTime) + offset);
 
-                // Enqueue all events with local times
-                // Note: Frequency is stored per-event and set by SyncTimer just before activation
-                activationQueue.clear();  // Start fresh for this macrocycle
+                // SAFETY: Validate localBaseTime is reasonable (within ±30 seconds of now)
+                uint64_t nowUs = getMicros();
+
+                // Debug logging for offset application
+                if (profiles.getDebugMode())
+                {
+                    int64_t timeUntilExec = static_cast<int64_t>(localBaseTime) - static_cast<int64_t>(nowUs);
+                    Serial.printf("[MACROCYCLE] Received seq=%lu offset=%ld baseTime=%lu -> localBaseTime=%lu (rxAt=%lu, timeUntilExec=%ld)\n",
+                                  (unsigned long)mc.sequenceId,
+                                  (long)offset,
+                                  (unsigned long)(mc.baseTime / 1000),
+                                  (unsigned long)(localBaseTime / 1000),
+                                  (unsigned long)(nowUs / 1000),
+                                  (long)(timeUntilExec / 1000));
+                }
+                int64_t timeDiff = static_cast<int64_t>(localBaseTime) - static_cast<int64_t>(nowUs);
+                constexpr int64_t MAX_TIME_DIFF = 30000000LL;  // 30 seconds
+                if (timeDiff > MAX_TIME_DIFF || timeDiff < -MAX_TIME_DIFF)
+                {
+                    // SP-C3 fix: Use split print for 64-bit value (ARM long is 32-bit)
+                    int64_t diffSec = timeDiff / 1000000;
+                    Serial.printf("[ERROR] MACROCYCLE rejected: baseTime %ld seconds from now\n",
+                                  (long)diffSec);  // Division reduces to 32-bit safe range
+                    // Still send ACK to avoid retry storms
+                    SyncCommand ackCmd = SyncCommand::createMacrocycleAck(mc.sequenceId);
+                    char ackBuffer[32];
+                    if (ackCmd.serialize(ackBuffer, sizeof(ackBuffer)))
+                    {
+                        ble.sendToPrimary(ackBuffer);
+                    }
+                    return;
+                }
+
+                // TP-1: Stage all events via lock-free buffer (ISR-safe)
+                // Main loop will forward to activationQueue and call scheduleNext()
+                motorEventBuffer.beginMacrocycle();
                 uint8_t validEvents = 0;
+                uint8_t lastValidIndex = 0;
+
+                // First pass: count valid events to mark the last one
+                for (uint8_t i = 0; i < mc.eventCount; i++)
+                {
+                    const MacrocycleEvent& evt = mc.events[i];
+                    if (evt.amplitude > 0 && evt.finger < MAX_ACTUATORS)
+                    {
+                        lastValidIndex = i;
+                        validEvents++;
+                    }
+                }
+
+                // Second pass: stage all valid events
+                uint8_t stagedCount = 0;
                 for (uint8_t i = 0; i < mc.eventCount; i++)
                 {
                     const MacrocycleEvent& evt = mc.events[i];
 
                     // Skip invalid events (garbage from truncated messages)
-                    // - amplitude 0 means no-op/garbage
-                    // - finger >= MAX_ACTUATORS is invalid
                     if (evt.amplitude == 0 || evt.finger >= MAX_ACTUATORS)
                     {
-                        Serial.printf("[WARN] Skipping invalid event %d: F%d A%d\n",
-                                      i, evt.finger, evt.amplitude);
                         continue;
                     }
 
                     uint64_t localActivateTime = localBaseTime + (evt.deltaTimeMs * 1000ULL);
                     uint16_t freqHz = evt.getFrequencyHz();
+                    bool isLast = (i == lastValidIndex);
 
-                    activationQueue.enqueue(localActivateTime, evt.finger, evt.amplitude,
-                                            evt.durationMs, freqHz);
-                    validEvents++;
+                    motorEventBuffer.stage(localActivateTime, evt.finger, evt.amplitude,
+                                           evt.durationMs, freqHz, isLast);
+                    stagedCount++;
                 }
 
-                // Start chain scheduling - arms hardware timer for first event
-                activationQueue.scheduleNext();
-
-                if (profiles.getDebugMode())
-                {
-                    Serial.printf("[MACROCYCLE] Enqueued %u events (parsed %u), offset=%ld, scheduling started\n",
-                                  validEvents, mc.eventCount, (long)offset);
-                }
+                // Note: scheduleNext() will be called by main loop after forwarding events
+                // Serial.printf moved to main loop to avoid ISR context I/O
 
                 // Send ACK immediately
                 SyncCommand ackCmd = SyncCommand::createMacrocycleAck(mc.sequenceId);
@@ -1336,26 +1541,48 @@ void onBLEMessage(uint16_t connHandle [[maybe_unused]], const char *message)
 
                 // Parse T2 and T3 from PONG data
                 // Format depends on whether high bits are used (see createPongWithTimestamps)
+                // C4 fix: Use getDataUnsigned to avoid sign extension when values > 2^31
                 uint64_t t2, t3;
                 if (cmd.hasData("2"))
                 {
                     // Full 64-bit: T2High|T2Low|T3High|T3Low
-                    uint32_t t2High = (uint32_t)cmd.getDataInt("0", 0);
-                    uint32_t t2Low = (uint32_t)cmd.getDataInt("1", 0);
-                    uint32_t t3High = (uint32_t)cmd.getDataInt("2", 0);
-                    uint32_t t3Low = (uint32_t)cmd.getDataInt("3", 0);
+                    uint32_t t2High = cmd.getDataUnsigned("0", 0);
+                    uint32_t t2Low = cmd.getDataUnsigned("1", 0);
+                    uint32_t t3High = cmd.getDataUnsigned("2", 0);
+                    uint32_t t3Low = cmd.getDataUnsigned("3", 0);
                     t2 = ((uint64_t)t2High << 32) | t2Low;
                     t3 = ((uint64_t)t3High << 32) | t3Low;
                 }
                 else
                 {
                     // Simple 32-bit: T2|T3
-                    t2 = (uint64_t)(uint32_t)cmd.getDataInt("0", 0);
-                    t3 = (uint64_t)(uint32_t)cmd.getDataInt("1", 0);
+                    t2 = static_cast<uint64_t>(cmd.getDataUnsigned("0", 0));
+                    t3 = static_cast<uint64_t>(cmd.getDataUnsigned("1", 0));
                 }
 
-                // Calculate RTT first (needed for quality filtering)
-                uint32_t rtt = (uint32_t)(t4 - t1);
+                // Calculate RTT using IEEE 1588 PTP formula (excludes SECONDARY processing)
+                // RTT = (T4 - T1) - (T3 - T2)
+                // This isolates network latency from SECONDARY processing time
+                uint32_t processingTime = (uint32_t)(t3 - t2);
+                uint32_t totalRoundTrip = (uint32_t)(t4 - t1);
+
+                // Bounds check: processing time should be positive and reasonable
+                if (t3 < t2) {
+                    Serial.println("[SYNC] WARNING: Negative processing time detected (clock error)");
+                    processingTime = 0;  // Fallback to prevent underflow
+                } else if (processingTime > 10000) {  // >10ms is excessive
+                    Serial.printf("[SYNC] WARNING: Excessive processing time: %lu us\n",
+                                  (unsigned long)processingTime);
+                }
+
+                uint32_t rtt = totalRoundTrip - processingTime;
+
+#ifdef DEBUG_SYNC_TIMING
+                Serial.printf("[RTT] Total: %lu us, Processing: %lu us, Network: %lu us\n",
+                              (unsigned long)totalRoundTrip,
+                              (unsigned long)processingTime,
+                              (unsigned long)rtt);
+#endif
 
                 // Calculate PTP clock offset
                 int64_t offset = syncProtocol.calculatePTPOffset(t1, t2, t3, t4);
@@ -1378,12 +1605,19 @@ void onBLEMessage(uint16_t connHandle [[maybe_unused]], const char *message)
                 // Also update RTT-based latency for backward compatibility
                 syncProtocol.updateLatency(rtt);
 
+                // Record RTT for latency metrics (if enabled)
+                if (latencyMetrics.enabled) {
+                    latencyMetrics.recordRtt(rtt);
+                }
+
                 // Enhanced logging (DEBUG only)
                 if (profiles.getDebugMode())
                 {
-                    Serial.printf("[SYNC] RTT=%lu offset=%ld valid=%d samples=%u %s\n",
+                    Serial.printf("[SYNC] RTT=%lu offset_raw=%ld offset_median=%ld offset_corrected=%ld valid=%d samples=%u %s\n",
                                   (unsigned long)rtt,
                                   (long)offset,
+                                  (long)syncProtocol.getMedianOffset(),
+                                  (long)syncProtocol.getCorrectedOffset(),
                                   syncProtocol.isClockSyncValid() ? 1 : 0,
                                   syncProtocol.getOffsetSampleCount(),
                                   sampleAccepted ? "" : "(rejected)");
@@ -1396,89 +1630,9 @@ void onBLEMessage(uint16_t connHandle [[maybe_unused]], const char *message)
 
         case SyncCommandType::BUZZ:
         {
-            // Track connectivity - BUZZ proves PRIMARY is alive during therapy
-            if (deviceRole == DeviceRole::SECONDARY)
-            {
-                lastKeepaliveReceived = millis();
-            }
-
-            // SECONDARY: Motor activation
-            int32_t fingerVal = cmd.getDataInt("0", -1);
-            int32_t amplitudeVal = cmd.getDataInt("1", 50);
-            int32_t durationMs = cmd.getDataInt("2", 100); // Default 100ms if not specified
-            int32_t freqHz = cmd.getDataInt("3", 250);     // Default 250Hz (v1 ACTUATOR_FREQUENCY)
-
-            if (fingerVal >= 0 && fingerVal < MAX_ACTUATORS && haptic.isEnabled(static_cast<uint8_t>(fingerVal)))
-            {
-                uint8_t finger = static_cast<uint8_t>(fingerVal);
-                uint8_t amplitude = static_cast<uint8_t>(amplitudeVal);
-
-                // Deactivate any previously active motor first
-                if (activeMotorFinger >= 0)
-                {
-                    Serial.printf("[DEACTIVATE] F%d (prev)\n", activeMotorFinger);
-                    haptic.deactivate(static_cast<uint8_t>(activeMotorFinger));
-                }
-
-                // Check if this is a PTP sync command with scheduled activation time
-                bool hasPTPTime = cmd.hasData("4");
-                if (hasPTPTime && syncProtocol.isClockSyncValid())
-                {
-                    // Parse activation time from command
-                    uint64_t activateTime;
-                    if (cmd.hasData("5"))
-                    {
-                        // Full 64-bit: timeHigh|timeLow
-                        uint32_t timeHigh = static_cast<uint32_t>(cmd.getDataInt("4", 0));
-                        uint32_t timeLow = static_cast<uint32_t>(cmd.getDataInt("5", 0));
-                        activateTime = ((uint64_t)timeHigh << 32) | timeLow;
-                    }
-                    else
-                    {
-                        // Simple 32-bit
-                        activateTime = static_cast<uint64_t>(static_cast<uint32_t>(cmd.getDataInt("4", 0)));
-                    }
-
-                    // Convert PRIMARY clock time to local (SECONDARY) clock time
-                    // Use drift-corrected offset for better accuracy between sync events
-                    // CRITICAL: Cast activateTime to signed before adding signed offset,
-                    // otherwise negative offset becomes large positive when implicitly converted
-                    int64_t offset = syncProtocol.getCorrectedOffset();
-                    uint64_t localActivateTime = static_cast<uint64_t>(static_cast<int64_t>(activateTime) + offset);
-
-                    if (profiles.getDebugMode())
-                    {
-                        Serial.printf("[ACTIVATE] PTP F%d A%d offset=%ld\n",
-                                      finger, amplitude, (long)offset);
-                    }
-
-                    // Schedule activation using hardware timer (frequency set by SyncTimer before activation)
-                    syncTimer.scheduleAbsoluteActivation(localActivateTime, finger, amplitude,
-                                                         static_cast<uint16_t>(freqHz));
-
-                    // Schedule non-blocking deactivation
-                    // Note: deactivation time based on when activation will fire
-                    activeMotorFinger = static_cast<int8_t>(finger);
-                    uint64_t now = getMicros();
-                    uint32_t delayMs = 0;
-                    if (localActivateTime > now)
-                    {
-                        delayMs = (uint32_t)((localActivateTime - now) / 1000);
-                    }
-                    motorDeactivateTime = millis() + delayMs + durationMs;
-                }
-                else
-                {
-                    // Legacy mode: activate immediately (no hardware timer)
-                    Serial.printf("[ACTIVATE] F%d A%d dur=%ldms freq=%ldHz\n", (int)finger, (int)amplitude, (long)durationMs, (long)freqHz);
-                    haptic.setFrequency(finger, static_cast<uint16_t>(freqHz));
-                    haptic.activate(finger, amplitude);
-
-                    // Schedule non-blocking deactivation after duration from profile
-                    activeMotorFinger = static_cast<int8_t>(finger);
-                    motorDeactivateTime = millis() + durationMs;
-                }
-            }
+            // BUZZ command deprecated - MACROCYCLE-only architecture
+            Serial.println(F("[WARN] Received deprecated BUZZ command - firmware uses MACROCYCLE only"));
+            // Note: BUZZ enum kept for protocol versioning, but command is no longer supported
         }
         break;
 
@@ -1516,14 +1670,16 @@ void onBLEMessage(uint16_t connHandle [[maybe_unused]], const char *message)
                     if (cmd.hasData("1"))
                     {
                         // Full 64-bit: timeHigh|timeLow
-                        uint32_t timeHigh = (uint32_t)cmd.getDataInt("0", 0);
-                        uint32_t timeLow = (uint32_t)cmd.getDataInt("1", 0);
+                        // SP-C1 fix: Use getDataUnsigned() to avoid sign extension for values > 2^31
+                        uint32_t timeHigh = cmd.getDataUnsigned("0", 0);
+                        uint32_t timeLow = cmd.getDataUnsigned("1", 0);
                         flashTime = ((uint64_t)timeHigh << 32) | timeLow;
                     }
                     else
                     {
                         // Simple 32-bit
-                        flashTime = (uint64_t)(uint32_t)cmd.getDataInt("0", 0);
+                        // SP-C1 fix: Use getDataUnsigned() to avoid sign extension
+                        flashTime = static_cast<uint64_t>(cmd.getDataUnsigned("0", 0));
                     }
 
                     // Convert PRIMARY clock time to local (SECONDARY) clock time
@@ -1531,13 +1687,13 @@ void onBLEMessage(uint16_t connHandle [[maybe_unused]], const char *message)
                     int64_t offset = syncProtocol.getCorrectedOffset();
                     uint64_t localFlashTime = flashTime + offset;
 
-                    // Wait until scheduled time and flash
-                    uint64_t now = getMicros();
-                    if (localFlashTime > now)
-                    {
-                        delayMicroseconds((uint32_t)(localFlashTime - now));
-                    }
-                    triggerDebugFlash();
+                    // NON-BLOCKING FIX: Schedule flash for later instead of busy-waiting
+                    // The old code used delayMicroseconds() which blocked BLE callback
+                    // processing for ~300ms, causing MACROCYCLE messages to queue up
+                    // and arrive after their scheduled execution time.
+                    // Now we store the flash time and check it in the main loop.
+                    g_pendingFlashTime = localFlashTime;
+                    g_pendingFlashActive = true;
                 }
                 else
                 {
@@ -1559,74 +1715,6 @@ void onBLEMessage(uint16_t connHandle [[maybe_unused]], const char *message)
 // =============================================================================
 // THERAPY CALLBACKS
 // =============================================================================
-
-void onSendCommand(const char *commandType [[maybe_unused]], uint8_t primaryFinger, uint8_t secondaryFinger, uint8_t amplitude, uint32_t durationMs, uint32_t seq, uint16_t frequencyHz)
-{
-    char buffer[128];
-
-    // Check if PTP clock sync is valid for absolute time scheduling
-    if (syncProtocol.isClockSyncValid())
-    {
-        // PTP SYNC MODE: Schedule activation at absolute time on both devices
-        // This achieves sub-millisecond synchronization accuracy
-
-        // Use adaptive lead time based on current RTT statistics
-        uint32_t leadTimeUs = syncProtocol.calculateAdaptiveLeadTime();
-        uint64_t activateTime = getMicros() + leadTimeUs;
-
-        // Create BUZZ command with scheduled activation time
-        SyncCommand cmd = SyncCommand::createBuzzWithTime(seq, secondaryFinger, amplitude, durationMs, frequencyHz, activateTime);
-        if (cmd.serialize(buffer, sizeof(buffer)))
-        {
-            ble.sendToSecondary(buffer);
-        }
-
-        // Schedule PRIMARY motor activation at the same absolute time
-        if (haptic.isEnabled(primaryFinger))
-        {
-            if (profiles.getDebugMode())
-            {
-                Serial.printf("[ACTIVATE] PTP sync F%d A%d at T+%luus\n",
-                              primaryFinger, amplitude, (unsigned long)leadTimeUs);
-            }
-            syncTimer.scheduleAbsoluteActivation(activateTime, primaryFinger, amplitude, frequencyHz);
-        }
-    }
-    else
-    {
-        // LEGACY MODE: Use RTT/2 latency estimation
-        // Less accurate but works without clock synchronization
-
-        // Create legacy BUZZ command (SECONDARY activates immediately on receipt)
-        SyncCommand cmd = SyncCommand::createBuzz(seq, secondaryFinger, amplitude, durationMs, frequencyHz);
-        if (cmd.serialize(buffer, sizeof(buffer)))
-        {
-            ble.sendToSecondary(buffer);
-        }
-
-        // Schedule local activation after measured BLE latency (non-blocking)
-        uint32_t latencyUs = syncProtocol.getMeasuredLatency();
-        if (latencyUs > 0 && haptic.isEnabled(primaryFinger))
-        {
-            // Hardware timer schedules activation with microsecond precision
-            if (profiles.getDebugMode())
-            {
-                Serial.printf("[ACTIVATE] Legacy F%d A%d delay=%luus\n", primaryFinger, amplitude, latencyUs);
-            }
-            syncTimer.scheduleActivation(latencyUs, primaryFinger, amplitude, frequencyHz);
-        }
-        else if (haptic.isEnabled(primaryFinger))
-        {
-            // No latency measurement yet - activate immediately (set frequency manually)
-            if (profiles.getDebugMode())
-            {
-                Serial.printf("[ACTIVATE] Immediate F%d A%d (no latency)\n", primaryFinger, amplitude);
-            }
-            haptic.setFrequency(primaryFinger, frequencyHz);
-            haptic.activate(primaryFinger, amplitude);
-        }
-    }
-}
 
 void onSendMacrocycle(const Macrocycle& macrocycle)
 {
@@ -1656,10 +1744,11 @@ void onSendMacrocycle(const Macrocycle& macrocycle)
 
         if (profiles.getDebugMode())
         {
-            Serial.printf("[MACROCYCLE] Sent seq=%lu events=%u baseTime=%lu\n",
+            Serial.printf("[MACROCYCLE] Sent seq=%lu events=%u baseTime=%lu offset=%ld\n",
                           (unsigned long)macrocycle.sequenceId,
                           macrocycle.eventCount,
-                          (unsigned long)(macrocycle.baseTime / 1000));
+                          (unsigned long)(macrocycle.baseTime / 1000),
+                          (long)mcCopy.clockOffset);
         }
     }
     else
@@ -1670,8 +1759,8 @@ void onSendMacrocycle(const Macrocycle& macrocycle)
 
 void onActivate(uint8_t finger, uint8_t amplitude)
 {
-    // When SECONDARY is connected, onSendCommand handles local activation
-    // to achieve synchronized execution. Skip here to avoid duplicate activation.
+    // When SECONDARY is connected, MACROCYCLE batching handles PRIMARY activation
+    // scheduling via FreeRTOS motor task. Skip here to avoid duplicate activation.
     if (deviceRole == DeviceRole::PRIMARY && ble.isSecondaryConnected())
     {
         return;
@@ -1704,21 +1793,21 @@ void onSetFrequency(uint8_t finger, uint16_t frequencyHz)
 }
 
 // =============================================================================
-// PRIMARY SCHEDULING CALLBACKS (Hardware Timer Chain Scheduling)
+// PRIMARY SCHEDULING CALLBACKS (FreeRTOS Motor Task)
 // =============================================================================
 
 void onScheduleActivation(uint64_t activateTimeUs, uint8_t finger, uint8_t amplitude,
                           uint16_t durationMs, uint16_t frequencyHz)
 {
-    // Enqueue activation to ActivationQueue for hardware timer scheduling
+    // Enqueue activation to ActivationQueue for FreeRTOS motor task
     // This is called by TherapyEngine for each event in a macrocycle
     activationQueue.enqueue(activateTimeUs, finger, amplitude, durationMs, frequencyHz);
 }
 
 void onStartScheduling()
 {
-    // Start hardware timer chain scheduling after all events are enqueued
-    // This arms the hardware timer for the first event
+    // Signal motor task that events are ready
+    // Motor task will wake and process events
     activationQueue.scheduleNext();
 }
 
@@ -1764,15 +1853,11 @@ void onMacrocycleStart(uint32_t macrocycleCount)
                     ble.sendToSecondary(buffer);
                 }
 
-                // Schedule local flash at the same absolute time
-                // Note: We can't use hardware timer for LED, so we use delay
-                // This blocks briefly but ensures visual accuracy for sync testing
-                uint64_t now = getMicros();
-                if (flashTime > now)
-                {
-                    delayMicroseconds((uint32_t)(flashTime - now));
-                }
-                triggerDebugFlash();
+                // NON-BLOCKING: Schedule local flash for later (checked in main loop)
+                // Critical: We must NOT block here - the MACROCYCLE is sent after this
+                // callback returns. Blocking delays MACROCYCLE transmission!
+                g_pendingFlashTime = flashTime;
+                g_pendingFlashActive = true;
             }
             else
             {
@@ -1783,13 +1868,17 @@ void onMacrocycleStart(uint32_t macrocycleCount)
                     ble.sendToSecondary(buffer);
                 }
 
-                // Delay local flash by measured BLE latency for synchronization
+                // NON-BLOCKING: Schedule local flash for later (checked in main loop)
                 uint32_t latencyUs = syncProtocol.getMeasuredLatency();
                 if (latencyUs > 0)
                 {
-                    delayMicroseconds(latencyUs);
+                    g_pendingFlashTime = getMicros() + latencyUs;
+                    g_pendingFlashActive = true;
                 }
-                triggerDebugFlash();
+                else
+                {
+                    triggerDebugFlash();  // No latency data, flash immediately
+                }
             }
         }
         else
@@ -2153,7 +2242,7 @@ void onStateChange(const StateTransition &transition)
         }
         // Always call emergencyStop - motors can be active without therapy running
         // (e.g., from deferred queue connect/disconnect pulses)
-        // Note: safeMotorShutdown() will also run from loop() via safetyShutdownPending
+        // Note: safeMotorShutdown() will also run from loop() via safety shutdown semaphore
         // but this provides immediate belt-and-suspenders safety
         haptic.emergencyStop();
         break;
@@ -2392,6 +2481,38 @@ void handleSerialCommand(const char *command)
         Serial.printf("Adaptive lead time: %lu us\n", (unsigned long)syncProtocol.calculateAdaptiveLeadTime());
         Serial.printf("Time since sync: %lu ms\n", (unsigned long)syncProtocol.getTimeSinceSync());
         Serial.println(F("========================================="));
+        return;
+    }
+
+    // GET_SYNC_STATS - Enhanced sync statistics (alias for GET_CLOCK_SYNC with better formatting)
+    if (strcmp(command, "GET_SYNC_STATS") == 0)
+    {
+        Serial.println(F("\n========== SYNC STATISTICS =========="));
+        Serial.printf("Device Role: %s\n", deviceRole == DeviceRole::PRIMARY ? "PRIMARY" : "SECONDARY");
+        Serial.println(F("-------------------------------------"));
+
+        // Clock Sync Status
+        Serial.printf("Clock Sync Valid: %s\n", syncProtocol.isClockSyncValid() ? "YES" : "NO");
+        Serial.printf("Offset (corrected): %+ld μs\n", (long)syncProtocol.getCorrectedOffset());
+        Serial.printf("Offset (median):    %+ld μs\n", (long)syncProtocol.getMedianOffset());
+        Serial.printf("Drift Rate:         %.4f μs/ms\n", syncProtocol.getDriftRate());
+        Serial.printf("Offset Samples:     %u/%u\n", syncProtocol.getOffsetSampleCount(), 10);
+        Serial.println(F("-------------------------------------"));
+
+        // RTT Statistics
+        Serial.printf("RTT (smoothed):     %lu μs\n", (unsigned long)syncProtocol.getAverageRTT());
+        Serial.printf("RTT (raw/last):     %lu μs\n", (unsigned long)(syncProtocol.getRawLatency() * 2));
+        Serial.printf("RTT Variance:       %lu μs\n", (unsigned long)syncProtocol.getRTTVariance());
+        Serial.printf("RTT Samples:        %u\n", syncProtocol.getSampleCount());
+        Serial.printf("One-way Latency:    %lu μs\n", (unsigned long)syncProtocol.getMeasuredLatency());
+        Serial.println(F("-------------------------------------"));
+
+        // Adaptive Lead Time
+        Serial.printf("Adaptive Lead Time: %lu μs (%.2f ms)\n",
+                      (unsigned long)syncProtocol.calculateAdaptiveLeadTime(),
+                      syncProtocol.calculateAdaptiveLeadTime() / 1000.0f);
+        Serial.printf("Time Since Sync:    %lu ms\n", (unsigned long)syncProtocol.getTimeSinceSync());
+        Serial.println(F("=====================================\n"));
         return;
     }
 

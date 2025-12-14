@@ -418,63 +418,6 @@ void test_TherapyEngine_remaining_zero_when_not_running(void) {
 }
 
 // =============================================================================
-// THERAPY ENGINE CALLBACK TESTS
-// =============================================================================
-
-void test_TherapyEngine_setActivateCallback(void) {
-    TherapyEngine engine;
-    engine.setActivateCallback(mockActivateCallback);
-
-    engine.startSession(7200, PatternType::RNDP, 100.0f, 67.0f, 0.0f, 4, true);
-    engine.update();  // Should trigger activation
-
-    TEST_ASSERT_TRUE(g_activateCallCount > 0);
-}
-
-void test_TherapyEngine_setDeactivateCallback(void) {
-    TherapyEngine engine;
-    engine.setActivateCallback(mockActivateCallback);
-    engine.setDeactivateCallback(mockDeactivateCallback);
-
-    engine.startSession(7200, PatternType::RNDP, 100.0f, 67.0f, 0.0f, 4, true);
-    engine.update();  // Activate
-
-    // Advance past burst duration to trigger deactivation
-    mockAdvanceMillis(150);
-    engine.update();
-
-    TEST_ASSERT_TRUE(g_deactivateCallCount > 0);
-}
-
-void test_TherapyEngine_pause_deactivates_motors(void) {
-    TherapyEngine engine;
-    engine.setActivateCallback(mockActivateCallback);
-    engine.setDeactivateCallback(mockDeactivateCallback);
-
-    engine.startSession(7200, PatternType::RNDP, 100.0f, 67.0f, 0.0f, 4, true);
-    engine.update();  // Activate motors
-
-    int deactivateCountBefore = g_deactivateCallCount;
-    engine.pause();  // Should deactivate
-
-    TEST_ASSERT_TRUE(g_deactivateCallCount > deactivateCountBefore);
-}
-
-void test_TherapyEngine_stop_deactivates_motors(void) {
-    TherapyEngine engine;
-    engine.setActivateCallback(mockActivateCallback);
-    engine.setDeactivateCallback(mockDeactivateCallback);
-
-    engine.startSession(7200, PatternType::RNDP, 100.0f, 67.0f, 0.0f, 4, true);
-    engine.update();  // Activate motors
-
-    int deactivateCountBefore = g_deactivateCallCount;
-    engine.stop();  // Should deactivate
-
-    TEST_ASSERT_TRUE(g_deactivateCallCount > deactivateCountBefore);
-}
-
-// =============================================================================
 // THERAPY ENGINE UPDATE BEHAVIOR TESTS
 // =============================================================================
 
@@ -517,35 +460,6 @@ void test_TherapyEngine_session_timeout(void) {
 // PATTERN TYPE TESTS
 // =============================================================================
 
-void test_TherapyEngine_pattern_type_rndp(void) {
-    TherapyEngine engine;
-    engine.setActivateCallback(mockActivateCallback);
-
-    engine.startSession(7200, PatternType::RNDP, 100.0f, 67.0f, 0.0f, 4, true);
-    engine.update();
-
-    // Should have activated (RNDP pattern generated)
-    TEST_ASSERT_TRUE(g_activateCallCount > 0);
-}
-
-void test_TherapyEngine_pattern_type_sequential(void) {
-    TherapyEngine engine;
-    engine.setActivateCallback(mockActivateCallback);
-    engine.startSession(7200, PatternType::SEQUENTIAL, 100.0f, 67.0f, 0.0f, 4, true);
-    engine.update();
-
-    TEST_ASSERT_TRUE(g_activateCallCount > 0);
-}
-
-void test_TherapyEngine_pattern_type_mirrored(void) {
-    TherapyEngine engine;
-    engine.setActivateCallback(mockActivateCallback);
-
-    engine.startSession(7200, PatternType::MIRRORED, 100.0f, 67.0f, 0.0f, 4, true);
-    engine.update();
-
-    TEST_ASSERT_TRUE(g_activateCallCount > 0);
-}
 
 // =============================================================================
 // TEST RUNNER
@@ -600,21 +514,10 @@ int main(int argc, char **argv) {
     RUN_TEST(test_TherapyEngine_elapsed_zero_when_not_running);
     RUN_TEST(test_TherapyEngine_remaining_zero_when_not_running);
 
-    // Therapy Engine Callback Tests
-    RUN_TEST(test_TherapyEngine_setActivateCallback);
-    RUN_TEST(test_TherapyEngine_setDeactivateCallback);
-    RUN_TEST(test_TherapyEngine_pause_deactivates_motors);
-    RUN_TEST(test_TherapyEngine_stop_deactivates_motors);
-
     // Therapy Engine Update Behavior Tests
     RUN_TEST(test_TherapyEngine_update_does_nothing_when_not_running);
     RUN_TEST(test_TherapyEngine_update_does_nothing_when_paused);
     RUN_TEST(test_TherapyEngine_session_timeout);
-
-    // Pattern Type Tests
-    RUN_TEST(test_TherapyEngine_pattern_type_rndp);
-    RUN_TEST(test_TherapyEngine_pattern_type_sequential);
-    RUN_TEST(test_TherapyEngine_pattern_type_mirrored);
 
     return UNITY_END();
 }

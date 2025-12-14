@@ -308,9 +308,9 @@ if (deviceConfig.role == DeviceRole::PRIMARY) {
 PRIMARY explicitly commands SECONDARY for every action using SYNC protocol:
 
 ```
-PRIMARY -> SECONDARY: BUZZ:seq:timestamp:2|100
-PRIMARY: <executes local buzz>
-SECONDARY: <waits for command, then executes>
+PRIMARY -> SECONDARY: MACROCYCLE:seq:baseTime:12|events...
+PRIMARY: <enqueues all 12 events to motor task>
+SECONDARY: <receives macrocycle, enqueues all 12 events, both execute synchronized>
 ```
 
 Benefits:
@@ -331,7 +331,7 @@ PRIMARY supports **simultaneous connections** to:
 1. **Advertise** as BLE peripheral ("BlueBuzzah")
 2. **Accept connections** from smartphone + SECONDARY
 3. **Execute boot sequence**: Wait for SECONDARY, optionally phone
-4. **Orchestrate therapy**: Send BUZZ commands
+4. **Orchestrate therapy**: Send MACROCYCLE batches (12 events every ~2s)
 5. **Send PING/PONG** for keepalive + clock sync (every 1s, all states)
 6. **Broadcast parameters** to SECONDARY on profile changes
 7. **Process smartphone commands** via MenuController
@@ -347,10 +347,10 @@ PRIMARY supports **simultaneous connections** to:
 
 1. **Scan** for "BlueBuzzah" BLE advertisement
 2. **Connect** to PRIMARY during boot sequence
-3. **Receive SYNC commands**: START_SESSION, BUZZ, PING
-4. **Execute synchronized buzzes** after command received
+3. **Receive SYNC commands**: START_SESSION, MACROCYCLE, PING
+4. **Execute synchronized motor events** from macrocycle batches
 5. **Respond to PING with PONG** for keepalive + clock sync
-6. **Monitor keepalive timeout** (6 seconds without PING/BUZZ)
+6. **Monitor keepalive timeout** (6 seconds without PING/MACROCYCLE)
 7. **Safety halt** if PRIMARY disconnects or keepalive times out
 
 | Function                   | Location            | Description                 |
@@ -869,12 +869,13 @@ sequenceDiagram
         P->>S: SYNC_ADJ (periodic resync)
         S->>P: ACK_SYNC_ADJ
 
-        loop Each Burst
-            P->>S: BUZZ(finger, amplitude, scheduled_time)
+        loop Each Macrocycle (~2s)
+            P->>S: MACROCYCLE(12 events, base_time)
+            S->>P: MACROCYCLE_ACK
             par
-              P->>P: Execute burst (left hand)
+              P->>P: Execute 12 events (left hand)
             and
-              S->>S: Execute buzz at scheduled time (right hand)
+              S->>S: Execute 12 events synchronized (right hand)
             end
         end
     end
@@ -947,7 +948,7 @@ if (deviceRole == DeviceRole::PRIMARY &&
 
 // src/main.cpp - SECONDARY timeout detection
 void checkKeepalive() {
-    // PING, BUZZ, and MACROCYCLE all update lastKeepaliveReceived
+    // PING and MACROCYCLE both update lastKeepaliveReceived
     uint32_t elapsed = millis() - lastKeepaliveReceived;
 
     if (elapsed > KEEPALIVE_TIMEOUT_MS) {
@@ -984,7 +985,8 @@ SYNC:<command>:<key1>|<value1>|<key2>|<value2>...<EOT>
 | `RESUME_SESSION`     | P->S      | Resume paused session        |
 | `STOP_SESSION`       | P->S      | Stop and end session         |
 | `STOPPED`            | S->P      | Session stopped confirmation |
-| `BUZZ`               | P->S      | Trigger buzz on SECONDARY    |
+| `MACROCYCLE`         | P->S      | Batch of 12 motor events     |
+| `MACROCYCLE_ACK`     | S->P      | Macrocycle acknowledgment    |
 | `PING`               | P->S      | Keepalive + clock sync       |
 | `PONG`               | S->P      | Keepalive + clock sync       |
 | `EMERGENCY_STOP`     | P<->S     | Immediate motor shutoff      |
@@ -996,9 +998,10 @@ SYNC:<command>:<key1>|<value1>|<key2>|<value2>...<EOT>
 
 ```text
 SYNC:START_SESSION:profile|noisy_vcr|duration|7200<EOT>
-BUZZ:42:1234567890:2|100
+MC:42|5000000|12|100,0,100,100,235|67,1,100,100,235|...
 PING:1|1234567890
 PONG:1|0|1234567900|1234567950
+MC_ACK:42
 SYNC:ACK:command|START_SESSION<EOT>
 ```
 
@@ -1339,11 +1342,14 @@ sequenceDiagram
     SS->>PS: ACK_SYNC_ADJ
     SS->>SS: Calculate time offset
 
-    loop Each burst in sequence
-        PE->>PE: Execute buzz (left)
-        PS->>SS: BUZZ(finger, amplitude, scheduled_time)
-        SS->>SE: Trigger buzz at scheduled time (right)
-        SE->>SE: Execute buzz (right, at scheduled time)
+    loop Each macrocycle (~2s)
+        PS->>SS: MACROCYCLE(12 events, base_time)
+        SS->>PS: MACROCYCLE_ACK
+        par
+            PE->>PE: Execute 12 events (left)
+        and
+            SE->>SE: Execute 12 events synchronized (right)
+        end
     end
 ```
 

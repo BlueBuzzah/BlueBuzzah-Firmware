@@ -294,15 +294,6 @@ void test_SyncCommand_createStopSession(void) {
     TEST_ASSERT_EQUAL_UINT32(25, cmd.getSequenceId());
 }
 
-void test_SyncCommand_createBuzz(void) {
-    SyncCommand cmd = SyncCommand::createBuzz(30, 2, 75, 100, 250);  // finger 2, amplitude 75, duration 100ms, freq 250Hz
-    TEST_ASSERT_EQUAL(SyncCommandType::BUZZ, cmd.getType());
-    TEST_ASSERT_EQUAL_UINT32(30, cmd.getSequenceId());
-    TEST_ASSERT_EQUAL_INT32(2, cmd.getDataInt("0", -1));    // finger
-    TEST_ASSERT_EQUAL_INT32(75, cmd.getDataInt("1", -1));   // amplitude
-    TEST_ASSERT_EQUAL_INT32(100, cmd.getDataInt("2", -1));  // duration
-    TEST_ASSERT_EQUAL_INT32(250, cmd.getDataInt("3", -1));  // frequency
-}
 
 void test_SyncCommand_createDeactivate(void) {
     SyncCommand cmd = SyncCommand::createDeactivate(40);
@@ -514,47 +505,8 @@ void test_SimpleSyncProtocol_resetLatency(void) {
 // CREATEBUZZ WITH DURATION TESTS
 // =============================================================================
 
-void test_SyncCommand_createBuzz_with_duration(void) {
-    // Create BUZZ with motor duration and frequency
-    SyncCommand cmd = SyncCommand::createBuzz(42, 2, 75, 150, 220);  // 150ms duration, 220Hz
 
-    TEST_ASSERT_EQUAL(SyncCommandType::BUZZ, cmd.getType());
-    TEST_ASSERT_EQUAL_UINT32(42, cmd.getSequenceId());
-    TEST_ASSERT_EQUAL_INT32(2, cmd.getDataInt("0", -1));    // finger
-    TEST_ASSERT_EQUAL_INT32(75, cmd.getDataInt("1", -1));   // amplitude
-    TEST_ASSERT_EQUAL_INT32(150, cmd.getDataInt("2", -1));  // duration
-    TEST_ASSERT_EQUAL_INT32(220, cmd.getDataInt("3", -1));  // frequency
-}
 
-void test_SyncCommand_createBuzz_default_duration(void) {
-    // Create BUZZ with default 100ms duration (typical TIME_ON) and 250Hz frequency (v1 default)
-    SyncCommand cmd = SyncCommand::createBuzz(42, 2, 75, 100, 250);
-
-    TEST_ASSERT_EQUAL(SyncCommandType::BUZZ, cmd.getType());
-    TEST_ASSERT_EQUAL_INT32(2, cmd.getDataInt("0", -1));    // finger
-    TEST_ASSERT_EQUAL_INT32(75, cmd.getDataInt("1", -1));   // amplitude
-    TEST_ASSERT_EQUAL_INT32(100, cmd.getDataInt("2", -1));  // duration
-    TEST_ASSERT_EQUAL_INT32(250, cmd.getDataInt("3", -1));  // frequency
-}
-
-void test_SyncCommand_createBuzz_serialize_deserialize(void) {
-    // Test round-trip serialization with duration and frequency
-    SyncCommand original = SyncCommand::createBuzz(99, 3, 80, 200, 250);  // 200ms duration, 250Hz
-
-    char buffer[256];
-    TEST_ASSERT_TRUE(original.serialize(buffer, sizeof(buffer)));
-
-    SyncCommand parsed;
-    TEST_ASSERT_TRUE(parsed.deserialize(buffer));
-
-    // Verify all fields preserved
-    TEST_ASSERT_EQUAL(SyncCommandType::BUZZ, parsed.getType());
-    TEST_ASSERT_EQUAL_UINT32(99, parsed.getSequenceId());
-    TEST_ASSERT_EQUAL_INT32(3, parsed.getDataInt("0", -1));   // finger
-    TEST_ASSERT_EQUAL_INT32(80, parsed.getDataInt("1", -1));  // amplitude
-    TEST_ASSERT_EQUAL_INT32(200, parsed.getDataInt("2", -1)); // duration
-    TEST_ASSERT_EQUAL_INT32(250, parsed.getDataInt("3", -1)); // frequency
-}
 
 // =============================================================================
 // SETDATA EDGE CASE TESTS
@@ -1136,17 +1088,6 @@ void test_SyncCommand_createPongWithTimestamps(void) {
     TEST_ASSERT_EQUAL_INT32(1005000, cmd.getDataInt("1", -1));  // T3
 }
 
-void test_SyncCommand_createBuzzWithTime(void) {
-    SyncCommand cmd = SyncCommand::createBuzzWithTime(42, 2, 75, 100, 250, 5000000);
-
-    TEST_ASSERT_EQUAL(SyncCommandType::BUZZ, cmd.getType());
-    TEST_ASSERT_EQUAL_UINT32(42, cmd.getSequenceId());
-    TEST_ASSERT_EQUAL_INT32(2, cmd.getDataInt("0", -1));    // finger
-    TEST_ASSERT_EQUAL_INT32(75, cmd.getDataInt("1", -1));   // amplitude
-    TEST_ASSERT_EQUAL_INT32(100, cmd.getDataInt("2", -1));  // duration
-    TEST_ASSERT_EQUAL_INT32(250, cmd.getDataInt("3", -1));  // frequency
-    TEST_ASSERT_EQUAL_INT32(5000000, cmd.getDataInt("4", -1));  // activateTime (low 32 bits)
-}
 
 void test_SyncCommand_createDebugFlashWithTime(void) {
     SyncCommand cmd = SyncCommand::createDebugFlashWithTime(42, 5000000);
@@ -1229,7 +1170,6 @@ int main(int argc, char **argv) {
     RUN_TEST(test_SyncCommand_createPauseSession);
     RUN_TEST(test_SyncCommand_createResumeSession);
     RUN_TEST(test_SyncCommand_createStopSession);
-    RUN_TEST(test_SyncCommand_createBuzz);
     RUN_TEST(test_SyncCommand_createDeactivate);
 
     // SequenceGenerator Tests
@@ -1254,11 +1194,6 @@ int main(int argc, char **argv) {
     RUN_TEST(test_SimpleSyncProtocol_updateLatency_ema_smoothing);
     RUN_TEST(test_SimpleSyncProtocol_updateLatency_outlier_rejection);
     RUN_TEST(test_SimpleSyncProtocol_resetLatency);
-
-    // createBuzz with duration Tests
-    RUN_TEST(test_SyncCommand_createBuzz_with_duration);
-    RUN_TEST(test_SyncCommand_createBuzz_default_duration);
-    RUN_TEST(test_SyncCommand_createBuzz_serialize_deserialize);
 
     // Timing Utility Tests
     RUN_TEST(test_getMicros);
@@ -1332,7 +1267,6 @@ int main(int argc, char **argv) {
     // Factory Method Tests for PTP Commands
     RUN_TEST(test_SyncCommand_createPingWithT1);
     RUN_TEST(test_SyncCommand_createPongWithTimestamps);
-    RUN_TEST(test_SyncCommand_createBuzzWithTime);
     RUN_TEST(test_SyncCommand_createDebugFlashWithTime);
     RUN_TEST(test_SyncCommand_createDebugFlash);
     RUN_TEST(test_SyncCommand_createPing);

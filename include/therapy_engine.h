@@ -24,32 +24,19 @@
 #include <cstdint>
 
 // =============================================================================
-// BUZZ FLOW STATE
+// FLOW CONTROL STATE
 // =============================================================================
 
 /**
- * @brief State machine for buzz execution flow control
- *
- * v1 macrocycle timing model:
- *   A macrocycle consists of 3 patterns followed by double TIME_RELAX:
- *
- *   [Pattern 1] -> [Pattern 2] -> [Pattern 3] -> [Relax] -> [Relax]
- *      668ms        668ms         668ms       668ms     668ms   = 3340ms
- *
- *   Within each pattern (4 fingers):
- *     IDLE -> Send BUZZ, activate motor -> ACTIVE
- *     ACTIVE -> Wait TIME_ON (100ms) -> deactivate motor -> WAITING_OFF
- *     WAITING_OFF -> Wait TIME_OFF + jitter (67ms +/- jitter) -> IDLE (next finger)
- *
- *   After pattern completes:
- *     If patterns < 3: -> generate new pattern -> IDLE (NO relaxation)
- *     If patterns == 3: -> WAITING_RELAX -> Wait 2x TIME_RELAX (1336ms) -> IDLE (new macrocycle)
+ * @brief State machine for therapy execution flow control
+ * NOTE: Despite the name, this is used by BOTH BUZZ (legacy) and MACROCYCLE modes
+ * TODO: Rename to MacrocycleFlowState after BUZZ removal
  */
 enum class BuzzFlowState : uint8_t {
-    IDLE = 0,           // Ready to send next BUZZ
-    ACTIVE,             // Motor running, waiting for TIME_ON (burst duration)
-    WAITING_OFF,        // Motor off, waiting for TIME_OFF + jitter before next finger
-    WAITING_RELAX       // Pattern complete, waiting TIME_RELAX before next cycle
+    IDLE = 0,           // Ready to start next cycle
+    ACTIVE,             // Cycle running, waiting for completion
+    WAITING_OFF,        // Motor off (unused in MACROCYCLE mode)
+    WAITING_RELAX       // Cycle complete, waiting before next cycle
 };
 
 // =============================================================================
@@ -204,9 +191,6 @@ Pattern generateMirroredPattern(
 // CALLBACK TYPES
 // =============================================================================
 
-// Callback for sending sync commands to SECONDARY
-typedef void (*SendCommandCallback)(const char* commandType, uint8_t primaryFinger, uint8_t secondaryFinger, uint8_t amplitude, uint32_t durationMs, uint32_t seq, uint16_t frequencyHz);
-
 // Callback for activating haptic motor
 typedef void (*ActivateCallback)(uint8_t finger, uint8_t amplitude);
 
@@ -228,7 +212,7 @@ typedef void (*MacrocycleStartCallback)(uint32_t macrocycleCount);
 // Called when a new macrocycle is generated, sends all events to SECONDARY
 typedef void (*SendMacrocycleCallback)(const Macrocycle& macrocycle);
 
-// Callback for scheduling PRIMARY motor activation via hardware timer
+// Callback for scheduling PRIMARY motor activation via FreeRTOS motor task
 // Parameters: activateTimeUs, finger, amplitude, durationMs, frequencyHz
 // Called for each event in macrocycle to enqueue to ActivationQueue
 typedef void (*ScheduleActivationCallback)(uint64_t activateTimeUs, uint8_t finger,
@@ -271,11 +255,6 @@ public:
     // =========================================================================
 
     /**
-     * @brief Set callback for sending sync commands
-     */
-    void setSendCommandCallback(SendCommandCallback callback);
-
-    /**
      * @brief Set callback for activating haptic motor
      */
     void setActivateCallback(ActivateCallback callback);
@@ -306,10 +285,10 @@ public:
     void setSendMacrocycleCallback(SendMacrocycleCallback callback);
 
     /**
-     * @brief Set callbacks for hardware timer scheduling on PRIMARY
+     * @brief Set callbacks for FreeRTOS motor task scheduling on PRIMARY
      *
      * These callbacks allow TherapyEngine to use the ActivationQueue
-     * for hardware timer-based motor scheduling (same as SECONDARY).
+     * for FreeRTOS motor task scheduling (same as SECONDARY).
      *
      * @param scheduleCallback Called for each event to enqueue
      * @param startCallback Called after all events enqueued to start chain
@@ -329,19 +308,6 @@ public:
      * @param callback Function returning lead time in microseconds
      */
     void setGetLeadTimeCallback(GetLeadTimeCallback callback);
-
-    /**
-     * @brief Enable/disable macrocycle batching mode
-     * When enabled, all 12 events are sent in a single MACROCYCLE message.
-     * When disabled, individual BUZZ messages are sent (legacy mode).
-     * @param enabled Enable macrocycle batching
-     */
-    void setMacrocycleBatching(bool enabled);
-
-    /**
-     * @brief Check if macrocycle batching is enabled
-     */
-    bool isMacrocycleBatchingEnabled() const { return _macrocycleBatching; }
 
     /**
      * @brief Enable/disable frequency randomization (Custom vCR feature)
@@ -495,15 +461,11 @@ private:
     uint8_t _patternsInMacrocycle;      // Count of patterns executed in current macrocycle (0-2)
     static const uint8_t PATTERNS_PER_MACROCYCLE = 3;  // v1: 3 patterns per macrocycle
 
-    // Sequence tracking
-    uint32_t _buzzSequenceId;
-
-    // Flow control state machine (PRIMARY only)
-    BuzzFlowState _buzzFlowState;
-    uint32_t _buzzSendTime;          // Time when BUZZ was sent
+    // Flow control state machine (used by MACROCYCLE mode)
+    BuzzFlowState _buzzFlowState;       // NOTE: Used by MACROCYCLE, not just BUZZ (legacy name)
+    uint32_t _buzzSendTime;             // Time tracking for state transitions
 
     // Callbacks
-    SendCommandCallback _sendCommandCallback;
     ActivateCallback _activateCallback;
     DeactivateCallback _deactivateCallback;
     CycleCompleteCallback _cycleCompleteCallback;
@@ -511,14 +473,12 @@ private:
     MacrocycleStartCallback _macrocycleStartCallback;
     SendMacrocycleCallback _sendMacrocycleCallback;
 
-    // Hardware timer scheduling callbacks (PRIMARY uses ActivationQueue)
+    // FreeRTOS motor task scheduling callbacks (PRIMARY uses ActivationQueue)
     ScheduleActivationCallback _scheduleActivationCallback;
     StartSchedulingCallback _startSchedulingCallback;
     IsSchedulingCompleteCallback _isSchedulingCompleteCallback;
     GetLeadTimeCallback _getLeadTimeCallback;
 
-    // Macrocycle batching mode
-    bool _macrocycleBatching;            // When true, send all 12 events as one MACROCYCLE message
     uint32_t _macrocycleSequenceId;      // Sequence ID for MACROCYCLE messages
     Macrocycle _currentMacrocycle;       // Current macrocycle being executed
     uint8_t _macrocycleEventIndex;       // Current event index within macrocycle (0-11)
@@ -526,7 +486,6 @@ private:
 
     // Internal methods
     void generateNextPattern();
-    void executePatternStep();
     void applyFrequencyRandomization();  // Called at start of each pattern cycle
     Macrocycle generateMacrocycle();     // Generate all 12 events for a macrocycle
     void executeMacrocycleStep();        // State machine for macrocycle batching mode

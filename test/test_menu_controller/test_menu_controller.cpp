@@ -532,10 +532,6 @@ void test_isInternalMessage_empty_returns_false() {
     TEST_ASSERT_FALSE(g_menu->isInternalMessage(""));
 }
 
-void test_isInternalMessage_BUZZ_returns_true() {
-    TEST_ASSERT_TRUE(g_menu->isInternalMessage("BUZZ:1:1234567890:0|100"));
-}
-
 void test_isInternalMessage_PARAM_UPDATE_returns_true() {
     TEST_ASSERT_TRUE(g_menu->isInternalMessage("PARAM_UPDATE:INTENSITY:75"));
 }
@@ -958,7 +954,6 @@ int main(int argc, char **argv) {
     // Internal message tests
     RUN_TEST(test_isInternalMessage_null_returns_false);
     RUN_TEST(test_isInternalMessage_empty_returns_false);
-    RUN_TEST(test_isInternalMessage_BUZZ_returns_true);
     RUN_TEST(test_isInternalMessage_PARAM_UPDATE_returns_true);
     RUN_TEST(test_isInternalMessage_SEED_returns_true);
     RUN_TEST(test_isInternalMessage_SEED_ACK_returns_true);

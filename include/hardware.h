@@ -20,6 +20,7 @@
 #include <Adafruit_DRV2605.h>
 #include <Adafruit_NeoPixel.h>
 
+#include "rtos.h"  // FreeRTOS for I2C mutex
 #include "config.h"
 #include "types.h"
 
@@ -155,12 +156,21 @@ public:
      */
     void closeAllChannels();
 
+    /**
+     * @brief Check which finger has mux channel pre-selected
+     * @return Finger index (0-3) or -1 if none pre-selected
+     */
+    int8_t getPreSelectedFinger() const { return _preSelectedFinger; }
+
 private:
     TCA9548A _tca;
     Adafruit_DRV2605 _drv[MAX_ACTUATORS];
     bool _fingerActive[MAX_ACTUATORS];
     bool _fingerEnabled[MAX_ACTUATORS];
     bool _initialized;
+    int8_t _preSelectedFinger;  // Tracks which finger has mux channel pre-selected (-1 = none)
+    uint16_t _lastFrequency[MAX_ACTUATORS] = {0};  // Cached frequency per finger (skip I2C if unchanged)
+    SemaphoreHandle_t _i2cMutex;  // Protects I2C operations from concurrent access
 
     /**
      * @brief Select multiplexer channel and prepare for DRV2605 communication

@@ -97,6 +97,29 @@ inline void delayMicroseconds(uint32_t us) {
 }
 
 // =============================================================================
+// ARM CMSIS INTRINSICS (NO-OP FOR NATIVE BUILDS)
+// =============================================================================
+
+// These are ARM Cortex-M intrinsics that don't exist on x86.
+// For native testing, we provide no-op implementations.
+extern "C" {
+    // Data Memory Barrier - ensures memory operations complete in order
+    inline void __DMB(void) { /* no-op on x86 */ }
+
+    // Get priority mask (interrupt state) - always return 0 (interrupts enabled)
+    inline uint32_t __get_PRIMASK(void) { return 0; }
+
+    // Set priority mask (restore interrupt state) - no-op
+    inline void __set_PRIMASK(uint32_t primask) { (void)primask; }
+
+    // Disable interrupts - no-op (single-threaded tests)
+    inline void __disable_irq(void) { /* no-op on x86 */ }
+
+    // Enable interrupts - no-op
+    inline void __enable_irq(void) { /* no-op on x86 */ }
+}
+
+// =============================================================================
 // MOCK TIMING CONTROL FOR TESTS
 // =============================================================================
 

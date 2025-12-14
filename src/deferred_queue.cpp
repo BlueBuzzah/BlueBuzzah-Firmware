@@ -25,6 +25,9 @@ bool DeferredQueue::enqueue(DeferredWorkType type, uint8_t param1, uint8_t param
     // Calculate next head position
     uint8_t nextHead = static_cast<uint8_t>((_head + 1) % MAX_WORK);
 
+    // SP-H4 fix: Memory barrier before reading _tail to ensure we see consumer's updates
+    __DMB();
+
     // Check if queue is full
     if (nextHead == _tail) {
         return false;  // Queue full
@@ -46,10 +49,16 @@ bool DeferredQueue::enqueue(DeferredWorkType type, uint8_t param1, uint8_t param
 }
 
 bool DeferredQueue::processOne() {
+    // SP-H4 fix: Memory barrier before reading _head to ensure we see producer's updates
+    __DMB();
+
     // Check if queue is empty
     if (_tail == _head) {
         return false;  // Queue empty
     }
+
+    // SP-H4 fix: Another barrier to ensure we read data AFTER producer finished writing
+    __DMB();
 
     // Read work item
     DeferredWorkType type = _queue[_tail].type;

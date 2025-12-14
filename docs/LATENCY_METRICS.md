@@ -192,7 +192,7 @@ Estimated sync error:    ~215 us (SECONDARY later)
 ┌─────────────────────────────────────────────────────────────┐
 │                       SECONDARY                              │
 ├─────────────────────────────────────────────────────────────┤
-│  onBLEMessage(BUZZ)                                         │
+│  onBLEMessage(MACROCYCLE)                                         │
 │    └─► syncProtocol.toLocalTime(executeAt)                  │
 │    └─► syncProtocol.waitUntil(localExecTime)                │
 │    └─► latencyMetrics.recordExecution(drift)                │
@@ -202,7 +202,7 @@ Estimated sync error:    ~215 us (SECONDARY later)
 ### Scheduled Execution Flow
 
 1. PRIMARY calculates `executeAt = now + SYNC_EXECUTION_BUFFER_MS`
-2. PRIMARY sends BUZZ command with `executeAt` to SECONDARY
+2. PRIMARY sends MACROCYCLE with batched events to SECONDARY
 3. Both devices spin-wait until scheduled time using `waitUntil()`
 4. Both devices record drift after execution
 
