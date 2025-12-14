@@ -15,6 +15,7 @@
 #define STATE_MACHINE_H
 
 #include <Arduino.h>
+#include <atomic>
 #include "types.h"
 
 // =============================================================================
@@ -106,14 +107,21 @@ public:
     void begin(TherapyState initialState = TherapyState::IDLE);
 
     /**
-     * @brief Get current therapy state
+     * @brief Get current therapy state (thread-safe)
+     *
+     * Uses atomic load with acquire semantics for thread-safe access.
+     * Safe to call from any context (main loop, BLE callbacks, ISRs).
      */
-    TherapyState getCurrentState() const { return _currentState; }
+    TherapyState getCurrentState() const {
+        return _currentState.load(std::memory_order_acquire);
+    }
 
     /**
-     * @brief Get previous therapy state
+     * @brief Get previous therapy state (thread-safe)
      */
-    TherapyState getPreviousState() const { return _previousState; }
+    TherapyState getPreviousState() const {
+        return _previousState.load(std::memory_order_acquire);
+    }
 
     /**
      * @brief Trigger a state transition
@@ -163,52 +171,54 @@ public:
     void clearCallbacks();
 
     // =========================================================================
-    // STATE CHECKS
+    // STATE CHECKS (all thread-safe via atomic load)
     // =========================================================================
 
     /**
      * @brief Check if currently in an active therapy session
      */
-    bool isActive() const { return isActiveState(_currentState); }
+    bool isActive() const { return isActiveState(_currentState.load(std::memory_order_acquire)); }
 
     /**
      * @brief Check if currently in an error state
      */
-    bool isError() const { return isErrorState(_currentState); }
+    bool isError() const { return isErrorState(_currentState.load(std::memory_order_acquire)); }
 
     /**
      * @brief Check if therapy is running
      */
-    bool isRunning() const { return _currentState == TherapyState::RUNNING; }
+    bool isRunning() const { return _currentState.load(std::memory_order_acquire) == TherapyState::RUNNING; }
 
     /**
      * @brief Check if therapy is paused
      */
-    bool isPaused() const { return _currentState == TherapyState::PAUSED; }
+    bool isPaused() const { return _currentState.load(std::memory_order_acquire) == TherapyState::PAUSED; }
 
     /**
      * @brief Check if ready for therapy
      */
-    bool isReady() const { return _currentState == TherapyState::READY; }
+    bool isReady() const { return _currentState.load(std::memory_order_acquire) == TherapyState::READY; }
 
     /**
      * @brief Check if idle (no session)
      */
-    bool isIdle() const { return _currentState == TherapyState::IDLE; }
+    bool isIdle() const { return _currentState.load(std::memory_order_acquire) == TherapyState::IDLE; }
 
 private:
-    TherapyState _currentState;
-    TherapyState _previousState;
+    // TP-2: Atomic state for thread-safe access from BLE callbacks and main loop
+    std::atomic<TherapyState> _currentState;
+    std::atomic<TherapyState> _previousState;
 
     StateChangeCallback _callbacks[MAX_STATE_CALLBACKS];
     uint8_t _callbackCount;
 
     /**
      * @brief Determine next state based on current state and trigger
+     * @param current Current state (passed in to avoid TOCTOU race)
      * @param trigger Event causing the transition
      * @return New state (may be same as current if no valid transition)
      */
-    TherapyState determineNextState(StateTrigger trigger);
+    TherapyState determineNextState(TherapyState current, StateTrigger trigger);
 
     /**
      * @brief Notify all registered callbacks of state change

@@ -59,7 +59,8 @@
 #define CONNECTION_TIMEOUT_MS 30000  // 30 seconds connection timeout
 
 // BLE parameters
-#define BLE_INTERVAL_MS 8            // Connection interval (rounded from 7.5ms)
+#define BLE_INTERVAL_MIN_MS 8        // Minimum connection interval (7.5ms = 6 units is BLE spec min)
+#define BLE_INTERVAL_MAX_MS 12       // Maximum connection interval (tighter than default 15ms)
 #define BLE_TIMEOUT_MS 4000          // Supervision timeout (4 seconds)
 #define BLE_ADV_INTERVAL_MS 500      // Advertising interval
 
@@ -69,18 +70,25 @@
 #define COMMAND_TIMEOUT_MS 5000      // General BLE command timeout
 
 // PTP-style clock synchronization
-#define SYNC_BURST_COUNT 10          // Number of PING/PONGs in initial sync burst
-#define SYNC_BURST_INTERVAL_MS 15    // Interval between burst PINGs
-#define SYNC_LEAD_TIME_US 50000      // 50ms lead time for scheduled activations (default)
+#define SYNC_LEAD_TIME_US 50000      // 50ms default lead time for PING-based RTT calculation
+                                      // Actual lead time is adaptive based on measured RTT + margin
+#define SYNC_PROCESSING_OVERHEAD_US 20000  // 20ms overhead for processing on SECONDARY
+                                            // Accounts for: BLE callback (~5ms), deserialization (~5ms),
+                                            // event staging (~5ms), queue forwarding (~5ms)
+// NOTE: MACROCYCLE_TRANSMISSION_OVERHEAD_US was removed after fixing the DEBUG_FLASH
+// blocking bug. The old code's delayMicroseconds() blocked BLE callbacks for ~300ms,
+// making it appear that MACROCYCLE transmission took much longer than it actually does.
+// Actual MACROCYCLE BLE transmission is ~40-50ms (included in RTT-based calculation).
 #define SYNC_MIN_VALID_SAMPLES 5     // Minimum samples before clock sync is valid
 #define SYNC_OFFSET_EMA_ALPHA_NUM 1  // Slow EMA α = 1/10 = 0.1 for continuous updates
 #define SYNC_OFFSET_EMA_ALPHA_DEN 10
 #define SYNC_MAINTENANCE_INTERVAL_MS 500  // Periodic sync interval during therapy (reduces drift)
-#define SYNC_RTT_QUALITY_THRESHOLD_US 30000  // 30ms - reject samples with RTT above this
+#define SYNC_RTT_QUALITY_THRESHOLD_US 120000 // 120ms network RTT threshold (Phase 5A)
+                                              // Accepts more samples while still rejecting very poor BLE conditions
 
-// Heartbeat
-#define HEARTBEAT_INTERVAL_MS 2000   // 2 seconds between heartbeats
-#define HEARTBEAT_TIMEOUT_MS 6000    // 6 seconds = 3 missed heartbeats
+// Unified keepalive + clock sync (PING/PONG)
+#define KEEPALIVE_INTERVAL_MS 1000   // 1 second between PING messages (unified keepalive + clock sync)
+#define KEEPALIVE_TIMEOUT_MS 6000    // 6 seconds = 6 missed keepalives
 
 // Battery monitoring
 #define BATTERY_CHECK_INTERVAL_MS 60000  // 60 seconds between checks
@@ -89,6 +97,9 @@
 #define THERAPY_CYCLE_MS 100            // Main therapy cycle period
 // Note: Therapy timing (TIME_ON, TIME_OFF, etc.) is defined in therapy profiles
 // See ProfileManager and ORIGINAL_PARAMETERS.md for v1 reference values
+
+// Test session duration (quick hardware verification, separate from profile settings)
+constexpr uint32_t TEST_DURATION_SEC = 120;  // 2 minutes
 
 // =============================================================================
 // BATTERY CONFIGURATION
@@ -116,7 +127,7 @@
 
 // LRA (Linear Resonant Actuator) parameters
 #define MIN_FREQUENCY_HZ 150            // Minimum LRA resonant frequency
-#define MAX_FREQUENCY_HZ 260            // Maximum LRA resonant frequency (v1 Custom vCR upper bound)
+#define MAX_FREQUENCY_HZ 255            // Maximum LRA resonant frequency (v1 randrange excludes 260)
 #define DEFAULT_FREQUENCY_HZ 250        // Default/standard LRA frequency (v1 reference: 250Hz)
 
 // Finger indices (4 fingers per hand, matching v1 original - no thumb)
@@ -208,6 +219,6 @@
 // Buffer sizes for static allocation
 #define RX_BUFFER_SIZE 256              // BLE receive buffer
 #define TX_BUFFER_SIZE 256              // BLE transmit buffer
-#define MESSAGE_BUFFER_SIZE 128         // General message buffer
+#define MESSAGE_BUFFER_SIZE 256         // General message buffer (increased for MACROCYCLE batching)
 
 #endif // CONFIG_H

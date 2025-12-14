@@ -192,8 +192,10 @@ def configure_role(port, role, retries=5):
                 time.sleep(1.0)
 
                 # Read response, looking for confirmation
-                # Device prints "[CONFIG] Role set to X - restarting..." before reboot
-                expected_confirmation = f"[CONFIG] Role set to {role}"
+                # Device prints "[SETTINGS] Saved" before "[CONFIG] Role set to X - restarting..."
+                # We match on [SETTINGS] Saved because the [CONFIG] message may not transmit
+                # before the device reboots (USB CDC timing race)
+                expected_confirmation = "[SETTINGS] Saved"
                 response = ""
                 start_time = time.time()
                 try:

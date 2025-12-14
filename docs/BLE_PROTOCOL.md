@@ -158,7 +158,7 @@ flowchart TD
 
 | Parameter | Value |
 |-----------|-------|
-| Connection interval | 7.5-20ms (negotiated) |
+| Connection interval | 8-12ms (6-9 BLE units) |
 | MTU size | 67 bytes (64 payload + 3 ATT header) |
 | Supervision timeout | 4000ms |
 | Message fragmentation | May occur for responses >MTU |
@@ -166,11 +166,11 @@ flowchart TD
 ### Internal Synchronization Timing
 
 During active therapy:
-- **BUZZ messages:** Sent every ~200ms
-- **BLE latency:** 7.5-20ms
+- **MACROCYCLE messages:** Sent every ~2 seconds (batches of 12 events)
+- **BLE latency:** 8-12ms
 - **Processing time:** <5ms per command
-- **Synchronization accuracy:** ±20ms between gloves
-- **Drift:** Zero (command-driven, not time-based)
+- **Synchronization accuracy:** <1ms between gloves (IEEE 1588 PTP clock sync + FreeRTOS motor task)
+- **Bandwidth efficiency:** 72% reduction vs legacy individual messages
 
 ---
 
@@ -740,15 +740,15 @@ Broadcast parameter changes from PRIMARY to SECONDARY.
 
 **Format:**
 ```
-PARAM_UPDATE:KEY1:VALUE1:KEY2:VALUE2:...\n
+PARAM_UPDATE:KEY1:VALUE1:KEY2:VALUE2:...
 ```
 
 **Example:**
 ```
-PARAM_UPDATE:ON:0.150:OFF:0.080:JITTER:10\n
+PARAM_UPDATE:ON:0.150:OFF:0.080:JITTER:10
 ```
 
-**Note:** No `\x04` terminator (internal message)
+**Note:** No terminator required (internal message)
 
 ---
 
@@ -758,26 +758,27 @@ Query SECONDARY battery voltage.
 
 **Direction:** PRIMARY → SECONDARY
 
-**Request:** `GET_BATTERY\n`
+**Request:** `GET_BATTERY`
 
-**Response:** `BATRESPONSE:3.68\n`
+**Response:** `BATRESPONSE:3.68`
 
 ---
 
 ### SYNC Messages
 
-During therapy, PRIMARY sends synchronization messages to SECONDARY:
+PRIMARY and SECONDARY exchange synchronization messages for therapy and keepalive:
 
 | Message | Format | Purpose |
 |---------|--------|---------|
-| BUZZ | `SYNC:BUZZ:seq:ts:finger\|amplitude` | Execute motor activation |
-| HEARTBEAT | `SYNC:HEARTBEAT:ts\|N` | Connection keepalive (every 2s) |
-| START_SESSION | `SYNC:START_SESSION:duration_sec\|...\` | Start therapy |
-| STOP_SESSION | `SYNC:STOP_SESSION:` | Stop therapy |
-| PAUSE_SESSION | `SYNC:PAUSE_SESSION:` | Pause therapy |
-| RESUME_SESSION | `SYNC:RESUME_SESSION:` | Resume therapy |
-| SEED | `SEED:N` | Random seed for jitter sync |
-| SEED_ACK | `SEED_ACK` | Seed acknowledgment |
+| PING | `PING:seq\|T1` | Unified keepalive + clock sync (every 1s, all states) |
+| PONG | `PONG:seq\|0\|T2\|T3` | Keepalive + clock sync response |
+| MACROCYCLE | `MC:seq\|baseTime\|count\|events...` | Batch of 12 motor activation events |
+| MACROCYCLE_ACK | `MC_ACK:seq` | Macrocycle acknowledgment |
+| START_SESSION | `SYNC:START_SESSION:seq\|ts` | Start therapy |
+| STOP_SESSION | `SYNC:STOP_SESSION:seq\|ts` | Stop therapy |
+| PAUSE_SESSION | `SYNC:PAUSE_SESSION:seq\|ts` | Pause therapy |
+| RESUME_SESSION | `SYNC:RESUME_SESSION:seq\|ts` | Resume therapy |
+| DEBUG_FLASH | `DEBUG_FLASH:seq\|flashTime` | Synchronized LED flash (debug mode) |
 
 ---
 
@@ -867,7 +868,7 @@ During active therapy sessions, PRIMARY sends internal synchronization messages 
 Messages that should be ignored (no `\x04` terminator):
 
 - `SYNC:*` - All internal sync messages
-- `BUZZ:*` - Motor activation commands
+- `MC:*` - MACROCYCLE messages (motor activation batches)
 - `PARAM_UPDATE:*` - Parameter broadcasts
 - `SEED:*` / `SEED_ACK` - Jitter synchronization
 - `GET_BATTERY` / `BATRESPONSE:*` - Battery queries
@@ -879,10 +880,10 @@ Messages that should be ignored (no `\x04` terminator):
 
 ```
 // Example RX stream during therapy:
-PONG\n\x04                           ← Response to PING (process)
-SYNC:BUZZ:42:5000000:0|100\n         ← Internal (ignore - no EOT)
-BATP:3.72\nBATS:3.68\n\x04           ← Response to BATTERY (process)
-SYNC:BUZZ:43:5200000:1|100\n         ← Internal (ignore - no EOT)
+PONG\x04                             ← Response to PING (process)
+MC:42|5000000|12|...                 ← Internal MACROCYCLE (ignore - no EOT)
+BATP:3.72\nBATS:3.68\x04             ← Response to BATTERY (process)
+SYNC:START_SESSION:1|5200000         ← Internal (ignore - no EOT)
 ```
 
 ---

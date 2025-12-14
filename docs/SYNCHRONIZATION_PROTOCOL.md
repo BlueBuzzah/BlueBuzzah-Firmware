@@ -1,1382 +1,417 @@
 # BlueBuzzah Synchronization Protocol
-**Version:** 2.0.0 (Command-Driven Architecture)
-**Date:** 2025-01-23
-**Platform:** Arduino C++ / PlatformIO
+
+**Version:** 2.4.0
+**Last Updated:** 2025-12-09
 
 ---
 
-## Table of Contents
+## Overview
 
-1. [Protocol Overview](#protocol-overview)
-2. [BLE Connection Establishment](#ble-connection-establishment)
-3. [Time Synchronization](#time-synchronization)
-4. [Command-Driven Execution](#command-driven-execution)
-5. [Parameter Synchronization](#parameter-synchronization)
-6. [Multi-Connection Support](#multi-connection-support)
-7. [Error Recovery](#error-recovery)
-8. [Timing Analysis](#timing-analysis)
-9. [Message Catalog](#message-catalog)
+BlueBuzzah uses a bilateral synchronization protocol to coordinate haptic feedback between two gloves (PRIMARY and SECONDARY) over Bluetooth Low Energy. The protocol achieves <2ms synchronization accuracy using IEEE 1588 PTP-inspired clock synchronization with absolute time scheduling.
 
----
-
-### Terminology Note
-
-This document uses the following device role terminology:
-- **PRIMARY**: Initiates therapy, controls timing, connects to phone and SECONDARY
-- **SECONDARY**: Follows PRIMARY commands, receives therapy instructions via BLE
-
-Both devices run identical firmware and advertise as "BlueBuzzah". The role is determined by the `settings.json` configuration file stored in LittleFS.
-
----
-
-## Protocol Overview
+| Metric | Target | Achieved |
+|--------|--------|----------|
+| Bilateral sync accuracy | <50ms | <2ms |
+| Clock offset precision | <5ms | <1ms |
+| BLE latency compensation | Yes | PTP 4-timestamp |
 
 ### Core Principles
 
-1. **PRIMARY commands, SECONDARY obeys**: PRIMARY sends explicit commands before every action
-2. **Scheduled execution**: SECONDARY receives BUZZ commands with scheduled execution timestamps
-3. **Safety timeout**: SECONDARY halts therapy if PRIMARY disconnects (10s timeout)
-
-### Synchronization Accuracy
-
-| Metric | Value | Source |
-|--------|-------|--------|
-| BLE latency | 7.5ms (nominal) | BLE connection interval |
-| BLE latency | 21ms (compensated) | Measured +21ms offset |
-| Execution jitter | ±10-20ms | Processing overhead |
-| **Total bilateral sync** | **±7.5-20ms** | Command receipt to motor activation |
-
-**Acceptable for therapy?** YES
-- Human temporal resolution: ~20-40ms
-- vCR therapy tolerance: <50ms bilateral lag
-- Observed performance: 7.5-20ms well within spec
+- **PRIMARY commands, SECONDARY follows** — All therapy decisions originate from PRIMARY
+- **Absolute time scheduling** — Commands include future activation timestamps
+- **Continuous synchronization** — Clock offset maintained throughout session
+- **Fail-safe design** — SECONDARY halts if PRIMARY connection lost
 
 ---
 
-## BLE Connection Establishment
-
-### Phase 1: Initial Connection (Legacy Single Connection)
-
-**PRIMARY Sequence** (`src/ble_manager.cpp`):
-
-```cpp
-bool BLEManager::initPrimary() {
-    // 1. Initialize Bluefruit stack
-    Bluefruit.begin(2, 1);  // 2 peripheral connections, 1 central
-    Bluefruit.setName("BlueBuzzah");
-    Bluefruit.setTxPower(4);
-
-    // 2. Setup UART service
-    bleuart_.begin();
-
-    // 3. Setup connection callbacks
-    Bluefruit.Periph.setConnectCallback(connectCallback);
-    Bluefruit.Periph.setDisconnectCallback(disconnectCallback);
-
-    // 4. Start advertising
-    startAdvertising();
-
-    return true;
-}
-
-void BLEManager::startAdvertising() {
-    Bluefruit.Advertising.addFlags(BLE_GAP_ADV_FLAGS_LE_ONLY_GENERAL_DISC_MODE);
-    Bluefruit.Advertising.addTxPower();
-    Bluefruit.Advertising.addService(bleuart_);
-    Bluefruit.Advertising.addName();
-
-    // Set advertising parameters
-    Bluefruit.Advertising.setInterval(80, 80);  // 50ms intervals
-    Bluefruit.Advertising.setFastTimeout(30);
-    Bluefruit.Advertising.start(0);  // Advertise forever
-}
-
-bool BLEManager::waitForConnection(uint32_t timeoutMs) {
-    uint32_t startTime = millis();
-
-    while (millis() - startTime < timeoutMs) {
-        if (Bluefruit.connected()) {
-            // Optimize connection parameters
-            Bluefruit.Connection(0)->requestConnectionParameter(6);  // 7.5ms interval
-            return true;
-        }
-        delay(10);
-    }
-
-    Serial.println(F("[PRIMARY] Connection timeout"));
-    return false;
-}
-
-bool BLEManager::waitForReady(uint32_t timeoutMs) {
-    uint32_t startTime = millis();
-
-    while (millis() - startTime < timeoutMs) {
-        if (bleuart_.available()) {
-            String message = readLine();
-            if (message == "READY") {
-                readyReceived_ = true;
-                return true;
-            }
-        }
-        delay(10);
-    }
-
-    return false;
-}
-
-bool BLEManager::sendFirstSync() {
-    // Send FIRST_SYNC with retry (3 attempts)
-    for (int attempt = 0; attempt < 3; attempt++) {
-        uint32_t timestamp = millis();
-        char syncMsg[32];
-        snprintf(syncMsg, sizeof(syncMsg), "FIRST_SYNC:%lu\n", timestamp);
-        bleuart_.print(syncMsg);
-
-        // Wait for ACK (500ms timeout per attempt)
-        uint32_t ackStart = millis();
-        while (millis() - ackStart < 500) {
-            if (bleuart_.available()) {
-                String response = readLine();
-                if (response == "ACK") {
-                    return true;
-                }
-            }
-            delay(10);
-        }
-    }
-
-    return false;
-}
-
-void BLEManager::sendVcrStart() {
-    bleuart_.print("VCR_START\n");
-}
-```
-
-**SECONDARY Sequence** (`src/ble_manager.cpp`):
-
-```cpp
-bool BLEManager::initSecondary() {
-    // 1. Initialize Bluefruit stack as Central
-    Bluefruit.begin(0, 1);  // 0 peripheral, 1 central connection
-    Bluefruit.setName("BlueBuzzah");
-
-    // 2. Setup client UART service
-    clientUart_.begin();
-    clientUart_.setRxCallback(rxCallback);
-
-    // 3. Setup Central callbacks
-    Bluefruit.Central.setConnectCallback(centralConnectCallback);
-    Bluefruit.Central.setDisconnectCallback(centralDisconnectCallback);
-
-    // 4. Start scanning for PRIMARY
-    Bluefruit.Scanner.setRxCallback(scanCallback);
-    Bluefruit.Scanner.restartOnDisconnect(true);
-    Bluefruit.Scanner.setInterval(160, 80);  // 100ms interval, 50ms window
-    Bluefruit.Scanner.useActiveScan(false);
-    Bluefruit.Scanner.start(0);  // Scan forever
-
-    return true;
-}
-
-void BLEManager::scanCallback(ble_gap_evt_adv_report_t* report) {
-    // Check if this is a BlueBuzzah device (potential PRIMARY)
-    if (Bluefruit.Scanner.checkReportForService(report, clientUart_)) {
-        char name[32];
-        memset(name, 0, sizeof(name));
-        Bluefruit.Scanner.parseReportByType(report, BLE_GAP_AD_TYPE_COMPLETE_LOCAL_NAME,
-                                             (uint8_t*)name, sizeof(name));
-
-        if (strcmp(name, "BlueBuzzah") == 0) {
-            // Found PRIMARY - connect
-            Bluefruit.Central.connect(report);
-            Bluefruit.Scanner.stop();
-        }
-    }
-}
-
-bool BLEManager::waitForPrimary(uint32_t timeoutMs) {
-    uint32_t startTime = millis();
-
-    while (millis() - startTime < timeoutMs) {
-        if (Bluefruit.Central.connected()) {
-            // Request optimal connection parameters
-            Bluefruit.Connection(0)->requestConnectionParameter(6);  // 7.5ms
-            return true;
-        }
-        delay(10);
-    }
-
-    return false;
-}
-
-void BLEManager::sendReady() {
-    clientUart_.print("READY\n");
-}
-
-bool BLEManager::waitForFirstSync(uint32_t timeoutMs) {
-    uint32_t startTime = millis();
-
-    while (millis() - startTime < timeoutMs) {
-        if (clientUart_.available()) {
-            String message = readLine();
-
-            if (message.startsWith("FIRST_SYNC:")) {
-                // Extract PRIMARY timestamp
-                uint32_t receivedTimestamp = message.substring(11).toInt();
-
-                // Get local timestamp
-                uint32_t currentTime = millis();
-
-                // Apply BLE latency compensation (+21ms)
-                uint32_t adjustedSyncTime = receivedTimestamp + 21;
-                int32_t timeShift = adjustedSyncTime - currentTime;
-
-                // Store offset for future sync corrections
-                initialTimeOffset_ = currentTime + timeShift;
-
-                // Send acknowledgment
-                clientUart_.print("ACK\n");
-                return true;
-            }
-        }
-        delay(10);
-    }
-
-    return false;
-}
-
-bool BLEManager::waitForVcrStart(uint32_t timeoutMs) {
-    uint32_t startTime = millis();
-
-    while (millis() - startTime < timeoutMs) {
-        if (clientUart_.available()) {
-            String message = readLine();
-            if (message == "VCR_START") {
-                return true;  // Ready for therapy
-            }
-        }
-        delay(10);
-    }
-
-    return false;
-}
-```
-
-**Message Flow Diagram:**
+## Session Lifecycle
 
 ```mermaid
 sequenceDiagram
     participant P as PRIMARY
     participant S as SECONDARY
 
-    Note over P: Power on
-    P->>P: Advertise as "BlueBuzzah"<br/>interval=50ms
-
-    Note over S: Power on (within 15s)
-    S->>S: Scan for "BlueBuzzah"<br/>interval=100ms
-
-    S->>P: Connect
-    Note over P,S: BLE Connection Established<br/>interval=7.5ms, latency=0, timeout=100ms
-
-    S->>P: READY
-
-    P->>S: FIRST_SYNC:12345
-    Note over S: Apply +21ms BLE compensation<br/>Calculate time offset
-
-    S->>P: ACK
-
-    P->>S: VCR_START
-    Note over P,S: Therapy Session Begins
-```
-
-**Timing Breakdown:**
-
-| Step | Duration | Notes |
-|------|----------|-------|
-| Advertisement start | 0.1s | Immediate |
-| SECONDARY scan window | 0-15s | Until PRIMARY found |
-| Connection establishment | 0.5-2s | BLE handshake |
-| READY signal | <0.1s | Single message |
-| FIRST_SYNC handshake | 0.5-1.5s | 3 retry attempts |
-| VCR_START | <0.1s | Single message |
-| **Total connection time** | **2-20s** | Typical: 5-10s |
-
-### Phase 2: Multi-Connection Detection (PRIMARY Only)
-
-**New Feature** (`src/ble_manager.cpp`):
-
-PRIMARY supports **simultaneous connections** to phone + SECONDARY. Connection detection identifies device types by analyzing first message received.
-
-**Detection Logic** (`src/ble_manager.cpp`):
-
-```cpp
-ConnectionType BLEManager::detectConnectionType(uint16_t connHandle, uint32_t timeoutMs) {
-    /**
-     * Identify connection as PHONE or SECONDARY by first message received.
-     *
-     * Phone sends: INFO, PING, BATTERY, PROFILE, SESSION commands
-     * SECONDARY sends: READY (immediately after connecting)
-     *
-     * Returns: PHONE, SECONDARY, or UNKNOWN
-     */
-    uint32_t timeoutEnd = millis() + timeoutMs;
-
-    while (millis() < timeoutEnd) {
-        if (bleuart_.available()) {
-            String message = readLine();
-
-            if (message == "READY") {
-                return ConnectionType::SECONDARY;
-            }
-
-            // Check for phone commands
-            static const char* phoneCommands[] = {
-                "INFO", "PING", "BATTERY", "PROFILE", "SESSION", "HELP", "PARAM"
-            };
-
-            for (int i = 0; i < 7; i++) {
-                if (message.indexOf(phoneCommands[i]) >= 0) {
-                    // Re-process this message since it's a valid command
-                    pendingMessage_ = message;
-                    return ConnectionType::PHONE;
-                }
-            }
-        }
-        delay(100);
-    }
-
-    return ConnectionType::UNKNOWN;  // Timeout - unknown device
-}
-```
-
-**Connection Assignment** (`src/ble_manager.cpp`):
-
-```cpp
-void BLEManager::assignConnectionByType(uint16_t connHandle, ConnectionType type) {
-    /**
-     * Assign connections to phone/secondary based on detected types.
-     */
-    switch (type) {
-        case ConnectionType::PHONE:
-            phoneConnHandle_ = connHandle;
-            hasPhoneConnection_ = true;
-            // Request optimal parameters
-            Bluefruit.Connection(connHandle)->requestConnectionParameter(6);
-            Serial.println(F("[PRIMARY] Phone connected"));
-            break;
-
-        case ConnectionType::SECONDARY:
-            secondaryConnHandle_ = connHandle;
-            hasSecondaryConnection_ = true;
-            Bluefruit.Connection(connHandle)->requestConnectionParameter(6);
-            Serial.println(F("[PRIMARY] SECONDARY connected"));
-            break;
-
-        default:
-            // Unknown device - disconnect
-            Bluefruit.Connection(connHandle)->disconnect();
-            break;
-    }
-}
-```
-
-**Multi-Connection Scenarios** (`src/main.cpp`):
-
-```cpp
-void handleMultipleConnections() {
-    bool hasPhone = bleManager.hasPhoneConnection();
-    bool hasSecondary = bleManager.hasSecondaryConnection();
-
-    // Scenario 1: Both phone and SECONDARY connected during startup
-    if (hasPhone && hasSecondary) {
-        connectionSuccess = bleManager.completeSecondaryHandshake();
-    }
-    // Scenario 2: Phone only - wait for SECONDARY
-    else if (hasPhone && !hasSecondary) {
-        connectionSuccess = bleManager.scanForSecondaryWhileAdvertising();
-        if (connectionSuccess) {
-            connectionSuccess = bleManager.completeSecondaryHandshake();
-        }
-    }
-    // Scenario 3: SECONDARY only - proceed without phone
-    else if (hasSecondary && !hasPhone) {
-        connectionSuccess = bleManager.completeSecondaryHandshake();
-    }
-    // Scenario 4: Unknown devices - cannot proceed
-    else {
-        connectionSuccess = false;
-    }
-}
-```
-
-**SECONDARY Handshake** (`src/ble_manager.cpp`):
-
-```cpp
-bool BLEManager::completeSecondaryHandshake() {
-    // 1. Wait for READY (8s timeout)
-    if (!waitForReady(8000)) {
-        Serial.println(F("[PRIMARY] No READY received"));
-        return false;
-    }
-
-    // 2. Send FIRST_SYNC (3 retry attempts)
-    if (!sendFirstSync()) {
-        Serial.println(F("[PRIMARY] No ACK received"));
-        return false;
-    }
-
-    // 3. Send VCR_START
-    sendVcrStart();
-
-    Serial.println(F("[PRIMARY] SECONDARY handshake complete"));
-    return true;
-}
-```
-
----
-
-## Time Synchronization
-
-### Initial Sync (FIRST_SYNC)
-
-**Purpose**: Establish common time reference between gloves
-
-**PRIMARY Sends** (`src/sync_protocol.cpp`):
-```cpp
-void SyncProtocol::sendFirstSync(BLEManager& ble) {
-    uint32_t timestamp = millis();  // Milliseconds
-    char syncMessage[32];
-    snprintf(syncMessage, sizeof(syncMessage), "FIRST_SYNC:%lu\n", timestamp);
-    ble.sendToSecondary(syncMessage);
-}
-```
-
-**SECONDARY Receives** (`src/sync_protocol.cpp`):
-```cpp
-bool SyncProtocol::handleFirstSync(const String& message) {
-    // 1. Extract PRIMARY timestamp
-    uint32_t receivedTimestamp = message.substring(11).toInt();  // e.g., 12345
-
-    // 2. Get local timestamp
-    uint32_t currentSecondaryTime = millis();  // e.g., 12320
-
-    // 3. Apply BLE latency compensation (+21ms)
-    uint32_t adjustedSyncTime = receivedTimestamp + 21;  // 12345 + 21 = 12366
-
-    // 4. Calculate time shift
-    int32_t appliedTimeShift = adjustedSyncTime - currentSecondaryTime;
-    // 12366 - 12320 = +46ms
-
-    // 5. Store offset for future corrections
-    initialTimeOffset_ = currentSecondaryTime + appliedTimeShift;
-    // 12320 + 46 = 12366
-
-    // 6. Send acknowledgment
-    ble_.sendToPrimary("ACK\n");
-
-    return true;
-}
-```
-
-**Why +21ms compensation?**
-- Measured BLE transmission latency: 7.5-35ms
-- Average observed latency: 21ms
-- Applied as fixed offset for deterministic sync
-
-**Sync Accuracy:**
-```
-PRIMARY sends at:     T0 = 12345ms
-BLE transmission:     +21ms
-SECONDARY receives:   T1 = 12366ms (adjusted)
-SECONDARY clock:      12320ms (before adjustment)
-Applied offset:       +46ms
-```
-
-### Periodic Sync (SYNC_ADJ) - Legacy/Optional
-
-**Status**: Still implemented but **optional** for diagnostics
-
-**PRIMARY Sends** (`src/sync_protocol.cpp`):
-```cpp
-void SyncProtocol::sendSyncAdj(BLEManager& ble, uint32_t buzzCycleCount) {
-    // Every 10th buzz cycle (optional timing check)
-    if (buzzCycleCount % 10 != 0) return;
-
-    uint32_t syncAdjTimestamp = millis();
-    char message[32];
-    snprintf(message, sizeof(message), "SYNC_ADJ:%lu\n", syncAdjTimestamp);
-    ble.sendToSecondary(message);
-
-    // Wait for ACK (2 second timeout)
-    uint32_t startWait = millis();
-    while (millis() - startWait < 2000) {
-        if (ble.hasSecondaryMessage()) {
-            String response = ble.readSecondaryMessage();
-            if (response == "ACK_SYNC_ADJ") {
-                ble.sendToSecondary("SYNC_ADJ_START\n");
-                return;
-            }
-        }
-        delay(1);
-    }
-}
-```
-
-**SECONDARY Receives** (`src/sync_protocol.cpp`):
-```cpp
-void SyncProtocol::handleSyncAdj(const String& message) {
-    if (message.startsWith("SYNC_ADJ:")) {
-        uint32_t receivedTimestamp = message.substring(9).toInt();
-
-        // Calculate adjusted time using initial offset
-        uint32_t currentSecondaryTime = millis();
-        uint32_t adjustedSecondaryTime = receivedTimestamp +
-            (currentSecondaryTime - initialTimeOffset_);
-        int32_t offset = adjustedSecondaryTime - receivedTimestamp;
-
-        // Send ACK
-        ble_.sendToPrimary("ACK_SYNC_ADJ\n");
-    }
-    else if (message == "SYNC_ADJ_START") {
-        // Ready signal received - continue therapy
-    }
-}
-```
-
-**Note**: SYNC_ADJ is **not required** for command-driven synchronization. It's kept for:
-- Monitoring clock drift during long sessions
-- Debugging timing issues
-- Future time-based coordination features
-
----
-
-## Command-Driven Execution
-
-### BUZZ Protocol
-
-**Core Synchronization Mechanism** - Compact positional format
-
-**Message Format**:
-```
-BUZZ:sequence_id:timestamp:finger|amplitude
-```
-
-**Example**:
-```
-BUZZ:42:5000000:0|100
-```
-- `42` = sequence ID
-- `5000000` = timestamp (microseconds)
-- `0` = finger index (positional)
-- `100` = amplitude percentage (positional)
-
-**PRIMARY Sends** (`src/sync_protocol.cpp`):
-```cpp
-SyncCommand cmd = SyncCommand::createBuzz(sequenceId, finger, amplitude);
-char buffer[64];
-cmd.serialize(buffer, sizeof(buffer));
-ble.sendToSecondary(buffer);
-// Result: "BUZZ:42:5000000:0|100"
-```
-
-**SECONDARY Receives (BLOCKING)**:
-```cpp
-// SECONDARY blocks until BUZZ command received
-SyncCommand cmd;
-if (cmd.deserialize(message)) {
-    if (cmd.getType() == SyncCommandType::BUZZ) {
-        int32_t finger = cmd.getDataInt("0", -1);     // Positional index 0
-        int32_t amplitude = cmd.getDataInt("1", 50);  // Positional index 1
-        // Execute buzz...
-    }
-}
-```
-
-**SECONDARY Safety Timeout** (`src/therapy_engine.cpp`):
-```cpp
-// If no BUZZ received within 10 seconds, PRIMARY likely disconnected
-if (timeout) {
-    Serial.println(F("[SECONDARY] ERROR: BUZZ timeout! PRIMARY disconnected."));
-    hardware_.allMotorsOff();  // Immediate motor shutoff
-    hardware_.setLED(COLOR_RED);  // Red error indicator
-}
-```
-
-### Therapy Loop Integration
-
-**PRIMARY Execution** (`src/therapy_engine.cpp`):
-```cpp
-for (uint8_t seqIdx = 0; seqIdx < 3; seqIdx++) {  // Three buzzes per macrocycle
-    // 1. Send BUZZ command to SECONDARY with scheduled execution time
-    syncProtocol_.sendBuzz(ble_, seqIdx);
-
-    // 2. Execute local buzz immediately
-    generatePattern(config_.mirror);
-    executeBuzzSequence(leftPattern_);
-}
-```
-
-**SECONDARY Execution** (`src/therapy_engine.cpp`):
-```cpp
-for (uint8_t seqIdx = 0; seqIdx < 3; seqIdx++) {
-    // 1. Wait for command from PRIMARY (BLOCKING)
-    int8_t receivedIdx = syncProtocol_.receiveBuzz(ble_, 10000);
-
-    if (receivedIdx < 0) {
-        // TIMEOUT - PRIMARY disconnected, halt therapy
-        Serial.println(F("[SECONDARY] ERROR: BUZZ timeout! PRIMARY disconnected."));
-        hardware_.allMotorsOff();
-        hardware_.setLED(COLOR_RED);
-        // Enter infinite error loop
-        while (true) {
-            delay(500);
-        }
-    }
-
-    if (receivedIdx != seqIdx) {
-        Serial.print(F("[SECONDARY] WARNING: Sequence mismatch: expected "));
-        Serial.print(seqIdx);
-        Serial.print(F(", got "));
-        Serial.println(receivedIdx);
-    }
-
-    // 2. Execute buzz sequence at scheduled time
-    generatePattern(config_.mirror);
-    executeBuzzSequence(leftPattern_);
-}
-```
-
-**Synchronization Guarantee:**
-- SECONDARY receives BUZZ commands with scheduled execution timestamps
-- PRIMARY executes **immediately** after sending command
-- BLE latency: 7.5ms (connection interval)
-- Processing overhead: ~5-10ms
-- **Total lag**: SECONDARY buzzes 7.5-20ms after PRIMARY
-- **Acceptable**: Well within human temporal resolution (20-40ms)
-
----
-
-## Parameter Synchronization
-
-### Protocol: PARAM_UPDATE
-
-**When Triggered:**
-1. **PROFILE_LOAD**: Broadcast ALL parameters
-2. **PROFILE_CUSTOM**: Broadcast changed parameters only
-3. **PARAM_SET**: Broadcast single parameter
-
-**PRIMARY Sends** (`src/menu_controller.cpp`):
-```cpp
-void MenuController::broadcastParamUpdate(const TherapyConfig& config) {
-    /**
-     * Broadcast parameter update to SECONDARY.
-     *
-     * Protocol: PARAM_UPDATE:KEY1:VALUE1:KEY2:VALUE2:...\n
-     *
-     * Example:
-     *     config with timeOnMs=150, timeOffMs=80, jitter=10
-     *     -> PARAM_UPDATE:TIME_ON:150:TIME_OFF:80:JITTER:10\n
-     */
-    String cmdString = "PARAM_UPDATE";
-
-    // Add all parameters to the message
-    cmdString += ":TIME_ON:" + String(config.timeOnMs);
-    cmdString += ":TIME_OFF:" + String(config.timeOffMs);
-    cmdString += ":JITTER:" + String(config.jitter);
-    cmdString += ":MIRROR:" + String(config.mirror ? 1 : 0);
-    cmdString += ":SYNC_LED:" + String(config.syncLed ? 1 : 0);
-    cmdString += ":SESSION:" + String(config.sessionMinutes);
-    cmdString += ":FREQ:" + String(config.actuatorFrequency);
-    cmdString += ":VOLTAGE:" + String(config.actuatorVoltage, 2);
-    cmdString += "\n";
-
-    ble_.sendToSecondary(cmdString.c_str());
-    Serial.println(F("[PRIMARY] Broadcast parameters to SECONDARY"));
-}
-```
-
-**SECONDARY Receives** (`src/menu_controller.cpp`):
-```cpp
-void MenuController::handleParamUpdate(const String& message) {
-    /**
-     * Apply parameter update from PRIMARY.
-     *
-     * Args:
-     *     message: "PARAM_UPDATE:KEY1:VALUE1:KEY2:VALUE2:..."
-     */
-    // Skip "PARAM_UPDATE:" prefix
-    String params = message.substring(13);
-
-    // Parse key:value pairs
-    int pos = 0;
-    while (pos < params.length()) {
-        int colonPos = params.indexOf(':', pos);
-        if (colonPos < 0) break;
-
-        String key = params.substring(pos, colonPos);
-        pos = colonPos + 1;
-
-        int nextColon = params.indexOf(':', pos);
-        String value = (nextColon < 0) ?
-            params.substring(pos) :
-            params.substring(pos, nextColon);
-
-        // Apply parameter
-        applyParameter(key, value);
-
-        pos = (nextColon < 0) ? params.length() : nextColon + 1;
-    }
-
-    Serial.println(F("[SECONDARY] Applied parameters from PRIMARY"));
-
-    // Send acknowledgment (optional, for debugging)
-    ble_.sendToPrimary("ACK_PARAM_UPDATE\n");
-}
-
-void MenuController::applyParameter(const String& key, const String& value) {
-    if (key == "TIME_ON") {
-        currentConfig_.timeOnMs = value.toInt();
-    } else if (key == "TIME_OFF") {
-        currentConfig_.timeOffMs = value.toInt();
-    } else if (key == "JITTER") {
-        currentConfig_.jitter = value.toInt();
-    } else if (key == "MIRROR") {
-        currentConfig_.mirror = (value == "1");
-    } else if (key == "SYNC_LED") {
-        currentConfig_.syncLed = (value == "1");
-    } else if (key == "SESSION") {
-        currentConfig_.sessionMinutes = value.toInt();
-    } else if (key == "FREQ") {
-        currentConfig_.actuatorFrequency = value.toInt();
-    } else if (key == "VOLTAGE") {
-        currentConfig_.actuatorVoltage = value.toFloat();
-    }
-}
-```
-
-### Synchronization Scenarios
-
-**Scenario 1: PROFILE_LOAD** (ALL parameters)
-```
-Phone -> PRIMARY: PROFILE_LOAD:2\n
-PRIMARY: <loads Noisy VCR profile>
-PRIMARY -> Phone: STATUS:LOADED\nPROFILE:Noisy VCR\n\x04
-PRIMARY -> SECONDARY: PARAM_UPDATE:TIME_ON:100:TIME_OFF:67:...\n
-SECONDARY: <applies all parameters>
-SECONDARY -> PRIMARY: ACK_PARAM_UPDATE\n (optional)
-```
-
-**Scenario 2: PROFILE_CUSTOM** (changed parameters only)
-```
-Phone -> PRIMARY: PROFILE_CUSTOM:TIME_ON:150:JITTER:10\n
-PRIMARY: <updates 2 parameters>
-PRIMARY -> Phone: STATUS:CUSTOM_LOADED\nTIME_ON:150\nJITTER:10\n\x04
-PRIMARY -> SECONDARY: PARAM_UPDATE:TIME_ON:150:JITTER:10\n
-SECONDARY: <applies 2 parameters>
-SECONDARY -> PRIMARY: ACK_PARAM_UPDATE\n (optional)
-```
-
-**Scenario 3: PARAM_SET** (single parameter)
-```
-Phone -> PRIMARY: PARAM_SET:TIME_ON:150\n
-PRIMARY: <updates 1 parameter>
-PRIMARY -> Phone: PARAM:TIME_ON\nVALUE:150\n\x04
-PRIMARY -> SECONDARY: PARAM_UPDATE:TIME_ON:150\n
-SECONDARY: <applies 1 parameter>
-SECONDARY -> PRIMARY: ACK_PARAM_UPDATE\n (optional)
-```
-
-### Validation and Error Handling
-
-**PRIMARY Validation** (`src/profile_manager.cpp`):
-```cpp
-bool ProfileManager::validateAndBroadcast(const TherapyConfig& config, BLEManager& ble) {
-    // 1. Validate parameters before sending
-    if (!validateConfig(config)) {
-        ble.sendError("Invalid configuration");
-        return false;
-    }
-
-    // 2. Apply to local profile
-    currentConfig_ = config;
-
-    // 3. Broadcast to SECONDARY
-    broadcastParamUpdate(config);
-
-    return true;
-}
-
-bool ProfileManager::validateConfig(const TherapyConfig& config) {
-    // TIME_ON: 50-500ms
-    if (config.timeOnMs < 50 || config.timeOnMs > 500) return false;
-
-    // TIME_OFF: 20-200ms
-    if (config.timeOffMs < 20 || config.timeOffMs > 200) return false;
-
-    // ACTUATOR_FREQUENCY: 150-300Hz
-    if (config.actuatorFrequency < 150 || config.actuatorFrequency > 300) return false;
-
-    // ACTUATOR_VOLTAGE: 1.0-3.3V
-    if (config.actuatorVoltage < 1.0f || config.actuatorVoltage > 3.3f) return false;
-
-    // JITTER: 0-50%
-    if (config.jitter > 50) return false;
-
-    // SESSION: 1-180 minutes
-    if (config.sessionMinutes < 1 || config.sessionMinutes > 180) return false;
-
-    return true;
-}
-```
-
-### No Bidirectional Validation
-
-**Important**: There is **no verification** that both gloves are running identical profiles.
-
-**Why?**
-- Fire-and-forget design for minimal latency
-- Optional ACK for debugging (not required)
-- Both gloves validate independently via same validation rules
-- Parameter changes rare (only during configuration, not therapy)
-
-**Risk**: If SECONDARY rejects parameters (e.g., out of range), PRIMARY doesn't know
-**Mitigation**: Identical validation logic on both sides ensures consistency
-
----
-
-## Multi-Connection Support
-
-### Connection Types
-
-**Three Device Types:**
-1. **PHONE**: Smartphone app for configuration/monitoring
-2. **SECONDARY**: SECONDARY glove for bilateral therapy
-3. **UNKNOWN**: Unidentified devices (rejected)
-
-### Connection Detection
-
-**Identification Strategy** (`src/ble_manager.cpp`):
-
-```cpp
-// Phone detection: Commands within 3 seconds
-static const char* phoneCommands[] = {
-    "INFO", "PING", "BATTERY", "PROFILE", "SESSION", "HELP", "PARAM"
-};
-
-if (messageContainsAny(firstMessage, phoneCommands, 7)) {
-    return ConnectionType::PHONE;
-}
-
-// SECONDARY detection: READY message within 3 seconds
-if (firstMessage == "READY") {
-    return ConnectionType::SECONDARY;
-}
-
-// Unknown: Timeout or unrecognized message
-return ConnectionType::UNKNOWN;
-```
-
-**Why 3-second timeout?**
-- Phone app should send command immediately after connecting
-- SECONDARY sends READY within 100ms of connection
-- 3s provides margin for slower devices
-
-### UART Routing
-
-**PRIMARY has separate connection handles:**
-```cpp
-class BLEManager {
-    uint16_t phoneConnHandle_;       // Smartphone communication
-    uint16_t secondaryConnHandle_;   // SECONDARY glove communication
-    bool hasPhoneConnection_;
-    bool hasSecondaryConnection_;
-};
-```
-
-**Routing Logic:**
-```cpp
-void BLEManager::sendToPhone(const char* message) {
-    if (hasPhoneConnection_) {
-        bleuart_.write(phoneConnHandle_, message, strlen(message));
-    }
-}
-
-void BLEManager::sendToSecondary(const char* message) {
-    if (hasSecondaryConnection_) {
-        bleuart_.write(secondaryConnHandle_, message, strlen(message));
-    }
-}
-```
-
-### Connection Scenarios
-
-**Scenario 1: Phone Only** (No SECONDARY)
-```
-1. Phone connects -> Detected as PHONE
-2. phoneConnHandle_ assigned
-3. SECONDARY not connected -> Therapy unavailable
-4. Phone can: Check battery (PRIMARY only), modify profiles, calibrate PRIMARY fingers
-5. SESSION_START -> ERROR: SECONDARY not connected
-```
-
-**Scenario 2: SECONDARY Only** (No Phone)
-```
-1. SECONDARY connects -> Detected as SECONDARY
-2. secondaryConnHandle_ assigned
-3. Complete handshake: READY -> SYNC -> ACK -> VCR_START
-4. Auto-start therapy after startup window
-5. No smartphone monitoring/control
-```
-
-**Scenario 3: Phone + SECONDARY** (Full Featured)
-```
-1. Both connect during startup window
-2. Identify types: phoneConnHandle_ + secondaryConnHandle_ assigned
-3. Complete SECONDARY handshake
-4. Phone can: Monitor battery (both gloves), control session, modify profiles
-5. SECONDARY synchronized for bilateral therapy
-6. Phone sees interleaved PRIMARY<->SECONDARY messages (BUZZ, PARAM_UPDATE, etc.)
-```
-
-**Scenario 4: Phone First, SECONDARY Later**
-```
-1. Phone connects -> phoneConnHandle_ assigned
-2. SECONDARY not connected -> secondaryConnHandle_ = invalid
-3. Wait for SECONDARY: scanForSecondaryWhileAdvertising()
-4. SECONDARY connects -> secondaryConnHandle_ assigned
-5. Complete SECONDARY handshake
-6. Proceed with therapy
-```
-
-### Message Interleaving (Phone Perspective)
-
-**Problem**: Phone may receive internal PRIMARY<->SECONDARY messages
-
-**Example RX stream at phone:**
-```
-PONG\n\x04                           <- Response to PING
-SYNC:BUZZ:42:5000000:0|100\x04       <- PRIMARY->SECONDARY internal message
-BATP:3.72\nBATS:3.68\n\x04           <- Response to BATTERY
-SYNC:BUZZ:43:5200000:1|100\x04       <- PRIMARY->SECONDARY internal message
-SESSION_STATUS:RUNNING\n...\n\x04    <- Response to SESSION_STATUS
-```
-
-**Note**: ALL messages end with EOT (`\x04`), including internal sync messages. Use prefix-based filtering.
-
-**Filtering Strategy** (recommended for phone app):
-```cpp
-// C++ example for phone app filtering
-void onBleNotification(const uint8_t* data, size_t length) {
-    String message((char*)data, length);
-
-    // Filter internal PRIMARY<->SECONDARY messages by prefix
-    if (isInternalMessage(message)) {
-        return;  // Ignore sync messages
-    }
-
-    // Process app-directed response
-    processResponse(message);
-}
-
-bool isInternalMessage(const String& msg) {
-    return msg.startsWith("SYNC:") ||
-           msg.startsWith("BUZZ:") ||
-           msg.startsWith("PARAM_UPDATE:") ||
-           msg.startsWith("SEED:") ||
-           msg.startsWith("BATRESPONSE:") ||
-           msg == "SEED_ACK\x04" ||
-           msg == "GET_BATTERY\x04" ||
-           msg == "ACK_PARAM_UPDATE\x04";
-}
-```
-
-**Internal Messages to Ignore** (all end with `\x04`):
-- `SYNC:BUZZ:seq:ts:finger|amplitude` (every ~200ms during therapy)
-- `PARAM_UPDATE:KEY:VAL:...` (during profile changes)
-- `GET_BATTERY` (when phone queries battery)
-- `BATRESPONSE:V` (SECONDARY response to PRIMARY)
-- `ACK_PARAM_UPDATE` (SECONDARY acknowledgment)
-- `SEED:N` / `SEED_ACK` (random seed sync)
-
----
-
-## Error Recovery
-
-### Connection Loss Detection Flow
-
-```mermaid
-sequenceDiagram
-    autonumber
-    participant PRIMARY as PRIMARY<br/>(Left Glove)
-    participant SECONDARY as SECONDARY<br/>(Right Glove)
-
-    Note over PRIMARY,SECONDARY: Normal Operation
-
-    PRIMARY->>SECONDARY: SYNC:HEARTBEAT:ts|1000
-    SECONDARY->>PRIMARY: SYNC:ACK:HEARTBEAT
-
-    Note over PRIMARY: PRIMARY goes silent<br/>(connection issue)
-
-    SECONDARY->>SECONDARY: Wait 2s... no heartbeat
-    SECONDARY->>SECONDARY: Wait 4s... no heartbeat
-    SECONDARY->>SECONDARY: Wait 6s... TIMEOUT!
-
-    Note over SECONDARY: Heartbeat timeout (6s = 3 missed)
-
-    rect rgb(255, 230, 230)
-        SECONDARY->>SECONDARY: EMERGENCY STOP motors
-        SECONDARY->>SECONDARY: State → CONNECTION_LOST
+    rect rgb(230, 245, 255)
+        Note over P,S: Phase 1: Connection
+        P->>P: Advertise "BlueBuzzah"
+        S->>S: Scan for "BlueBuzzah"
+        S->>P: BLE Connect
+        S->>P: READY
     end
 
-    loop Reconnection attempts (max 3)
-        SECONDARY->>SECONDARY: Attempt reconnection
-        alt Connection restored
-            SECONDARY-->>PRIMARY: BLE reconnected
-            PRIMARY->>SECONDARY: SYNC:CONNECTED
-            SECONDARY->>SECONDARY: State → READY
-            Note over SECONDARY: Recovery successful
-        else Connection failed
-            SECONDARY->>SECONDARY: Wait 2s before retry
+    rect rgb(255, 245, 230)
+        Note over P,S: Phase 2: Idle Clock Synchronization
+        loop Every 1s (keepalive)
+            P->>S: PING (T1)
+            S->>P: PONG (T2, T3)
+            Note over P: Compute clock offset
+        end
+        Note over P: 5+ valid samples = sync ready (~5s)
+    end
+
+    rect rgb(230, 255, 230)
+        Note over P,S: Phase 3: Therapy Session
+        P->>S: START_SESSION
+        loop Every ~2s
+            P->>S: MACROCYCLE (batch of 12 events)
+            S->>P: MACROCYCLE_ACK
+            Note over P,S: Both gloves execute 12 events with <2ms sync
+        end
+        loop Every 1s (unified keepalive + sync)
+            P->>S: PING (T1)
+            S->>P: PONG (T2, T3)
+            Note over P: Continuous clock offset maintenance
         end
     end
 
-    alt All attempts failed
-        SECONDARY->>SECONDARY: State → IDLE
-        Note over SECONDARY: Manual intervention required
+    rect rgb(255, 230, 230)
+        Note over P,S: Phase 4: Session End
+        P->>S: STOP_SESSION
+        Note over P,S: Motors off, connection maintained
     end
 ```
 
-### Recovery State Machine
+### Timing Requirements
+
+| Phase | Maximum Duration |
+|-------|------------------|
+| Connection establishment | 15 seconds |
+| Initial clock sync | 200ms |
+| Session start | Immediate after sync |
+| Keepalive timeout | 6 seconds (3 missed) |
+
+---
+
+## Clock Synchronization
+
+### PTP 4-Timestamp Exchange
+
+The protocol uses IEEE 1588-inspired clock synchronization to measure the offset between PRIMARY and SECONDARY clocks, independent of network asymmetry.
+
+```mermaid
+sequenceDiagram
+    participant P as PRIMARY
+    participant S as SECONDARY
+
+    Note over P: Record T1
+    P->>S: PING:seq|T1
+    Note over S: Record T2
+
+    Note over S: Record T3
+    S->>P: PONG:seq|0|T2|T3
+    Note over P: Record T4
+
+    Note over P: offset = ((T2-T1) + (T3-T4)) / 2
+```
+
+### Offset Calculation
+
+```text
+offset = ((T2 - T1) + (T3 - T4)) / 2
+```
+
+| Timestamp | Device | Event |
+|-----------|--------|-------|
+| T1 | PRIMARY | PING sent |
+| T2 | SECONDARY | PING received |
+| T3 | SECONDARY | PONG sent |
+| T4 | PRIMARY | PONG received |
+
+A positive offset means SECONDARY's clock is ahead of PRIMARY.
+
+### RTT Measurement
+
+Round-Trip Time (RTT) is calculated using the IEEE 1588 PTP formula:
+
+```text
+RTT = (T4 - T1) - (T3 - T2)
+```
+
+This formula isolates network latency from SECONDARY processing time:
+- `(T4 - T1)` = total round trip including processing
+- `(T3 - T2)` = SECONDARY processing time
+- Result = pure network latency (BLE transmission delays only)
+
+Excluding processing time provides:
+- More accurate network latency estimates (5-20ms typical)
+- Better quality filtering (rejects poor BLE conditions, not slow processing)
+- Improved lead time precision (adapts to actual network conditions)
+
+### Filtering and Maintenance
+
+- **Initial sync:** Idle keepalive (1s) accumulates samples, median offset selected
+- **Quality filter:** Exchanges with RTT > 120ms are discarded (network latency only)
+- **Minimum valid:** At least 5 good samples required (~5s after connect)
+- **Drift compensation:** Ongoing sync every 1s corrects for crystal drift
+- **Smoothing:** Exponential moving average prevents sudden jumps
+
+### Outlier Rejection
+
+The clock sync algorithm uses MAD (Median Absolute Deviation) to filter outliers before computing the final offset:
+
+1. Compute preliminary median from all offset samples
+2. Filter samples with deviation > 5ms from preliminary median
+3. Compute final median from filtered samples only
+4. Require minimum 5 valid samples after filtering
+
+This improves robustness against BLE retransmissions and RF interference that cause anomalous RTT measurements.
+
+---
+
+## Synchronized Execution
+
+### MACROCYCLE Command Flow
+
+```mermaid
+flowchart LR
+    subgraph PRIMARY
+        A[Generate 3 patterns<br/>12 events total] --> B[Calculate base time]
+        B --> C[Send MACROCYCLE]
+        C --> D[Enqueue all 12 events]
+        D --> E[FreeRTOS motor task<br/>executes chain]
+    end
+
+    subgraph BLE
+        C -.->|3-15ms latency| F
+    end
+
+    subgraph SECONDARY
+        F[Receive MACROCYCLE] --> G[Convert to local time]
+        G --> H[Enqueue all 12 events]
+        H --> I[FreeRTOS motor task<br/>executes chain]
+    end
+
+    E --> J((Events fire))
+    I --> J
+    J --> K[Motors activate with <2ms sync]
+```
+
+### Lead Time Calculation
+
+The activation time is set in the future to ensure SECONDARY receives and processes the command before the scheduled time:
+
+```text
+activate_time = current_time + lead_time
+lead_time = average_RTT + safety_margin
+```
+
+| Parameter | Value | Purpose |
+|-----------|-------|---------|
+| Minimum lead time | 15ms | Accounts for BLE latency |
+| Maximum lead time | 100ms | Adaptive ceiling (default 50ms) |
+| Safety margin | 3× latency variance | Handles jitter |
+
+### Time Conversion
+
+SECONDARY converts PRIMARY timestamps to local time:
+
+```text
+local_time = primary_time + clock_offset
+```
+
+---
+
+## Therapy Event Cycle
+
+```mermaid
+flowchart TD
+    A[Therapy Pattern Generator] --> B{Macrocycle ready?}
+    B -->|Yes| C[Generate 3 patterns<br/>12 events total]
+    B -->|No| D[Wait for completion]
+    D --> B
+
+    C --> E[Calculate base time<br/>now + lead_time]
+    E --> F[Create MACROCYCLE message]
+    F --> G[Send to SECONDARY]
+    G --> H[Await MACROCYCLE_ACK]
+    H --> I[Enqueue all 12 events]
+
+    I --> J{Next event time?}
+    J -->|Wait| J
+    J -->|Ready| K[FreeRTOS motor task<br/>activates motor]
+    K --> L[Motor ON for duration]
+    L --> M[Auto-deactivate]
+    M --> N{More events?}
+    N -->|Yes| J
+    N -->|No| O[Relax period]
+    O --> B
+```
+
+### Macrocycle Structure
+
+One therapy macrocycle consists of 3 patterns (12 buzz events total) followed by a relax period:
+
+| Component | Duration |
+|-----------|----------|
+| Motor ON time | 100ms (configurable) |
+| Motor OFF time | 67ms (configurable) |
+| Fingers per pattern | 4 |
+| Patterns per macrocycle | 3 |
+| Events per macrocycle | 12 (3 patterns × 4 fingers) |
+| Pattern duration | ~668ms |
+| Inter-macrocycle relax | ~1336ms (2× pattern duration) |
+| **Total macrocycle** | **~3.3 seconds** |
+
+### Macrocycle Batching Architecture
+
+PRIMARY sends all 12 events in a single MACROCYCLE message. This batching approach provides:
+
+- **~4× reduction in BLE traffic** (~200 bytes vs ~720 bytes)
+- **Zero BLE during motor activity** — all commands sent before first buzz
+- **Single clock offset application** — less computation, fewer rounding errors
+- **Cleaner architecture** — macrocycle as atomic unit
+
+SECONDARY's `ActivationQueue` schedules all 12 events with their local activation times, then processes them as time elapses.
+
+---
+
+## Error Handling
+
+### Connection Loss Recovery
 
 ```mermaid
 stateDiagram-v2
-    [*] --> NormalOperation
+    [*] --> Normal
 
-    NormalOperation --> ConnectionLost : Heartbeat timeout (6s)
+    Normal --> ConnectionLost: Keepalive timeout
 
-    ConnectionLost --> EmergencyStop : Immediate
-    EmergencyStop --> ReconnectAttempt1 : Motors safe
+    ConnectionLost --> EmergencyStop: Immediate
+    EmergencyStop --> Reconnect1: Motors safe
 
-    ReconnectAttempt1 --> Recovered : Success
-    ReconnectAttempt1 --> Wait2s_1 : Failed
+    Reconnect1 --> Normal: Success
+    Reconnect1 --> Reconnect2: Failed (wait 2s)
 
-    Wait2s_1 --> ReconnectAttempt2
-    ReconnectAttempt2 --> Recovered : Success
-    ReconnectAttempt2 --> Wait2s_2 : Failed
+    Reconnect2 --> Normal: Success
+    Reconnect2 --> Reconnect3: Failed (wait 2s)
 
-    Wait2s_2 --> ReconnectAttempt3
-    ReconnectAttempt3 --> Recovered : Success
-    ReconnectAttempt3 --> GiveUp : Failed
+    Reconnect3 --> Normal: Success
+    Reconnect3 --> Idle: Failed
 
-    Recovered --> NormalOperation : State → READY
-    GiveUp --> IDLE : State → IDLE
-
-    IDLE --> [*] : Manual restart required
+    Idle --> [*]: Manual restart required
 ```
 
-### Connection Failures
+### Timeout Behavior
 
-**PRIMARY Timeout** (`src/ble_manager.cpp`):
-```cpp
-if (!secondaryFound) {
-    Serial.print(F("[PRIMARY] ERROR: No SECONDARY found in "));
-    Serial.print(CONNECTION_TIMEOUT_MS / 1000);
-    Serial.println(F("s! Restart required."));
-    hardware_.setLED(COLOR_RED);  // Red indicator
-    return false;
-}
+| Event | Timeout | Action |
+|-------|---------|--------|
+| No SECONDARY found | 15s | Abort startup |
+| No READY received | 8s | Abort startup |
+| No MACROCYCLE received | 10s | Emergency stop |
+| No PING/PONG | 6s | Emergency stop + reconnect |
+
+---
+
+## Message Reference
+
+### Message Format
+
+All messages use the format:
+
+```text
+COMMAND:field1|field2|field3|...
 ```
 
-**SECONDARY Timeout** (`src/ble_manager.cpp`):
-```cpp
-if (!primaryFound) {
-    Serial.print(F("[SECONDARY] ERROR: No PRIMARY found in "));
-    Serial.print(CONNECTION_TIMEOUT_MS / 1000);
-    Serial.println(F("s! Restart required."));
-    hardware_.setLED(COLOR_RED);
-    return false;
-}
+- Field delimiter: `|` (pipe)
+- Message terminator: `0x04` (EOT)
+- Timestamps: Microseconds since boot
+
+### Handshake Messages
+
+| Message | Direction | Fields | Example |
+|---------|-----------|--------|---------|
+| `READY` | S → P | (none) | `READY` |
+| `START_SESSION` | P → S | seq, timestamp | `START_SESSION:1\|50000` |
+| `STOP_SESSION` | P → S | seq, timestamp | `STOP_SESSION:99\|120000000` |
+
+### Synchronization Messages
+
+| Message | Direction | Fields | Example |
+|---------|-----------|--------|---------|
+| `PING` | P → S | seq, T1 | `PING:42\|1000000` |
+| `PONG` | S → P | seq, 0, T2, T3 | `PONG:42\|0\|1000500\|1000600` |
+
+**Unified Keepalive + Clock Sync:**
+
+The protocol uses a single unified mechanism for both keepalive and clock synchronization:
+
+| State | Mechanism | Interval | Purpose |
+|-------|-----------|----------|---------|
+| All states | PING/PONG | 1 second | Clock sync + keepalive (unified) |
+
+- **PING** provides: Clock sync timestamp (T1) + proof PRIMARY is alive
+- **PONG** provides: Clock sync response (T2, T3) + proof SECONDARY is alive
+- **Continuous sync:** Clock offset is maintained every second, even during therapy
+- **No separate keepalive:** PING/PONG serves both purposes efficiently
+
+This unified approach provides continuous clock synchronization (max 1s between samples) throughout all session states, eliminating clock drift during therapy.
+
+### Therapy Messages
+
+| Message | Direction | Fields | Example |
+|---------|-----------|--------|---------|
+| `MACROCYCLE` | P → S | seq, baseTime, count, events... | See below |
+| `MACROCYCLE_ACK` | S → P | seq | `MC_ACK:42` |
+| `DEACTIVATE` | P → S | seq, timestamp | `DEACTIVATE:43\|5100000` |
+
+**MACROCYCLE format:**
+
+```text
+MC:seq|baseTime|count|d,f,a,dur,fo|d,f,a,dur,fo|...
 ```
 
-**Recovery**: Manual power cycle required (no auto-retry)
+| Field | Description |
+|-------|-------------|
+| seq | Sequence number for ACK matching |
+| baseTime | Absolute activation time of event 0 (PRIMARY clock, µs) |
+| count | Number of events (typically 12: 3 patterns × 4 fingers) |
+| d | Delta time from baseTime (ms) |
+| f | Finger index (0-3) |
+| a | Amplitude percentage (0-100) |
+| dur | ON duration (ms) |
+| fo | Frequency offset: `(freq - 200) / 5` for 200-455 Hz range |
 
-### Handshake Failures
+**Example MACROCYCLE:**
 
-**READY Timeout** (`src/ble_manager.cpp`):
-```cpp
-if (!readyReceived) {
-    Serial.println(F("[PRIMARY] ERROR: No READY received! Restart required."));
-    hardware_.setLED(COLOR_RED);
-    return false;
-}
+```text
+MC:1|5050000|12|0,0,100,100,10|167,1,100,100,10|334,2,100,100,10|...
 ```
 
-**ACK Timeout** (`src/ble_manager.cpp`):
-```cpp
-if (!ackReceived) {
-    Serial.println(F("[PRIMARY] ERROR: No ACK received! Restart required."));
-    hardware_.setLED(COLOR_RED);
-    return false;
-}
-```
+SECONDARY applies clock offset once to baseTime, then schedules all 12 events via an activation queue. This reduces BLE traffic from 12 messages to 1 per macrocycle (~200 bytes vs ~720 bytes).
 
-**Recovery**: Manual power cycle (no retry after handshake failure)
+### Parameter Messages
 
-### Therapy Execution Errors
+| Message | Direction | Fields | Example |
+|---------|-----------|--------|---------|
+| `PARAM_UPDATE` | P → S | key:value pairs | `PARAM_UPDATE:TIME_ON:150:JITTER:10` |
+| `SEED` | P → S | random seed | `SEED:123456` |
+| `SEED_ACK` | S → P | (none) | `SEED_ACK` |
 
-**SECONDARY BUZZ Timeout** (`src/therapy_engine.cpp`):
-```cpp
-if (receivedIdx < 0) {
-    Serial.println(F("[SECONDARY] ERROR: BUZZ timeout! PRIMARY disconnected."));
-    Serial.println(F("[SECONDARY] Stopping all motors for safety..."));
-    hardware_.allMotorsOff();
-    hardware_.setLED(COLOR_RED);
+### Status Messages
 
-    // Enter infinite error loop
-    while (true) {
-        hardware_.setLED(COLOR_RED);
-        delay(500);
-        hardware_.setLED(COLOR_OFF);
-        delay(500);
-    }
-}
-```
+| Message | Direction | Fields | Example |
+|---------|-----------|--------|---------|
+| `GET_BATTERY` | P → S | (none) | `GET_BATTERY` |
+| `BAT_RESPONSE` | S → P | voltage | `BAT_RESPONSE:3.68` |
 
-**Recovery**: None - device halts, requires manual restart
+---
 
-
-### Connection Health Monitoring
-
-#### Heartbeat Protocol
-
-During active therapy sessions, PRIMARY sends periodic heartbeat messages to SECONDARY to detect connection loss early.
-
-**Heartbeat Parameters** (`include/config.h`):
+## Protocol Parameters
 
 | Parameter | Value | Description |
 |-----------|-------|-------------|
-| `HEARTBEAT_INTERVAL_MS` | 2000 | PRIMARY sends heartbeat every 2 seconds |
-| `HEARTBEAT_TIMEOUT_MS` | 6000 | SECONDARY timeout (3 missed heartbeats) |
-
-**Heartbeat Message Format**:
-```
-SYNC:HEARTBEAT:ts|<timestamp_microseconds>
-```
-
-**PRIMARY Heartbeat Sender** (`src/sync_protocol.cpp`):
-```cpp
-void SyncProtocol::sendHeartbeat(BLEManager& ble) {
-    // During therapy, PRIMARY sends heartbeat every 2 seconds
-    if (millis() - lastHeartbeatTime_ >= HEARTBEAT_INTERVAL_MS) {
-        uint32_t timestampUs = micros();
-        char message[48];
-        snprintf(message, sizeof(message), "SYNC:HEARTBEAT:ts|%lu\n", timestampUs);
-        ble.sendToSecondary(message);
-        lastHeartbeatTime_ = millis();
-    }
-}
-```
-
-**SECONDARY Heartbeat Receiver** (`src/sync_protocol.cpp`):
-```cpp
-void SyncProtocol::checkHeartbeat() {
-    // SECONDARY monitors for heartbeat timeout
-    if (millis() - lastHeartbeatReceived_ > HEARTBEAT_TIMEOUT_MS) {
-        Serial.println(F("[SECONDARY] Heartbeat timeout - PRIMARY connection lost"));
-        stateMachine_.transitionTo(TherapyState::CONNECTION_LOST);
-    }
-}
-```
-
-**Recovery Behavior**:
-- SECONDARY detects timeout after 6 seconds (3 missed heartbeats)
-- Motors are stopped immediately for safety
-- LED shows red flashing pattern
-- Device requires manual restart
-
-#### Periodic Health Check
-
-**Connection Status Check** (`src/ble_manager.cpp`):
-```cpp
-ConnectionHealth BLEManager::checkConnectionHealth() {
-    ConnectionHealth result = {false, false, false, false};
-
-    // Check phone connection
-    if (hasPhoneConnection_) {
-        if (!Bluefruit.Connection(phoneConnHandle_)->connected()) {
-            result.phoneLost = true;
-            hasPhoneConnection_ = false;  // Clear stale reference
-        } else {
-            result.phoneConnected = true;
-        }
-    }
-
-    // Check SECONDARY connection (CRITICAL)
-    if (hasSecondaryConnection_) {
-        if (!Bluefruit.Connection(secondaryConnHandle_)->connected()) {
-            result.secondaryLost = true;
-            hasSecondaryConnection_ = false;  // Clear stale reference
-        } else {
-            result.secondaryConnected = true;
-        }
-    }
-
-    return result;
-}
-```
-
-**Usage**:
-- Called periodically during therapy (~every 10 seconds)
-- Phone disconnect: Non-fatal (therapy continues)
-- SECONDARY disconnect: Detected via BUZZ timeout (10s), then halt
-
----
-
-## Timing Analysis
-
-### Critical Path Timing
-
-**Buzz Sequence Execution** (one of three per macrocycle):
-
-| Event | Time (ms) | Cumulative |
-|-------|-----------|------------|
-| PRIMARY: Generate pattern | 0-5 | 0-5 |
-| PRIMARY: Send BUZZ | 5-10 | 5-15 |
-| BLE transmission | 7.5 | 12.5-22.5 |
-| SECONDARY: Receive command | 0-2 | 12.5-24.5 |
-| SECONDARY: Generate pattern | 0-5 | 12.5-29.5 |
-| **PRIMARY: Start buzz** | **0** | **15-20** |
-| **SECONDARY: Start buzz** | **0** | **12.5-29.5** |
-| PRIMARY: TIME_ON duration | 100 | 115-120 |
-| SECONDARY: TIME_ON duration | 100 | 112.5-129.5 |
-| PRIMARY: TIME_OFF + jitter | 67-90 | 182-210 |
-| SECONDARY: TIME_OFF + jitter | 67-90 | 179.5-219.5 |
-
-**Key Observation**: SECONDARY buzzes 12.5-29.5ms after PRIMARY (dominated by BLE latency)
-
-**Acceptable?** YES - Human temporal resolution ~20-40ms
-
-### Macrocycle Timing
-
-**One Macrocycle** (3 buzzes + 2 relax periods):
-
-```
-Buzz 1: 100ms ON + 67ms OFF = 167ms
-Buzz 2: 100ms ON + 67ms OFF = 167ms
-Buzz 3: 100ms ON + 67ms OFF = 167ms
-Relax 1: 4 * (100 + 67) = 668ms
-Relax 2: 4 * (100 + 67) = 668ms
---------------------------------------
-Total: 1837ms (~1.8 seconds per macrocycle)
-```
-
-**Per Session** (120 minutes):
-```
-Total macrocycles: (120 * 60) / 1.837 = 3,920 macrocycles
-Total buzzes: 3,920 * 3 = 11,760 buzzes per glove
-Total BUZZ messages: 11,760 messages over 2 hours
-```
-
-**BLE Bandwidth** (~12,000 messages over 2 hours):
-```
-Messages: BUZZ (11,760)
-Total: ~11,760 messages
-Rate: 11,760 / 7200s = 1.6 messages/second
-Data: ~20 bytes/message * 11,760 = 235KB over 2 hours
-```
-
-**Conclusion**: Extremely low bandwidth usage (~0.03 KB/s average)
-
-### Latency Budget
-
-**TARGET: <50ms bilateral synchronization** (therapy requirement)
-
-| Component | Latency | Contribution |
-|-----------|---------|--------------|
-| Pattern generation | 0-5ms | 10% |
-| UART write | 0-2ms | 4% |
-| BLE transmission | 7.5ms (nominal) | 15% |
-| BLE transmission (worst) | 35ms | 70% |
-| UART read | 0-2ms | 4% |
-| Processing overhead | 0-5ms | 10% |
-| **Total (nominal)** | **~15-20ms** | **40% of budget** |
-| **Total (worst-case)** | **~45ms** | **90% of budget** |
-
-**Result**: Well within spec, even at worst-case BLE latency
-
----
-
-## Message Catalog
-
-### Handshake Messages (PRIMARY <-> SECONDARY)
-
-| Message | Direction | Purpose | Timeout | Response |
-|---------|-----------|---------|---------|----------|
-| `READY\n` | SECONDARY -> PRIMARY | Signal connection ready | - | `FIRST_SYNC` |
-| `FIRST_SYNC:12345\n` | PRIMARY -> SECONDARY | Initial time sync | 8s | `ACK` |
-| `ACK\n` | SECONDARY -> PRIMARY | Acknowledge sync | 0.5s | `VCR_START` |
-| `VCR_START\n` | PRIMARY -> SECONDARY | Begin therapy | - | (none) |
-
-### Therapy Execution Messages (PRIMARY <-> SECONDARY)
-
-| Message | Direction | Purpose | Timeout | Response |
-|---------|-----------|---------|---------|----------|
-| `BUZZ:seq:ts:f\|a\n` | PRIMARY -> SECONDARY | Command buzz execution | - | (SECONDARY executes) |
-| `SYNC_ADJ:12345\n` | PRIMARY -> SECONDARY | Optional time check | - | `ACK_SYNC_ADJ` |
-| `ACK_SYNC_ADJ\n` | SECONDARY -> PRIMARY | Acknowledge sync | 2s | `SYNC_ADJ_START` |
-| `SYNC_ADJ_START\n` | PRIMARY -> SECONDARY | Resume therapy | - | (none) |
-
-### Parameter Synchronization (PRIMARY -> SECONDARY)
-
-| Message | Direction | Purpose | Response |
-|---------|-----------|---------|----------|
-| `PARAM_UPDATE:KEY:VAL:...\n` | PRIMARY -> SECONDARY | Broadcast parameter changes | `ACK_PARAM_UPDATE` (optional) |
-| `ACK_PARAM_UPDATE\n` | SECONDARY -> PRIMARY | Acknowledge update | (none) |
-| `SEED:123456\n` | PRIMARY -> SECONDARY | Random seed for jitter sync | `SEED_ACK` |
-| `SEED_ACK\n` | SECONDARY -> PRIMARY | Acknowledge seed | (none) |
-
-### Battery Query (PRIMARY <-> SECONDARY)
-
-| Message | Direction | Purpose | Timeout | Response |
-|---------|-----------|---------|---------|----------|
-| `GET_BATTERY\n` | PRIMARY -> SECONDARY | Query SECONDARY battery voltage | - | `BAT_RESPONSE` |
-| `BAT_RESPONSE:3.68\n` | SECONDARY -> PRIMARY | Report voltage | 1s | (none) |
-
-### BLE Protocol Commands (Phone -> PRIMARY)
-
-See **[BLE_PROTOCOL.md](BLE_PROTOCOL.md)** for complete BLE Protocol v2.0.0 specification.
-
-**Categories:**
-- Device Information: INFO, BATTERY, PING
-- Therapy Profiles: PROFILE_LIST, PROFILE_LOAD, PROFILE_GET, PROFILE_CUSTOM
-- Session Control: SESSION_START, SESSION_PAUSE, SESSION_RESUME, SESSION_STOP, SESSION_STATUS
-- Parameter Adjustment: PARAM_SET
-- Calibration: CALIBRATE_START, CALIBRATE_BUZZ, CALIBRATE_STOP
-- System: HELP, RESTART
-
-**All phone-directed responses end with `\x04` (EOT terminator)**
+| RTT quality threshold | 120ms | Discard samples with higher RTT |
+| Minimum valid samples | 5 | Required for valid sync (~5s from connect) |
+| PING/PONG interval | 1s | Unified keepalive + clock sync (all states) |
+| Keepalive timeout (SECONDARY) | 6s | 6 missed PINGs = connection lost |
+| Keepalive timeout (PRIMARY) | 4s | During therapy (emergency shutdown) |
+| MACROCYCLE timeout | 10s | SECONDARY safety halt |
+| Lead time range | 15-100ms | Adaptive scheduling window |
+| BLE connection interval | 8-12ms | Low-latency communication (6-9 BLE units) |
 
 ---
 
 ## See Also
 
-- **[BLE_PROTOCOL.md](BLE_PROTOCOL.md)** - Phone ↔ PRIMARY BLE command protocol
-- **[ARCHITECTURE.md](ARCHITECTURE.md)** - System architecture and dual-device design
-- **[BOOT_SEQUENCE.md](BOOT_SEQUENCE.md)** - Connection establishment during boot
-- **[THERAPY_ENGINE.md](THERAPY_ENGINE.md)** - Pattern generation that triggers BUZZ commands
-- **[API_REFERENCE.md](API_REFERENCE.md)** - SyncProtocol module API
-
----
-
-**Document Maintenance:**
-Update this document when:
-- Modifying handshake protocol
-- Changing command message formats
-- Adding new synchronization messages
-- Updating timeout values
-- Changing BLE connection parameters
-
-**Last Updated:** 2025-01-23
-**Protocol Version:** 2.0.0
-**Platform:** Arduino C++ / PlatformIO
+- **[BLE_PROTOCOL.md](BLE_PROTOCOL.md)** — Phone app command protocol
+- **[THERAPY_ENGINE.md](THERAPY_ENGINE.md)** — Pattern generation
+- **[ARCHITECTURE.md](ARCHITECTURE.md)** — System design overview

@@ -202,10 +202,6 @@ void test_syncCommandTypeToString_buzz(void) {
     TEST_ASSERT_EQUAL_STRING("BUZZ", syncCommandTypeToString(SyncCommandType::BUZZ));
 }
 
-void test_syncCommandTypeToString_heartbeat(void) {
-    TEST_ASSERT_EQUAL_STRING("HEARTBEAT", syncCommandTypeToString(SyncCommandType::HEARTBEAT));
-}
-
 void test_syncCommandTypeToString_deactivate(void) {
     TEST_ASSERT_EQUAL_STRING("DEACTIVATE", syncCommandTypeToString(SyncCommandType::DEACTIVATE));
 }
@@ -640,7 +636,6 @@ int main(int argc, char **argv) {
     // Sync Command Type String Tests
     RUN_TEST(test_syncCommandTypeToString_startSession);
     RUN_TEST(test_syncCommandTypeToString_buzz);
-    RUN_TEST(test_syncCommandTypeToString_heartbeat);
     RUN_TEST(test_syncCommandTypeToString_deactivate);
     RUN_TEST(test_syncCommandTypeToString_pauseSession);
     RUN_TEST(test_syncCommandTypeToString_resumeSession);

@@ -279,7 +279,7 @@ bool ProfileManager::setParameter(const char* paramName, const char* value) {
     strncpy(paramUpper, paramName, sizeof(paramUpper) - 1);
     paramUpper[sizeof(paramUpper) - 1] = '\0';
     for (char* c = paramUpper; *c; c++) {
-        *c = toupper(*c);
+        *c = static_cast<char>(toupper(*c));
     }
 
     // Validate and set parameter
@@ -295,32 +295,32 @@ bool ProfileManager::setParameter(const char* paramName, const char* value) {
     else if (strcmp(paramUpper, "FREQ") == 0) {
         int freq = atoi(value);
         if (freq < 50 || freq > 300) return false;
-        _currentProfile.frequencyHz = freq;
+        _currentProfile.frequencyHz = static_cast<uint16_t>(freq);
     }
     else if (strcmp(paramUpper, "ON") == 0) {
-        float onTime = atof(value);
+        float onTime = static_cast<float>(atof(value));
         if (onTime < 10.0f || onTime > 1000.0f) return false;
         _currentProfile.timeOnMs = onTime;
     }
     else if (strcmp(paramUpper, "OFF") == 0) {
-        float offTime = atof(value);
+        float offTime = static_cast<float>(atof(value));
         if (offTime < 10.0f || offTime > 1000.0f) return false;
         _currentProfile.timeOffMs = offTime;
     }
     else if (strcmp(paramUpper, "SESSION") == 0) {
         int duration = atoi(value);
         if (duration < 1 || duration > 240) return false;
-        _currentProfile.sessionDurationMin = duration;
+        _currentProfile.sessionDurationMin = static_cast<uint16_t>(duration);
     }
     else if (strcmp(paramUpper, "AMPMIN") == 0) {
         int amp = atoi(value);
         if (amp < 0 || amp > 100) return false;
-        _currentProfile.amplitudeMin = amp;
+        _currentProfile.amplitudeMin = static_cast<uint8_t>(amp);
     }
     else if (strcmp(paramUpper, "AMPMAX") == 0) {
         int amp = atoi(value);
         if (amp < 0 || amp > 100) return false;
-        _currentProfile.amplitudeMax = amp;
+        _currentProfile.amplitudeMax = static_cast<uint8_t>(amp);
     }
     else if (strcmp(paramUpper, "PATTERN") == 0) {
         if (strcasecmp(value, "rndp") == 0 ||
@@ -330,7 +330,7 @@ bool ProfileManager::setParameter(const char* paramName, const char* value) {
             _currentProfile.patternType[PATTERN_TYPE_MAX - 1] = '\0';
             // Lowercase for consistency
             for (char* c = _currentProfile.patternType; *c; c++) {
-                *c = tolower(*c);
+                *c = static_cast<char>(tolower(*c));
             }
         } else {
             return false;
@@ -341,14 +341,14 @@ bool ProfileManager::setParameter(const char* paramName, const char* value) {
         _currentProfile.mirrorPattern = (mirror != 0);
     }
     else if (strcmp(paramUpper, "JITTER") == 0) {
-        float jitter = atof(value);
+        float jitter = static_cast<float>(atof(value));
         if (jitter < 0.0f || jitter > 100.0f) return false;
         _currentProfile.jitterPercent = jitter;
     }
     else if (strcmp(paramUpper, "FINGERS") == 0) {
         int fingers = atoi(value);
         if (fingers < 1 || fingers > 4) return false;
-        _currentProfile.numFingers = fingers;
+        _currentProfile.numFingers = static_cast<uint8_t>(fingers);
     }
     else {
         Serial.printf("[PROFILE] Unknown parameter: %s\n", paramName);
@@ -399,6 +399,7 @@ bool ProfileManager::saveSettings() {
         data.amplitudeMax = _currentProfile.amplitudeMax;
         data.sessionDurationMin = _currentProfile.sessionDurationMin;
         strncpy(data.patternType, _currentProfile.patternType, sizeof(data.patternType) - 1);
+        data.patternType[sizeof(data.patternType) - 1] = '\0';
         data.mirrorPattern = _currentProfile.mirrorPattern ? 1 : 0;
         data.numFingers = _currentProfile.numFingers;
     }
@@ -492,6 +493,7 @@ bool ProfileManager::loadSettings() {
         _currentProfile.amplitudeMax = data.amplitudeMax;
         _currentProfile.sessionDurationMin = data.sessionDurationMin;
         strncpy(_currentProfile.patternType, data.patternType, PATTERN_TYPE_MAX - 1);
+        _currentProfile.patternType[PATTERN_TYPE_MAX - 1] = '\0';
         _currentProfile.mirrorPattern = (data.mirrorPattern != 0);
         _currentProfile.numFingers = data.numFingers;
 

@@ -159,22 +159,22 @@ uint8_t motorChannel = fingerIndex - 4;  // 4→0, 5→1, 6→2, 7→3
 **Complete Calibration Session**:
 
 ```text
-1. Phone → PRIMARY: CALIBRATE_START\n
-2. PRIMARY → Phone: MODE:CALIBRATION\n\x04
+1. Phone → PRIMARY: CALIBRATE_START\x04
+2. PRIMARY → Phone: MODE:CALIBRATION\x04
 
-3. Phone → PRIMARY: CALIBRATE_BUZZ:0:50:500\n
+3. Phone → PRIMARY: CALIBRATE_BUZZ:0:50:500\x04
 4. PRIMARY: <tests local index finger at 50% for 500ms>
-5. PRIMARY → Phone: FINGER:0\nINTENSITY:50\nDURATION:500\n\x04
+5. PRIMARY → Phone: FINGER:0\nINTENSITY:50\nDURATION:500\x04
 
-6. Phone → PRIMARY: CALIBRATE_BUZZ:4:75:500\n
-7. PRIMARY → SECONDARY: CALIBRATE_BUZZ:4:75:500\n
+6. Phone → PRIMARY: CALIBRATE_BUZZ:4:75:500\x04
+7. PRIMARY → SECONDARY: CALIBRATE_BUZZ:4:75:500
 8. SECONDARY: <tests local index finger at 75% for 500ms>
-9. PRIMARY → Phone: FINGER:4\nINTENSITY:75\nDURATION:500\n\x04
+9. PRIMARY → Phone: FINGER:4\nINTENSITY:75\nDURATION:500\x04
 
 ... (repeat for all 8 fingers)
 
-10. Phone → PRIMARY: CALIBRATE_STOP\n
-11. PRIMARY → Phone: MODE:NORMAL\n\x04
+10. Phone → PRIMARY: CALIBRATE_STOP\x04
+11. PRIMARY → Phone: MODE:NORMAL\x04
 ```
 
 ### Main Buzz Method
@@ -351,7 +351,6 @@ void MenuController::buzzRemoteFinger(uint8_t finger, uint8_t intensity, uint16_
     cmd += String(intensity);
     cmd += ":";
     cmd += String(durationMs);
-    cmd += "\n";
 
     ble_.sendToSecondary(cmd);
     Serial.printf("[CalibrationMode] Sent buzz command to SECONDARY: %s", cmd.c_str());

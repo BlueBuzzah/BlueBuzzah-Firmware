@@ -27,7 +27,6 @@ const char* INTERNAL_MESSAGES[] = {
     "GET_BATTERY",
     "BATRESPONSE",
     "ACK_PARAM_UPDATE",
-    "HEARTBEAT",
     "SYNC_",           // Covers SYNC_ADJ, SYNC_PROBE, SYNC_PROBE_ACK
     "FIRST_SYNC",
     "ACK_SYNC",        // Covers ACK_SYNC_ADJ
@@ -38,7 +37,9 @@ const char* INTERNAL_MESSAGES[] = {
     "IDENTIFY:",
     "LED_OFF_SYNC",
     "DEBUG_FLASH",
-    "DEBUG_SYNC"
+    "DEBUG_SYNC",
+    "MC:",             // Macrocycle batch message
+    "MC_ACK:"          // Macrocycle acknowledgment
 };
 
 const uint8_t INTERNAL_MESSAGE_COUNT = sizeof(INTERNAL_MESSAGES) / sizeof(INTERNAL_MESSAGES[0]);
@@ -245,7 +246,7 @@ bool MenuController::parseCommand(const char* message, char* command, char param
 
     // Convert command to uppercase
     for (char* c = command; *c; c++) {
-        *c = toupper(*c);
+        *c = static_cast<char>(toupper(*c));
     }
 
     // Remaining tokens are parameters
@@ -408,7 +409,7 @@ void MenuController::handleProfileLoad(const char params[][PARAM_BUFFER_SIZE], u
     }
 
     int profileId = atoi(params[0]);
-    if (!_profiles->loadProfile(profileId)) {
+    if (!_profiles->loadProfile(static_cast<uint8_t>(profileId))) {
         sendError("Invalid profile ID");
         return;
     }
@@ -674,7 +675,7 @@ void MenuController::handleSessionStatus() {
         elapsed = _therapy->getElapsedSeconds();
         total = _therapy->getDurationSeconds();
         if (total > 0) {
-            progress = (elapsed * 100) / total;
+            progress = static_cast<uint8_t>((elapsed * 100) / total);
         }
     }
 
@@ -710,7 +711,7 @@ void MenuController::handleParamSet(const char params[][PARAM_BUFFER_SIZE], uint
     strncpy(paramName, params[0], PARAM_BUFFER_SIZE - 1);
     paramName[PARAM_BUFFER_SIZE - 1] = '\0';
     for (char* c = paramName; *c; c++) {
-        *c = toupper(*c);
+        *c = static_cast<char>(toupper(*c));
     }
 
     if (!_profiles->setParameter(paramName, params[1])) {
@@ -773,10 +774,12 @@ void MenuController::handleCalibrateBuzz(const char params[][PARAM_BUFFER_SIZE],
 
     // Execute buzz on local fingers (0-4)
     if (finger < MAX_ACTUATORS && _haptic) {
-        if (_haptic->isEnabled(finger)) {
-            _haptic->activate(finger, intensity);
+        uint8_t fingerIdx = static_cast<uint8_t>(finger);
+        uint8_t intensityVal = static_cast<uint8_t>(intensity);
+        if (_haptic->isEnabled(fingerIdx)) {
+            _haptic->activate(fingerIdx, intensityVal);
             delay(duration);
-            _haptic->deactivate(finger);
+            _haptic->deactivate(fingerIdx);
         }
     }
     // Fingers 5-7 would be sent to SECONDARY device

@@ -72,14 +72,26 @@ bool BLEManager::begin(DeviceRole role, const char* deviceName) {
     // Fix: Larger MTU (messages fit in ONE notification) + larger queue
     // ==========================================================================
 
-    // MTU 67 = 64 bytes payload (ATT header is 3 bytes)
-    // Our largest message is ~30 bytes, so 64 payload is plenty of headroom
-    // HVN queue of 8 allows bursting without overflow
-    // Event length 6 allows more data per connection event (in 1.25ms units)
-    const uint16_t BLE_MTU = 67;           // 64 byte payload + 3 byte ATT header
-    const uint16_t BLE_EVENT_LEN = 6;      // Connection event length (in 1.25ms units)
-    const uint8_t  BLE_HVN_QSIZE = 8;      // Handle Value Notification queue size
-    const uint8_t  BLE_WRCMD_QSIZE = 8;    // Write Command queue size
+    // ==========================================================================
+    // Connection parameters - balance features vs SRAM usage
+    // ==========================================================================
+    // SRAM usage increases dramatically with:
+    //   - Number of connections
+    //   - MTU size (per connection)
+    //   - Queue sizes (per connection)
+    //
+    // PRIMARY needs 2 peripheral connections (phone + SECONDARY)
+    // Using moderate settings to stay within SRAM budget
+    // ==========================================================================
+
+    // Proper BLE configuration for reliable large message transmission
+    // MACROCYCLE messages are ~160 bytes - MTU must exceed this to avoid fragmentation
+    // EVENT_LEN and queue sizes must also be increased to prevent SoftDevice instability
+    // See: https://github.com/adafruit/Adafruit_nRF52_Arduino/issues/721
+    const uint16_t BLE_MTU = 200;          // Fits MACROCYCLE (~160 bytes) with headroom
+    const uint16_t BLE_EVENT_LEN = 10;     // 12.5ms - sufficient for full packet + 2 connections
+    const uint8_t  BLE_HVN_QSIZE = 8;      // Handle notification bursts without overflow
+    const uint8_t  BLE_WRCMD_QSIZE = 8;    // Match for write commands
 
     // API: configPrphConn(mtu_max, event_len, hvn_qsize, wrcmd_qsize)
     if (role == DeviceRole::PRIMARY) {
@@ -98,6 +110,7 @@ bool BLEManager::begin(DeviceRole role, const char* deviceName) {
     if (role == DeviceRole::PRIMARY) {
         // PRIMARY: 2 peripheral connections (phone + SECONDARY), 0 central
         Bluefruit.begin(2, 0);
+        Serial.println(F("[BLE] PRIMARY mode: 2 peripheral connections enabled"));
     } else {
         // SECONDARY: 0 peripheral, 1 central connection (to PRIMARY)
         Bluefruit.begin(0, 1);
@@ -109,9 +122,21 @@ bool BLEManager::begin(DeviceRole role, const char* deviceName) {
     // Set TX power (0 dBm is balanced for most uses)
     Bluefruit.setTxPower(0);
 
-    // Configure connection parameters
-    // interval: 8ms (10ms min for compatibility), timeout: 4000ms
-    Bluefruit.Periph.setConnInterval(6, 12);  // 7.5ms - 15ms (in 1.25ms units)
+    // Configure connection parameters for low-latency communication
+    // Phase 3: Reduced from 7.5ms to 5ms minimum for lower jitter
+    // Values in 1.25ms units (BLE spec): N * 1.25ms = actual interval
+    // Both roles need this for proper PTP clock sync (RTT < 30ms required)
+    constexpr uint16_t connIntervalMin = (BLE_INTERVAL_MIN_MS * 1000) / 1250;  // 5ms -> 4 units
+    constexpr uint16_t connIntervalMax = (BLE_INTERVAL_MAX_MS * 1000) / 1250;  // 10ms -> 8 units
+    if (role == DeviceRole::PRIMARY) {
+        // PRIMARY is peripheral - phone/SECONDARY connect to us
+        Bluefruit.Periph.setConnInterval(connIntervalMin, connIntervalMax);
+    } else {
+        // SECONDARY is central - we connect to PRIMARY
+        // Without this, SoftDevice uses default ~30-50ms interval,
+        // causing RTT > 30ms and clock sync failures
+        Bluefruit.Central.setConnInterval(connIntervalMin, connIntervalMax);
+    }
 
     // Setup role-specific configuration
     if (role == DeviceRole::PRIMARY) {
@@ -161,7 +186,9 @@ void BLEManager::setupAdvertising() {
     Bluefruit.Advertising.addTxPower();
 
     // Add service UUID - check if it succeeds (packet may be full)
-    if (!Bluefruit.Advertising.addService(_uartService)) {
+    bool serviceAdded = Bluefruit.Advertising.addService(_uartService);
+
+    if (!serviceAdded) {
         Serial.println(F("[BLE] WARNING: Failed to add service to advertising!"));
         // Try adding to scan response instead
         Bluefruit.ScanResponse.addService(_uartService);
@@ -177,7 +204,9 @@ void BLEManager::setupAdvertising() {
     Bluefruit.Advertising.restartOnDisconnect(true);
     Bluefruit.Advertising.setInterval(32, 244);  // 20ms - 152.5ms (in 0.625ms units)
     Bluefruit.Advertising.setFastTimeout(30);    // Fast mode for 30 seconds
+
     Bluefruit.Advertising.start(0);              // 0 = Don't stop advertising
+    Serial.println(F("[BLE] Advertising started"));
 }
 
 // =============================================================================
@@ -190,26 +219,29 @@ void BLEManager::update() {
     // Process TX queue (non-blocking message transmission)
     processTxQueue();
 
-    // Periodic scanner health check for SECONDARY mode
+    // Periodic scanner health check for SECONDARY mode (only when disconnected)
     static uint32_t lastScanCheck = 0;
     if (_role == DeviceRole::SECONDARY && _scannerAutoRestartEnabled && (now - lastScanCheck >= 5000)) {
         lastScanCheck = now;
-        bool running = Bluefruit.Scanner.isRunning();
-        Serial.printf("[BLE] Scanner health check: %s\n", running ? "RUNNING" : "STOPPED");
 
-        // Auto-restart scanner if it stopped unexpectedly
-        if (!running && getConnectionCount() == 0) {
-            Serial.println(F("[BLE] Scanner stopped unexpectedly, restarting..."));
-            startScanning(_targetName);
+        // Only check scanner if NOT connected (scanner should be stopped when connected)
+        if (getConnectionCount() == 0) {
+            bool running = Bluefruit.Scanner.isRunning();
+            if (!running) {
+                Serial.println(F("[BLE] Scanner stopped unexpectedly, restarting..."));
+                startScanning(_targetName);
+            }
         }
     }
 
     // Check for identification timeout on pending connections
+    // SP-H3 fix: Use fresh millis() for timeout check to avoid stale timestamp
+    uint32_t timeoutNow = millis();
     for (int i = 0; i < MAX_CONNECTIONS; i++) {
         BBConnection* conn = &_connections[i];
         if (conn->isConnected && conn->pendingIdentify) {
             // Check if timeout elapsed
-            if (now - conn->identifyStartTime >= IDENTIFY_TIMEOUT_MS) {
+            if (timeoutNow - conn->identifyStartTime >= IDENTIFY_TIMEOUT_MS) {
                 // No IDENTIFY message received - classify as PHONE
                 Serial.println(F("[BLE] IDENTIFY timeout - classifying as PHONE"));
                 conn->type = ConnectionType::PHONE;
@@ -263,11 +295,8 @@ bool BLEManager::startScanning(const char* targetName) {
     Serial.printf("[BLE] Starting scan for '%s'...\n", _targetName);
 
     // Configure scanner
-    Serial.println(F("[BLE] Configuring scanner..."));
     Bluefruit.Scanner.setRxCallback(_onScanCallback);
-    Serial.println(F("[BLE]   - Callback registered"));
     Bluefruit.Scanner.restartOnDisconnect(true);
-    Serial.println(F("[BLE]   - Restart on disconnect: ON"));
 
     // CRITICAL: Filter to prevent callback flood in busy BLE environments
     // Note: Service UUID filtering doesn't work reliably because:
@@ -275,22 +304,19 @@ bool BLEManager::startScanning(const char* targetName) {
     // - UUID may be in scan response, which filters don't check
     // Solution: Use RSSI filter + name matching in callback
     Bluefruit.Scanner.clearFilters();
-
-    // RSSI filter: Only nearby devices (reduces callback volume significantly)
-    Bluefruit.Scanner.filterRssi(-80);
-    Serial.println(F("[BLE]   - Filter: RSSI >= -80 dBm (name matching in callback)"));
+    Bluefruit.Scanner.filterRssi(-80);  // Only nearby devices
 
     // Use longer interval with shorter window to reduce CPU load
     Bluefruit.Scanner.setInterval(320, 60);  // 200ms interval, 37.5ms window (19% duty)
-    Serial.println(F("[BLE]   - Interval: 200ms/37.5ms"));
     Bluefruit.Scanner.useActiveScan(true);   // Request scan response for name
-    Serial.println(F("[BLE]   - Active scan: ON"));
 
     // Start scanning
-    Serial.println(F("[BLE] Calling Scanner.start(0)..."));
     bool started = Bluefruit.Scanner.start(0);  // 0 = Don't stop
-    Serial.printf("[BLE] Scanner.start() returned: %s\n", started ? "true" : "false");
-    Serial.printf("[BLE] Scanner.isRunning(): %s\n", Bluefruit.Scanner.isRunning() ? "true" : "false");
+    if (started) {
+        Serial.println(F("[BLE] Scanner started"));
+    } else {
+        Serial.println(F("[BLE] ERROR: Failed to start scanner"));
+    }
 
     return started;
 }
@@ -442,13 +468,13 @@ bool BLEManager::enqueueTx(uint16_t connHandle, const char* message) {
     // Copy message + EOT to entry buffer
     memcpy(entry->data, message, msgLen);
     entry->data[msgLen] = EOT_CHAR;
-    entry->length = msgLen + 1;
+    entry->length = static_cast<uint16_t>(msgLen + 1);
     entry->bytesSent = 0;
     entry->connHandle = connHandle;
     entry->pending = true;
 
     // Advance tail
-    _txTail = (_txTail + 1) % TX_QUEUE_SIZE;
+    _txTail = static_cast<uint8_t>((_txTail + 1) % TX_QUEUE_SIZE);
     _txCount++;
 
     return true;
@@ -460,7 +486,7 @@ void BLEManager::processTxQueue() {
         TxEntry* entry = &_txQueue[_txHead];
         if (!entry->pending) {
             // Advance head if slot is empty (shouldn't happen)
-            _txHead = (_txHead + 1) % TX_QUEUE_SIZE;
+            _txHead = static_cast<uint8_t>((_txHead + 1) % TX_QUEUE_SIZE);
             continue;
         }
 
@@ -471,7 +497,7 @@ void BLEManager::processTxQueue() {
                                            remaining);
 
         if (written > 0) {
-            entry->bytesSent += written;
+            entry->bytesSent = static_cast<uint16_t>(entry->bytesSent + written);
 
             // Check if complete
             if (entry->bytesSent >= entry->length) {
@@ -484,7 +510,7 @@ void BLEManager::processTxQueue() {
 
                 // Mark slot free and advance head
                 entry->pending = false;
-                _txHead = (_txHead + 1) % TX_QUEUE_SIZE;
+                _txHead = static_cast<uint8_t>((_txHead + 1) % TX_QUEUE_SIZE);
                 _txCount--;
             }
         } else {
@@ -494,7 +520,7 @@ void BLEManager::processTxQueue() {
     }
 }
 
-size_t BLEManager::tryWriteImmediate(uint16_t connHandle, const uint8_t* data, size_t len) {
+size_t BLEManager::tryWriteImmediate(uint16_t connHandle [[maybe_unused]], const uint8_t* data, size_t len) {
     // Non-blocking write attempt
     if (_role == DeviceRole::PRIMARY) {
         return _uartService.write(data, len);
@@ -589,7 +615,7 @@ BBConnection* BLEManager::findFreeConnection() {
     return nullptr;
 }
 
-ConnectionType BLEManager::identifyConnectionType(uint16_t connHandle) {
+ConnectionType BLEManager::identifyConnectionType(uint16_t connHandle [[maybe_unused]]) {
     // In PRIMARY mode, we need to identify if connection is from phone or SECONDARY
     // Currently using simple heuristic: first connection is SECONDARY, second is phone
     // A more robust approach would check device name or use a handshake protocol
@@ -610,8 +636,6 @@ void BLEManager::processIncomingData(uint16_t connHandleParam, const uint8_t* da
     BBConnection* conn = findConnection(connHandleParam);
     if (!conn) return;
 
-    bool messageDelivered = false;
-
     // Append data to buffer
     for (uint16_t i = 0; i < len && conn->rxIndex < RX_BUFFER_SIZE - 1; i++) {
         uint8_t c = data[i];
@@ -628,7 +652,6 @@ void BLEManager::processIncomingData(uint16_t connHandleParam, const uint8_t* da
 
             if (conn->rxIndex > 0) {
                 deliverMessage(conn, connHandleParam);
-                messageDelivered = true;
             }
 
             // Reset buffer for next message
@@ -868,7 +891,7 @@ void BLEManager::_onUartRx(uint16_t connHandle) {
     int len = g_bleManager->_uartService.read(buf, sizeof(buf));
 
     if (len > 0) {
-        g_bleManager->processIncomingData(connHandle, buf, len);
+        g_bleManager->processIncomingData(connHandle, buf, static_cast<uint16_t>(len));
     }
 }
 
@@ -880,6 +903,6 @@ void BLEManager::_onClientUartRx(BLEClientUart& clientUart) {
     int len = clientUart.read(buf, sizeof(buf));
 
     if (len > 0) {
-        g_bleManager->processClientIncomingData(buf, len);
+        g_bleManager->processClientIncomingData(buf, static_cast<uint16_t>(len));
     }
 }

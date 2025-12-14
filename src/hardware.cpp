@@ -8,6 +8,48 @@
 #include "hardware.h"
 
 // =============================================================================
+// I2C MUTEX RAII LOCK
+// =============================================================================
+
+/**
+ * @brief RAII lock for I2C mutex - automatically releases on scope exit
+ *
+ * Usage:
+ *   I2CMutexLock lock(_i2cMutex);
+ *   if (!lock.acquired()) return Result::ERROR_BUSY;
+ *   // ... I2C operations are now protected ...
+ *   // Mutex released automatically when lock goes out of scope
+ */
+class I2CMutexLock {
+public:
+    I2CMutexLock(SemaphoreHandle_t mutex, TickType_t timeout = pdMS_TO_TICKS(100))
+        : _mutex(mutex), _acquired(false) {
+        if (_mutex != nullptr) {
+            _acquired = (xSemaphoreTake(_mutex, timeout) == pdTRUE);
+        } else {
+            // No mutex (failed creation or single-threaded) - allow operation
+            _acquired = true;
+        }
+    }
+
+    ~I2CMutexLock() {
+        if (_mutex != nullptr && _acquired) {
+            xSemaphoreGive(_mutex);
+        }
+    }
+
+    // Prevent copying
+    I2CMutexLock(const I2CMutexLock&) = delete;
+    I2CMutexLock& operator=(const I2CMutexLock&) = delete;
+
+    bool acquired() const { return _acquired; }
+
+private:
+    SemaphoreHandle_t _mutex;
+    bool _acquired;
+};
+
+// =============================================================================
 // BATTERY MONITOR - Static Data
 // =============================================================================
 
@@ -27,7 +69,7 @@ const uint8_t BatteryMonitor::VOLTAGE_CURVE_SIZE = sizeof(VOLTAGE_CURVE) / sizeo
 // HAPTIC CONTROLLER - Implementation
 // =============================================================================
 
-HapticController::HapticController() : _tca(TCA9548A_ADDRESS), _initialized(false) {
+HapticController::HapticController() : _tca(TCA9548A_ADDRESS), _initialized(false), _preSelectedFinger(-1), _i2cMutex(nullptr) {
     for (uint8_t i = 0; i < MAX_ACTUATORS; i++) {
         _fingerActive[i] = false;
         _fingerEnabled[i] = false;
@@ -36,6 +78,12 @@ HapticController::HapticController() : _tca(TCA9548A_ADDRESS), _initialized(fals
 
 bool HapticController::begin() {
     Serial.println(F("[INFO] Initializing haptic controller..."));
+
+    // Create I2C mutex for thread-safe access
+    _i2cMutex = xSemaphoreCreateMutex();
+    if (_i2cMutex == nullptr) {
+        Serial.println(F("[WARN] Failed to create I2C mutex - proceeding without thread safety"));
+    }
 
     // Initialize I2C at 400kHz
     Wire.begin();
@@ -155,6 +203,7 @@ bool HapticController::selectChannel(uint8_t finger) {
 
 void HapticController::closeChannels() {
     _tca.closeAll();
+    _preSelectedFinger = -1;  // Invalidate pre-selection
 }
 
 uint8_t HapticController::amplitudeToRTP(uint8_t amplitude) const {
@@ -181,6 +230,12 @@ Result HapticController::activate(uint8_t finger, uint8_t amplitude) {
     // Validate amplitude
     if (amplitude > MAX_AMPLITUDE) {
         amplitude = MAX_AMPLITUDE;
+    }
+
+    // Acquire I2C mutex for thread-safe access
+    I2CMutexLock lock(_i2cMutex);
+    if (!lock.acquired()) {
+        return Result::ERROR_BUSY;
     }
 
     // Select channel
@@ -211,6 +266,12 @@ Result HapticController::deactivate(uint8_t finger) {
         return Result::ERROR_DISABLED;
     }
 
+    // Acquire I2C mutex for thread-safe access
+    I2CMutexLock lock(_i2cMutex);
+    if (!lock.acquired()) {
+        return Result::ERROR_BUSY;
+    }
+
     // Select channel
     if (!selectChannel(finger)) {
         return Result::ERROR_HARDWARE;
@@ -236,6 +297,10 @@ void HapticController::stopAll() {
 }
 
 void HapticController::emergencyStop() {
+    // Acquire I2C mutex - use longer timeout for emergency stop
+    // If we can't acquire, proceed anyway (emergency takes priority)
+    I2CMutexLock lock(_i2cMutex, pdMS_TO_TICKS(200));
+
     // Stop all motors regardless of tracked state
     for (uint8_t finger = 0; finger < MAX_ACTUATORS; finger++) {
         if (_fingerEnabled[finger]) {
@@ -282,6 +347,17 @@ Result HapticController::setFrequency(uint8_t finger, uint16_t frequencyHz) {
         return Result::ERROR_DISABLED;
     }
 
+    // Skip I2C if frequency unchanged (latency optimization)
+    if (_lastFrequency[finger] == frequencyHz) {
+        return Result::OK;
+    }
+
+    // Acquire I2C mutex for thread-safe access
+    I2CMutexLock lock(_i2cMutex);
+    if (!lock.acquired()) {
+        return Result::ERROR_BUSY;
+    }
+
     // Select channel
     if (!selectChannel(finger)) {
         return Result::ERROR_HARDWARE;
@@ -296,6 +372,9 @@ Result HapticController::setFrequency(uint8_t finger, uint16_t frequencyHz) {
 
     closeChannels();
 
+    // Cache the frequency for future skip optimization
+    _lastFrequency[finger] = frequencyHz;
+
     return Result::OK;
 }
 
@@ -307,6 +386,113 @@ uint8_t HapticController::getEnabledCount() const {
         }
     }
     return count;
+}
+
+// =============================================================================
+// PRE-SELECTION OPTIMIZATION METHODS
+// =============================================================================
+
+bool HapticController::selectChannelPersistent(uint8_t finger) {
+    if (finger >= MAX_ACTUATORS) {
+        return false;
+    }
+
+    // Acquire I2C mutex for thread-safe access
+    I2CMutexLock lock(_i2cMutex);
+    if (!lock.acquired()) {
+        return false;
+    }
+
+    // Open channel and leave it open (no closeChannels call)
+    _tca.openChannel(finger);
+    _preSelectedFinger = static_cast<int8_t>(finger);  // Track pre-selected channel
+    return true;
+}
+
+Result HapticController::setFrequencyDirect(uint8_t finger, uint16_t frequencyHz) {
+    // Validate finger index
+    if (finger >= MAX_ACTUATORS) {
+        return Result::ERROR_INVALID_PARAM;
+    }
+
+    // Validate frequency range
+    if (frequencyHz < MIN_FREQUENCY_HZ || frequencyHz > MAX_FREQUENCY_HZ) {
+        return Result::ERROR_INVALID_PARAM;
+    }
+
+    // Check if finger is enabled
+    if (!_fingerEnabled[finger]) {
+        return Result::ERROR_DISABLED;
+    }
+
+    // Acquire I2C mutex for thread-safe access
+    I2CMutexLock lock(_i2cMutex);
+    if (!lock.acquired()) {
+        return Result::ERROR_BUSY;
+    }
+
+    // PRECONDITION: Channel must already be selected
+    // Write directly to DRV2605 without mux operations
+
+    // Calculate drive time for LRA frequency (same formula as setFrequency)
+    uint8_t driveTime = (uint8_t)((5000 / frequencyHz) & 0x1F);
+
+    // Write to CONTROL1 register (0x1B)
+    _drv[finger].writeRegister8(DRV2605_REG_CONTROL1, driveTime);
+
+    return Result::OK;
+}
+
+Result HapticController::activatePreSelected(uint8_t finger, uint8_t amplitude) {
+    // Validate finger index
+    if (finger >= MAX_ACTUATORS) {
+        return Result::ERROR_INVALID_PARAM;
+    }
+
+    // Check if finger is enabled
+    if (!_fingerEnabled[finger]) {
+        return Result::ERROR_DISABLED;
+    }
+
+    // Validate amplitude
+    if (amplitude > MAX_AMPLITUDE) {
+        amplitude = MAX_AMPLITUDE;
+    }
+
+    // Acquire I2C mutex for thread-safe access
+    I2CMutexLock lock(_i2cMutex);
+    if (!lock.acquired()) {
+        return Result::ERROR_BUSY;
+    }
+
+    // Only re-select channel if pre-selection was invalidated
+    // Pre-selection is invalidated when closeChannels() or closeAllChannels() is called
+    // (e.g., by deactivate() on another motor)
+    if (_preSelectedFinger != static_cast<int8_t>(finger)) {
+        if (!selectChannel(finger)) {
+            return Result::ERROR_HARDWARE;
+        }
+        // Note: selectChannel() doesn't update _preSelectedFinger (it's for persistent selection)
+    }
+
+    // Write RTP value (frequency was already set during pre-selection)
+    // This is the minimal critical-path I2C: just the RTP write (~100-150µs)
+    uint8_t rtpValue = amplitudeToRTP(amplitude);
+    _drv[finger].setRealtimeValue(rtpValue);
+
+    // Update state
+    _fingerActive[finger] = (amplitude > 0);
+
+    return Result::OK;
+}
+
+void HapticController::closeAllChannels() {
+    // Acquire I2C mutex - if we can't acquire, still try to close
+    // (closing is important for safety)
+    I2CMutexLock lock(_i2cMutex, pdMS_TO_TICKS(50));
+
+    _tca.closeAll();
+    _preSelectedFinger = -1;  // Invalidate pre-selection
 }
 
 // =============================================================================
@@ -611,7 +797,7 @@ float LEDController::calculateBreatheBrightness(uint32_t cycleMs) const {
     // sin goes from -1 to 1, we want 0 to 1
     // Position 0 = brightness 0.5, position 0.25 = brightness 1.0
     // position 0.5 = brightness 0.5, position 0.75 = brightness 0.0
-    float brightness = (sin(position * 2.0f * PI - PI / 2.0f) + 1.0f) / 2.0f;
+    float brightness = (sinf(position * 2.0f * static_cast<float>(PI) - static_cast<float>(PI) / 2.0f) + 1.0f) / 2.0f;
 
     // Clamp to ensure we don't go below a minimum visibility threshold
     const float MIN_BRIGHTNESS = 0.1f;

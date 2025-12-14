@@ -557,6 +557,107 @@ void test_StateMachine_isIdle(void) {
 }
 
 // =============================================================================
+// PHONE RECONNECT/TIMEOUT TESTS
+// =============================================================================
+
+void test_StateMachine_phoneDisconnected_to_previous_on_phoneReconnected(void) {
+    TherapyStateMachine sm;
+    sm.begin(TherapyState::RUNNING);
+
+    // First, go to PHONE_DISCONNECTED
+    TEST_ASSERT_TRUE(sm.transition(StateTrigger::PHONE_LOST));
+    TEST_ASSERT_EQUAL(TherapyState::PHONE_DISCONNECTED, sm.getCurrentState());
+    TEST_ASSERT_EQUAL(TherapyState::RUNNING, sm.getPreviousState());
+
+    // Then reconnect - should return to previous state (RUNNING)
+    TEST_ASSERT_TRUE(sm.transition(StateTrigger::PHONE_RECONNECTED));
+    TEST_ASSERT_EQUAL(TherapyState::RUNNING, sm.getCurrentState());
+}
+
+void test_StateMachine_phoneDisconnected_to_previous_on_phoneTimeout(void) {
+    TherapyStateMachine sm;
+    sm.begin(TherapyState::READY);
+
+    // First, go to PHONE_DISCONNECTED
+    TEST_ASSERT_TRUE(sm.transition(StateTrigger::PHONE_LOST));
+    TEST_ASSERT_EQUAL(TherapyState::PHONE_DISCONNECTED, sm.getCurrentState());
+    TEST_ASSERT_EQUAL(TherapyState::READY, sm.getPreviousState());
+
+    // Then timeout - should return to previous state (READY)
+    TEST_ASSERT_TRUE(sm.transition(StateTrigger::PHONE_TIMEOUT));
+    TEST_ASSERT_EQUAL(TherapyState::READY, sm.getCurrentState());
+}
+
+// =============================================================================
+// MAX CALLBACKS TESTS
+// =============================================================================
+
+// Helper callbacks for max callbacks test
+void helperCallback1(const StateTransition&) {}
+void helperCallback2(const StateTransition&) {}
+void helperCallback3(const StateTransition&) {}
+void helperCallback4(const StateTransition&) {}
+
+void test_StateMachine_onStateChange_max_callbacks_returns_false(void) {
+    TherapyStateMachine sm;
+    sm.begin(TherapyState::IDLE);
+
+    // Register max callbacks (MAX_STATE_CALLBACKS = 4)
+    TEST_ASSERT_TRUE(sm.onStateChange(helperCallback1));
+    TEST_ASSERT_TRUE(sm.onStateChange(helperCallback2));
+    TEST_ASSERT_TRUE(sm.onStateChange(helperCallback3));
+    TEST_ASSERT_TRUE(sm.onStateChange(helperCallback4));
+
+    // Next one should fail
+    TEST_ASSERT_FALSE(sm.onStateChange(testCallback));
+}
+
+// =============================================================================
+// ADDITIONAL TRANSITION EDGE CASES
+// =============================================================================
+
+void test_StateMachine_paused_disconnected(void) {
+    TherapyStateMachine sm;
+    sm.begin(TherapyState::PAUSED);
+
+    TEST_ASSERT_TRUE(sm.transition(StateTrigger::DISCONNECTED));
+    TEST_ASSERT_EQUAL(TherapyState::CONNECTION_LOST, sm.getCurrentState());
+}
+
+void test_StateMachine_connectionLost_connected(void) {
+    TherapyStateMachine sm;
+    sm.begin(TherapyState::CONNECTION_LOST);
+
+    TEST_ASSERT_TRUE(sm.transition(StateTrigger::CONNECTED));
+    TEST_ASSERT_EQUAL(TherapyState::READY, sm.getCurrentState());
+}
+
+void test_StateMachine_lowBattery_stopSession(void) {
+    TherapyStateMachine sm;
+    sm.begin(TherapyState::LOW_BATTERY);
+
+    // LOW_BATTERY is an active state, can stop
+    TEST_ASSERT_FALSE(sm.transition(StateTrigger::STOP_SESSION));  // Not running/paused
+}
+
+void test_StateMachine_stopping_emergencyStop(void) {
+    TherapyStateMachine sm;
+    sm.begin(TherapyState::STOPPING);
+
+    // STOPPING is not active, should not transition on emergency stop
+    TEST_ASSERT_FALSE(sm.transition(StateTrigger::EMERGENCY_STOP));
+    TEST_ASSERT_EQUAL(TherapyState::STOPPING, sm.getCurrentState());
+}
+
+void test_StateMachine_criticalBattery_from_paused(void) {
+    TherapyStateMachine sm;
+    sm.begin(TherapyState::PAUSED);
+
+    TEST_ASSERT_TRUE(sm.transition(StateTrigger::BATTERY_CRITICAL));
+    TEST_ASSERT_EQUAL(TherapyState::CRITICAL_BATTERY, sm.getCurrentState());
+}
+
+// =============================================================================
 // TEST RUNNER
 // =============================================================================
 
@@ -639,6 +740,20 @@ int main(int argc, char **argv) {
     RUN_TEST(test_StateMachine_isPaused);
     RUN_TEST(test_StateMachine_isReady);
     RUN_TEST(test_StateMachine_isIdle);
+
+    // Phone Reconnect/Timeout Tests
+    RUN_TEST(test_StateMachine_phoneDisconnected_to_previous_on_phoneReconnected);
+    RUN_TEST(test_StateMachine_phoneDisconnected_to_previous_on_phoneTimeout);
+
+    // Max Callbacks Tests
+    RUN_TEST(test_StateMachine_onStateChange_max_callbacks_returns_false);
+
+    // Additional Transition Edge Cases
+    RUN_TEST(test_StateMachine_paused_disconnected);
+    RUN_TEST(test_StateMachine_connectionLost_connected);
+    RUN_TEST(test_StateMachine_lowBattery_stopSession);
+    RUN_TEST(test_StateMachine_stopping_emergencyStop);
+    RUN_TEST(test_StateMachine_criticalBattery_from_paused);
 
     return UNITY_END();
 }

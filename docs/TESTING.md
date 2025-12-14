@@ -375,7 +375,7 @@ No downward trend detected
 **Purpose:** Measure synchronization command latency
 
 **Test Sequence:**
-1. Send `BUZZ:seq:timestamp:finger|amplitude` command with scheduled execution time
+1. Send `MACROCYCLE:seq:baseTime:12|events...` with batched motor events
 2. Record send timestamp
 3. Monitor SECONDARY serial output for execution confirmation
 4. Calculate command delivery latency (send to execution)
@@ -492,7 +492,7 @@ BlueBuzzah uses scheduled execution synchronization (SYNCHRONIZATION_PROTOCOL.md
 
 **Synchronization Flow:**
 ```
-PRIMARY → BUZZ:seq:timestamp:finger|amplitude → SECONDARY
+PRIMARY → MACROCYCLE:seq:baseTime:12|events... → SECONDARY
 SECONDARY: Execute buzz at scheduled time
 ```
 

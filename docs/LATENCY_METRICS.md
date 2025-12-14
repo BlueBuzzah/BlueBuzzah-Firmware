@@ -121,11 +121,12 @@ During initial connection, PRIMARY sends multiple RTT probes to measure BLE late
 
 ### Ongoing RTT (PRIMARY Only)
 
-Tracks BLE round-trip time during therapy via `SYNC_ADJ`/`ACK_SYNC_ADJ` exchanges.
+Tracks BLE round-trip time continuously via PING/PONG exchanges (every 1 second).
 
 - Monitors BLE latency changes over time
 - High variance may indicate degrading sync quality
-- Only available on PRIMARY (initiates sync messages)
+- Only available on PRIMARY (initiates PING messages)
+- Used for adaptive lead time calculation
 
 ## Interpreting Results
 
@@ -164,9 +165,9 @@ Estimated sync error:    ~215 us (SECONDARY later)
 | Symptom | Possible Cause | Solution |
 |---------|----------------|----------|
 | No sync probing data | Devices connected before firmware update | Power cycle both devices |
-| SECONDARY shows 0 buzzes | `isSynced()` returning false | Ensure FIRST_SYNC received |
+| SECONDARY shows 0 buzzes | `isClockSyncValid()` returning false | Wait ~5s for sync samples |
 | High jitter | System interrupts, BLE callbacks | Check for blocking operations |
-| HIGH drift values | Missed scheduled times | Reduce `SYNC_EXECUTION_BUFFER_MS` |
+| HIGH drift values | Missed scheduled times | Verify lead time calculation |
 | LOW confidence | BLE interference | Move devices closer, reduce interference |
 
 ## Technical Details
@@ -177,11 +178,16 @@ Estimated sync error:    ~215 us (SECONDARY later)
 ┌─────────────────────────────────────────────────────────────┐
 │                        PRIMARY                               │
 ├─────────────────────────────────────────────────────────────┤
-│  onSendCommand()                                            │
-│    └─► syncProtocol.waitUntil(executeAt)                    │
+│  TherapyEngine                                              │
+│    └─► Enqueue events to ActivationQueue                    │
+│                                                             │
+│  FreeRTOS Motor Task (Priority 4)                           │
+│    └─► Sleep until ~2ms before event                        │
+│    └─► Busy-wait for sub-ms precision                       │
+│    └─► executeMotorEvent()                                  │
 │    └─► latencyMetrics.recordExecution(drift)                │
 │                                                             │
-│  onBLEMessage(ACK_SYNC_ADJ)                                 │
+│  onBLEMessage(PONG)                                         │
 │    └─► latencyMetrics.recordRtt(rtt)                        │
 │                                                             │
 │  RTT Probing (on connection)                                │
@@ -191,19 +197,28 @@ Estimated sync error:    ~215 us (SECONDARY later)
 ┌─────────────────────────────────────────────────────────────┐
 │                       SECONDARY                              │
 ├─────────────────────────────────────────────────────────────┤
-│  onBLEMessage(BUZZ)                                         │
+│  onBLEMessage(MACROCYCLE)                                   │
 │    └─► syncProtocol.toLocalTime(executeAt)                  │
-│    └─► syncProtocol.waitUntil(localExecTime)                │
+│    └─► Enqueue events to ActivationQueue                    │
+│                                                             │
+│  FreeRTOS Motor Task (Priority 4)                           │
+│    └─► Sleep until ~2ms before event                        │
+│    └─► Busy-wait for sub-ms precision                       │
+│    └─► executeMotorEvent()                                  │
 │    └─► latencyMetrics.recordExecution(drift)                │
 └─────────────────────────────────────────────────────────────┘
 ```
 
 ### Scheduled Execution Flow
 
-1. PRIMARY calculates `executeAt = now + SYNC_EXECUTION_BUFFER_MS`
-2. PRIMARY sends BUZZ command with `executeAt` to SECONDARY
-3. Both devices spin-wait until scheduled time using `waitUntil()`
-4. Both devices record drift after execution
+1. PRIMARY calculates `executeAt = now + adaptiveLeadTime`
+2. PRIMARY sends MACROCYCLE with 12 batched events to SECONDARY
+3. Both devices enqueue events to ActivationQueue
+4. FreeRTOS motor task (Priority 4) processes queue:
+   - Sleeps until ~2ms before event (non-blocking)
+   - Busy-waits final 2ms for sub-millisecond precision
+   - Uses I2C pre-selection for ~100μs activation latency
+5. Both devices record drift after execution
 
 ### Clock Synchronization
 
@@ -214,10 +229,12 @@ localExecTime = syncProtocol.toLocalTime(executeAt);
 // Internally: return executeAt + _currentOffset;
 ```
 
-The offset is calculated when SECONDARY receives `FIRST_SYNC` or `SYNC_ADJ`:
+The offset is calculated using PTP 4-timestamp protocol via PING/PONG exchanges:
 
 ```cpp
-offset = localTime - primaryTime;
+// IEEE 1588-inspired calculation
+offset = ((T2 - T1) + (T3 - T4)) / 2;
+// Where T1=PING sent, T2=PING received, T3=PONG sent, T4=PONG received
 ```
 
 ### Configuration Constants
@@ -257,13 +274,18 @@ Defined in `include/config.h`:
 
 ### Accuracy Bounds
 
-The system cannot measure inter-device latency more precisely than the clock synchronization accuracy:
+The system achieves sub-millisecond bilateral synchronization through:
 
-| Sync Method | Accuracy |
-|-------------|----------|
-| RTT probing (10 samples) | ±2-3ms |
-| Single FIRST_SYNC | ±10-15ms |
-| No sync | Undefined |
+- PTP-style clock synchronization with outlier rejection
+- FreeRTOS motor task with hybrid sleep/busy-wait
+- I2C pre-selection for fast motor activation
+
+| Component | Accuracy |
+|-----------|----------|
+| Clock sync (5+ samples) | ±500μs |
+| Motor task timing | <100μs drift |
+| I2C pre-selected activation | ~100μs |
+| Total bilateral sync | <1ms |
 
 ### Ground Truth Measurement
 

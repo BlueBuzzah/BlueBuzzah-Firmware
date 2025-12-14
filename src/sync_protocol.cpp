@@ -10,6 +10,90 @@
 #include <stdlib.h>
 
 // =============================================================================
+// 64-BIT MICROSECOND TIMESTAMP WITH OVERFLOW TRACKING
+// =============================================================================
+
+// Overflow tracking state (file-scope, single instance)
+// volatile for ISR visibility
+static volatile uint32_t s_lastMicros = 0;
+static volatile uint32_t s_overflowCount = 0;
+
+uint64_t getMicros() {
+    // CRITICAL: This function is called from both main loop and BLE callback context.
+    // Must be interrupt-safe to prevent race conditions that cause false overflow detection.
+    //
+    // Race condition without protection:
+    // 1. Main loop: now = micros() → 1,000,000
+    // 2. ISR fires, calls getMicros(), sets s_lastMicros = 1,000,100
+    // 3. Main loop: 1,000,000 < 1,000,100? YES → false overflow!
+    // 4. s_overflowCount++ → timestamp jumps 71 minutes!
+
+    // Disable interrupts for atomic read-modify-write
+    uint32_t primask = __get_PRIMASK();
+    __disable_irq();
+
+    uint32_t now = micros();
+
+    // Detect overflow: if current value is less than last, we wrapped
+    if (now < s_lastMicros) {
+        s_overflowCount++;
+    }
+    s_lastMicros = now;
+
+    // Capture values before re-enabling interrupts
+    uint32_t overflows = s_overflowCount;
+
+    // Restore interrupt state (only re-enable if they were enabled before)
+    __set_PRIMASK(primask);
+
+    // Combine overflow count (upper 32 bits) with current micros (lower 32 bits)
+    return ((uint64_t)overflows << 32) | now;
+}
+
+void resetMicrosOverflow() {
+    uint32_t primask = __get_PRIMASK();
+    __disable_irq();
+
+    s_lastMicros = 0;
+    s_overflowCount = 0;
+
+    __set_PRIMASK(primask);
+}
+
+// =============================================================================
+// 64-BIT MILLISECOND TIMESTAMP WITH OVERFLOW TRACKING
+// =============================================================================
+
+// Separate overflow tracking state for millis (independent of micros)
+// volatile for ISR visibility
+static volatile uint32_t s_lastMillis = 0;
+static volatile uint32_t s_millisOverflowCount = 0;
+
+uint64_t getMillis64() {
+    // Interrupt-safe 64-bit millis - same pattern as getMicros()
+    // millis() wraps every 49.7 days; this tracks wraps for true 64-bit timestamp
+    uint32_t primask = __get_PRIMASK();
+    __disable_irq();
+
+    uint32_t now = millis();
+
+    // Detect overflow: if current value is less than last, we wrapped
+    if (now < s_lastMillis) {
+        s_millisOverflowCount++;
+    }
+    s_lastMillis = now;
+
+    // Capture values before re-enabling interrupts
+    uint32_t overflows = s_millisOverflowCount;
+
+    // Restore interrupt state
+    __set_PRIMASK(primask);
+
+    // Combine overflow count (upper 32 bits) with current millis (lower 32 bits)
+    return ((uint64_t)overflows << 32) | now;
+}
+
+// =============================================================================
 // GLOBAL SEQUENCE GENERATOR
 // =============================================================================
 
@@ -31,10 +115,11 @@ static const CommandTypeMapping COMMAND_MAPPINGS[] = {
     { SyncCommandType::STOP_SESSION,   "STOP_SESSION" },
     { SyncCommandType::BUZZ,           "BUZZ" },
     { SyncCommandType::DEACTIVATE,     "DEACTIVATE" },
-    { SyncCommandType::HEARTBEAT,      "HEARTBEAT" },
     { SyncCommandType::PING,           "PING" },
     { SyncCommandType::PONG,           "PONG" },
-    { SyncCommandType::DEBUG_FLASH,    "DEBUG_FLASH" }
+    { SyncCommandType::DEBUG_FLASH,    "DEBUG_FLASH" },
+    { SyncCommandType::MACROCYCLE,     "MC" },
+    { SyncCommandType::MACROCYCLE_ACK, "MC_ACK" }
 };
 
 static const size_t COMMAND_MAPPINGS_COUNT = sizeof(COMMAND_MAPPINGS) / sizeof(COMMAND_MAPPINGS[0]);
@@ -44,7 +129,7 @@ static const size_t COMMAND_MAPPINGS_COUNT = sizeof(COMMAND_MAPPINGS) / sizeof(C
 // =============================================================================
 
 SyncCommand::SyncCommand() :
-    _type(SyncCommandType::HEARTBEAT),
+    _type(SyncCommandType::PING),
     _sequenceId(0),
     _timestamp(0),
     _dataCount(0)
@@ -76,19 +161,20 @@ bool SyncCommand::serialize(char* buffer, size_t bufferSize) const {
         return false;
     }
 
-    // Format: COMMAND_TYPE:sequence_id:timestamp
+    // Format: COMMAND_TYPE:sequence_id|timestamp[|data...]
+    // All parameters after the command type are pipe-delimited
     // Note: %llu doesn't work on ARM Arduino, so we print timestamp as two 32-bit parts
     uint32_t tsHigh = (uint32_t)(_timestamp >> 32);
     uint32_t tsLow = (uint32_t)(_timestamp & 0xFFFFFFFF);
     int written;
     if (tsHigh > 0) {
-        written = snprintf(buffer, bufferSize, "%s:%lu:%lu%09lu",
+        written = snprintf(buffer, bufferSize, "%s:%lu|%lu%09lu",
                            typeStr,
                            (unsigned long)_sequenceId,
                            (unsigned long)tsHigh,
                            (unsigned long)tsLow);
     } else {
-        written = snprintf(buffer, bufferSize, "%s:%lu:%lu",
+        written = snprintf(buffer, bufferSize, "%s:%lu|%lu",
                            typeStr,
                            (unsigned long)_sequenceId,
                            (unsigned long)tsLow);
@@ -112,9 +198,9 @@ void SyncCommand::serializeData(char* buffer, size_t bufferSize) const {
         return;
     }
 
-    // Add delimiter before data
+    // Add pipe delimiter before data (consistent with other parameters)
     size_t pos = 0;
-    buffer[pos++] = SYNC_CMD_DELIMITER;
+    buffer[pos++] = SYNC_DATA_DELIMITER;
 
     // Add values only (positional encoding - no keys)
     for (uint8_t i = 0; i < _dataCount && pos < bufferSize - 1; i++) {
@@ -144,48 +230,53 @@ bool SyncCommand::deserialize(const char* message) {
     // Clear current data
     clearData();
 
-    // Make a copy for parsing header fields (type:seq:timestamp)
+    // Make a copy for parsing
     char buffer[MESSAGE_BUFFER_SIZE];
     strncpy(buffer, message, sizeof(buffer) - 1);
     buffer[sizeof(buffer) - 1] = '\0';
 
-    // Find data payload position in original message (after 3rd colon)
-    // Format: COMMAND:seq:timestamp:data
-    const char* dataStart = nullptr;
-    int colonCount = 0;
-    for (const char* p = message; *p; p++) {
-        if (*p == ':') {
-            colonCount++;
-            if (colonCount == 3) {
-                dataStart = p + 1;  // Position after 3rd colon
-                break;
-            }
-        }
-    }
-
-    // Parse command type (first token)
-    char* token = strtok(buffer, ":");
-    if (!token || !parseCommandType(token)) {
+    // New format: COMMAND:seq|timestamp|param|param|...
+    // Find the colon that separates command type from parameters
+    char* colonPos = strchr(buffer, ':');
+    if (!colonPos) {
         return false;
     }
 
-    // Parse sequence ID (second token)
-    token = strtok(nullptr, ":");
+    // Null-terminate command type and parse it
+    *colonPos = '\0';
+    if (!parseCommandType(buffer)) {
+        return false;
+    }
+
+    // Everything after the colon is pipe-delimited: seq|timestamp|data...
+    char* params = colonPos + 1;
+    if (!params || *params == '\0') {
+        return false;  // Need at least seq|timestamp
+    }
+
+    // Parse sequence ID (first pipe-delimited token)
+    char* token = strtok(params, "|");
     if (!token) {
         return false;
     }
     _sequenceId = strtoul(token, nullptr, 10);
 
-    // Parse timestamp (third token)
-    token = strtok(nullptr, ":");
+    // Parse timestamp (second pipe-delimited token)
+    token = strtok(nullptr, "|");
     if (!token) {
         return false;
     }
     _timestamp = strtoull(token, nullptr, 10);
 
-    // Parse data payload if present (found via colon counting above)
-    if (dataStart && strlen(dataStart) > 0) {
-        parseData(dataStart);
+    // Parse remaining pipe-delimited data parameters
+    uint8_t index = 0;
+    char indexKey[4];
+    token = strtok(nullptr, "|");
+    while (token && _dataCount < SYNC_MAX_DATA_PAIRS) {
+        snprintf(indexKey, sizeof(indexKey), "%d", index);
+        setData(indexKey, token);
+        index++;
+        token = strtok(nullptr, "|");
     }
 
     return true;
@@ -282,6 +373,12 @@ bool SyncCommand::setData(const char* key, int32_t value) {
     return setData(key, valueStr);
 }
 
+bool SyncCommand::setDataUnsigned(const char* key, uint32_t value) {
+    char valueStr[16];
+    snprintf(valueStr, sizeof(valueStr), "%lu", (unsigned long)value);
+    return setData(key, valueStr);
+}
+
 const char* SyncCommand::getData(const char* key) const {
     for (uint8_t i = 0; i < _dataCount; i++) {
         if (strcmp(_data[i].key, key) == 0) {
@@ -297,6 +394,15 @@ int32_t SyncCommand::getDataInt(const char* key, int32_t defaultValue) const {
         return defaultValue;
     }
     return strtol(value, nullptr, 10);
+}
+
+uint32_t SyncCommand::getDataUnsigned(const char* key, uint32_t defaultValue) const {
+    const char* value = getData(key);
+    if (!value) {
+        return defaultValue;
+    }
+    // Use strtoul for unsigned parsing - avoids sign extension when values > 2^31
+    return static_cast<uint32_t>(strtoul(value, nullptr, 10));
 }
 
 bool SyncCommand::hasData(const char* key) const {
@@ -315,10 +421,6 @@ void SyncCommand::clearData() {
 // SYNC COMMAND - FACTORY METHODS
 // =============================================================================
 
-SyncCommand SyncCommand::createHeartbeat(uint32_t sequenceId) {
-    return SyncCommand(SyncCommandType::HEARTBEAT, sequenceId);
-}
-
 SyncCommand SyncCommand::createStartSession(uint32_t sequenceId) {
     return SyncCommand(SyncCommandType::START_SESSION, sequenceId);
 }
@@ -333,37 +435,6 @@ SyncCommand SyncCommand::createResumeSession(uint32_t sequenceId) {
 
 SyncCommand SyncCommand::createStopSession(uint32_t sequenceId) {
     return SyncCommand(SyncCommandType::STOP_SESSION, sequenceId);
-}
-
-SyncCommand SyncCommand::createBuzz(uint32_t sequenceId, uint8_t finger, uint8_t amplitude, uint32_t durationMs, uint16_t frequencyHz) {
-    SyncCommand cmd(SyncCommandType::BUZZ, sequenceId);
-    cmd.setData("0", (int32_t)finger);
-    cmd.setData("1", (int32_t)amplitude);
-    cmd.setData("2", (int32_t)durationMs);
-    cmd.setData("3", (int32_t)frequencyHz);
-    return cmd;
-}
-
-SyncCommand SyncCommand::createBuzzWithTime(uint32_t sequenceId, uint8_t finger, uint8_t amplitude, uint32_t durationMs, uint16_t frequencyHz, uint64_t activateTime) {
-    SyncCommand cmd(SyncCommandType::BUZZ, sequenceId);
-    cmd.setData("0", (int32_t)finger);
-    cmd.setData("1", (int32_t)amplitude);
-    cmd.setData("2", (int32_t)durationMs);
-    cmd.setData("3", (int32_t)frequencyHz);
-
-    // Store activation time (for <71 minute uptime, only low 32 bits needed)
-    uint32_t timeHigh = (uint32_t)(activateTime >> 32);
-    uint32_t timeLow = (uint32_t)(activateTime & 0xFFFFFFFF);
-
-    if (timeHigh == 0) {
-        // Simple format: finger|amp|dur|freq|activateTimeLow
-        cmd.setData("4", (int32_t)timeLow);
-    } else {
-        // Full 64-bit: finger|amp|dur|freq|timeHigh|timeLow
-        cmd.setData("4", (int32_t)timeHigh);
-        cmd.setData("5", (int32_t)timeLow);
-    }
-    return cmd;
 }
 
 SyncCommand SyncCommand::createDeactivate(uint32_t sequenceId) {
@@ -387,22 +458,24 @@ SyncCommand SyncCommand::createPong(uint32_t sequenceId) {
 SyncCommand SyncCommand::createPongWithTimestamps(uint32_t sequenceId, uint64_t t2, uint64_t t3) {
     SyncCommand cmd(SyncCommandType::PONG, sequenceId);
     // Store T2 and T3 as data payload (ARM can't handle %llu, so split into high/low)
+    // CRITICAL: Use setDataUnsigned() for all parts - timestamps are never negative
+    // Using signed setData() causes sign inversion when bit 31 is set (uptime > 35 min)
     uint32_t t2High = (uint32_t)(t2 >> 32);
     uint32_t t2Low = (uint32_t)(t2 & 0xFFFFFFFF);
     uint32_t t3High = (uint32_t)(t3 >> 32);
     uint32_t t3Low = (uint32_t)(t3 & 0xFFFFFFFF);
 
     // For simplicity, if high bits are 0 (typical for <71 minute uptime), just use low bits
-    // Format: T2Low|T3Low (or T2High:T2Low|T3High:T3Low if high bits needed)
+    // Format: T2Low|T3Low (or T2High|T2Low|T3High|T3Low if high bits needed)
     if (t2High == 0 && t3High == 0) {
-        cmd.setData("0", (int32_t)t2Low);
-        cmd.setData("1", (int32_t)t3Low);
+        cmd.setDataUnsigned("0", t2Low);
+        cmd.setDataUnsigned("1", t3Low);
     } else {
         // Full 64-bit encoding: T2High|T2Low|T3High|T3Low
-        cmd.setData("0", (int32_t)t2High);
-        cmd.setData("1", (int32_t)t2Low);
-        cmd.setData("2", (int32_t)t3High);
-        cmd.setData("3", (int32_t)t3Low);
+        cmd.setDataUnsigned("0", t2High);
+        cmd.setDataUnsigned("1", t2Low);
+        cmd.setDataUnsigned("2", t3High);
+        cmd.setDataUnsigned("3", t3Low);
     }
     return cmd;
 }
@@ -414,16 +487,185 @@ SyncCommand SyncCommand::createDebugFlash(uint32_t sequenceId) {
 SyncCommand SyncCommand::createDebugFlashWithTime(uint32_t sequenceId, uint64_t flashTime) {
     SyncCommand cmd(SyncCommandType::DEBUG_FLASH, sequenceId);
     // Store activation time in data payload
+    // CRITICAL: Use setDataUnsigned() - timestamps are never negative
+    // Using signed setData() causes sign inversion when bit 31 is set (uptime > 35 min)
     uint32_t timeHigh = (uint32_t)(flashTime >> 32);
     uint32_t timeLow = (uint32_t)(flashTime & 0xFFFFFFFF);
 
     if (timeHigh == 0) {
-        cmd.setData("0", (int32_t)timeLow);
+        cmd.setDataUnsigned("0", timeLow);
     } else {
-        cmd.setData("0", (int32_t)timeHigh);
-        cmd.setData("1", (int32_t)timeLow);
+        cmd.setDataUnsigned("0", timeHigh);
+        cmd.setDataUnsigned("1", timeLow);
     }
     return cmd;
+}
+
+SyncCommand SyncCommand::createMacrocycleAck(uint32_t sequenceId) {
+    return SyncCommand(SyncCommandType::MACROCYCLE_ACK, sequenceId);
+}
+
+// =============================================================================
+// MACROCYCLE SERIALIZATION (all-text format for BLE compatibility)
+// =============================================================================
+
+bool SyncCommand::serializeMacrocycle(char* buffer, size_t bufferSize, const Macrocycle& macrocycle) {
+    if (!buffer || bufferSize < 200) {
+        return false;
+    }
+
+    // Compact format V4: MC:seq|baseMs|offHigh|offLow|dur|count|d,f,a[,fo]|...
+    // - baseMs: baseTime in MILLISECONDS (uint32, fits 49 days)
+    // - offHigh/offLow: clockOffset split into two 32-bit parts (supports any uptime diff)
+    // This avoids 64-bit printf issues on ARM and keeps message short
+
+    // Convert baseTime from microseconds to milliseconds for transmission
+    uint32_t baseMs = (uint32_t)(macrocycle.baseTime / 1000);
+
+    // Split 64-bit offset into high/low 32-bit parts for ARM compatibility
+    // Offset can exceed ±35 minutes when devices have different uptimes
+    int32_t offHigh = (int32_t)(macrocycle.clockOffset >> 32);
+    uint32_t offLow = (uint32_t)(macrocycle.clockOffset & 0xFFFFFFFF);
+
+    // Format: MC:seq|baseMs|offHigh|offLow|dur|count
+    int written = snprintf(buffer, bufferSize, "MC:%lu|%lu|%ld|%lu|%u|%u",
+                           (unsigned long)macrocycle.sequenceId,
+                           (unsigned long)baseMs,
+                           (long)offHigh,
+                           (unsigned long)offLow,
+                           macrocycle.durationMs,
+                           macrocycle.eventCount);
+
+    if (written < 0 || (size_t)written >= bufferSize) {
+        return false;
+    }
+
+    // Append events: |deltaTimeMs,finger,amplitude[,freqOffset]
+    // Omit freqOffset when 0 for compression
+    for (uint8_t i = 0; i < macrocycle.eventCount && (size_t)written < bufferSize - 15; i++) {
+        const MacrocycleEvent& evt = macrocycle.events[i];
+        int evtWritten;
+
+        if (evt.freqOffset != 0) {
+            evtWritten = snprintf(buffer + written, bufferSize - written,
+                                  "|%u,%u,%u,%u",
+                                  evt.deltaTimeMs, evt.finger, evt.amplitude, evt.freqOffset);
+        } else {
+            evtWritten = snprintf(buffer + written, bufferSize - written,
+                                  "|%u,%u,%u",
+                                  evt.deltaTimeMs, evt.finger, evt.amplitude);
+        }
+
+        if (evtWritten < 0) {
+            return false;
+        }
+        written += evtWritten;
+    }
+
+    return true;
+}
+
+size_t SyncCommand::getMacrocycleSerializedSize(const Macrocycle& macrocycle) {
+    // Header: "MC:seq|baseTime|offset|dur|count" = ~50 bytes
+    // Each event: "|d,f,a" or "|d,f,a,fo" = ~10-12 bytes
+    return 50 + (macrocycle.eventCount * 12);
+}
+
+bool SyncCommand::deserializeMacrocycle(const char* message, size_t messageLen, Macrocycle& macrocycle) {
+    (void)messageLen;  // Not needed for text format
+
+    if (!message || strlen(message) < 20) {
+        return false;
+    }
+
+    // Clean format V4: MC:seq|baseMs|offHigh|offLow|dur|count|d,f,a[,fo]|...
+    // - baseMs: baseTime in milliseconds (convert to microseconds)
+    // - offHigh/offLow: clockOffset split into two 32-bit parts
+    const char* ptr = message;
+
+    // Skip "MC:"
+    if (strncmp(ptr, "MC:", 3) != 0) {
+        return false;
+    }
+    ptr += 3;
+
+    char* endptr;
+
+    // Parse sequence ID
+    macrocycle.sequenceId = strtoul(ptr, &endptr, 10);
+    if (*endptr != '|') return false;
+    ptr = endptr + 1;
+
+    // Parse baseMs and convert to microseconds
+    uint32_t baseMs = strtoul(ptr, &endptr, 10);
+    macrocycle.baseTime = (uint64_t)baseMs * 1000;  // ms → μs
+    if (*endptr != '|') return false;
+    ptr = endptr + 1;
+
+    // Parse clockOffset high 32 bits (signed)
+    int32_t offHigh = strtol(ptr, &endptr, 10);
+    if (*endptr != '|') return false;
+    ptr = endptr + 1;
+
+    // Parse clockOffset low 32 bits (unsigned)
+    uint32_t offLow = strtoul(ptr, &endptr, 10);
+    if (*endptr != '|') return false;
+    ptr = endptr + 1;
+
+    // Reconstruct 64-bit signed offset
+    // SP-C2 fix: Explicit cast to uint64_t for clean bit operations with signed offset
+    macrocycle.clockOffset = ((int64_t)offHigh << 32) | static_cast<uint64_t>(offLow);
+
+    // Parse durationMs
+    macrocycle.durationMs = (uint16_t)strtoul(ptr, &endptr, 10);
+    if (*endptr != '|') return false;
+    ptr = endptr + 1;
+
+    // Parse event count
+    macrocycle.eventCount = (uint8_t)strtoul(ptr, &endptr, 10);
+    if (macrocycle.eventCount > MACROCYCLE_MAX_EVENTS) {
+        macrocycle.eventCount = MACROCYCLE_MAX_EVENTS;
+    }
+
+    // Parse events: |deltaTimeMs,finger,amplitude[,freqOffset]
+    // freqOffset is optional (defaults to 0 if not present)
+    for (uint8_t i = 0; i < macrocycle.eventCount; i++) {
+        // Skip to next pipe delimiter
+        if (*endptr != '|') {
+            macrocycle.eventCount = i;  // Truncate to parsed events
+            break;
+        }
+        ptr = endptr + 1;
+
+        MacrocycleEvent& evt = macrocycle.events[i];
+
+        // Parse deltaTimeMs
+        evt.deltaTimeMs = (uint16_t)strtoul(ptr, &endptr, 10);
+        if (*endptr != ',') { macrocycle.eventCount = i; break; }
+        ptr = endptr + 1;
+
+        // Parse finger
+        evt.finger = (uint8_t)strtoul(ptr, &endptr, 10);
+        if (*endptr != ',') { macrocycle.eventCount = i; break; }
+        ptr = endptr + 1;
+
+        // Parse amplitude
+        evt.amplitude = (uint8_t)strtoul(ptr, &endptr, 10);
+
+        // Use duration from header
+        evt.durationMs = macrocycle.durationMs;
+
+        // freqOffset is optional - check if present
+        if (*endptr == ',') {
+            ptr = endptr + 1;
+            evt.freqOffset = (uint8_t)strtoul(ptr, &endptr, 10);
+        } else {
+            evt.freqOffset = 0;  // Default when omitted
+        }
+        // Note: endptr now points to '|' or end of string for next iteration
+    }
+
+    return macrocycle.eventCount > 0;
 }
 
 // =============================================================================
@@ -501,7 +743,7 @@ int64_t SimpleSyncProtocol::calculatePTPOffset(uint64_t t1, uint64_t t2, uint64_
 void SimpleSyncProtocol::addOffsetSample(int64_t offset) {
     // Add sample to circular buffer
     _offsetSamples[_offsetSampleIndex] = offset;
-    _offsetSampleIndex = (_offsetSampleIndex + 1) % OFFSET_SAMPLE_COUNT;
+    _offsetSampleIndex = static_cast<uint8_t>((_offsetSampleIndex + 1) % OFFSET_SAMPLE_COUNT);
 
     if (_offsetSampleCount < OFFSET_SAMPLE_COUNT) {
         _offsetSampleCount++;
@@ -509,7 +751,8 @@ void SimpleSyncProtocol::addOffsetSample(int64_t offset) {
 
     // Compute median when we have enough samples
     if (_offsetSampleCount >= SYNC_MIN_VALID_SAMPLES) {
-        // Copy samples to temp array for sorting
+        // Phase 5B: Outlier rejection using MAD (Median Absolute Deviation)
+        // Step 1: Compute preliminary median from all samples
         int64_t sorted[OFFSET_SAMPLE_COUNT];
         for (uint8_t i = 0; i < _offsetSampleCount; i++) {
             sorted[i] = _offsetSamples[i];
@@ -518,7 +761,7 @@ void SimpleSyncProtocol::addOffsetSample(int64_t offset) {
         // Simple insertion sort (small array, O(n^2) is fine)
         for (uint8_t i = 1; i < _offsetSampleCount; i++) {
             int64_t key = sorted[i];
-            int8_t j = i - 1;
+            int8_t j = static_cast<int8_t>(i - 1);
             while (j >= 0 && sorted[j] > key) {
                 sorted[j + 1] = sorted[j];
                 j--;
@@ -526,14 +769,53 @@ void SimpleSyncProtocol::addOffsetSample(int64_t offset) {
             sorted[j + 1] = key;
         }
 
-        // Get median
+        // Get preliminary median
+        int64_t prelimMedian;
         if (_offsetSampleCount % 2 == 0) {
-            // Even count: average of two middle values
             uint8_t mid = _offsetSampleCount / 2;
-            _medianOffset = (sorted[mid - 1] + sorted[mid]) / 2;
+            prelimMedian = (sorted[mid - 1] + sorted[mid]) / 2;
         } else {
-            // Odd count: middle value
-            _medianOffset = sorted[_offsetSampleCount / 2];
+            prelimMedian = sorted[_offsetSampleCount / 2];
+        }
+
+        // Step 2: Filter outliers (deviation > 5ms from preliminary median)
+        // This removes samples affected by BLE retransmissions or interference
+        constexpr int64_t OUTLIER_THRESHOLD_US = 5000;  // 5ms
+        int64_t filtered[OFFSET_SAMPLE_COUNT];
+        uint8_t filteredCount = 0;
+
+        for (uint8_t i = 0; i < _offsetSampleCount; i++) {
+            int64_t deviation = _offsetSamples[i] - prelimMedian;
+            if (deviation < 0) deviation = -deviation;  // abs()
+
+            if (deviation <= OUTLIER_THRESHOLD_US) {
+                filtered[filteredCount++] = _offsetSamples[i];
+            }
+        }
+
+        // Step 3: Compute final median from filtered samples
+        if (filteredCount >= SYNC_MIN_VALID_SAMPLES) {
+            // Sort filtered samples
+            for (uint8_t i = 1; i < filteredCount; i++) {
+                int64_t key = filtered[i];
+                int8_t j = static_cast<int8_t>(i - 1);
+                while (j >= 0 && filtered[j] > key) {
+                    filtered[j + 1] = filtered[j];
+                    j--;
+                }
+                filtered[j + 1] = key;
+            }
+
+            // Get final median from filtered samples
+            if (filteredCount % 2 == 0) {
+                uint8_t mid = filteredCount / 2;
+                _medianOffset = (filtered[mid - 1] + filtered[mid]) / 2;
+            } else {
+                _medianOffset = filtered[filteredCount / 2];
+            }
+        } else {
+            // Not enough non-outlier samples, use preliminary median
+            _medianOffset = prelimMedian;
         }
 
         _clockSyncValid = true;
@@ -572,7 +854,9 @@ void SimpleSyncProtocol::updateOffsetEMA(int64_t offset) {
 
     // Store for next drift calculation
     _lastMeasuredOffset = offset;
-    _lastOffsetTime = now;
+    // SP-C4 fix: Capture fresh millis() just before storing to avoid stale timestamp
+    // (original captured 'now' at function start, creating time gap that causes drift errors)
+    _lastOffsetTime = millis();
 
     // EMA: new = α * measured + (1-α) * previous
     _medianOffset = (SYNC_OFFSET_EMA_ALPHA_NUM * offset +
@@ -590,8 +874,29 @@ int64_t SimpleSyncProtocol::getCorrectedOffset() const {
     // Apply drift compensation based on time since last measurement
     if (_lastOffsetTime > 0) {
         uint32_t elapsed = millis() - _lastOffsetTime;
-        int64_t driftCorrection = (int64_t)(_driftRateUsPerMs * (float)elapsed);
-        return _medianOffset + driftCorrection;
+
+        // SAFETY: Cap elapsed time to prevent runaway drift correction
+        // If we haven't had a sync update in >10s, something is wrong
+        // Limit to 10 seconds max to prevent overflow
+        if (elapsed > 10000) {
+            elapsed = 10000;
+        }
+
+        // SAFETY: Cap drift rate to reasonable bounds (±100 ppm = ±0.1 µs/ms)
+        // Crystal oscillators typically drift ±20-50 ppm
+        // Anything larger indicates bad measurements
+        float cappedDriftRate = _driftRateUsPerMs;
+        if (cappedDriftRate > 0.1f) cappedDriftRate = 0.1f;
+        if (cappedDriftRate < -0.1f) cappedDriftRate = -0.1f;
+
+        int64_t driftCorrection = (int64_t)(cappedDriftRate * (float)elapsed);
+
+        // Note: Offset can be large when devices boot at different times
+        // The MACROCYCLE handler validates ±30 second reasonableness
+        // We only apply drift correction, no artificial cap here
+        int64_t result = _medianOffset + driftCorrection;
+
+        return result;
     }
 
     return _medianOffset;
@@ -624,28 +929,41 @@ bool SimpleSyncProtocol::addOffsetSampleWithQuality(int64_t offset, uint32_t rtt
 uint32_t SimpleSyncProtocol::calculateAdaptiveLeadTime() const {
     // If not enough samples, use conservative default
     if (_sampleCount < MIN_SAMPLES) {
-        return SYNC_LEAD_TIME_US;  // Default 50ms
+        return SYNC_LEAD_TIME_US + SYNC_PROCESSING_OVERHEAD_US;
+        // Default 50ms + 20ms processing = 70ms
     }
 
-    // Calculate lead time based on RTT statistics:
-    // Lead time = RTT + 3σ margin (ensures message arrives before target time)
+    // Calculate lead time based on RTT statistics + processing overhead:
+    // Lead time = RTT + 3σ margin + processing overhead
+    //
+    // Processing overhead accounts for:
+    // - BLE callback processing (~5ms)
+    // - Message deserialization (~5ms)
+    // - Event staging in motorEventBuffer (~5ms)
+    // - Queue forwarding to activationQueue (~5ms)
+    // Total: ~20ms typical
+    //
+    // Note: MACROCYCLE_TRANSMISSION_OVERHEAD was removed after fixing the
+    // DEBUG_FLASH blocking bug. The old delayMicroseconds() call blocked
+    // BLE callback processing for ~300ms, making MACROCYCLE appear to take
+    // much longer to transmit than it actually does. Actual MACROCYCLE BLE
+    // transmission is similar to PING (~40-50ms one-way).
     //
     // Note: _smoothedLatencyUs is one-way latency, so RTT = 2 * _smoothedLatencyUs
     // _rttVariance is already one-way variance, so RTT variance scale = 2 * _rttVariance
     uint32_t avgRTT = _smoothedLatencyUs * 2;  // RTT = 2 * one-way
     uint32_t margin = _rttVariance * 6;        // 3-sigma * 2 (one-way to RTT scale)
 
-    // Lead time = RTT + margin (NOT 2x RTT - that was a bug!)
-    uint32_t leadTime = avgRTT + margin;
+    // Lead time = RTT + margin + processing overhead
+    uint32_t leadTime = avgRTT + margin + SYNC_PROCESSING_OVERHEAD_US;
 
     // Clamp to reasonable bounds:
-    // - Minimum 15ms: ensures enough time for BLE connection event + transmission
-    // - Maximum 50ms: MUST be less than TIME_ON (100ms) to prevent deactivation
-    //   before activation. Using 50ms gives 50ms buffer for activation timing.
-    if (leadTime < 15000) {
-        leadTime = 15000;
-    } else if (leadTime > 50000) {
-        leadTime = 50000;
+    // - Minimum 65ms: Covers RTT (~40ms) + variance (~5ms) + processing (20ms)
+    // - Maximum 150ms: Conservative upper bound for worst-case BLE conditions
+    if (leadTime < 65000) {
+        leadTime = 65000;
+    } else if (leadTime > 150000) {
+        leadTime = 150000;
     }
 
     return leadTime;

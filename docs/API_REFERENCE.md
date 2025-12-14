@@ -322,8 +322,9 @@ Current firmware version following semantic versioning.
 #define CONNECTION_TIMEOUT_SEC 30
 // BLE connection establishment timeout in seconds
 
-#define BLE_INTERVAL_MS 7.5f
-// BLE connection interval in milliseconds for sub-10ms synchronization
+#define BLE_INTERVAL_MIN_MS 8
+#define BLE_INTERVAL_MAX_MS 12
+// BLE connection interval range (6-9 BLE units, 8-12ms)
 
 #define SYNC_INTERVAL_MS 1000
 // Periodic synchronization interval in milliseconds (SYNC_ADJ messages)
@@ -331,11 +332,11 @@ Current firmware version following semantic versioning.
 #define COMMAND_TIMEOUT_MS 5000
 // General BLE command timeout in milliseconds
 
-#define HEARTBEAT_INTERVAL_MS 2000
-// Heartbeat message interval in milliseconds
+#define KEEPALIVE_INTERVAL_MS 1000
+// PING/PONG interval in milliseconds (unified keepalive + clock sync, all states)
 
-#define HEARTBEAT_TIMEOUT_MS 6000
-// Heartbeat timeout (3 missed heartbeats = connection lost)
+#define KEEPALIVE_TIMEOUT_MS 6000
+// SECONDARY keepalive timeout (6 missed PINGs = connection lost)
 ```
 
 ---
@@ -684,14 +685,21 @@ public:
     bool begin();
 
     // Motor control
-    void buzzFinger(uint8_t finger, uint8_t amplitude);
-    void stopFinger(uint8_t finger);
+    void activate(uint8_t finger, uint8_t amplitude);
+    void deactivate(uint8_t finger);
     void stopAllMotors();
     bool isMotorActive(uint8_t finger) const;
 
     // DRV2605 configuration
     void setFrequency(uint8_t finger, uint16_t frequencyHz);
     void setActuatorType(bool useLRA);
+
+    // I2C Pre-Selection (Latency Optimization)
+    // Moves mux selection off critical path for ~100μs vs ~500μs activation
+    bool selectChannelPersistent(uint8_t finger);  // Opens mux channel, keeps it open
+    void setFrequencyDirect(uint8_t finger, uint16_t frequencyHz);  // Sets freq on pre-selected channel
+    void activatePreSelected(uint8_t finger, uint8_t amplitude);  // Fast activation (~100μs)
+    int8_t getPreSelectedFinger() const;  // Returns currently pre-selected finger (-1 if none)
 
     // Battery monitoring
     float getBatteryVoltage();
@@ -708,6 +716,7 @@ private:
     Adafruit_TCA9548A _tca;
     Adafruit_DRV2605 _drv[4];
     bool _motorActive[4];
+    int8_t _preSelectedFinger;  // Currently pre-selected finger (-1 if none)
 
     void configureDRV2605(Adafruit_DRV2605& driver);
 };
@@ -725,10 +734,16 @@ if (!hardware.begin()) {
     while (true) { delay(1000); }
 }
 
-// Activate motor
-hardware.buzzFinger(0, 100);  // Index finger at ~78% (100/127)
+// Activate motor (standard path)
+hardware.activate(0, 100);  // Index finger at ~78% (100/127)
 delay(100);
-hardware.stopFinger(0);
+hardware.deactivate(0);
+
+// Fast path using I2C pre-selection (for FreeRTOS motor task)
+hardware.selectChannelPersistent(0);  // Pre-select channel
+hardware.setFrequencyDirect(0, 250);  // Set frequency
+// ... later, when event is due:
+hardware.activatePreSelected(0, 100);  // ~100μs vs ~500μs
 
 // Stop all motors
 hardware.stopAllMotors();
@@ -1115,7 +1130,7 @@ public:
     bool sendStopSession();
     bool sendBuzz(uint8_t finger, uint8_t amplitude);
     bool sendDeactivate();
-    bool sendHeartbeat();
+    bool sendPing();  // Unified keepalive + clock sync
 
     // Command receiving (SECONDARY)
     bool hasCommand() const;
@@ -1126,13 +1141,13 @@ public:
     void setCommandCallback(CommandCallback cb);
 
     // Status
-    uint32_t getLastHeartbeatTime() const;
-    bool isHeartbeatTimeout() const;
+    uint32_t getLastKeepaliveTime() const;
+    bool isKeepaliveTimeout() const;
 
 private:
     BLEManager& _bleManager;
     DeviceRole _role;
-    uint32_t _lastHeartbeat;
+    uint32_t _lastKeepalive;
     CommandCallback _callback;
 
     void formatMessage(char* buffer, size_t size,
@@ -1153,15 +1168,19 @@ SYNC:<command>:<key1>|<val1>|<key2>|<val2>|...
 | PAUSE_SESSION  | P->S      | Pause current session     |
 | RESUME_SESSION | P->S      | Resume paused session     |
 | STOP_SESSION   | P->S      | Stop session              |
-| BUZZ           | P->S      | Trigger motor activation  |
+| MACROCYCLE     | P->S      | Batch of 12 motor events  |
+| MACROCYCLE_ACK | S->P      | Macrocycle acknowledgment |
 | DEACTIVATE     | P->S      | Stop motor activation     |
-| HEARTBEAT      | P->S      | Connection keepalive      |
+| PING           | P->S      | Keepalive + clock sync    |
+| PONG           | S->P      | Keepalive + clock sync    |
 
 **Examples:**
 ```
-SYNC:START_SESSION:duration_sec|7200|pattern_type|rndp|jitter_percent|235
-BUZZ:42:1234567890:2|100
-SYNC:HEARTBEAT:ts|1234567890
+START_SESSION:1|1234567890
+MC:42|5000000|12|100,0,100,100,235|67,1,100,100,235|...
+PING:1|1234567890
+PONG:1|0|1234567900|1234567950
+MC_ACK:42
 ```
 
 **Usage:**
@@ -1172,8 +1191,8 @@ SyncProtocol sync(bleManager, DeviceRole::PRIMARY);
 
 // Callback for received commands (SECONDARY)
 void onSyncCommand(const char* command, const char* params) {
-    if (strcmp(command, "BUZZ") == 0) {
-        // Parse params and execute buzz
+    if (strcmp(command, "MACROCYCLE") == 0) {
+        // Parse params and execute macrocycle batch
     }
 }
 sync.setCommandCallback(onSyncCommand);
@@ -1181,11 +1200,11 @@ sync.setCommandCallback(onSyncCommand);
 // Send execute command (PRIMARY)
 sync.sendBuzz(2, 100);  // Finger 2, amplitude 100
 
-// Send heartbeat (PRIMARY, call every 2 seconds)
-sync.sendHeartbeat();
+// Send PING for keepalive + clock sync (PRIMARY, call every 1 second)
+sync.sendPing();
 
-// Check heartbeat timeout (SECONDARY)
-if (sync.isHeartbeatTimeout()) {
+// Check keepalive timeout (SECONDARY)
+if (sync.isKeepaliveTimeout()) {
     handleConnectionLost();
 }
 ```
@@ -1470,17 +1489,15 @@ void loop() {
 }
 
 void runPrimaryLoop() {
-    static uint32_t lastHeartbeat = 0;
+    static uint32_t lastPing = 0;
 
     // Update therapy engine
     therapyEngine->update();
 
-    // Send heartbeat every 2 seconds during therapy
-    if (stateMachine.currentState() == TherapyState::RUNNING) {
-        if (millis() - lastHeartbeat >= HEARTBEAT_INTERVAL_MS) {
-            syncProtocol->sendHeartbeat();
-            lastHeartbeat = millis();
-        }
+    // Send unified keepalive + clock sync PING (every 1s, all states)
+    if (millis() - lastPing >= KEEPALIVE_INTERVAL_MS) {
+        sendPing();  // PING provides both keepalive and clock sync
+        lastPing = millis();
     }
 
     // Update LED
@@ -1489,8 +1506,8 @@ void runPrimaryLoop() {
 }
 
 void runSecondaryLoop() {
-    // Check heartbeat timeout
-    if (syncProtocol->isHeartbeatTimeout()) {
+    // Check keepalive timeout (6s without PING/MACROCYCLE)
+    if (syncProtocol->isKeepaliveTimeout()) {
         hardware.stopAllMotors();
         stateMachine.forceState(TherapyState::CONNECTION_LOST);
         ledController.indicateConnectionLost();
@@ -1631,9 +1648,9 @@ enum class Result : uint8_t {
 };
 
 // Example usage
-Result result = hardware.buzzFinger(finger, amplitude);
+Result result = hardware.activate(finger, amplitude);
 if (result != Result::OK) {
-    Serial.printf("[ERROR] buzzFinger failed: %d\n", (int)result);
+    Serial.printf("[ERROR] activate failed: %d\n", (int)result);
 }
 
 // BLE error response format

@@ -230,7 +230,7 @@ void LatencyMetrics::printReport() const {
 
         // Late percentage
         float latePercent = (sampleCount > 0) ?
-            (100.0f * lateCount / sampleCount) : 0.0f;
+            (100.0f * static_cast<float>(lateCount) / static_cast<float>(sampleCount)) : 0.0f;
         Serial.printf("  Late (>%lu us): %lu (%.1f%%)\n",
                       (unsigned long)LATENCY_LATE_THRESHOLD_US,
                       (unsigned long)lateCount,

@@ -20,6 +20,7 @@
 #include <Adafruit_DRV2605.h>
 #include <Adafruit_NeoPixel.h>
 
+#include "rtos.h"  // FreeRTOS for I2C mutex
 #include "config.h"
 #include "types.h"
 
@@ -112,12 +113,64 @@ public:
      */
     uint8_t getEnabledCount() const;
 
+    // =========================================================================
+    // PRE-SELECTION OPTIMIZATION METHODS
+    // =========================================================================
+    // These methods support I2C latency optimization by allowing channel
+    // and frequency to be set BEFORE the activation time, leaving only
+    // the RTP write at the critical moment.
+
+    /**
+     * @brief Select mux channel and keep it open (for pre-selection)
+     * @param finger Finger index (0-3)
+     * @return true if channel selected successfully
+     *
+     * Unlike selectChannel(), this does NOT close the channel after use.
+     * Call closeChannels() explicitly when done with pre-selected operations.
+     */
+    bool selectChannelPersistent(uint8_t finger);
+
+    /**
+     * @brief Set frequency without mux open/close (channel must be pre-selected)
+     * @param finger Finger index (0-3)
+     * @param frequencyHz Frequency in Hz (150-250)
+     * @return Result code indicating success or error
+     *
+     * PRECONDITION: Channel must already be selected via selectChannelPersistent()
+     */
+    Result setFrequencyDirect(uint8_t finger, uint16_t frequencyHz);
+
+    /**
+     * @brief Activate motor without mux operations (channel must be pre-selected)
+     * @param finger Finger index (0-3)
+     * @param amplitude Amplitude percentage (0-100)
+     * @return Result code indicating success or error
+     *
+     * PRECONDITION: Channel must already be selected via selectChannelPersistent()
+     * This is the minimal I2C path: only writes RTP value to DRV2605.
+     */
+    Result activatePreSelected(uint8_t finger, uint8_t amplitude);
+
+    /**
+     * @brief Close all mux channels (use after pre-selected operations)
+     */
+    void closeAllChannels();
+
+    /**
+     * @brief Check which finger has mux channel pre-selected
+     * @return Finger index (0-3) or -1 if none pre-selected
+     */
+    int8_t getPreSelectedFinger() const { return _preSelectedFinger; }
+
 private:
     TCA9548A _tca;
     Adafruit_DRV2605 _drv[MAX_ACTUATORS];
     bool _fingerActive[MAX_ACTUATORS];
     bool _fingerEnabled[MAX_ACTUATORS];
     bool _initialized;
+    int8_t _preSelectedFinger;  // Tracks which finger has mux channel pre-selected (-1 = none)
+    uint16_t _lastFrequency[MAX_ACTUATORS] = {0};  // Cached frequency per finger (skip I2C if unchanged)
+    SemaphoreHandle_t _i2cMutex;  // Protects I2C operations from concurrent access
 
     /**
      * @brief Select multiplexer channel and prepare for DRV2605 communication

@@ -24,32 +24,19 @@
 #include <cstdint>
 
 // =============================================================================
-// BUZZ FLOW STATE
+// FLOW CONTROL STATE
 // =============================================================================
 
 /**
- * @brief State machine for buzz execution flow control
- *
- * v1 macrocycle timing model:
- *   A macrocycle consists of 3 patterns followed by double TIME_RELAX:
- *
- *   [Pattern 1] -> [Pattern 2] -> [Pattern 3] -> [Relax] -> [Relax]
- *      668ms        668ms         668ms       668ms     668ms   = 3340ms
- *
- *   Within each pattern (4 fingers):
- *     IDLE -> Send BUZZ, activate motor -> ACTIVE
- *     ACTIVE -> Wait TIME_ON (100ms) -> deactivate motor -> WAITING_OFF
- *     WAITING_OFF -> Wait TIME_OFF + jitter (67ms +/- jitter) -> IDLE (next finger)
- *
- *   After pattern completes:
- *     If patterns < 3: -> generate new pattern -> IDLE (NO relaxation)
- *     If patterns == 3: -> WAITING_RELAX -> Wait 2x TIME_RELAX (1336ms) -> IDLE (new macrocycle)
+ * @brief State machine for therapy execution flow control
+ * NOTE: Despite the name, this is used by BOTH BUZZ (legacy) and MACROCYCLE modes
+ * TODO: Rename to MacrocycleFlowState after BUZZ removal
  */
 enum class BuzzFlowState : uint8_t {
-    IDLE = 0,           // Ready to send next BUZZ
-    ACTIVE,             // Motor running, waiting for TIME_ON (burst duration)
-    WAITING_OFF,        // Motor off, waiting for TIME_OFF + jitter before next finger
-    WAITING_RELAX       // Pattern complete, waiting TIME_RELAX before next cycle
+    IDLE = 0,           // Ready to start next cycle
+    ACTIVE,             // Cycle running, waiting for completion
+    WAITING_OFF,        // Motor off (unused in MACROCYCLE mode)
+    WAITING_RELAX       // Cycle complete, waiting before next cycle
 };
 
 // =============================================================================
@@ -118,6 +105,8 @@ struct [[nodiscard]] Pattern {
      * @param secondaryFinger Output SECONDARY device finger index
      */
     void getFingerPair(uint8_t index, uint8_t& primaryFinger, uint8_t& secondaryFinger) const {
+        primaryFinger = 0;      // Safe default
+        secondaryFinger = 0;    // Safe default
         if (index < numFingers) {
             primaryFinger = primarySequence[index];
             secondaryFinger = secondarySequence[index];
@@ -202,9 +191,6 @@ Pattern generateMirroredPattern(
 // CALLBACK TYPES
 // =============================================================================
 
-// Callback for sending sync commands to SECONDARY
-typedef void (*SendCommandCallback)(const char* commandType, uint8_t primaryFinger, uint8_t secondaryFinger, uint8_t amplitude, uint32_t durationMs, uint32_t seq, uint16_t frequencyHz);
-
 // Callback for activating haptic motor
 typedef void (*ActivateCallback)(uint8_t finger, uint8_t amplitude);
 
@@ -221,6 +207,26 @@ typedef void (*SetFrequencyCallback)(uint8_t finger, uint16_t frequencyHz);
 // Callback for macrocycle start (for PING/PONG latency measurement)
 // Called at the start of each macrocycle before the first pattern
 typedef void (*MacrocycleStartCallback)(uint32_t macrocycleCount);
+
+// Callback for sending entire macrocycle (batch of 12 events)
+// Called when a new macrocycle is generated, sends all events to SECONDARY
+typedef void (*SendMacrocycleCallback)(const Macrocycle& macrocycle);
+
+// Callback for scheduling PRIMARY motor activation via FreeRTOS motor task
+// Parameters: activateTimeUs, finger, amplitude, durationMs, frequencyHz
+// Called for each event in macrocycle to enqueue to ActivationQueue
+typedef void (*ScheduleActivationCallback)(uint64_t activateTimeUs, uint8_t finger,
+                                           uint8_t amplitude, uint16_t durationMs, uint16_t frequencyHz);
+
+// Callback to start chain scheduling after all events are enqueued
+typedef void (*StartSchedulingCallback)();
+
+// Callback to check if activation queue execution is complete
+typedef bool (*IsSchedulingCompleteCallback)();
+
+// Callback to get adaptive lead time from sync protocol (microseconds)
+// Returns RTT + 3σ margin, clamped to reasonable bounds
+typedef uint32_t (*GetLeadTimeCallback)();
 
 // =============================================================================
 // THERAPY ENGINE CLASS
@@ -249,11 +255,6 @@ public:
     // =========================================================================
 
     /**
-     * @brief Set callback for sending sync commands
-     */
-    void setSendCommandCallback(SendCommandCallback callback);
-
-    /**
      * @brief Set callback for activating haptic motor
      */
     void setActivateCallback(ActivateCallback callback);
@@ -279,12 +280,42 @@ public:
     void setMacrocycleStartCallback(MacrocycleStartCallback callback);
 
     /**
+     * @brief Set callback for sending macrocycle batch
+     */
+    void setSendMacrocycleCallback(SendMacrocycleCallback callback);
+
+    /**
+     * @brief Set callbacks for FreeRTOS motor task scheduling on PRIMARY
+     *
+     * These callbacks allow TherapyEngine to use the ActivationQueue
+     * for FreeRTOS motor task scheduling (same as SECONDARY).
+     *
+     * @param scheduleCallback Called for each event to enqueue
+     * @param startCallback Called after all events enqueued to start chain
+     * @param isCompleteCallback Called to check if queue execution complete
+     */
+    void setSchedulingCallbacks(ScheduleActivationCallback scheduleCallback,
+                                StartSchedulingCallback startCallback,
+                                IsSchedulingCompleteCallback isCompleteCallback);
+
+    /**
+     * @brief Set callback to get adaptive lead time
+     *
+     * When set, TherapyEngine uses this callback to determine lead time
+     * for macrocycle scheduling instead of hardcoded 50ms. The callback
+     * should return syncProtocol.calculateAdaptiveLeadTime().
+     *
+     * @param callback Function returning lead time in microseconds
+     */
+    void setGetLeadTimeCallback(GetLeadTimeCallback callback);
+
+    /**
      * @brief Enable/disable frequency randomization (Custom vCR feature)
      * @param enabled Enable frequency randomization
-     * @param minHz Minimum frequency (default 210 Hz)
-     * @param maxHz Maximum frequency (default 260 Hz)
+     * @param minHz Minimum frequency (default 210 Hz, v1 ACTUATOR_FREQL)
+     * @param maxHz Maximum frequency (default 255 Hz, v1 randrange excludes 260)
      */
-    void setFrequencyRandomization(bool enabled, uint16_t minHz = 210, uint16_t maxHz = 260);
+    void setFrequencyRandomization(bool enabled, uint16_t minHz = 210, uint16_t maxHz = 255);
 
     // =========================================================================
     // SESSION CONTROL
@@ -301,6 +332,7 @@ public:
      * @param mirrorPattern If true, same finger on both hands
      * @param amplitudeMin Minimum motor amplitude (0-100)
      * @param amplitudeMax Maximum motor amplitude (0-100)
+     * @param isTestMode If true, marks session as test (for completion message)
      */
     void startSession(
         uint32_t durationSec,
@@ -311,7 +343,8 @@ public:
         uint8_t numFingers = 4,
         bool mirrorPattern = false,
         uint8_t amplitudeMin = 100,
-        uint8_t amplitudeMax = 100
+        uint8_t amplitudeMax = 100,
+        bool isTestMode = false
     );
 
     /**
@@ -347,6 +380,11 @@ public:
      * @brief Check if therapy is paused
      */
     bool isPaused() const { return _isPaused; }
+
+    /**
+     * @brief Check if this is a test session (started via TEST command)
+     */
+    bool isTestMode() const { return _isTestMode; }
 
     /**
      * @brief Get cycles completed
@@ -387,6 +425,7 @@ private:
     bool _isRunning;
     bool _isPaused;
     bool _shouldStop;
+    bool _isTestMode;  // True when started via TEST command (not persisted)
 
     // Session parameters
     uint32_t _sessionStartTime;
@@ -403,7 +442,7 @@ private:
     // Frequency randomization (Custom vCR feature - v1 defaults_CustomVCR.py)
     bool _frequencyRandomization;
     uint16_t _frequencyMin;     // 210 Hz (v1 ACTUATOR_FREQL)
-    uint16_t _frequencyMax;     // 260 Hz (v1 ACTUATOR_FREQH)
+    uint16_t _frequencyMax;     // 255 Hz (v1 randrange excludes 260)
     uint16_t _currentFrequency[MAX_ACTUATORS];  // Current frequency per finger (Hz)
 
     // Current pattern execution
@@ -422,25 +461,34 @@ private:
     uint8_t _patternsInMacrocycle;      // Count of patterns executed in current macrocycle (0-2)
     static const uint8_t PATTERNS_PER_MACROCYCLE = 3;  // v1: 3 patterns per macrocycle
 
-    // Sequence tracking
-    uint32_t _buzzSequenceId;
-
-    // Flow control state machine (PRIMARY only)
-    BuzzFlowState _buzzFlowState;
-    uint32_t _buzzSendTime;          // Time when BUZZ was sent
+    // Flow control state machine (used by MACROCYCLE mode)
+    BuzzFlowState _buzzFlowState;       // NOTE: Used by MACROCYCLE, not just BUZZ (legacy name)
+    uint32_t _buzzSendTime;             // Time tracking for state transitions
 
     // Callbacks
-    SendCommandCallback _sendCommandCallback;
     ActivateCallback _activateCallback;
     DeactivateCallback _deactivateCallback;
     CycleCompleteCallback _cycleCompleteCallback;
     SetFrequencyCallback _setFrequencyCallback;
     MacrocycleStartCallback _macrocycleStartCallback;
+    SendMacrocycleCallback _sendMacrocycleCallback;
+
+    // FreeRTOS motor task scheduling callbacks (PRIMARY uses ActivationQueue)
+    ScheduleActivationCallback _scheduleActivationCallback;
+    StartSchedulingCallback _startSchedulingCallback;
+    IsSchedulingCompleteCallback _isSchedulingCompleteCallback;
+    GetLeadTimeCallback _getLeadTimeCallback;
+
+    uint32_t _macrocycleSequenceId;      // Sequence ID for MACROCYCLE messages
+    Macrocycle _currentMacrocycle;       // Current macrocycle being executed
+    uint8_t _macrocycleEventIndex;       // Current event index within macrocycle (0-11)
+    uint64_t _macrocycleBaseTime;        // Base activation time for current macrocycle
 
     // Internal methods
     void generateNextPattern();
-    void executePatternStep();
     void applyFrequencyRandomization();  // Called at start of each pattern cycle
+    Macrocycle generateMacrocycle();     // Generate all 12 events for a macrocycle
+    void executeMacrocycleStep();        // State machine for macrocycle batching mode
 };
 
 #endif // THERAPY_ENGINE_H

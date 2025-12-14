@@ -294,7 +294,7 @@ Both gloves must produce identical random sequences. This is achieved via shared
 if JITTER != 0:
     SHARED_SEED = int(time.monotonic() * 1000) % 1000000
     random.seed(SHARED_SEED)
-    uart_service.write(f"SEED:{SHARED_SEED}\n")
+    uart_service.write(f"SEED:{SHARED_SEED}")
 
 # VR (Slave) - Receive and apply seed
 if response.startswith("SEED:"):

@@ -186,7 +186,9 @@ BlueBuzzah-Firmware/
 │   ├── profile_manager.h             # Profile handling
 │   ├── led_controller.h              # LED animations
 │   ├── session_manager.h             # Session lifecycle
-│   └── calibration_controller.h      # Calibration workflows
+│   ├── calibration_controller.h      # Calibration workflows
+│   ├── activation_queue.h            # Motor event scheduling queue
+│   └── motor_event_buffer.h          # Motor event ring buffer
 ├── src/
 │   ├── main.cpp                      # Entry point: setup() + loop()
 │   ├── hardware.cpp                  # Hardware implementations
@@ -198,7 +200,9 @@ BlueBuzzah-Firmware/
 │   ├── profile_manager.cpp           # Profile implementations
 │   ├── led_controller.cpp            # LED implementations
 │   ├── session_manager.cpp           # Session implementations
-│   └── calibration_controller.cpp    # Calibration implementations
+│   ├── calibration_controller.cpp    # Calibration implementations
+│   ├── activation_queue.cpp          # Motor event queue implementations
+│   └── motor_event_buffer.cpp        # Motor event buffer implementations
 └── data/
     └── settings.json                 # Device configuration (uploaded via LittleFS)
 ```
@@ -218,6 +222,8 @@ BlueBuzzah-Firmware/
 | `led_controller.h/.cpp`         | LED animations                   | NeoPixel                        |
 | `session_manager.h/.cpp`        | Session lifecycle                | `state_machine.h`               |
 | `calibration_controller.h/.cpp` | Motor testing                    | `hardware.h`                    |
+| `activation_queue.h/.cpp`       | Motor event scheduling queue     | `types.h`                       |
+| `motor_event_buffer.h/.cpp`     | Motor event ring buffer          | `types.h`                       |
 
 ### Architecture Layers
 
@@ -308,9 +314,9 @@ if (deviceConfig.role == DeviceRole::PRIMARY) {
 PRIMARY explicitly commands SECONDARY for every action using SYNC protocol:
 
 ```
-PRIMARY -> SECONDARY: BUZZ:seq:timestamp:2|100
-PRIMARY: <executes local buzz>
-SECONDARY: <waits for command, then executes>
+PRIMARY -> SECONDARY: MACROCYCLE:seq:baseTime:12|events...
+PRIMARY: <enqueues all 12 events to motor task>
+SECONDARY: <receives macrocycle, enqueues all 12 events, both execute synchronized>
 ```
 
 Benefits:
@@ -331,8 +337,8 @@ PRIMARY supports **simultaneous connections** to:
 1. **Advertise** as BLE peripheral ("BlueBuzzah")
 2. **Accept connections** from smartphone + SECONDARY
 3. **Execute boot sequence**: Wait for SECONDARY, optionally phone
-4. **Orchestrate therapy**: Send BUZZ commands
-5. **Send heartbeats** to SECONDARY during therapy
+4. **Orchestrate therapy**: Send MACROCYCLE batches (12 events every ~2s)
+5. **Send PING/PONG** for keepalive + clock sync (every 1s, all states)
 6. **Broadcast parameters** to SECONDARY on profile changes
 7. **Process smartphone commands** via MenuController
 
@@ -347,17 +353,18 @@ PRIMARY supports **simultaneous connections** to:
 
 1. **Scan** for "BlueBuzzah" BLE advertisement
 2. **Connect** to PRIMARY during boot sequence
-3. **Receive SYNC commands**: START_SESSION, BUZZ, HEARTBEAT
-4. **Execute synchronized buzzes** after command received
-5. **Monitor heartbeat timeout** (6 seconds)
-6. **Safety halt** if PRIMARY disconnects or heartbeat times out
+3. **Receive SYNC commands**: START_SESSION, MACROCYCLE, PING
+4. **Execute synchronized motor events** from macrocycle batches
+5. **Respond to PING with PONG** for keepalive + clock sync
+6. **Monitor keepalive timeout** (6 seconds without PING/MACROCYCLE)
+7. **Safety halt** if PRIMARY disconnects or keepalive times out
 
 | Function                   | Location            | Description                 |
 | -------------------------- | ------------------- | --------------------------- |
 | `secondaryBootSequence()`  | `main.cpp`          | Scan and connect to PRIMARY |
 | `runSecondaryLoop()`       | `main.cpp`          | Wait for SYNC commands      |
 | `handleSyncCommand()`      | `sync_protocol.cpp` | Process SYNC messages       |
-| `handleHeartbeatTimeout()` | `main.cpp`          | Connection recovery         |
+| `handleKeepaliveTimeout()` | `main.cpp`          | Connection recovery         |
 
 ## Entry Point Flow
 
@@ -632,7 +639,7 @@ void TherapyEngine::executeCycle() {
 ```cpp
 // src/hardware.cpp
 
-void HardwareController::buzzFinger(uint8_t finger, uint8_t amplitude) {
+void HardwareController::activate(uint8_t finger, uint8_t amplitude) {
     // Infrastructure-level details
     _tca.select(finger);
 
@@ -643,7 +650,7 @@ void HardwareController::buzzFinger(uint8_t finger, uint8_t amplitude) {
     _motorActive[finger] = true;
 }
 
-void HardwareController::stopFinger(uint8_t finger) {
+void HardwareController::deactivate(uint8_t finger) {
     _tca.select(finger);
     _drv[finger].setRealtimeValue(0);
     _motorActive[finger] = false;
@@ -651,6 +658,53 @@ void HardwareController::stopFinger(uint8_t finger) {
 ```
 
 ## Component Details
+
+### FreeRTOS Motor Task
+
+A dedicated FreeRTOS task handles motor activation with sub-millisecond precision:
+
+```cpp
+// Motor task runs at Priority 4 (above normal, below BLE)
+void motorTaskFunction(void* pvParameters) {
+    while (true) {
+        MotorEvent event;
+        if (activationQueue.getNextEvent(event)) {
+            uint64_t now = getMicros();
+            int64_t delayUs = event.timeUs - now;
+
+            // Hybrid sleep + busy-wait for precision
+            if (delayUs > 2000) {
+                // Sleep until ~2ms before event
+                vTaskDelay(pdMS_TO_TICKS((delayUs - 2000) / 1000));
+            }
+
+            // Busy-wait for final precision
+            while (getMicros() < event.timeUs) { /* spin */ }
+
+            // Execute motor event
+            executeMotorEvent(event);
+        }
+        vTaskDelay(1);  // Yield if queue empty
+    }
+}
+```
+
+**Key Features:**
+- **Non-blocking**: Allows BLE callbacks to process during sleep
+- **Sub-millisecond precision**: Busy-waits only the final 2ms
+- **I2C pre-selection**: Moves mux selection off critical path (~100μs vs ~500μs)
+- **Queue-based**: Events scheduled via ActivationQueue
+
+**I2C Pre-Selection Optimization:**
+
+```cpp
+// Fast path when channel is pre-selected
+if (haptic.getPreSelectedFinger() == event.finger) {
+    haptic.activatePreSelected(event.finger, event.amplitude);  // ~100μs
+} else {
+    haptic.activate(event.finger, event.amplitude);  // ~500μs
+}
+```
 
 ### State Management
 
@@ -868,12 +922,13 @@ sequenceDiagram
         P->>S: SYNC_ADJ (periodic resync)
         S->>P: ACK_SYNC_ADJ
 
-        loop Each Burst
-            P->>S: BUZZ(finger, amplitude, scheduled_time)
+        loop Each Macrocycle (~2s)
+            P->>S: MACROCYCLE(12 events, base_time)
+            S->>P: MACROCYCLE_ACK
             par
-              P->>P: Execute burst (left hand)
+              P->>P: Execute 12 events (left hand)
             and
-              S->>S: Execute buzz at scheduled time (right hand)
+              S->>S: Execute 12 events synchronized (right hand)
             end
         end
     end
@@ -896,25 +951,32 @@ uint32_t SyncProtocol::applyCompensation(uint32_t timestamp, int32_t offset) {
 }
 ```
 
-### Heartbeat Protocol
+### Keepalive Protocol (PING/PONG)
 
-The heartbeat protocol ensures continuous connection monitoring between PRIMARY and SECONDARY devices:
+Connection monitoring uses a unified PING/PONG mechanism that provides both keepalive and clock synchronization:
 
 | Parameter         | Value     | Description                           |
 | ----------------- | --------- | ------------------------------------- |
-| Interval          | 2 seconds | Time between heartbeat messages       |
-| Timeout           | 6 seconds | 3 missed heartbeats = connection lost |
+| Interval          | 1 second  | PING/PONG every 1s (all states)       |
+| Timeout (SECONDARY) | 6 seconds | 6 missed PINGs = connection lost    |
+| Timeout (PRIMARY)   | 4 seconds | During therapy (emergency shutdown) |
 | Recovery attempts | 3         | Number of reconnection attempts       |
 | Recovery delay    | 2 seconds | Delay between reconnection attempts   |
+
+**Unified Mechanism:**
+- **PING** (PRIMARY → SECONDARY): Proves PRIMARY alive + carries T1 timestamp
+- **PONG** (SECONDARY → PRIMARY): Proves SECONDARY alive + carries T2, T3 timestamps
+- Same mechanism in idle and therapy states — no separate keepalive messages
+- Continuous clock synchronization prevents drift during long therapy sessions
 
 **Connection Recovery Flow**:
 
 ```mermaid
 stateDiagram-v2
     [*] --> Connected
-    Connected --> HeartbeatMissed: No response
-    HeartbeatMissed --> Connected: Response received
-    HeartbeatMissed --> ConnectionLost: 3 missed (6s timeout)
+    Connected --> KeepaliveMissed: No PONG response
+    KeepaliveMissed --> Connected: PONG received
+    KeepaliveMissed --> ConnectionLost: Timeout (4-6s)
     ConnectionLost --> Reconnecting: Start recovery
     Reconnecting --> Connected: Success
     Reconnecting --> Failed: 3 attempts failed
@@ -924,38 +986,27 @@ stateDiagram-v2
 **Implementation**:
 
 ```cpp
-// src/main.cpp
+// include/config.h
+#define KEEPALIVE_INTERVAL_MS 1000  // PING every 1 second (unified keepalive + sync)
+#define KEEPALIVE_TIMEOUT_MS 6000   // SECONDARY: 6 missed = connection lost
 
-#define HEARTBEAT_INTERVAL_MS 2000
-#define HEARTBEAT_TIMEOUT_MS 6000
-#define RECONNECT_ATTEMPTS 3
-#define RECONNECT_DELAY_MS 2000
-
-void checkHeartbeat() {
-    uint32_t elapsed = millis() - lastHeartbeatReceived;
-
-    if (elapsed > HEARTBEAT_TIMEOUT_MS) {
-        handleConnectionLost();
-    }
+// src/main.cpp - PRIMARY keepalive (unified mechanism)
+if (deviceRole == DeviceRole::PRIMARY &&
+    isConnected &&
+    (now - lastKeepalive >= KEEPALIVE_INTERVAL_MS))
+{
+    lastKeepalive = now;
+    sendPing();  // PING provides both keepalive and clock sync
 }
 
-void handleConnectionLost() {
-    hardware.stopAllMotors();
-    stateMachine.forceState(TherapyState::CONNECTION_LOST);
-    ledController.indicateConnectionLost();
+// src/main.cpp - SECONDARY timeout detection
+void checkKeepalive() {
+    // PING and MACROCYCLE both update lastKeepaliveReceived
+    uint32_t elapsed = millis() - lastKeepaliveReceived;
 
-    // Attempt recovery
-    for (uint8_t attempt = 0; attempt < RECONNECT_ATTEMPTS; attempt++) {
-        delay(RECONNECT_DELAY_MS);
-        if (bleManager.reconnectToPrimary()) {
-            stateMachine.forceState(TherapyState::READY);
-            lastHeartbeatReceived = millis();
-            return;
-        }
+    if (elapsed > KEEPALIVE_TIMEOUT_MS) {
+        handleKeepaliveTimeout();
     }
-
-    // Recovery failed
-    stateMachine.forceState(TherapyState::IDLE);
 }
 ```
 
@@ -987,8 +1038,10 @@ SYNC:<command>:<key1>|<value1>|<key2>|<value2>...<EOT>
 | `RESUME_SESSION`     | P->S      | Resume paused session        |
 | `STOP_SESSION`       | P->S      | Stop and end session         |
 | `STOPPED`            | S->P      | Session stopped confirmation |
-| `BUZZ`               | P->S      | Trigger buzz on SECONDARY    |
-| `HEARTBEAT`          | P<->S     | Connection keepalive         |
+| `MACROCYCLE`         | P->S      | Batch of 12 motor events     |
+| `MACROCYCLE_ACK`     | S->P      | Macrocycle acknowledgment    |
+| `PING`               | P->S      | Keepalive + clock sync       |
+| `PONG`               | S->P      | Keepalive + clock sync       |
 | `EMERGENCY_STOP`     | P<->S     | Immediate motor shutoff      |
 | `PHONE_DISCONNECTED` | P->S      | Phone app disconnected       |
 | `ACK`                | S->P      | Acknowledgment               |
@@ -998,8 +1051,10 @@ SYNC:<command>:<key1>|<value1>|<key2>|<value2>...<EOT>
 
 ```text
 SYNC:START_SESSION:profile|noisy_vcr|duration|7200<EOT>
-BUZZ:42:1234567890:2|100
-SYNC:HEARTBEAT:timestamp|1234567890<EOT>
+MC:42|5000000|12|100,0,100,100,235|67,1,100,100,235|...
+PING:1|1234567890
+PONG:1|0|1234567900|1234567950
+MC_ACK:42
 SYNC:ACK:command|START_SESSION<EOT>
 ```
 
@@ -1313,9 +1368,9 @@ sequenceDiagram
     loop Until Session Complete
         TE->>TE: Generate pattern
         loop For each finger pair
-            TE->>H: buzzFinger(finger, amplitude)
+            TE->>H: activate(finger, amplitude)
             TE->>TE: Wait burst_duration
-            TE->>H: stopFinger(finger)
+            TE->>H: deactivate(finger)
             TE->>TE: Wait inter_burst_interval
         end
         TE->>SM: Cycle complete
@@ -1340,11 +1395,14 @@ sequenceDiagram
     SS->>PS: ACK_SYNC_ADJ
     SS->>SS: Calculate time offset
 
-    loop Each burst in sequence
-        PE->>PE: Execute buzz (left)
-        PS->>SS: BUZZ(finger, amplitude, scheduled_time)
-        SS->>SE: Trigger buzz at scheduled time (right)
-        SE->>SE: Execute buzz (right, at scheduled time)
+    loop Each macrocycle (~2s)
+        PS->>SS: MACROCYCLE(12 events, base_time)
+        SS->>PS: MACROCYCLE_ACK
+        par
+            PE->>PE: Execute 12 events (left)
+        and
+            SE->>SE: Execute 12 events synchronized (right)
+        end
     end
 ```
 
@@ -1356,7 +1414,7 @@ sequenceDiagram
 
 - Boot sequence failure -> Red LED flash, halt
 - I2C initialization failure -> Diagnostic message + halt
-- Heartbeat timeout -> Emergency stop motors, attempt reconnect
+- Keepalive timeout -> Emergency stop motors, attempt reconnect
 
 ```cpp
 void fatalError(const char* message) {
@@ -1400,7 +1458,7 @@ void sendErrorResponse(const char* error) {
 | -------------------- | ------------ | ----------------- | ------------------- |
 | Boot sequence        | 30s          | Red LED, halt     | `main.cpp`          |
 | BLE scan (SECONDARY) | 30s          | Red LED, halt     | `ble_manager.cpp`   |
-| Heartbeat            | 6s           | Reconnect attempt | `main.cpp`          |
+| Keepalive (PING/PONG)| 6s           | Reconnect attempt | `main.cpp`          |
 | SYNC command         | 10s          | Log warning       | `sync_protocol.cpp` |
 | BLE receive          | Non-blocking | Callback-based    | `ble_manager.cpp`   |
 
@@ -1415,7 +1473,7 @@ enum class Result : uint8_t {
     ERROR_HARDWARE
 };
 
-Result HardwareController::buzzFinger(uint8_t finger, uint8_t amplitude) {
+Result HardwareController::activate(uint8_t finger, uint8_t amplitude) {
     if (finger > 4) return Result::ERROR_INVALID_PARAM;
     if (amplitude > 127) return Result::ERROR_INVALID_PARAM;
 
@@ -1545,7 +1603,7 @@ void HardwareController::selectChannel(uint8_t channel) {
     Wire.endTransmission();
 }
 
-void HardwareController::buzzFinger(uint8_t finger, uint8_t amplitude) {
+void HardwareController::activate(uint8_t finger, uint8_t amplitude) {
     // Select multiplexer channel for this finger
     selectChannel(finger);
 
@@ -1727,7 +1785,7 @@ Before committing changes:
 - [ ] **BLE commands verified**: Test phone commands via nRF Connect app
 - [ ] **Memory stable**: No crashes during 5-minute test
 - [ ] **Synchronization accurate**: PRIMARY/SECONDARY buzz within 20ms (serial logs)
-- [ ] **Heartbeat working**: Verify 2s heartbeat, 6s timeout detection
+- [ ] **Keepalive working**: Verify 1s PING/PONG, 6s timeout detection
 - [ ] **Error handling**: Test disconnection, invalid commands, low battery
 
 ### C++ Embedded Best Practices
@@ -1907,9 +1965,9 @@ The architecture enables confident refactoring, easy testing, and straightforwar
 | Constant | Value | Description |
 |----------|-------|-------------|
 | Boot timeout | 30s | Max boot sequence time |
-| Heartbeat interval | 2s | Between heartbeat messages |
-| Heartbeat timeout | 6s | 3 missed = connection lost |
-| BLE connection interval | 7.5ms | Minimum latency |
+| Keepalive interval | 1s | PING/PONG (unified keepalive + sync) |
+| Keepalive timeout | 6s | SECONDARY: 6 missed PINGs |
+| BLE connection interval | 8-12ms | Low-latency (6-9 BLE units) |
 | BLE supervision timeout | 4s | Disconnect detection |
 | Therapy default ON | 100ms | Burst duration |
 | Therapy default OFF | 67ms | Inter-burst interval |
