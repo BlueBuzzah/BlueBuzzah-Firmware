@@ -11,6 +11,9 @@
       "WebSearch",
       "Bash(pio test:*)"
     ],
+    "enabledPlugins": {
+      "clangd-lsp@claude-plugins-official": true
+    },
     "deny": [],
     "ask": []
   }

@@ -81,6 +81,11 @@ volatile uint32_t bootWindowStart = 0;    // When SECONDARY connected (starts co
 volatile bool bootWindowActive = false;   // Whether we're waiting for phone
 bool autoStartTriggered = false; // Prevent repeated auto-starts (only accessed from main loop)
 
+// Sync validity delayed start (PRIMARY only)
+// If sync not valid when auto-start triggers, retry after 1 second
+bool autoStartScheduled = false;   // Whether we're waiting to retry auto-start
+uint32_t autoStartTime = 0;        // When to retry auto-start (millis)
+
 // Keepalive monitoring (bidirectional via PING/PONG)
 // MUST be volatile: updated in BLE callback context, read in main loop
 volatile uint32_t lastKeepaliveReceived = 0;  // SECONDARY: Last PING/BUZZ from PRIMARY
@@ -113,6 +118,28 @@ static volatile uint64_t g_pendingFlashTime = 0;
 
 // Finger names for display (4 fingers per hand - index through pinky, no thumb per v1)
 const char *FINGER_NAMES[] = {"Index", "Middle", "Ring", "Pinky"};
+
+// =============================================================================
+// ATOMIC 64-BIT ACCESS HELPERS
+// =============================================================================
+// On 32-bit ARM, 64-bit reads/writes are NOT atomic. A read can see a
+// partially-written value (torn read) when the write is interrupted mid-update.
+// These helpers disable interrupts to ensure atomic access.
+
+static inline uint64_t atomicRead64(volatile uint64_t* ptr) {
+    uint32_t primask = __get_PRIMASK();
+    __disable_irq();
+    uint64_t val = *ptr;
+    __set_PRIMASK(primask);
+    return val;
+}
+
+static inline void atomicWrite64(volatile uint64_t* ptr, uint64_t val) {
+    uint32_t primask = __get_PRIMASK();
+    __disable_irq();
+    *ptr = val;
+    __set_PRIMASK(primask);
+}
 
 // =============================================================================
 // FREERTOS MOTOR TASK
@@ -326,7 +353,7 @@ void sendPing();
 // BLE Callbacks
 void onBLEConnect(uint16_t connHandle, ConnectionType type);
 void onBLEDisconnect(uint16_t connHandle, ConnectionType type, uint8_t reason);
-void onBLEMessage(uint16_t connHandle, const char *message);
+void onBLEMessage(uint16_t connHandle, const char *message, uint64_t rxTimestamp);
 
 // Therapy Callbacks
 void onSendMacrocycle(const Macrocycle& macrocycle);
@@ -663,7 +690,8 @@ void loop()
     if (g_pendingFlashActive)
     {
         uint64_t nowUs = getMicros();
-        if (nowUs >= g_pendingFlashTime)
+        // Use atomic read to prevent torn reads on 32-bit ARM
+        if (nowUs >= atomicRead64(&g_pendingFlashTime))
         {
             g_pendingFlashActive = false;
             triggerDebugFlash();
@@ -799,6 +827,13 @@ void loop()
                 bootWindowActive = false;
             }
         }
+    }
+
+    // Check for scheduled auto-start retry (sync wasn't valid on first attempt)
+    if (autoStartScheduled && millis() >= autoStartTime)
+    {
+        autoStartScheduled = false;
+        autoStartTherapy();
     }
 
     // Periodic latency metrics reporting (when enabled and therapy running)
@@ -1073,6 +1108,9 @@ void onBLEConnect(uint16_t connHandle, ConnectionType type)
     Serial.printf("[CONNECT] Handle: %d, Type: %s\n", connHandle, typeStr);
 
     // If SECONDARY device connected to PRIMARY, send identification
+    // Note: SECONDARY has no warm-start logic because it doesn't maintain sync state.
+    // SECONDARY receives clock offset from PRIMARY in every MACROCYCLE message, so it
+    // simply waits for the next MACROCYCLE after reconnection.
     if (deviceRole == DeviceRole::SECONDARY && type == ConnectionType::PRIMARY)
     {
         Serial.println(F("[SECONDARY] Sending IDENTIFY:SECONDARY to PRIMARY"));
@@ -1101,9 +1139,18 @@ void onBLEConnect(uint16_t connHandle, ConnectionType type)
             Serial.printf("[BOOT] SECONDARY connected at %lu - starting 30s boot window for phone\n",
                           (unsigned long)bootWindowStart);
 
-            // Reset clock sync - idle keepalive (2s) will establish sync before therapy starts
+            // Reset clock sync state
             syncProtocol.resetClockSync();
-            Serial.println(F("[SYNC] Clock sync reset - idle keepalive will establish sync"));
+
+            // Try warm-start if recent disconnect (cache preserved across resetClockSync)
+            if (syncProtocol.tryWarmStart())
+            {
+                Serial.println(F("[SYNC] Warm-start mode - need 3 confirmatory samples (~3s)"));
+            }
+            else
+            {
+                Serial.println(F("[SYNC] Cold start - need 5 samples for sync (~5s)"));
+            }
         }
         else if (type == ConnectionType::PHONE && bootWindowActive)
         {
@@ -1140,6 +1187,28 @@ void onBLEDisconnect(uint16_t connHandle, ConnectionType type, uint8_t reason)
 
     Serial.printf("[DISCONNECT] Handle: %d, Type: %s, Reason: 0x%02X\n",
                   connHandle, typeStr, reason);
+
+    // Log HCI disconnect reason for diagnostics (helps identify interference vs intentional)
+    const char *reasonStr = "UNKNOWN";
+    switch (reason)
+    {
+    case 0x08:
+        reasonStr = "SUPERVISION_TIMEOUT";
+        break;
+    case 0x13:
+        reasonStr = "REMOTE_TERMINATED";
+        break;
+    case 0x16:
+        reasonStr = "LOCAL_TERMINATED";
+        break;
+    case 0x22:
+        reasonStr = "LMP_TIMEOUT";
+        break;
+    case 0x3B:
+        reasonStr = "CONN_PARAMS_REJECTED";
+        break;
+    }
+    Serial.printf("[DISCONNECT] HCI Reason: %s\n", reasonStr);
 
     // Update state machine on relevant disconnections
     if ((deviceRole == DeviceRole::PRIMARY && type == ConnectionType::SECONDARY) ||
@@ -1264,11 +1333,11 @@ void executeDeferredWork(DeferredWorkType type, uint8_t p1, uint8_t p2, uint32_t
     }
 }
 
-void onBLEMessage(uint16_t connHandle [[maybe_unused]], const char *message)
+void onBLEMessage(uint16_t connHandle [[maybe_unused]], const char *message, uint64_t rxTimestamp)
 {
-    // CRITICAL: Capture receive timestamp FIRST, before any parsing
-    // This minimizes jitter for PTP clock synchronization
-    uint64_t rxTimestamp = getMicros();
+    // rxTimestamp is captured at the earliest possible point in the BLE stack
+    // (immediately when data is received in _onUartRx/_onClientUartRx)
+    // This provides maximum accuracy for PTP clock synchronization
 
     // Check for simple text commands first (for testing)
     // Both PRIMARY and SECONDARY can run standalone tests for hardware verification
@@ -1522,6 +1591,7 @@ void onBLEMessage(uint16_t connHandle [[maybe_unused]], const char *message)
             break;
 
         case SyncCommandType::PONG:
+        {
             // PRIMARY: Any PONG proves SECONDARY is alive (keepalive)
             // Update keepalive UNCONDITIONALLY - don't require pingT1 > 0
             // (PONG might arrive late after pingT1 cleared, but still proves link alive)
@@ -1531,13 +1601,15 @@ void onBLEMessage(uint16_t connHandle [[maybe_unused]], const char *message)
             }
 
             // PRIMARY: Calculate RTT and PTP clock offset (requires valid pingT1)
-            if (deviceRole == DeviceRole::PRIMARY && pingT1 > 0)
+            // Use atomic read to prevent torn reads on 32-bit ARM
+            uint64_t t1_atomic = atomicRead64(&pingT1);
+            if (deviceRole == DeviceRole::PRIMARY && t1_atomic > 0)
             {
 
                 // T4 = rxTimestamp captured at callback entry (before parsing)
                 // This gives us the most accurate receive timestamp
                 uint64_t t4 = rxTimestamp;
-                uint64_t t1 = pingT1;
+                uint64_t t1 = t1_atomic;
 
                 // Parse T2 and T3 from PONG data
                 // Format depends on whether high bits are used (see createPongWithTimestamps)
@@ -1623,10 +1695,12 @@ void onBLEMessage(uint16_t connHandle [[maybe_unused]], const char *message)
                                   sampleAccepted ? "" : "(rejected)");
                 }
 
-                pingT1 = 0; // Clear for next PING
-                pingStartTime = 0;
+                // Use atomic writes for consistency with atomic reads
+                atomicWrite64(&pingT1, 0);
+                atomicWrite64(&pingStartTime, 0);
             }
-            break;
+        }
+        break;
 
         case SyncCommandType::BUZZ:
         {
@@ -1692,7 +1766,8 @@ void onBLEMessage(uint16_t connHandle [[maybe_unused]], const char *message)
                     // processing for ~300ms, causing MACROCYCLE messages to queue up
                     // and arrive after their scheduled execution time.
                     // Now we store the flash time and check it in the main loop.
-                    g_pendingFlashTime = localFlashTime;
+                    // Use atomic write since this runs in BLE callback (ISR) context
+                    atomicWrite64(&g_pendingFlashTime, localFlashTime);
                     g_pendingFlashActive = true;
                 }
                 else
@@ -1856,7 +1931,8 @@ void onMacrocycleStart(uint32_t macrocycleCount)
                 // NON-BLOCKING: Schedule local flash for later (checked in main loop)
                 // Critical: We must NOT block here - the MACROCYCLE is sent after this
                 // callback returns. Blocking delays MACROCYCLE transmission!
-                g_pendingFlashTime = flashTime;
+                // Use atomic write to prevent torn reads on 32-bit ARM
+                atomicWrite64(&g_pendingFlashTime, flashTime);
                 g_pendingFlashActive = true;
             }
             else
@@ -1872,7 +1948,8 @@ void onMacrocycleStart(uint32_t macrocycleCount)
                 uint32_t latencyUs = syncProtocol.getMeasuredLatency();
                 if (latencyUs > 0)
                 {
-                    g_pendingFlashTime = getMicros() + latencyUs;
+                    // Use atomic write to prevent torn reads on 32-bit ARM
+                    atomicWrite64(&g_pendingFlashTime, getMicros() + latencyUs);
                     g_pendingFlashActive = true;
                 }
                 else
@@ -1901,6 +1978,13 @@ void startTherapyTest()
     {
         Serial.println(F("[TEST] Therapy already running"));
         return;
+    }
+
+    // Warn if sync not valid when SECONDARY is connected (timing may be off)
+    if (deviceRole == DeviceRole::PRIMARY && ble.isSecondaryConnected() &&
+        !syncProtocol.isClockSyncValid())
+    {
+        Serial.println(F("[WARN] Starting test with invalid sync - timing may be misaligned"));
     }
 
     // Get current profile
@@ -2021,6 +2105,33 @@ void autoStartTherapy()
     {
         Serial.println(F("[AUTO] Therapy already running"));
         return;
+    }
+
+    // Check sync validity before starting therapy (SECONDARY must be synced)
+    // After reconnection, sync requires 5 samples (~5 seconds) to become valid
+    static uint8_t autoStartRetryCount = 0;
+    if (ble.isSecondaryConnected() && !syncProtocol.isClockSyncValid())
+    {
+        if (++autoStartRetryCount > 10)
+        {
+            // Give up waiting for sync after 10 seconds - start anyway (degraded mode)
+            Serial.println(F("[AUTO] Sync not valid after 10s - starting therapy (timing may be degraded)"));
+            autoStartRetryCount = 0;
+            // Fall through to start therapy
+        }
+        else
+        {
+            Serial.printf("[AUTO] Sync not valid (attempt %u/10) - retrying in 1 second\n", autoStartRetryCount);
+            // Schedule retry in 1 second
+            autoStartScheduled = true;
+            autoStartTime = millis() + 1000;
+            return;
+        }
+    }
+    else
+    {
+        // Reset retry counter on successful sync or no SECONDARY connected
+        autoStartRetryCount = 0;
     }
 
     // Get current profile
@@ -2144,10 +2255,12 @@ void sendPing()
     }
 
     // Record T1 for PTP offset calculation
-    pingT1 = getMicros();
-    pingStartTime = pingT1; // Keep for backward compat
+    // Use atomic writes to prevent torn reads on 32-bit ARM
+    uint64_t t1 = getMicros();
+    atomicWrite64(&pingT1, t1);
+    atomicWrite64(&pingStartTime, t1); // Keep for backward compat
 
-    SyncCommand cmd = SyncCommand::createPingWithT1(g_sequenceGenerator.next(), pingT1);
+    SyncCommand cmd = SyncCommand::createPingWithT1(g_sequenceGenerator.next(), t1);
 
     char buffer[64];
     if (cmd.serialize(buffer, sizeof(buffer)))
@@ -2559,5 +2672,6 @@ void handleSerialCommand(const char *command)
     }
 
     // Not a serial-only command, pass to regular BLE message handler
-    onBLEMessage(0, command);
+    // Use current time as timestamp for serial commands (less critical for serial)
+    onBLEMessage(0, command, getMicros());
 }

@@ -6,6 +6,7 @@
  */
 
 #include "ble_manager.h"
+#include "sync_protocol.h"  // For getMicros() - overflow-safe 64-bit timestamp
 
 // =============================================================================
 // GLOBAL INSTANCE (needed for static callbacks)
@@ -126,7 +127,7 @@ bool BLEManager::begin(DeviceRole role, const char* deviceName) {
     // Phase 3: Reduced from 7.5ms to 5ms minimum for lower jitter
     // Values in 1.25ms units (BLE spec): N * 1.25ms = actual interval
     // Both roles need this for proper PTP clock sync (RTT < 30ms required)
-    constexpr uint16_t connIntervalMin = (BLE_INTERVAL_MIN_MS * 1000) / 1250;  // 5ms -> 4 units
+    constexpr uint16_t connIntervalMin = static_cast<uint16_t>((BLE_INTERVAL_MIN_MS * 1000) / 1250);  // 7.5ms -> 6 units
     constexpr uint16_t connIntervalMax = (BLE_INTERVAL_MAX_MS * 1000) / 1250;  // 10ms -> 8 units
     if (role == DeviceRole::PRIMARY) {
         // PRIMARY is peripheral - phone/SECONDARY connect to us
@@ -632,9 +633,14 @@ ConnectionType BLEManager::identifyConnectionType(uint16_t connHandle [[maybe_un
     }
 }
 
-void BLEManager::processIncomingData(uint16_t connHandleParam, const uint8_t* data, uint16_t len) {
+void BLEManager::processIncomingData(uint16_t connHandleParam, const uint8_t* data, uint16_t len, uint64_t rxTimestamp) {
     BBConnection* conn = findConnection(connHandleParam);
     if (!conn) return;
+
+    // Capture timestamp for first byte of message (if buffer was empty)
+    if (conn->rxIndex == 0) {
+        conn->rxTimestamp = rxTimestamp;
+    }
 
     // Append data to buffer
     for (uint16_t i = 0; i < len && conn->rxIndex < RX_BUFFER_SIZE - 1; i++) {
@@ -696,16 +702,21 @@ void BLEManager::deliverMessage(BBConnection* conn, uint16_t connHandleParam) {
         }
     }
 
-    // Normal message - deliver to callback
+    // Normal message - deliver to callback with captured RX timestamp
     if (_messageCallback) {
-        _messageCallback(connHandleParam, conn->rxBuffer);
+        _messageCallback(connHandleParam, conn->rxBuffer, conn->rxTimestamp);
     }
 }
 
-void BLEManager::processClientIncomingData(const uint8_t* data, uint16_t len) {
+void BLEManager::processClientIncomingData(const uint8_t* data, uint16_t len, uint64_t rxTimestamp) {
     // Find PRIMARY connection (SECONDARY mode)
     BBConnection* conn = findConnectionByType(ConnectionType::PRIMARY);
     if (!conn) return;
+
+    // Capture timestamp for first byte of message (if buffer was empty)
+    if (conn->rxIndex == 0) {
+        conn->rxTimestamp = rxTimestamp;
+    }
 
     // Append data to buffer
     for (uint16_t i = 0; i < len && conn->rxIndex < RX_BUFFER_SIZE - 1; i++) {
@@ -722,7 +733,7 @@ void BLEManager::processClientIncomingData(const uint8_t* data, uint16_t len) {
             conn->rxBuffer[conn->rxIndex] = '\0';
 
             if (conn->rxIndex > 0 && _messageCallback) {
-                _messageCallback(conn->connHandle, conn->rxBuffer);
+                _messageCallback(conn->connHandle, conn->rxBuffer, conn->rxTimestamp);
             }
 
             // Reset buffer for next message
@@ -748,6 +759,15 @@ void BLEManager::_onPeriphConnect(uint16_t connHandleParam) {
     if (!g_bleManager) return;
 
     Serial.printf("[BLE] Peripheral connected: handle=%d\n", connHandleParam);
+
+    // Request 2M PHY for faster BLE transmission (reduces latency)
+#ifdef BLE_USE_2M_PHY
+    BLEConnection* bleConn = Bluefruit.Connection(connHandleParam);
+    if (bleConn) {
+        bleConn->requestPHY(BLE_GAP_PHY_2MBPS);
+        Serial.println(F("[BLE] Requested 2M PHY upgrade"));
+    }
+#endif
 
     // Find free connection slot
     BBConnection* conn = g_bleManager->findFreeConnection();
@@ -802,6 +822,15 @@ void BLEManager::_onCentralConnect(uint16_t connHandle) {
     if (!g_bleManager) return;
 
     Serial.printf("[BLE] Central connected to PRIMARY: handle=%d\n", connHandle);
+
+    // Request 2M PHY for faster BLE transmission (reduces latency)
+#ifdef BLE_USE_2M_PHY
+    BLEConnection* bleConn = Bluefruit.Connection(connHandle);
+    if (bleConn) {
+        bleConn->requestPHY(BLE_GAP_PHY_2MBPS);
+        Serial.println(F("[BLE] Requested 2M PHY upgrade"));
+    }
+#endif
 
     // Find free connection slot
     BBConnection* conn = g_bleManager->findFreeConnection();
@@ -886,23 +915,31 @@ void BLEManager::_onScanCallback(ble_gap_evt_adv_report_t* report) {
 void BLEManager::_onUartRx(uint16_t connHandle) {
     if (!g_bleManager) return;
 
+    // CRITICAL: Capture timestamp IMMEDIATELY when data arrives
+    // This provides the most accurate RX timestamp for sync calculations
+    uint64_t rxTimestamp = getMicros();
+
     // Read available data
     uint8_t buf[64];
     int len = g_bleManager->_uartService.read(buf, sizeof(buf));
 
     if (len > 0) {
-        g_bleManager->processIncomingData(connHandle, buf, static_cast<uint16_t>(len));
+        g_bleManager->processIncomingData(connHandle, buf, static_cast<uint16_t>(len), rxTimestamp);
     }
 }
 
 void BLEManager::_onClientUartRx(BLEClientUart& clientUart) {
     if (!g_bleManager) return;
 
+    // CRITICAL: Capture timestamp IMMEDIATELY when data arrives
+    // This provides the most accurate RX timestamp for sync calculations
+    uint64_t rxTimestamp = getMicros();
+
     // Read available data
     uint8_t buf[64];
     int len = clientUart.read(buf, sizeof(buf));
 
     if (len > 0) {
-        g_bleManager->processClientIncomingData(buf, static_cast<uint16_t>(len));
+        g_bleManager->processClientIncomingData(buf, static_cast<uint16_t>(len), rxTimestamp);
     }
 }

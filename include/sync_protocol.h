@@ -373,7 +373,10 @@ uint64_t getMillis64();
 // =============================================================================
 
 /**
- * @brief Thread-safe sequence ID generator
+ * @brief Sequence ID generator for BLE message tracking
+ *
+ * @note NOT thread-safe. Call only from main loop context.
+ *       FreeRTOS tasks should not call next() directly.
  */
 class SequenceGenerator {
 public:
@@ -381,6 +384,7 @@ public:
 
     /**
      * @brief Get next sequence ID
+     * @note NOT thread-safe - call only from main loop context
      */
     uint32_t next() { return _nextId++; }
 
@@ -669,6 +673,38 @@ public:
         return localTime - getCorrectedOffset();
     }
 
+    // =========================================================================
+    // WARM-START SYNC (Quick Recovery After Brief Disconnects)
+    // =========================================================================
+
+    /**
+     * @brief Attempt warm-start sync using cached offset from recent disconnect
+     *
+     * Should be called on reconnection. If cache is valid (disconnect was <30s ago),
+     * enters warm-start mode requiring only 3 confirmatory samples instead of 5.
+     *
+     * @return true if warm-start mode activated, false if cold start required
+     */
+    bool tryWarmStart();
+
+    /**
+     * @brief Explicitly invalidate warm-start cache
+     *
+     * Call this for intentional full resets (user-initiated, factory reset, etc.)
+     */
+    void invalidateWarmStartCache();
+
+    /**
+     * @brief Check if warm-start mode is active
+     */
+    bool isWarmStartMode() const { return _warmStartMode; }
+
+    /**
+     * @brief Get projected offset using cached value and drift rate
+     * @return Projected offset in microseconds (0 if cache invalid)
+     */
+    int64_t getProjectedOffset() const;
+
 private:
     // EMA tuning constants
     static constexpr uint16_t MIN_SAMPLES = 3;        // Minimum before using smoothed
@@ -699,6 +735,20 @@ private:
     int64_t _lastMeasuredOffset;  // Previous offset measurement for drift calculation
     uint32_t _lastOffsetTime;     // Time of last offset measurement (millis)
     float _driftRateUsPerMs;      // Estimated drift rate (microseconds per millisecond)
+
+    // Warm-start cache for quick reconnection
+    struct WarmStartCache {
+        int64_t cachedOffset;        // Last known median offset
+        float cachedDriftRate;       // Last known drift rate (us/ms)
+        uint32_t cacheTimestamp;     // millis() when cached
+        bool isValid;                // Cache contains usable data
+
+        WarmStartCache() : cachedOffset(0), cachedDriftRate(0.0f),
+                           cacheTimestamp(0), isValid(false) {}
+    } _warmStartCache;
+
+    bool _warmStartMode;             // Currently in warm-start recovery
+    uint8_t _warmStartConfirmed;     // Number of validated confirmatory samples
 };
 
 #endif // SYNC_PROTOCOL_H

@@ -71,6 +71,7 @@ struct BBConnection {
     // Message receive buffer
     char rxBuffer[RX_BUFFER_SIZE];
     uint16_t rxIndex;
+    uint64_t rxTimestamp;  // Timestamp when first byte of current message was received
 
     BBConnection() :
         connHandle(CONN_HANDLE_INVALID),
@@ -79,7 +80,8 @@ struct BBConnection {
         connectedAt(0),
         pendingIdentify(false),
         identifyStartTime(0),
-        rxIndex(0) {
+        rxIndex(0),
+        rxTimestamp(0) {
         memset(rxBuffer, 0, sizeof(rxBuffer));
     }
 
@@ -91,6 +93,7 @@ struct BBConnection {
         pendingIdentify = false;
         identifyStartTime = 0;
         rxIndex = 0;
+        rxTimestamp = 0;
         memset(rxBuffer, 0, sizeof(rxBuffer));
     }
 };
@@ -102,7 +105,7 @@ struct BBConnection {
 // Callback function types
 typedef void (*BLEConnectCallback)(uint16_t connHandle, ConnectionType type);
 typedef void (*BLEDisconnectCallback)(uint16_t connHandle, ConnectionType type, uint8_t reason);
-typedef void (*BLEMessageCallback)(uint16_t connHandle, const char* message);
+typedef void (*BLEMessageCallback)(uint16_t connHandle, const char* message, uint64_t rxTimestamp);
 
 // =============================================================================
 // BLE MANAGER CLASS
@@ -400,8 +403,8 @@ private:
     BBConnection* findConnectionByType(ConnectionType type);
     BBConnection* findFreeConnection();
 
-    void processIncomingData(uint16_t connHandle, const uint8_t* data, uint16_t len);
-    void processClientIncomingData(const uint8_t* data, uint16_t len);
+    void processIncomingData(uint16_t connHandle, const uint8_t* data, uint16_t len, uint64_t rxTimestamp);
+    void processClientIncomingData(const uint8_t* data, uint16_t len, uint64_t rxTimestamp);
     void deliverMessage(BBConnection* conn, uint16_t connHandle);
     ConnectionType identifyConnectionType(uint16_t connHandle);
 };

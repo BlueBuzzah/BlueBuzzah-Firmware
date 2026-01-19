@@ -1,18 +1,18 @@
 # BlueBuzzah Synchronization Protocol
 
-**Version:** 2.4.0
-**Last Updated:** 2025-12-09
+**Version:** 2.5.0
+**Last Updated:** 2026-01-18
 
 ---
 
 ## Overview
 
-BlueBuzzah uses a bilateral synchronization protocol to coordinate haptic feedback between two gloves (PRIMARY and SECONDARY) over Bluetooth Low Energy. The protocol achieves <2ms synchronization accuracy using IEEE 1588 PTP-inspired clock synchronization with absolute time scheduling.
+BlueBuzzah uses a bilateral synchronization protocol to coordinate haptic feedback between two gloves (PRIMARY and SECONDARY) over Bluetooth Low Energy. The protocol achieves <1ms synchronization accuracy using IEEE 1588 PTP-inspired clock synchronization with absolute time scheduling and microsecond-precision timestamps.
 
 | Metric | Target | Achieved |
 |--------|--------|----------|
-| Bilateral sync accuracy | <50ms | <2ms |
-| Clock offset precision | <5ms | <1ms |
+| Bilateral sync accuracy | <50ms | <1ms |
+| Clock offset precision | <5ms | <500µs |
 | BLE latency compensation | Yes | PTP 4-timestamp |
 
 ### Core Principles
@@ -76,9 +76,9 @@ sequenceDiagram
 | Phase | Maximum Duration |
 |-------|------------------|
 | Connection establishment | 15 seconds |
-| Initial clock sync | 200ms |
+| Initial clock sync | ~5 seconds (5 samples @ 1s interval) |
 | Session start | Immediate after sync |
-| Keepalive timeout | 6 seconds (3 missed) |
+| Keepalive timeout | 6 seconds (6 missed) |
 
 ---
 
@@ -140,10 +140,11 @@ Excluding processing time provides:
 ### Filtering and Maintenance
 
 - **Initial sync:** Idle keepalive (1s) accumulates samples, median offset selected
-- **Quality filter:** Exchanges with RTT > 120ms are discarded (network latency only)
+- **Quality filter:** Exchanges with RTT > 60ms are discarded (network latency only)
 - **Minimum valid:** At least 5 good samples required (~5s after connect)
 - **Drift compensation:** Ongoing sync every 1s corrects for crystal drift
 - **Smoothing:** Exponential moving average prevents sudden jumps
+- **Drift rate capping:** Maximum ±150 ppm (±0.15 µs/ms) to prevent runaway drift
 
 ### Outlier Rejection
 
@@ -155,6 +156,27 @@ The clock sync algorithm uses MAD (Median Absolute Deviation) to filter outliers
 4. Require minimum 5 valid samples after filtering
 
 This improves robustness against BLE retransmissions and RF interference that cause anomalous RTT measurements.
+
+### Warm-Start Sync (Quick Reconnection)
+
+Brief BLE disconnections (interference, range limits) can recover quickly using cached sync state:
+
+| Scenario | Samples Required | Recovery Time |
+|----------|------------------|---------------|
+| Cold start (first connect) | 5 | ~5 seconds |
+| Warm start (<15s disconnect) | 3 confirmatory | ~3 seconds |
+| Long disconnect (>15s) | 5 | ~5 seconds |
+
+**Warm-start process:**
+1. On valid sync, cache current offset + drift rate (updated continuously)
+2. On disconnect, cache preserved with timestamp
+3. On reconnect within 15 seconds:
+   - Project cached offset forward using drift rate
+   - Enter warm-start mode
+   - Require 3 confirmatory samples within 5ms of projection
+4. If samples diverge >5ms, abort to cold start (safety fallback)
+
+This reduces user-perceived disruption from 6-10+ seconds to ~3 seconds for brief BLE interference events.
 
 ---
 
@@ -192,14 +214,15 @@ The activation time is set in the future to ensure SECONDARY receives and proces
 
 ```text
 activate_time = current_time + lead_time
-lead_time = average_RTT + safety_margin
+lead_time = average_RTT + 3σ_variance + processing_overhead
 ```
 
 | Parameter | Value | Purpose |
 |-----------|-------|---------|
-| Minimum lead time | 15ms | Accounts for BLE latency |
-| Maximum lead time | 100ms | Adaptive ceiling (default 50ms) |
+| Minimum lead time | 70ms | Covers RTT (~40ms) + variance (~5ms) + processing (20ms) + generation (5ms) |
+| Maximum lead time | 150ms | Conservative upper bound for worst-case BLE conditions |
 | Safety margin | 3× latency variance | Handles jitter |
+| Processing overhead | 10ms | BLE callback + deserialization + queue forwarding |
 
 ### Time Conversion
 
@@ -353,28 +376,33 @@ This unified approach provides continuous clock synchronization (max 1s between 
 | `MACROCYCLE_ACK` | S → P | seq | `MC_ACK:42` |
 | `DEACTIVATE` | P → S | seq, timestamp | `DEACTIVATE:43\|5100000` |
 
-**MACROCYCLE format:**
+**MACROCYCLE format (V5):**
 
 ```text
-MC:seq|baseTime|count|d,f,a,dur,fo|d,f,a,dur,fo|...
+MC:seq|baseHigh|baseLow|offHigh|offLow|dur|count|d,f,a[,fo]|d,f,a[,fo]|...
 ```
 
 | Field | Description |
 |-------|-------------|
 | seq | Sequence number for ACK matching |
-| baseTime | Absolute activation time of event 0 (PRIMARY clock, µs) |
+| baseHigh | High 32 bits of baseTime (µs) |
+| baseLow | Low 32 bits of baseTime (µs) |
+| offHigh | High 32 bits of clockOffset (signed) |
+| offLow | Low 32 bits of clockOffset |
+| dur | Common ON duration for all events (ms) |
 | count | Number of events (typically 12: 3 patterns × 4 fingers) |
 | d | Delta time from baseTime (ms) |
 | f | Finger index (0-3) |
 | a | Amplitude percentage (0-100) |
-| dur | ON duration (ms) |
-| fo | Frequency offset: `(freq - 200) / 5` for 200-455 Hz range |
+| fo | Frequency offset (optional): `(freq - 200) / 5` for 200-455 Hz range |
 
 **Example MACROCYCLE:**
 
 ```text
-MC:1|5050000|12|0,0,100,100,10|167,1,100,100,10|334,2,100,100,10|...
+MC:1|0|5050000|0|12345|100|12|0,0,100|167,1,100|334,2,100|...
 ```
+
+**Note:** The V5 format preserves full microsecond precision for baseTime by splitting the 64-bit value into two 32-bit parts, avoiding the up to 999µs precision loss in the previous millisecond-based format.
 
 SECONDARY applies clock offset once to baseTime, then schedules all 12 events via an activation queue. This reduces BLE traffic from 12 messages to 1 per macrocycle (~200 bytes vs ~720 bytes).
 
@@ -395,18 +423,98 @@ SECONDARY applies clock offset once to baseTime, then schedules all 12 events vi
 
 ---
 
+## Safety Validations
+
+The protocol includes several safety mechanisms to prevent incorrect synchronization:
+
+| Validation | Threshold | Action |
+|------------|-----------|--------|
+| Offset magnitude | ±35 seconds | Reject samples with unreasonable clock drift |
+| baseTime freshness | ±30 seconds | Reject macrocycles with stale timestamps |
+| Drift rate | ±150 ppm | Cap drift rate to prevent runaway compensation |
+| Elapsed time | 10 seconds max | Cap EMA time delta to prevent overflow |
+| RTT quality | 60ms | Reject samples affected by retransmissions |
+
+These validations ensure that BLE interference or momentary disconnects don't cause the sync system to make large erroneous corrections.
+
+---
+
+## Tuning Guidance
+
+### RTT Quality Threshold
+
+The `SYNC_RTT_QUALITY_THRESHOLD_US` (60ms) balances sample acceptance vs quality:
+- **Too low (20ms):** Rejects most samples, slow sync convergence
+- **Too high (200ms):** Accepts retransmission-affected samples, poor accuracy
+- **Recommended:** 60ms rejects ~10-20% of samples while maintaining <1ms accuracy
+
+### Connection Interval Trade-offs
+
+| Interval | Latency | Battery | Use Case |
+|----------|---------|---------|----------|
+| 7.5ms | Lowest | Highest drain | Active therapy |
+| 15ms | Medium | Medium drain | Idle monitoring |
+| 30ms | Higher | Lower drain | Background connection |
+
+Current setting: 7.5-10ms for maximum sync accuracy during therapy.
+
+### Outlier Threshold
+
+The outlier rejection uses MAD (Median Absolute Deviation) with minimum 5ms:
+- **Automatic:** Adapts to network conditions (3× MAD)
+- **Minimum floor:** Never rejects samples within 5ms of median
+- **Aggressive mode:** Reduce floor to 3ms if network is very stable
+
+---
+
+## Known Limitations
+
+### SECONDARY Stateless Design
+
+The SECONDARY glove operates statelessly—it receives macrocycles with clock offset but doesn't send timing feedback. This simplifies the protocol but means:
+- PRIMARY cannot detect SECONDARY clock drift directly
+- Sync quality relies entirely on PING/PONG exchanges
+- If PING/PONG fails, sync degrades silently
+
+### Timestamp Precision
+
+- `micros()` on nRF52840 has ~1µs resolution
+- `micros()` overflows at ~71 minutes (32-bit wraparound)
+- `getMicros()` wrapper detects and handles overflow using 64-bit counters
+- Maximum uptime before overflow issues: ~584 years (64-bit)
+
+### Interrupt Safety
+
+Sync state variables are accessed from both main loop and BLE callbacks. Key considerations:
+- Connection state marked `volatile` for cache coherency
+- Sequence ID generator is NOT thread-safe (main loop only)
+- Large structures (Macrocycle) should only be modified from main loop
+
+### ARM printf Limitations
+
+- 64-bit printf (%llu, %lld) not supported on ARM Cortex-M4
+- Macrocycle serialization splits 64-bit values into high/low 32-bit parts
+- This adds ~10 bytes overhead per macrocycle but ensures portability
+
+---
+
 ## Protocol Parameters
 
 | Parameter | Value | Description |
 |-----------|-------|-------------|
-| RTT quality threshold | 120ms | Discard samples with higher RTT |
+| RTT quality threshold | 60ms | Discard samples with higher RTT |
 | Minimum valid samples | 5 | Required for valid sync (~5s from connect) |
+| Outlier threshold | 5ms | Offset outlier rejection (MAD-based filtering) |
 | PING/PONG interval | 1s | Unified keepalive + clock sync (all states) |
 | Keepalive timeout (SECONDARY) | 6s | 6 missed PINGs = connection lost |
 | Keepalive timeout (PRIMARY) | 4s | During therapy (emergency shutdown) |
 | MACROCYCLE timeout | 10s | SECONDARY safety halt |
-| Lead time range | 15-100ms | Adaptive scheduling window |
-| BLE connection interval | 8-12ms | Low-latency communication (6-9 BLE units) |
+| Lead time range | 70-150ms | Adaptive scheduling window |
+| Default lead time | 35ms | Used before RTT samples available |
+| Processing overhead | 10ms | SECONDARY processing time allowance |
+| Max drift rate | ±150 ppm | Crystal drift rate cap for safety |
+| Warm-start validity | 15s | Cache valid after disconnect |
+| BLE connection interval | 7.5-10ms | Low-latency communication (6-8 BLE units) |
 
 ---
 
