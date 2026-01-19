@@ -2695,6 +2695,23 @@ void handleSerialCommand(const char *command)
                       (unsigned long)syncProtocol.calculateAdaptiveLeadTime(),
                       syncProtocol.calculateAdaptiveLeadTime() / 1000.0f);
         Serial.printf("Time Since Sync:    %lu ms\n", (unsigned long)syncProtocol.getTimeSinceSync());
+        Serial.println(F("-------------------------------------"));
+
+        // Path Asymmetry (Phase 1 diagnostics)
+        Serial.println(F("PATH ASYMMETRY (Phase 1):"));
+        Serial.printf("  Raw (last):     %+ld μs\n", (long)syncProtocol.getRawAsymmetry());
+        Serial.printf("  Smoothed:       %+ld μs\n", (long)syncProtocol.getSmoothedAsymmetry());
+        Serial.printf("  Variance:       %lu μs\n", (unsigned long)syncProtocol.getAsymmetryVariance());
+        Serial.printf("  Samples:        %u\n", syncProtocol.getAsymmetrySampleCount());
+        Serial.printf("  Phone during:   %s\n", syncProtocol.wasPhoneConnectedDuringSync() ? "YES" : "NO");
+
+        // Phase 2 readiness check
+        bool varianceStable = syncProtocol.getAsymmetryVariance() < SYNC_ASYMMETRY_STABLE_VARIANCE_US;
+        bool enoughSamples = syncProtocol.getAsymmetrySampleCount() >= SYNC_ASYMMETRY_MIN_SAMPLES;
+        Serial.printf("  Phase 2 Ready:  %s\n",
+                      (varianceStable && enoughSamples) ? "YES (variance stable)" :
+                      (!enoughSamples) ? "NO (need more samples)" : "NO (variance too high)");
+
         Serial.println(F("=====================================\n"));
         return;
     }
