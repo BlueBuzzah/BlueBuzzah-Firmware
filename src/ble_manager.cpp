@@ -6,6 +6,7 @@
  */
 
 #include "ble_manager.h"
+#include "sync_protocol.h"  // For getMicros() - overflow-safe 64-bit timestamp
 
 // =============================================================================
 // GLOBAL INSTANCE (needed for static callbacks)
@@ -123,10 +124,10 @@ bool BLEManager::begin(DeviceRole role, const char* deviceName) {
     Bluefruit.setTxPower(0);
 
     // Configure connection parameters for low-latency communication
-    // Phase 3: Reduced from 7.5ms to 5ms minimum for lower jitter
+    // Reduced from 7.5ms to 5ms minimum for lower jitter
     // Values in 1.25ms units (BLE spec): N * 1.25ms = actual interval
     // Both roles need this for proper PTP clock sync (RTT < 30ms required)
-    constexpr uint16_t connIntervalMin = (BLE_INTERVAL_MIN_MS * 1000) / 1250;  // 5ms -> 4 units
+    constexpr uint16_t connIntervalMin = static_cast<uint16_t>((BLE_INTERVAL_MIN_MS * 1000) / 1250);  // 7.5ms -> 6 units
     constexpr uint16_t connIntervalMax = (BLE_INTERVAL_MAX_MS * 1000) / 1250;  // 10ms -> 8 units
     if (role == DeviceRole::PRIMARY) {
         // PRIMARY is peripheral - phone/SECONDARY connect to us
@@ -247,11 +248,24 @@ void BLEManager::update() {
                 conn->type = ConnectionType::PHONE;
                 conn->pendingIdentify = false;
 
+                // Query and log connection interval
+                queryConnectionInterval(conn->connHandle);
+
                 // Fire connect callback
                 if (_connectCallback) {
                     _connectCallback(conn->connHandle, ConnectionType::PHONE);
                 }
             }
+        }
+    }
+
+    // Check for pending interval requeries
+    for (int i = 0; i < MAX_CONNECTIONS; i++) {
+        BBConnection* conn = &_connections[i];
+        if (conn->isConnected && conn->pendingIntervalRequery &&
+            now >= conn->intervalRequeryTime) {
+            conn->pendingIntervalRequery = false;
+            queryConnectionInterval(conn->connHandle);
         }
     }
 }
@@ -632,9 +646,69 @@ ConnectionType BLEManager::identifyConnectionType(uint16_t connHandle [[maybe_un
     }
 }
 
-void BLEManager::processIncomingData(uint16_t connHandleParam, const uint8_t* data, uint16_t len) {
+void BLEManager::queryConnectionInterval(uint16_t connHandleParam) {
+    BBConnection* conn = findConnection(connHandleParam);
+    if (!conn || !conn->isConnected) return;
+
+    BLEConnection* bleConn = Bluefruit.Connection(connHandleParam);
+    if (!bleConn) {
+        Serial.printf("[BLE] WARN: Cannot query interval for handle %d\n", connHandleParam);
+        return;
+    }
+
+    uint16_t intervalUnits = bleConn->getConnectionInterval();
+    if (intervalUnits == 0) {
+        Serial.printf("[BLE] WARN: Interval query returned 0 for handle %d, scheduling retry\n", connHandleParam);
+        conn->pendingIntervalRequery = true;
+        conn->intervalRequeryTime = millis() + 200;  // Retry in 200ms
+        return;
+    }
+    conn->pendingIntervalRequery = false;  // Clear flag on success
+
+    conn->negotiatedIntervalUnits = intervalUnits;
+    conn->intervalQueriedAt = millis();
+
+    float intervalMs = intervalUnits * 1.25f;
+    const char* typeName = (conn->type == ConnectionType::PHONE) ? "PHONE" :
+                           (conn->type == ConnectionType::SECONDARY) ? "SECONDARY" :
+                           (conn->type == ConnectionType::PRIMARY) ? "PRIMARY" : "UNKNOWN";
+
+    if (intervalMs > BLE_INTERVAL_WARNING_THRESHOLD_MS) {
+        Serial.printf("[BLE] WARN: %s interval %.1fms exceeds target (%.1f-%.1fms)\n",
+                      typeName, intervalMs, BLE_INTERVAL_MIN_MS, BLE_INTERVAL_MAX_MS);
+    } else {
+        Serial.printf("[BLE] %s connection interval: %.1fms\n", typeName, intervalMs);
+    }
+}
+
+float BLEManager::getConnectionIntervalMs(uint16_t connHandleParam) const {
+    for (int i = 0; i < MAX_CONNECTIONS; i++) {
+        if (_connections[i].connHandle == connHandleParam && _connections[i].isConnected) {
+            if (_connections[i].negotiatedIntervalUnits == 0) return 0.0f;
+            return _connections[i].negotiatedIntervalUnits * 1.25f;
+        }
+    }
+    return 0.0f;
+}
+
+float BLEManager::getSecondaryConnectionIntervalMs() const {
+    for (int i = 0; i < MAX_CONNECTIONS; i++) {
+        if (_connections[i].type == ConnectionType::SECONDARY && _connections[i].isConnected) {
+            if (_connections[i].negotiatedIntervalUnits == 0) return 0.0f;
+            return _connections[i].negotiatedIntervalUnits * 1.25f;
+        }
+    }
+    return 0.0f;
+}
+
+void BLEManager::processIncomingData(uint16_t connHandleParam, const uint8_t* data, uint16_t len, uint64_t rxTimestamp) {
     BBConnection* conn = findConnection(connHandleParam);
     if (!conn) return;
+
+    // Capture timestamp for first byte of message (if buffer was empty)
+    if (conn->rxIndex == 0) {
+        conn->rxTimestamp = rxTimestamp;
+    }
 
     // Append data to buffer
     for (uint16_t i = 0; i < len && conn->rxIndex < RX_BUFFER_SIZE - 1; i++) {
@@ -681,6 +755,7 @@ void BLEManager::deliverMessage(BBConnection* conn, uint16_t connHandleParam) {
             Serial.println(F("[BLE] Received IDENTIFY:SECONDARY"));
             conn->type = ConnectionType::SECONDARY;
             conn->pendingIdentify = false;
+            queryConnectionInterval(connHandleParam);
             if (_connectCallback) {
                 _connectCallback(connHandleParam, ConnectionType::SECONDARY);
             }
@@ -689,6 +764,7 @@ void BLEManager::deliverMessage(BBConnection* conn, uint16_t connHandleParam) {
             Serial.println(F("[BLE] Received IDENTIFY:PHONE"));
             conn->type = ConnectionType::PHONE;
             conn->pendingIdentify = false;
+            queryConnectionInterval(connHandleParam);
             if (_connectCallback) {
                 _connectCallback(connHandleParam, ConnectionType::PHONE);
             }
@@ -696,16 +772,21 @@ void BLEManager::deliverMessage(BBConnection* conn, uint16_t connHandleParam) {
         }
     }
 
-    // Normal message - deliver to callback
+    // Normal message - deliver to callback with captured RX timestamp
     if (_messageCallback) {
-        _messageCallback(connHandleParam, conn->rxBuffer);
+        _messageCallback(connHandleParam, conn->rxBuffer, conn->rxTimestamp);
     }
 }
 
-void BLEManager::processClientIncomingData(const uint8_t* data, uint16_t len) {
+void BLEManager::processClientIncomingData(const uint8_t* data, uint16_t len, uint64_t rxTimestamp) {
     // Find PRIMARY connection (SECONDARY mode)
     BBConnection* conn = findConnectionByType(ConnectionType::PRIMARY);
     if (!conn) return;
+
+    // Capture timestamp for first byte of message (if buffer was empty)
+    if (conn->rxIndex == 0) {
+        conn->rxTimestamp = rxTimestamp;
+    }
 
     // Append data to buffer
     for (uint16_t i = 0; i < len && conn->rxIndex < RX_BUFFER_SIZE - 1; i++) {
@@ -722,7 +803,7 @@ void BLEManager::processClientIncomingData(const uint8_t* data, uint16_t len) {
             conn->rxBuffer[conn->rxIndex] = '\0';
 
             if (conn->rxIndex > 0 && _messageCallback) {
-                _messageCallback(conn->connHandle, conn->rxBuffer);
+                _messageCallback(conn->connHandle, conn->rxBuffer, conn->rxTimestamp);
             }
 
             // Reset buffer for next message
@@ -748,6 +829,15 @@ void BLEManager::_onPeriphConnect(uint16_t connHandleParam) {
     if (!g_bleManager) return;
 
     Serial.printf("[BLE] Peripheral connected: handle=%d\n", connHandleParam);
+
+    // Request 2M PHY for faster BLE transmission (reduces latency)
+#ifdef BLE_USE_2M_PHY
+    BLEConnection* bleConn = Bluefruit.Connection(connHandleParam);
+    if (bleConn) {
+        bleConn->requestPHY(BLE_GAP_PHY_2MBPS);
+        Serial.println(F("[BLE] Requested 2M PHY upgrade"));
+    }
+#endif
 
     // Find free connection slot
     BBConnection* conn = g_bleManager->findFreeConnection();
@@ -803,6 +893,15 @@ void BLEManager::_onCentralConnect(uint16_t connHandle) {
 
     Serial.printf("[BLE] Central connected to PRIMARY: handle=%d\n", connHandle);
 
+    // Request 2M PHY for faster BLE transmission (reduces latency)
+#ifdef BLE_USE_2M_PHY
+    BLEConnection* bleConn = Bluefruit.Connection(connHandle);
+    if (bleConn) {
+        bleConn->requestPHY(BLE_GAP_PHY_2MBPS);
+        Serial.println(F("[BLE] Requested 2M PHY upgrade"));
+    }
+#endif
+
     // Find free connection slot
     BBConnection* conn = g_bleManager->findFreeConnection();
     if (!conn) {
@@ -829,6 +928,9 @@ void BLEManager::_onCentralConnect(uint16_t connHandle) {
         Bluefruit.disconnect(connHandle);
         return;
     }
+
+    // Query and log connection interval
+    g_bleManager->queryConnectionInterval(connHandle);
 
     // Notify callback
     if (g_bleManager->_connectCallback) {
@@ -886,23 +988,31 @@ void BLEManager::_onScanCallback(ble_gap_evt_adv_report_t* report) {
 void BLEManager::_onUartRx(uint16_t connHandle) {
     if (!g_bleManager) return;
 
+    // CRITICAL: Capture timestamp IMMEDIATELY when data arrives
+    // This provides the most accurate RX timestamp for sync calculations
+    uint64_t rxTimestamp = getMicros();
+
     // Read available data
     uint8_t buf[64];
     int len = g_bleManager->_uartService.read(buf, sizeof(buf));
 
     if (len > 0) {
-        g_bleManager->processIncomingData(connHandle, buf, static_cast<uint16_t>(len));
+        g_bleManager->processIncomingData(connHandle, buf, static_cast<uint16_t>(len), rxTimestamp);
     }
 }
 
 void BLEManager::_onClientUartRx(BLEClientUart& clientUart) {
     if (!g_bleManager) return;
 
+    // CRITICAL: Capture timestamp IMMEDIATELY when data arrives
+    // This provides the most accurate RX timestamp for sync calculations
+    uint64_t rxTimestamp = getMicros();
+
     // Read available data
     uint8_t buf[64];
     int len = clientUart.read(buf, sizeof(buf));
 
     if (len > 0) {
-        g_bleManager->processClientIncomingData(buf, static_cast<uint16_t>(len));
+        g_bleManager->processClientIncomingData(buf, static_cast<uint16_t>(len), rxTimestamp);
     }
 }

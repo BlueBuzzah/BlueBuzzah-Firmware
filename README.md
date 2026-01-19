@@ -11,7 +11,7 @@ BlueBuzzah is a medical device research platform implementing vibrotactile Coord
 
 ## Features
 
-- **Bilateral Synchronization**: Sub-10ms synchronization between left and right gloves
+- **Bilateral Synchronization**: Sub-millisecond (<1ms) synchronization between left and right gloves
 - **Research-Based Therapy**: Regular vCR, Noisy vCR, and Hybrid vCR profiles
 - **Mobile Control**: Comprehensive BLE protocol for iOS/Android app integration
 - **Real-Time Session Management**: Pause, resume, and progress tracking

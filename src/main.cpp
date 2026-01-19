@@ -81,6 +81,12 @@ volatile uint32_t bootWindowStart = 0;    // When SECONDARY connected (starts co
 volatile bool bootWindowActive = false;   // Whether we're waiting for phone
 bool autoStartTriggered = false; // Prevent repeated auto-starts (only accessed from main loop)
 
+// Sync validity delayed start (PRIMARY only)
+// If sync not valid when auto-start triggers, retry after 1 second
+bool autoStartScheduled = false;   // Whether we're waiting to retry auto-start
+uint32_t autoStartTime = 0;        // When to retry auto-start (millis)
+uint8_t g_autoStartRetryCount = 0; // Auto-start sync retry counter (reset on SECONDARY disconnect)
+
 // Keepalive monitoring (bidirectional via PING/PONG)
 // MUST be volatile: updated in BLE callback context, read in main loop
 volatile uint32_t lastKeepaliveReceived = 0;  // SECONDARY: Last PING/BUZZ from PRIMARY
@@ -111,8 +117,35 @@ LEDPattern savedLedPattern = LEDPattern::SOLID;
 static volatile bool g_pendingFlashActive = false;
 static volatile uint64_t g_pendingFlashTime = 0;
 
+// PHY change detection (SECONDARY only - resets RTT statistics on PHY upgrade)
+// Written in BLE event callback context, read in main loop
+static volatile bool g_phyChangeDetected = false;
+static volatile uint8_t g_newPhy = 0;  // 1=1M, 2=2M, 4=Coded
+
 // Finger names for display (4 fingers per hand - index through pinky, no thumb per v1)
 const char *FINGER_NAMES[] = {"Index", "Middle", "Ring", "Pinky"};
+
+// =============================================================================
+// ATOMIC 64-BIT ACCESS HELPERS
+// =============================================================================
+// On 32-bit ARM, 64-bit reads/writes are NOT atomic. A read can see a
+// partially-written value (torn read) when the write is interrupted mid-update.
+// These helpers disable interrupts to ensure atomic access.
+
+static inline uint64_t atomicRead64(volatile uint64_t* ptr) {
+    uint32_t primask = __get_PRIMASK();
+    __disable_irq();
+    uint64_t val = *ptr;
+    __set_PRIMASK(primask);
+    return val;
+}
+
+static inline void atomicWrite64(volatile uint64_t* ptr, uint64_t val) {
+    uint32_t primask = __get_PRIMASK();
+    __disable_irq();
+    *ptr = val;
+    __set_PRIMASK(primask);
+}
 
 // =============================================================================
 // FREERTOS MOTOR TASK
@@ -148,14 +181,14 @@ static void preSelectNextActivation() {
  *
  * M1 fix: Captures lateness AFTER motor I2C operations for accurate timing.
  * H6 fix: Handles 64-bit lateness values correctly in printf.
- * Phase 2: Uses I2C pre-selection for faster activation when available.
+ * Uses I2C pre-selection for faster activation when available.
  */
 static void executeMotorEvent(const MotorEvent& event) {
     uint64_t beforeOp = getMicros();
 
     if (event.type == MotorEventType::ACTIVATE) {
         if (haptic.isEnabled(event.finger)) {
-            // Phase 2: Check if this finger is pre-selected for fast-path activation
+            // Check if this finger is pre-selected for fast-path activation
             bool usedFastPath = false;
             if (haptic.getPreSelectedFinger() == static_cast<int8_t>(event.finger)) {
                 // Fast path: Channel already selected, frequency already set
@@ -222,7 +255,7 @@ static void executeMotorEvent(const MotorEvent& event) {
             }
         }
 
-        // Phase 2: Pre-select next activation's channel while we have time
+        // Pre-select next activation's channel while we have time
         // This moves mux selection OFF the critical path for the next ACTIVATE
         preSelectNextActivation();
     }
@@ -326,7 +359,7 @@ void sendPing();
 // BLE Callbacks
 void onBLEConnect(uint16_t connHandle, ConnectionType type);
 void onBLEDisconnect(uint16_t connHandle, ConnectionType type, uint8_t reason);
-void onBLEMessage(uint16_t connHandle, const char *message);
+void onBLEMessage(uint16_t connHandle, const char *message, uint64_t rxTimestamp);
 
 // Therapy Callbacks
 void onSendMacrocycle(const Macrocycle& macrocycle);
@@ -359,6 +392,9 @@ void executeDeferredWork(DeferredWorkType type, uint8_t p1, uint8_t p2, uint32_t
 
 // Serial-Only Commands (not available via BLE)
 void handleSerialCommand(const char *command);
+
+// BLE Event Callback (PHY change detection)
+void onBLEEvent(ble_evt_t* evt);
 
 // Role Configuration Wait (blocks until role is set)
 void waitForRoleConfiguration();
@@ -663,7 +699,8 @@ void loop()
     if (g_pendingFlashActive)
     {
         uint64_t nowUs = getMicros();
-        if (nowUs >= g_pendingFlashTime)
+        // Use atomic read to prevent torn reads on 32-bit ARM
+        if (nowUs >= atomicRead64(&g_pendingFlashTime))
         {
             g_pendingFlashActive = false;
             triggerDebugFlash();
@@ -682,6 +719,29 @@ void loop()
 
     // Process BLE events (includes non-blocking TX queue)
     ble.update();
+
+    // Handle PHY change detection (SECONDARY only)
+    // When PHY upgrades from 1M to 2M, RTT changes significantly - reset statistics
+    if (g_phyChangeDetected)
+    {
+        g_phyChangeDetected = false;
+        uint8_t newPhy = g_newPhy;
+
+        const char* phyStr = (newPhy == 2) ? "2M" : (newPhy == 1) ? "1M" : "Coded";
+        Serial.printf("[BLE] PHY changed to %s - resetting RTT and asymmetry statistics\n", phyStr);
+
+        syncProtocol.resetLatency();
+        syncProtocol.resetAsymmetryTracking();
+
+        // Reset clock sync if few samples collected during PHY transition
+        // (samples before and after PHY change have inconsistent RTT)
+        if (syncProtocol.getOffsetSampleCount() > 0 &&
+            syncProtocol.getOffsetSampleCount() < SYNC_MIN_VALID_SAMPLES)
+        {
+            syncProtocol.resetClockSync();
+            Serial.println(F("[SYNC] Clock sync reset due to PHY transition"));
+        }
+    }
 
     // Motor events handled by motor task - no polling needed
 
@@ -799,6 +859,13 @@ void loop()
                 bootWindowActive = false;
             }
         }
+    }
+
+    // Check for scheduled auto-start retry (sync wasn't valid on first attempt)
+    if (autoStartScheduled && millis() >= autoStartTime)
+    {
+        autoStartScheduled = false;
+        autoStartTherapy();
     }
 
     // Periodic latency metrics reporting (when enabled and therapy running)
@@ -963,6 +1030,12 @@ bool initializeBLE()
         return false;
     }
 
+    // Register PHY change callback (both roles)
+    // Detects 1M -> 2M PHY upgrades so we can reset RTT statistics
+    // PRIMARY also uses RTT for adaptive lead time calculation
+    Bluefruit.setEventCallback(onBLEEvent);
+    Serial.println(F("[BLE] PHY change event callback registered"));
+
     // Start scanning for SECONDARY role
     // Note: PRIMARY advertising is started in setupAdvertising() during ble.begin()
     if (deviceRole == DeviceRole::SECONDARY)
@@ -1073,6 +1146,9 @@ void onBLEConnect(uint16_t connHandle, ConnectionType type)
     Serial.printf("[CONNECT] Handle: %d, Type: %s\n", connHandle, typeStr);
 
     // If SECONDARY device connected to PRIMARY, send identification
+    // Note: SECONDARY has no warm-start logic because it doesn't maintain sync state.
+    // SECONDARY receives clock offset from PRIMARY in every MACROCYCLE message, so it
+    // simply waits for the next MACROCYCLE after reconnection.
     if (deviceRole == DeviceRole::SECONDARY && type == ConnectionType::PRIMARY)
     {
         Serial.println(F("[SECONDARY] Sending IDENTIFY:SECONDARY to PRIMARY"));
@@ -1101,9 +1177,18 @@ void onBLEConnect(uint16_t connHandle, ConnectionType type)
             Serial.printf("[BOOT] SECONDARY connected at %lu - starting 30s boot window for phone\n",
                           (unsigned long)bootWindowStart);
 
-            // Reset clock sync - idle keepalive (2s) will establish sync before therapy starts
+            // Reset clock sync state
             syncProtocol.resetClockSync();
-            Serial.println(F("[SYNC] Clock sync reset - idle keepalive will establish sync"));
+
+            // Try warm-start if recent disconnect (cache preserved across resetClockSync)
+            if (syncProtocol.tryWarmStart())
+            {
+                Serial.println(F("[SYNC] Warm-start mode - need 3 confirmatory samples (~3s)"));
+            }
+            else
+            {
+                Serial.println(F("[SYNC] Cold start - need 5 samples for sync (~5s)"));
+            }
         }
         else if (type == ConnectionType::PHONE && bootWindowActive)
         {
@@ -1141,6 +1226,28 @@ void onBLEDisconnect(uint16_t connHandle, ConnectionType type, uint8_t reason)
     Serial.printf("[DISCONNECT] Handle: %d, Type: %s, Reason: 0x%02X\n",
                   connHandle, typeStr, reason);
 
+    // Log HCI disconnect reason for diagnostics (helps identify interference vs intentional)
+    const char *reasonStr = "UNKNOWN";
+    switch (reason)
+    {
+    case 0x08:
+        reasonStr = "SUPERVISION_TIMEOUT";
+        break;
+    case 0x13:
+        reasonStr = "REMOTE_TERMINATED";
+        break;
+    case 0x16:
+        reasonStr = "LOCAL_TERMINATED";
+        break;
+    case 0x22:
+        reasonStr = "LMP_TIMEOUT";
+        break;
+    case 0x3B:
+        reasonStr = "CONN_PARAMS_REJECTED";
+        break;
+    }
+    Serial.printf("[DISCONNECT] HCI Reason: %s\n", reasonStr);
+
     // Update state machine on relevant disconnections
     if ((deviceRole == DeviceRole::PRIMARY && type == ConnectionType::SECONDARY) ||
         (deviceRole == DeviceRole::SECONDARY && type == ConnectionType::PRIMARY))
@@ -1163,6 +1270,13 @@ void onBLEDisconnect(uint16_t connHandle, ConnectionType type, uint8_t reason)
         {
             bootWindowActive = false;
             Serial.println(F("[BOOT] SECONDARY disconnected - boot window cancelled"));
+        }
+
+        // PRIMARY: Reset auto-start retry counter on SECONDARY disconnect
+        // Prevents stale counter from causing immediate give-up on reconnection
+        if (deviceRole == DeviceRole::PRIMARY)
+        {
+            g_autoStartRetryCount = 0;
         }
     }
     else if (deviceRole == DeviceRole::PRIMARY && type == ConnectionType::PHONE)
@@ -1264,11 +1378,11 @@ void executeDeferredWork(DeferredWorkType type, uint8_t p1, uint8_t p2, uint32_t
     }
 }
 
-void onBLEMessage(uint16_t connHandle [[maybe_unused]], const char *message)
+void onBLEMessage(uint16_t connHandle [[maybe_unused]], const char *message, uint64_t rxTimestamp)
 {
-    // CRITICAL: Capture receive timestamp FIRST, before any parsing
-    // This minimizes jitter for PTP clock synchronization
-    uint64_t rxTimestamp = getMicros();
+    // rxTimestamp is captured at the earliest possible point in the BLE stack
+    // (immediately when data is received in _onUartRx/_onClientUartRx)
+    // This provides maximum accuracy for PTP clock synchronization
 
     // Check for simple text commands first (for testing)
     // Both PRIMARY and SECONDARY can run standalone tests for hardware verification
@@ -1465,7 +1579,7 @@ void onBLEMessage(uint16_t connHandle [[maybe_unused]], const char *message)
         if (deviceRole == DeviceRole::PRIMARY)
         {
             lastSecondaryKeepalive = millis();
-            // TODO: TherapyEngine will handle ACK tracking in Phase 4
+            // TODO: TherapyEngine will handle ACK tracking (future enhancement)
             if (profiles.getDebugMode())
             {
                 // Parse sequence ID from message
@@ -1522,6 +1636,7 @@ void onBLEMessage(uint16_t connHandle [[maybe_unused]], const char *message)
             break;
 
         case SyncCommandType::PONG:
+        {
             // PRIMARY: Any PONG proves SECONDARY is alive (keepalive)
             // Update keepalive UNCONDITIONALLY - don't require pingT1 > 0
             // (PONG might arrive late after pingT1 cleared, but still proves link alive)
@@ -1531,13 +1646,15 @@ void onBLEMessage(uint16_t connHandle [[maybe_unused]], const char *message)
             }
 
             // PRIMARY: Calculate RTT and PTP clock offset (requires valid pingT1)
-            if (deviceRole == DeviceRole::PRIMARY && pingT1 > 0)
+            // Use atomic read to prevent torn reads on 32-bit ARM
+            uint64_t t1_atomic = atomicRead64(&pingT1);
+            if (deviceRole == DeviceRole::PRIMARY && t1_atomic > 0)
             {
 
                 // T4 = rxTimestamp captured at callback entry (before parsing)
                 // This gives us the most accurate receive timestamp
                 uint64_t t4 = rxTimestamp;
-                uint64_t t1 = pingT1;
+                uint64_t t1 = t1_atomic;
 
                 // Parse T2 and T3 from PONG data
                 // Format depends on whether high bits are used (see createPongWithTimestamps)
@@ -1610,23 +1727,29 @@ void onBLEMessage(uint16_t connHandle [[maybe_unused]], const char *message)
                     latencyMetrics.recordRtt(rtt);
                 }
 
-                // Enhanced logging (DEBUG only)
+                // Record path asymmetry for diagnostics (measurement only)
+                bool phoneConnected = ble.isPhoneConnected();
+                syncProtocol.recordAsymmetry(t1, t2, t3, t4, phoneConnected);
+
+                // Enhanced logging with asymmetry (DEBUG only)
                 if (profiles.getDebugMode())
                 {
-                    Serial.printf("[SYNC] RTT=%lu offset_raw=%ld offset_median=%ld offset_corrected=%ld valid=%d samples=%u %s\n",
+                    Serial.printf("[SYNC] RTT=%lu offset=%ld asym=%ld asym_sm=%ld phone=%d samples=%u %s\n",
                                   (unsigned long)rtt,
                                   (long)offset,
-                                  (long)syncProtocol.getMedianOffset(),
-                                  (long)syncProtocol.getCorrectedOffset(),
-                                  syncProtocol.isClockSyncValid() ? 1 : 0,
+                                  (long)syncProtocol.getRawAsymmetry(),
+                                  (long)syncProtocol.getSmoothedAsymmetry(),
+                                  phoneConnected ? 1 : 0,
                                   syncProtocol.getOffsetSampleCount(),
                                   sampleAccepted ? "" : "(rejected)");
                 }
 
-                pingT1 = 0; // Clear for next PING
-                pingStartTime = 0;
+                // Use atomic writes for consistency with atomic reads
+                atomicWrite64(&pingT1, 0);
+                atomicWrite64(&pingStartTime, 0);
             }
-            break;
+        }
+        break;
 
         case SyncCommandType::BUZZ:
         {
@@ -1692,7 +1815,8 @@ void onBLEMessage(uint16_t connHandle [[maybe_unused]], const char *message)
                     // processing for ~300ms, causing MACROCYCLE messages to queue up
                     // and arrive after their scheduled execution time.
                     // Now we store the flash time and check it in the main loop.
-                    g_pendingFlashTime = localFlashTime;
+                    // Use atomic write since this runs in BLE callback (ISR) context
+                    atomicWrite64(&g_pendingFlashTime, localFlashTime);
                     g_pendingFlashActive = true;
                 }
                 else
@@ -1856,7 +1980,8 @@ void onMacrocycleStart(uint32_t macrocycleCount)
                 // NON-BLOCKING: Schedule local flash for later (checked in main loop)
                 // Critical: We must NOT block here - the MACROCYCLE is sent after this
                 // callback returns. Blocking delays MACROCYCLE transmission!
-                g_pendingFlashTime = flashTime;
+                // Use atomic write to prevent torn reads on 32-bit ARM
+                atomicWrite64(&g_pendingFlashTime, flashTime);
                 g_pendingFlashActive = true;
             }
             else
@@ -1872,7 +1997,8 @@ void onMacrocycleStart(uint32_t macrocycleCount)
                 uint32_t latencyUs = syncProtocol.getMeasuredLatency();
                 if (latencyUs > 0)
                 {
-                    g_pendingFlashTime = getMicros() + latencyUs;
+                    // Use atomic write to prevent torn reads on 32-bit ARM
+                    atomicWrite64(&g_pendingFlashTime, getMicros() + latencyUs);
                     g_pendingFlashActive = true;
                 }
                 else
@@ -1901,6 +2027,13 @@ void startTherapyTest()
     {
         Serial.println(F("[TEST] Therapy already running"));
         return;
+    }
+
+    // Warn if sync not valid when SECONDARY is connected (timing may be off)
+    if (deviceRole == DeviceRole::PRIMARY && ble.isSecondaryConnected() &&
+        !syncProtocol.isClockSyncValid())
+    {
+        Serial.println(F("[WARN] Starting test with invalid sync - timing may be misaligned"));
     }
 
     // Get current profile
@@ -2021,6 +2154,32 @@ void autoStartTherapy()
     {
         Serial.println(F("[AUTO] Therapy already running"));
         return;
+    }
+
+    // Check sync validity before starting therapy (SECONDARY must be synced)
+    // After reconnection, sync requires 5 samples (~5 seconds) to become valid
+    if (ble.isSecondaryConnected() && !syncProtocol.isClockSyncValid())
+    {
+        if (++g_autoStartRetryCount > 10)
+        {
+            // Give up waiting for sync after 10 seconds - start anyway (degraded mode)
+            Serial.println(F("[AUTO] Sync not valid after 10s - starting therapy (timing may be degraded)"));
+            g_autoStartRetryCount = 0;
+            // Fall through to start therapy
+        }
+        else
+        {
+            Serial.printf("[AUTO] Sync not valid (attempt %u/10) - retrying in 1 second\n", g_autoStartRetryCount);
+            // Schedule retry in 1 second
+            autoStartScheduled = true;
+            autoStartTime = millis() + 1000;
+            return;
+        }
+    }
+    else
+    {
+        // Reset retry counter on successful sync or no SECONDARY connected
+        g_autoStartRetryCount = 0;
     }
 
     // Get current profile
@@ -2144,10 +2303,12 @@ void sendPing()
     }
 
     // Record T1 for PTP offset calculation
-    pingT1 = getMicros();
-    pingStartTime = pingT1; // Keep for backward compat
+    // Use atomic writes to prevent torn reads on 32-bit ARM
+    uint64_t t1 = getMicros();
+    atomicWrite64(&pingT1, t1);
+    atomicWrite64(&pingStartTime, t1); // Keep for backward compat
 
-    SyncCommand cmd = SyncCommand::createPingWithT1(g_sequenceGenerator.next(), pingT1);
+    SyncCommand cmd = SyncCommand::createPingWithT1(g_sequenceGenerator.next(), t1);
 
     char buffer[64];
     if (cmd.serialize(buffer, sizeof(buffer)))
@@ -2267,6 +2428,28 @@ void onMenuSendResponse(const char *response)
     {
         ble.sendToPhone(response);
     }
+}
+
+// =============================================================================
+// BLE EVENT CALLBACK (PHY Change Detection)
+// =============================================================================
+
+/**
+ * @brief BLE event callback for PHY change detection
+ *
+ * Runs in SoftDevice context - only sets flags, no I2C/Serial.
+ * When PHY upgrades from 1M to 2M, RTT changes significantly (~20ms to ~10-15ms).
+ * This callback detects the transition so main loop can reset RTT statistics.
+ */
+void onBLEEvent(ble_evt_t* evt)
+{
+    if (evt->header.evt_id != BLE_GAP_EVT_PHY_UPDATE) return;
+
+    ble_gap_evt_phy_update_t* phy = &evt->evt.gap_evt.params.phy_update;
+    if (phy->status != BLE_HCI_STATUS_CODE_SUCCESS) return;
+
+    g_newPhy = phy->tx_phy;
+    g_phyChangeDetected = true;
 }
 
 // =============================================================================
@@ -2512,6 +2695,23 @@ void handleSerialCommand(const char *command)
                       (unsigned long)syncProtocol.calculateAdaptiveLeadTime(),
                       syncProtocol.calculateAdaptiveLeadTime() / 1000.0f);
         Serial.printf("Time Since Sync:    %lu ms\n", (unsigned long)syncProtocol.getTimeSinceSync());
+        Serial.println(F("-------------------------------------"));
+
+        // Path Asymmetry diagnostics
+        Serial.println(F("PATH ASYMMETRY:"));
+        Serial.printf("  Raw (last):     %+ld μs\n", (long)syncProtocol.getRawAsymmetry());
+        Serial.printf("  Smoothed:       %+ld μs\n", (long)syncProtocol.getSmoothedAsymmetry());
+        Serial.printf("  Variance:       %lu μs\n", (unsigned long)syncProtocol.getAsymmetryVariance());
+        Serial.printf("  Samples:        %u\n", syncProtocol.getAsymmetrySampleCount());
+        Serial.printf("  Phone during:   %s\n", syncProtocol.wasPhoneConnectedDuringSync() ? "YES" : "NO");
+
+        // Correction readiness check
+        bool varianceStable = syncProtocol.getAsymmetryVariance() < SYNC_ASYMMETRY_STABLE_VARIANCE_US;
+        bool enoughSamples = syncProtocol.getAsymmetrySampleCount() >= SYNC_ASYMMETRY_MIN_SAMPLES;
+        Serial.printf("  Correction Ready: %s\n",
+                      (varianceStable && enoughSamples) ? "YES (variance stable)" :
+                      (!enoughSamples) ? "NO (need more samples)" : "NO (variance too high)");
+
         Serial.println(F("=====================================\n"));
         return;
     }
@@ -2559,5 +2759,6 @@ void handleSerialCommand(const char *command)
     }
 
     // Not a serial-only command, pass to regular BLE message handler
-    onBLEMessage(0, command);
+    // Use current time as timestamp for serial commands (less critical for serial)
+    onBLEMessage(0, command, getMicros());
 }

@@ -37,23 +37,54 @@ BlueBuzzah v2 is built using Clean Architecture principles, separating concerns 
 
 ### High-Level Structure
 
-```
-+-------------------------------------------------------------+
-|                    Presentation Layer                       |
-|  - BLE Command Handler  - Response Formatter  - LED UI      |
-+-------------------------------------------------------------+
-|                    Application Layer                        |
-|  - Session Manager  - Profile Manager  - Command Processor  |
-+-------------------------------------------------------------+
-|                      Domain Layer                           |
-|  - Therapy Engine  - Pattern Generator  - Sync Protocol     |
-+-------------------------------------------------------------+
-|                   Infrastructure Layer                      |
-|  - BLE Service  - Haptic Driver  - Storage  - Battery Mon   |
-+-------------------------------------------------------------+
-|                      Hardware Layer                         |
-|  - nRF52840  - DRV2605  - TCA9548A  - LRA Motors           |
-+-------------------------------------------------------------+
+```mermaid
+%%{init: {'theme': 'base', 'themeVariables': {
+  'primaryColor': '#0d3a4d',
+  'primaryTextColor': '#fafafa',
+  'primaryBorderColor': '#35B6F2',
+  'lineColor': '#35B6F2',
+  'secondaryColor': '#05212D',
+  'tertiaryColor': '#0a0a0a',
+  'background': '#0a0a0a',
+  'mainBkg': '#0d3a4d',
+  'nodeBorder': '#35B6F2',
+  'clusterBkg': '#05212D',
+  'clusterBorder': '#35B6F2',
+  'titleColor': '#fafafa',
+  'edgeLabelBackground': '#0a0a0a'
+}}}%%
+flowchart TB
+    subgraph PRES["Presentation Layer"]
+        P1["BLE Command Handler"]
+        P2["Response Formatter"]
+        P3["LED UI"]
+    end
+    subgraph APP["Application Layer"]
+        A1["Session Manager"]
+        A2["Profile Manager"]
+        A3["Command Processor"]
+    end
+    subgraph DOMAIN["Domain Layer"]
+        D1["Therapy Engine"]
+        D2["Pattern Generator"]
+        D3["Sync Protocol"]
+    end
+    subgraph INFRA["Infrastructure Layer"]
+        I1["BLE Service"]
+        I2["Haptic Driver"]
+        I3["Storage"]
+        I4["Battery Monitor"]
+    end
+    subgraph HW["Hardware Layer"]
+        H1["nRF52840"]
+        H2["DRV2605"]
+        H3["TCA9548A"]
+        H4["LRA Motors"]
+    end
+    PRES --> APP
+    APP --> DOMAIN
+    DOMAIN --> INFRA
+    INFRA --> HW
 ```
 
 ## Design Principles
@@ -86,7 +117,7 @@ class PatternGenerator {
     // Responsible ONLY for generating patterns
 };
 
-class HardwareController {
+class HapticController {
     // Responsible ONLY for controlling motors
 };
 ```
@@ -115,9 +146,9 @@ public:
 **Liskov Substitution**: Subtypes must be substitutable
 
 ```cpp
-// Any HardwareController implementation can be used interchangeably
-HardwareController* haptic = new DRV2605Controller(...);
-HardwareController* haptic = new MockHapticController();  // For testing
+// Any HapticController implementation can be used interchangeably
+HapticController* haptic = new DRV2605Controller(...);
+HapticController* haptic = new MockHapticController();  // For testing
 ```
 
 **Interface Segregation**: Clients shouldn't depend on unused interfaces
@@ -177,60 +208,57 @@ BlueBuzzah-Firmware/
 ├── include/
 │   ├── config.h                      # Pin definitions, constants
 │   ├── types.h                       # Enums, structs (DeviceRole, TherapyState)
-│   ├── hardware.h                    # Hardware class declarations
+│   ├── hardware.h                    # HapticController, LEDController classes
 │   ├── ble_manager.h                 # BLE management class
 │   ├── therapy_engine.h              # Therapy execution class
 │   ├── sync_protocol.h               # Sync command handling
 │   ├── state_machine.h               # Therapy state machine
 │   ├── menu_controller.h             # Command processing
 │   ├── profile_manager.h             # Profile handling
-│   ├── led_controller.h              # LED animations
-│   ├── session_manager.h             # Session lifecycle
-│   ├── calibration_controller.h      # Calibration workflows
 │   ├── activation_queue.h            # Motor event scheduling queue
-│   └── motor_event_buffer.h          # Motor event ring buffer
+│   ├── motor_event_buffer.h          # Motor event ring buffer
+│   ├── deferred_queue.h              # ISR-safe work queue
+│   └── latency_metrics.h             # Performance tracking
 ├── src/
 │   ├── main.cpp                      # Entry point: setup() + loop()
-│   ├── hardware.cpp                  # Hardware implementations
+│   ├── hardware.cpp                  # HapticController, LEDController implementations
 │   ├── ble_manager.cpp               # BLE implementations
 │   ├── therapy_engine.cpp            # Therapy implementations
 │   ├── sync_protocol.cpp             # Sync implementations
 │   ├── state_machine.cpp             # State machine implementations
 │   ├── menu_controller.cpp           # Menu implementations
 │   ├── profile_manager.cpp           # Profile implementations
-│   ├── led_controller.cpp            # LED implementations
-│   ├── session_manager.cpp           # Session implementations
-│   ├── calibration_controller.cpp    # Calibration implementations
 │   ├── activation_queue.cpp          # Motor event queue implementations
-│   └── motor_event_buffer.cpp        # Motor event buffer implementations
+│   ├── motor_event_buffer.cpp        # Motor event buffer implementations
+│   ├── deferred_queue.cpp            # ISR-safe work queue implementations
+│   └── latency_metrics.cpp           # Performance tracking implementations
 └── data/
     └── settings.json                 # Device configuration (uploaded via LittleFS)
 ```
 
 ### Module Responsibilities
 
-| Module                          | Responsibility                   | Depends On                      |
-| ------------------------------- | -------------------------------- | ------------------------------- |
-| `main.cpp`                      | Entry point (setup/loop)         | All modules                     |
-| `ble_manager.h/.cpp`            | BLE radio, connection management | `bluefruit.h`                   |
-| `therapy_engine.h/.cpp`         | Therapy execution, pattern gen   | `hardware.h`, `sync_protocol.h` |
-| `hardware.h/.cpp`               | Motor control, battery, I2C mux  | DRV2605, TCA9548A libs          |
-| `menu_controller.h/.cpp`        | BLE command processing           | `profile_manager.h`             |
-| `sync_protocol.h/.cpp`          | PRIMARY-SECONDARY messaging      | `ble_manager.h`                 |
-| `profile_manager.h/.cpp`        | Therapy parameter management     | ArduinoJson                     |
-| `state_machine.h/.cpp`          | Therapy state machine            | `types.h`                       |
-| `led_controller.h/.cpp`         | LED animations                   | NeoPixel                        |
-| `session_manager.h/.cpp`        | Session lifecycle                | `state_machine.h`               |
-| `calibration_controller.h/.cpp` | Motor testing                    | `hardware.h`                    |
-| `activation_queue.h/.cpp`       | Motor event scheduling queue     | `types.h`                       |
-| `motor_event_buffer.h/.cpp`     | Motor event ring buffer          | `types.h`                       |
+| Module                          | Responsibility                              | Depends On                      |
+| ------------------------------- | ------------------------------------------- | ------------------------------- |
+| `main.cpp`                      | Entry point (setup/loop)                    | All modules                     |
+| `ble_manager.h/.cpp`            | BLE radio, connection management            | `bluefruit.h`                   |
+| `therapy_engine.h/.cpp`         | Therapy execution, pattern gen              | `hardware.h`, `sync_protocol.h` |
+| `hardware.h/.cpp`               | HapticController, LEDController, battery    | DRV2605, TCA9548A, NeoPixel     |
+| `menu_controller.h/.cpp`        | BLE command processing                      | `profile_manager.h`             |
+| `sync_protocol.h/.cpp`          | PRIMARY-SECONDARY messaging                 | `ble_manager.h`                 |
+| `profile_manager.h/.cpp`        | Therapy parameter management                | ArduinoJson                     |
+| `state_machine.h/.cpp`          | Therapy state machine                       | `types.h`                       |
+| `activation_queue.h/.cpp`       | FreeRTOS motor event scheduling             | `types.h`, FreeRTOS             |
+| `motor_event_buffer.h/.cpp`     | Lock-free ring buffer (BLE→main thread)     | `types.h`                       |
+| `deferred_queue.h/.cpp`         | ISR-safe work queue for blocking ops        | FreeRTOS                        |
+| `latency_metrics.h/.cpp`        | Performance tracking, RTT measurement       | `types.h`                       |
 
 ### Architecture Layers
 
-- **Presentation**: `led_controller`, `menu_controller` (BLE command interface)
-- **Application**: `session_manager`, `calibration_controller`
+- **Presentation**: `LEDController` (in hardware.h), `menu_controller` (BLE command interface)
+- **Application**: `therapy_engine` (session orchestration via callbacks)
 - **Domain**: `therapy_engine`, `sync_protocol`, `state_machine`
-- **Infrastructure**: `ble_manager`, `hardware`, `profile_manager`
+- **Infrastructure**: `ble_manager`, `HapticController`, `profile_manager`
 
 ## Role-Based Architecture
 
@@ -346,7 +374,7 @@ PRIMARY supports **simultaneous connections** to:
 | -------------------------------- | --------------------- | --------------------------------- |
 | `primaryBootSequence()`          | `main.cpp`            | Boot and connection establishment |
 | `runPrimaryLoop()`               | `main.cpp`            | Main therapy loop                 |
-| `SessionManager::startSession()` | `session_manager.cpp` | Sends SYNC:START_SESSION          |
+| `TherapyEngine::startSession()`  | `therapy_engine.cpp`  | Initiates therapy, sends SYNC     |
 | `TherapyEngine::update()`        | `therapy_engine.cpp`  | Pattern generation and motor ctrl |
 
 ### SECONDARY Responsibilities
@@ -391,7 +419,7 @@ Arduino uses two entry functions:
 // Global instances
 DeviceConfig deviceConfig;
 TherapyConfig therapyConfig;
-HardwareController hardware;
+HapticController haptic;
 BLEManager bleManager;
 TherapyEngine therapyEngine;
 StateMachine stateMachine;
@@ -414,7 +442,7 @@ void setup() {
     Serial.printf("[INFO] Role: %s\n", deviceConfig.deviceTag);
 
     // 3. Initialize hardware
-    if (!hardware.begin()) {
+    if (!haptic.begin()) {
         ledController.indicateFailure();
         while (true) { delay(1000); }  // Halt
     }
@@ -527,42 +555,40 @@ void MenuController::processCommand(const char* command,
 
 **Components**:
 
-- `session_manager.h/.cpp`: Session lifecycle management
+- `therapy_engine.h/.cpp`: Session lifecycle via callback-driven architecture
 - `profile_manager.h/.cpp`: Profile loading and validation
-- `calibration_controller.h/.cpp`: Calibration workflows
+- `menu_controller.h/.cpp`: Command routing and response formatting
 
 **Characteristics**:
 
 - Use case implementations
-- Transaction boundaries
+- Callback-driven coordination
 - Error handling and recovery
 
 **Example**:
 
 ```cpp
-// src/session_manager.cpp
+// src/therapy_engine.cpp - callback-driven session start
 
-bool SessionManager::startSession(const char* profileName, uint32_t durationSec) {
-    // Load profile (application service)
-    TherapyConfig config;
-    if (!_profiles.loadProfile(profileName, config)) {
-        return false;
+void TherapyEngine::startSession(uint32_t durationSec, PatternType patternType,
+                                  float timeOnMs, float timeOffMs, float jitterPercent,
+                                  uint8_t amplitude, bool mirrorPattern, uint16_t frequencyHz) {
+    // Store session parameters
+    _durationSec = durationSec;
+    _patternType = patternType;
+    _timeOnMs = timeOnMs;
+    _timeOffMs = timeOffMs;
+    // ... additional parameters
+
+    // Reset session state
+    _sessionActive = true;
+    _sessionStartTime = millis();
+    _cycleCount = 0;
+
+    // Trigger macrocycle start callback (notifies sync_protocol)
+    if (_macrocycleStartCallback) {
+        _macrocycleStartCallback();
     }
-
-    // Validate preconditions
-    if (!canStartSession()) {
-        return false;
-    }
-
-    // Execute therapy (domain service)
-    if (!_engine.startSession(config, durationSec)) {
-        return false;
-    }
-
-    // Update state
-    _stateMachine.transition(StateTrigger::START_SESSION);
-
-    return true;
 }
 ```
 
@@ -624,7 +650,7 @@ void TherapyEngine::executeCycle() {
 **Components**:
 
 - `ble_manager.h/.cpp`: BLE communication
-- `hardware.h/.cpp`: Motor control (DRV2605), battery, I2C mux
+- `hardware.h/.cpp`: HapticController (DRV2605), LEDController, battery
 - `profile_manager.h/.cpp`: LittleFS profile storage
 
 **Characteristics**:
@@ -639,7 +665,7 @@ void TherapyEngine::executeCycle() {
 ```cpp
 // src/hardware.cpp
 
-void HardwareController::activate(uint8_t finger, uint8_t amplitude) {
+void HapticController::activate(uint8_t finger, uint8_t amplitude) {
     // Infrastructure-level details
     _tca.select(finger);
 
@@ -650,7 +676,7 @@ void HardwareController::activate(uint8_t finger, uint8_t amplitude) {
     _motorActive[finger] = true;
 }
 
-void HardwareController::deactivate(uint8_t finger) {
+void HapticController::deactivate(uint8_t finger) {
     _tca.select(finger);
     _drv[finger].setRealtimeValue(0);
     _motorActive[finger] = false;
@@ -711,6 +737,27 @@ if (haptic.getPreSelectedFinger() == event.finger) {
 The system has 11 distinct states to handle all operational scenarios:
 
 ```mermaid
+%%{init: {'theme': 'base', 'themeVariables': {
+  'primaryColor': '#0d3a4d',
+  'primaryTextColor': '#fafafa',
+  'primaryBorderColor': '#35B6F2',
+  'lineColor': '#35B6F2',
+  'secondaryColor': '#05212D',
+  'tertiaryColor': '#0a0a0a',
+  'background': '#0a0a0a',
+  'labelTextColor': '#fafafa',
+  'stateBkg': '#0d3a4d',
+  'stateBorder': '#35B6F2',
+  'stateLabelColor': '#fafafa',
+  'compositeBackground': '#05212D',
+  'compositeBorder': '#35B6F2',
+  'compositeTitleBackground': '#0d3a4d',
+  'transitionColor': '#35B6F2',
+  'transitionLabelColor': '#a3a3a3',
+  'noteBkgColor': '#05212D',
+  'noteBorderColor': '#35B6F2',
+  'noteTextColor': '#fafafa'
+}}}%%
 stateDiagram-v2
     [*] --> IDLE
 
@@ -909,6 +956,31 @@ DeviceConfig loadDeviceConfig() {
 **PRIMARY-SECONDARY Communication**:
 
 ```mermaid
+%%{init: {'theme': 'base', 'themeVariables': {
+  'primaryColor': '#0d3a4d',
+  'primaryTextColor': '#fafafa',
+  'primaryBorderColor': '#35B6F2',
+  'lineColor': '#35B6F2',
+  'secondaryColor': '#05212D',
+  'tertiaryColor': '#0a0a0a',
+  'background': '#0a0a0a',
+  'actorBkg': '#0d3a4d',
+  'actorBorder': '#35B6F2',
+  'actorTextColor': '#fafafa',
+  'actorLineColor': '#35B6F2',
+  'signalColor': '#35B6F2',
+  'signalTextColor': '#fafafa',
+  'labelBoxBkgColor': '#05212D',
+  'labelBoxBorderColor': '#35B6F2',
+  'labelTextColor': '#fafafa',
+  'loopTextColor': '#fafafa',
+  'noteBkgColor': '#05212D',
+  'noteBorderColor': '#35B6F2',
+  'noteTextColor': '#fafafa',
+  'activationBkgColor': '#0d3a4d',
+  'activationBorderColor': '#35B6F2',
+  'sequenceNumberColor': '#fafafa'
+}}}%%
 sequenceDiagram
     participant P as PRIMARY
     participant S as SECONDARY
@@ -972,6 +1044,27 @@ Connection monitoring uses a unified PING/PONG mechanism that provides both keep
 **Connection Recovery Flow**:
 
 ```mermaid
+%%{init: {'theme': 'base', 'themeVariables': {
+  'primaryColor': '#0d3a4d',
+  'primaryTextColor': '#fafafa',
+  'primaryBorderColor': '#35B6F2',
+  'lineColor': '#35B6F2',
+  'secondaryColor': '#05212D',
+  'tertiaryColor': '#0a0a0a',
+  'background': '#0a0a0a',
+  'labelTextColor': '#fafafa',
+  'stateBkg': '#0d3a4d',
+  'stateBorder': '#35B6F2',
+  'stateLabelColor': '#fafafa',
+  'compositeBackground': '#05212D',
+  'compositeBorder': '#35B6F2',
+  'compositeTitleBackground': '#0d3a4d',
+  'transitionColor': '#35B6F2',
+  'transitionLabelColor': '#a3a3a3',
+  'noteBkgColor': '#05212D',
+  'noteBorderColor': '#35B6F2',
+  'noteTextColor': '#fafafa'
+}}}%%
 stateDiagram-v2
     [*] --> Connected
     Connected --> KeepaliveMissed: No PONG response
@@ -1063,7 +1156,7 @@ SYNC:ACK:command|START_SESSION<EOT>
 ### Haptic Controller Architecture
 
 ```text
-[HardwareController]
+[HapticController]
     └── I2C Bus (Wire @ 400kHz)
         └── TCA9548A Multiplexer (0x70)
             ├── Port 0: DRV2605 (Index)   @ 0x5A
@@ -1084,7 +1177,7 @@ SYNC:ACK:command|START_SESSION<EOT>
 Adafruit_TCA9548A tca;
 Adafruit_DRV2605 drv[4];
 
-bool HardwareController::begin() {
+bool HapticController::begin() {
     Wire.begin();
     Wire.setClock(400000);  // 400kHz I2C
 
@@ -1115,7 +1208,7 @@ bool HardwareController::begin() {
 ### DRV2605 Configuration
 
 ```cpp
-void HardwareController::configureDRV2605(Adafruit_DRV2605& driver) {
+void HapticController::configureDRV2605(Adafruit_DRV2605& driver) {
     // 1. Set actuator type (LRA - Linear Resonant Actuator)
     driver.useLRA();
 
@@ -1245,24 +1338,24 @@ void executeTherapy(HapticInterface& haptic) {
 class TherapyEngine {
 public:
     // Dependencies injected through constructor
-    TherapyEngine(HardwareController& hardware,
+    TherapyEngine(HapticController& hardware,
                   StateMachine& stateMachine)
         : _hardware(hardware)
         , _stateMachine(stateMachine)
     {}
 
 private:
-    HardwareController& _hardware;
+    HapticController& _hardware;
     StateMachine& _stateMachine;
 };
 
 // Production setup
-HardwareController hardware;
+HapticController hardware;
 StateMachine stateMachine;
 TherapyEngine engine(hardware, stateMachine);
 
 // Test setup
-MockHardwareController mockHardware;
+MockHapticController mockHardware;
 StateMachine stateMachine;
 TherapyEngine engine(mockHardware, stateMachine);
 ```
@@ -1353,6 +1446,31 @@ TherapyConfig profile = ProfileFactory::createProfile("noisy_vcr");
 ### Session Start Flow
 
 ```mermaid
+%%{init: {'theme': 'base', 'themeVariables': {
+  'primaryColor': '#0d3a4d',
+  'primaryTextColor': '#fafafa',
+  'primaryBorderColor': '#35B6F2',
+  'lineColor': '#35B6F2',
+  'secondaryColor': '#05212D',
+  'tertiaryColor': '#0a0a0a',
+  'background': '#0a0a0a',
+  'actorBkg': '#0d3a4d',
+  'actorBorder': '#35B6F2',
+  'actorTextColor': '#fafafa',
+  'actorLineColor': '#35B6F2',
+  'signalColor': '#35B6F2',
+  'signalTextColor': '#fafafa',
+  'labelBoxBkgColor': '#05212D',
+  'labelBoxBorderColor': '#35B6F2',
+  'labelTextColor': '#fafafa',
+  'loopTextColor': '#fafafa',
+  'noteBkgColor': '#05212D',
+  'noteBorderColor': '#35B6F2',
+  'noteTextColor': '#fafafa',
+  'activationBkgColor': '#0d3a4d',
+  'activationBorderColor': '#35B6F2',
+  'sequenceNumberColor': '#fafafa'
+}}}%%
 sequenceDiagram
     participant U as User/App
     participant P as Protocol Handler
@@ -1384,6 +1502,31 @@ sequenceDiagram
 ### Bilateral Synchronization Flow
 
 ```mermaid
+%%{init: {'theme': 'base', 'themeVariables': {
+  'primaryColor': '#0d3a4d',
+  'primaryTextColor': '#fafafa',
+  'primaryBorderColor': '#35B6F2',
+  'lineColor': '#35B6F2',
+  'secondaryColor': '#05212D',
+  'tertiaryColor': '#0a0a0a',
+  'background': '#0a0a0a',
+  'actorBkg': '#0d3a4d',
+  'actorBorder': '#35B6F2',
+  'actorTextColor': '#fafafa',
+  'actorLineColor': '#35B6F2',
+  'signalColor': '#35B6F2',
+  'signalTextColor': '#fafafa',
+  'labelBoxBkgColor': '#05212D',
+  'labelBoxBorderColor': '#35B6F2',
+  'labelTextColor': '#fafafa',
+  'loopTextColor': '#fafafa',
+  'noteBkgColor': '#05212D',
+  'noteBorderColor': '#35B6F2',
+  'noteTextColor': '#fafafa',
+  'activationBkgColor': '#0d3a4d',
+  'activationBorderColor': '#35B6F2',
+  'sequenceNumberColor': '#fafafa'
+}}}%%
 sequenceDiagram
     participant PE as PRIMARY Engine
     participant PS as PRIMARY Sync
@@ -1473,7 +1616,7 @@ enum class Result : uint8_t {
     ERROR_HARDWARE
 };
 
-Result HardwareController::activate(uint8_t finger, uint8_t amplitude) {
+Result HapticController::activate(uint8_t finger, uint8_t amplitude) {
     if (finger > 4) return Result::ERROR_INVALID_PARAM;
     if (amplitude > 127) return Result::ERROR_INVALID_PARAM;
 
@@ -1593,7 +1736,7 @@ KEY2:VALUE2\n
 ```cpp
 // src/hardware.cpp
 
-void HardwareController::selectChannel(uint8_t channel) {
+void HapticController::selectChannel(uint8_t channel) {
     if (channel > 7) return;
 
     // TCA9548A: Write channel bitmask to control register
@@ -1603,7 +1746,7 @@ void HardwareController::selectChannel(uint8_t channel) {
     Wire.endTransmission();
 }
 
-void HardwareController::activate(uint8_t finger, uint8_t amplitude) {
+void HapticController::activate(uint8_t finger, uint8_t amplitude) {
     // Select multiplexer channel for this finger
     selectChannel(finger);
 

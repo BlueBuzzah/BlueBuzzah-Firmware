@@ -366,6 +366,31 @@ void MenuController::buzzRemoteFinger(uint8_t finger, uint8_t intensity, uint16_
 **Message Flow**:
 
 ```mermaid
+%%{init: {'theme': 'base', 'themeVariables': {
+  'primaryColor': '#0d3a4d',
+  'primaryTextColor': '#fafafa',
+  'primaryBorderColor': '#35B6F2',
+  'lineColor': '#35B6F2',
+  'secondaryColor': '#05212D',
+  'tertiaryColor': '#0a0a0a',
+  'background': '#0a0a0a',
+  'actorBkg': '#0d3a4d',
+  'actorBorder': '#35B6F2',
+  'actorTextColor': '#fafafa',
+  'actorLineColor': '#35B6F2',
+  'signalColor': '#35B6F2',
+  'signalTextColor': '#fafafa',
+  'labelBoxBkgColor': '#05212D',
+  'labelBoxBorderColor': '#35B6F2',
+  'labelTextColor': '#fafafa',
+  'loopTextColor': '#fafafa',
+  'noteBkgColor': '#05212D',
+  'noteBorderColor': '#35B6F2',
+  'noteTextColor': '#fafafa',
+  'activationBkgColor': '#0d3a4d',
+  'activationBorderColor': '#35B6F2',
+  'sequenceNumberColor': '#fafafa'
+}}}%%
 sequenceDiagram
     participant Phone
     participant PRIMARY
@@ -633,6 +658,16 @@ Result: All fingers above detection, Finger 1 has optimal intensity
    [PRIMARY] Secondary i2c Channel 0: 0x5A
    ```
    **Fix**: If empty, check wiring to multiplexer
+
+   **Note**: The firmware uses different I2C timing for different channels:
+   ```cpp
+   // From config.h:
+   #define I2C_INIT_DELAY_MS 5       // Delay after channel select (fingers 0-3)
+   #define I2C_INIT_DELAY_CH4_MS 10  // Extended delay for channel 4 (longer I2C path)
+   #define I2C_RETRY_COUNT 3         // Max retries for DRV2605 initialization
+   #define I2C_RETRY_DELAY_MS 50     // Delay between retries
+   ```
+   Channel 4 (SECONDARY index finger) may need longer initialization due to longer I2C traces on the PCB
 
 5. **Check motor wiring**:
    - Measure motor terminals with multimeter

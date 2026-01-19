@@ -9,10 +9,12 @@ Arduino C++ firmware for vibrotactile haptic feedback gloves (Adafruit Feather n
 | **Board**      | Adafruit Feather nRF52840    |
 | **Framework**  | Arduino via PlatformIO       |
 | **C++**        | C++20 (gnu++20)              |
-| **Build**      | `pio run`                    |
-| **Flash**      | `pio run -t upload`          |
+| **Build**      | `pio run -e adafruit_feather_nrf52840` |
+| **Flash**      | `pio run -e adafruit_feather_nrf52840 -t upload` |
 | **Test**       | `pio test -e native`         |
+| **Coverage**   | `pio test -e native_coverage` (macOS) / `native_coverage_gcc` (Linux) |
 | **Monitor**    | `pio device monitor` (115200)|
+| **Deploy**     | `python deploy.py` (interactive dual-glove deployment) |
 
 ## Module Map
 
@@ -26,6 +28,12 @@ Arduino C++ firmware for vibrotactile haptic feedback gloves (Adafruit Feather n
 | `state_machine.cpp`  | 11-state therapy FSM                  |
 | `menu_controller.cpp`| Phone command routing                 |
 | `profile_manager.cpp`| Therapy profiles (LittleFS)           |
+| `latency_metrics.cpp`| Runtime latency measurement, RTT tracking, sync quality reporting |
+| `activation_queue.cpp`| FreeRTOS motor event scheduling with paired activate/deactivate |
+| `deferred_queue.cpp` | ISR-safe work queue for blocking operations |
+| `motor_event_buffer.cpp`| Lock-free staging buffer (BLE callbacks → main loop) |
+| `config.h`           | Hardware constants, BLE parameters, tuning values |
+| `types.h`            | Enums, packed structs, macrocycle format definitions |
 
 ## Configuration
 
@@ -53,7 +61,15 @@ Activated automatically for `.cpp`/`.h` files or when discussing BLE, timing, or
 
 | Document                           | Purpose                        |
 | ---------------------------------- | ------------------------------ |
-| `docs/ARDUINO_FIRMWARE_ARCHITECTURE.md` | Architecture (source of truth) |
+| `docs/ARCHITECTURE.md`             | System architecture (source of truth) |
+| `docs/API_REFERENCE.md`            | Module API documentation       |
 | `docs/BLE_PROTOCOL.md`             | Mobile app command protocol    |
-| `docs/COMMAND_REFERENCE.md`        | All 18 BLE commands            |
-| `docs/SYNCHRONIZATION_PROTOCOL.md` | PRIMARY<->SECONDARY protocol   |
+| `docs/SYNCHRONIZATION_PROTOCOL.md` | PRIMARY↔SECONDARY protocol     |
+| `docs/BOOT_SEQUENCE.md`            | Startup initialization flow    |
+| `docs/CALIBRATION_GUIDE.md`        | Motor/sensor calibration procedures |
+| `docs/LATENCY_METRICS.md`          | Performance measurement guide  |
+| `docs/TESTING.md`                  | Test framework and patterns    |
+| `docs/THERAPY_ENGINE.md`           | Pattern generation internals   |
+| `docs/THERAPY_SESSION_FLOW.md`     | Session state machine flow     |
+| `docs/TIMING_BASELINE.md`          | Timing analysis and profiling  |
+| `docs/ORIGINAL_PARAMETERS.md`      | Legacy parameter reference     |

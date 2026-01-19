@@ -59,10 +59,12 @@
 #define CONNECTION_TIMEOUT_MS 30000  // 30 seconds connection timeout
 
 // BLE parameters
-#define BLE_INTERVAL_MIN_MS 8        // Minimum connection interval (7.5ms = 6 units is BLE spec min)
-#define BLE_INTERVAL_MAX_MS 12       // Maximum connection interval (tighter than default 15ms)
-#define BLE_TIMEOUT_MS 4000          // Supervision timeout (4 seconds)
+#define BLE_INTERVAL_MIN_MS 7.5f     // Minimum connection interval (7.5ms = 6 units, BLE spec minimum)
+#define BLE_INTERVAL_MAX_MS 10       // Maximum connection interval (tighter than default 15ms)
+#define BLE_TIMEOUT_MS 6000          // Supervision timeout (6 seconds - increased for interference tolerance)
 #define BLE_ADV_INTERVAL_MS 500      // Advertising interval
+#define BLE_USE_2M_PHY 1             // Enable 2M PHY for faster BLE transmission
+#define BLE_INTERVAL_WARNING_THRESHOLD_MS 12.0f  // Warn if negotiated interval > 12ms
 
 // Sync protocol
 #define SYNC_INTERVAL_MS 1000        // Periodic sync interval during therapy
@@ -70,11 +72,15 @@
 #define COMMAND_TIMEOUT_MS 5000      // General BLE command timeout
 
 // PTP-style clock synchronization
-#define SYNC_LEAD_TIME_US 50000      // 50ms default lead time for PING-based RTT calculation
+#define SYNC_LEAD_TIME_US 35000      // 35ms default lead time (BLE RTT is 16-24ms; 35ms provides ample margin)
                                       // Actual lead time is adaptive based on measured RTT + margin
-#define SYNC_PROCESSING_OVERHEAD_US 20000  // 20ms overhead for processing on SECONDARY
-                                            // Accounts for: BLE callback (~5ms), deserialization (~5ms),
-                                            // event staging (~5ms), queue forwarding (~5ms)
+#define SYNC_PROCESSING_OVERHEAD_US 10000  // 10ms overhead for processing on SECONDARY
+                                            // Actual processing is 3-5ms; 10ms is 2-3x margin
+                                            // Accounts for: BLE callback (~2ms), deserialization (~1ms),
+                                            // event staging (~1ms), queue forwarding (~1ms)
+#define SYNC_GENERATION_OVERHEAD_US 5000   // 5ms overhead for macrocycle generation + serialization on PRIMARY
+                                            // Accounts for: pattern generation (~1-5ms), serialization (~2-3ms)
+                                            // Added to lead time to prevent systematic lateness
 // NOTE: MACROCYCLE_TRANSMISSION_OVERHEAD_US was removed after fixing the DEBUG_FLASH
 // blocking bug. The old code's delayMicroseconds() blocked BLE callbacks for ~300ms,
 // making it appear that MACROCYCLE transmission took much longer than it actually does.
@@ -83,8 +89,31 @@
 #define SYNC_OFFSET_EMA_ALPHA_NUM 1  // Slow EMA α = 1/10 = 0.1 for continuous updates
 #define SYNC_OFFSET_EMA_ALPHA_DEN 10
 #define SYNC_MAINTENANCE_INTERVAL_MS 500  // Periodic sync interval during therapy (reduces drift)
-#define SYNC_RTT_QUALITY_THRESHOLD_US 120000 // 120ms network RTT threshold (Phase 5A)
-                                              // Accepts more samples while still rejecting very poor BLE conditions
+#define SYNC_RTT_QUALITY_THRESHOLD_US 60000 // 60ms RTT threshold - reject retransmission-affected samples
+                                             // (reduced from 120ms for stricter quality filtering)
+#define SYNC_OUTLIER_THRESHOLD_US 5000   // 5ms threshold for offset outlier rejection (was hardcoded)
+#define SYNC_MAX_DRIFT_RATE_US_PER_MS 0.15f  // 150 ppm max drift rate (cap for safety)
+#define SYNC_MAX_APPLIED_DRIFT_RATE_US_PER_MS 0.1f  // 100 ppm max for corrections
+                                                     // More conservative than measurement cap (0.15f)
+                                                     // Applied in getCorrectedOffset() and getProjectedOffset()
+
+// Warm-start sync configuration (quick recovery after brief disconnects)
+#define SYNC_WARM_START_VALIDITY_MS 15000    // Cache valid for 15 seconds (reduced drift extrapolation window)
+#define SYNC_WARM_START_MIN_SAMPLES 3        // Confirmatory samples required for warm-start
+#define SYNC_WARM_START_TOLERANCE_US 5000    // 5ms tolerance for confirmatory sample validation
+
+// Path asymmetry compensation (measurement mode - correction not yet implemented)
+#define SYNC_ASYMMETRY_CORRECTION_ENABLED 0   // 0 = measure only, 1 = apply correction
+#define SYNC_ASYMMETRY_MIN_SAMPLES 10         // Samples before correction applied
+#define SYNC_ASYMMETRY_STABLE_VARIANCE_US 3000 // Variance threshold for stable estimate
+#define SYNC_ASYMMETRY_MAX_CORRECTION_US 20000 // Maximum correction (20ms cap)
+
+// Drift rate and lead time calculation constants
+#define SYNC_MAX_CORRECTION_ELAPSED_MS 10000  // 10s max elapsed time for drift correction
+#define SYNC_MIN_DRIFT_INTERVAL_MS 500        // 500ms min interval for drift rate calculation
+#define SYNC_DRIFT_EMA_ALPHA 0.3f             // Drift rate EMA smoothing factor (α=0.3)
+#define SYNC_MIN_LEAD_TIME_US 70000           // 70ms minimum lead time for MACROCYCLE
+#define SYNC_MAX_LEAD_TIME_US 150000          // 150ms maximum lead time for MACROCYCLE
 
 // Unified keepalive + clock sync (PING/PONG)
 #define KEEPALIVE_INTERVAL_MS 1000   // 1 second between PING messages (unified keepalive + clock sync)

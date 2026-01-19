@@ -1,9 +1,9 @@
 # BlueBuzzah v2 Testing Guide
 
-**Hardware integration testing guide for BlueBuzzah v2 firmware**
+**Testing guide for BlueBuzzah v2 firmware**
 
 Version: 2.0.0
-Last Updated: 2025-11-23
+Last Updated: 2026-01-19
 
 ---
 
@@ -11,400 +11,294 @@ Last Updated: 2025-11-23
 
 - [Overview](#overview)
 - [Test Infrastructure](#test-infrastructure)
-- [Hardware Requirements](#hardware-requirements)
 - [Running Tests](#running-tests)
 - [Test Coverage](#test-coverage)
-- [Test Files](#test-files)
+- [Native Unit Tests](#native-unit-tests)
+- [Hardware Integration Testing](#hardware-integration-testing)
 - [BLE Protocol Testing](#ble-protocol-testing)
 - [Memory Testing](#memory-testing)
 - [Synchronization Testing](#synchronization-testing)
 - [Troubleshooting](#troubleshooting)
-- [Test Results Interpretation](#test-results-interpretation)
 - [Contributing](#contributing)
 
 ---
 
 ## Overview
 
-BlueBuzzah v2 uses **manual hardware integration tests** to validate firmware functionality on actual Feather nRF52840 devices. The testing approach emphasizes:
+BlueBuzzah v2 uses a **dual testing approach**:
 
-- **Real hardware validation** - Tests run on actual Arduino/PlatformIO devices
-- **BLE protocol verification** - Validates command/response behavior
-- **Memory monitoring** - Ensures firmware memory stability
-- **Synchronization accuracy** - Measures multi-device timing
-- **Manual execution** - Requires human setup and intervention
+1. **PlatformIO Native Unit Tests** - Automated tests that run on the host computer with mocked Arduino APIs
+2. **Hardware Integration Tests** - Manual tests that run on actual Feather nRF52840 devices
 
 ### What This Testing Does
 
-✓ Validates BLE command protocol (8 out of 18 commands)
-✓ Verifies haptic motor calibration workflow
-✓ Tests therapy session management commands
-✓ Monitors memory usage over extended periods
-✓ Measures synchronization latency between devices
+✓ Unit testing of individual components (PlatformIO native)
+✓ Validates BLE command protocol handling
+✓ Tests therapy engine state machine transitions
+✓ Verifies synchronization protocol logic
+✓ Tests motor event buffer thread safety
+✓ Validates profile management
+✓ Code coverage reporting (via `native_coverage` environment)
 
-### What This Testing Does NOT Do
+### Testing Limitations
 
-✗ Unit testing of individual components
-✗ Automated CI/CD integration
-✗ Mock-based testing without hardware
-✗ Code coverage reporting
-✗ Automated regression testing
+- Hardware-in-the-loop tests require manual setup
+- No automated CI/CD integration yet
+- BLE communication testing requires real hardware
 
 ---
 
 ## Test Infrastructure
 
-### Current Test Files
+### PlatformIO Test Environments
 
-| File | Purpose | Duration | Hardware Required |
-|------|---------|----------|-------------------|
-| `calibrate_commands_test.py` | Motor calibration validation | 5-10 min | 1 device (PRIMARY or SECONDARY) |
-| `session_commands_test.py` | Session management commands | 3-5 min | 1 device (PRIMARY) |
-| `memory_stress_test.py` | Memory leak detection | 2+ hours | 1 device |
-| `sync_accuracy_test.py` | Latency measurement | 2-5 min | 1-2 devices |
+| Environment | Purpose | Command |
+|-------------|---------|---------|
+| `native` | Fast unit tests (no coverage) | `pio test -e native` |
+| `native_coverage` | Unit tests + coverage (macOS/clang) | `pio test -e native_coverage` |
+| `native_coverage_gcc` | Unit tests + coverage (Linux/GCC) | `pio test -e native_coverage_gcc` |
 
-### Testing Architecture
+### Native Unit Test Files
+
+| Test Suite | Module Tested | Purpose |
+|------------|---------------|---------|
+| `test_latency_metrics` | `latency_metrics.cpp` | RTT tracking, drift calculation |
+| `test_profile_manager` | `profile_manager.cpp` | Profile load/save, validation |
+| `test_types` | `types.h` | Struct packing, enum values |
+| `test_menu_controller` | `menu_controller.cpp` | Command parsing, response format |
+| `test_motor_event_buffer` | `motor_event_buffer.cpp` | Lock-free buffer, thread safety |
+| `test_state_machine` | `state_machine.cpp` | Therapy FSM transitions |
+| `test_therapy_engine` | `therapy_engine.cpp` | Pattern generation, callbacks |
+| `test_sync_protocol` | `sync_protocol.cpp` | PTP clock sync, offset calculation |
+
+### Mock Infrastructure
+
+The `test/mocks/` directory provides Arduino API mocks:
 
 ```
-Host Computer (Python/PlatformIO)
-    │
-    ├─ BLE Connection (bleak/adafruit-blinka-bleio)
-    │
-    └─ BlueBuzzah Device (Arduino C++)
-        ├─ Bluefruit BLE UART Service
-        ├─ MenuController (command handler)
-        ├─ HardwareController
-        └─ TherapyEngine
+test/mocks/
+├── include/
+│   ├── Arduino.h       # millis(), micros(), delay(), Serial
+│   ├── bluefruit.h     # BLE stubs
+│   └── ...
+└── src/
+    └── Arduino.cpp     # Mock implementations
 ```
-
-Tests send BLE commands and validate responses. PlatformIO test framework can also be used for unit testing.
-
----
-
-## Hardware Requirements
-
-### Required Equipment
-
-1. **BlueBuzzah Device(s)**
-   - Adafruit Feather nRF52840 Express
-   - BlueBuzzah v2 firmware installed
-   - Charged battery or USB power
-   - BLE advertising active
-
-2. **Host Computer**
-   - Bluetooth 4.0+ (BLE capable)
-   - Python 3.9+
-   - BLE library (`adafruit-blinka-bleio` or `bleak`)
-
-3. **Optional**
-   - Second BlueBuzzah device for sync testing
-   - USB cable for serial console monitoring
-   - Logic analyzer for timing verification
-
-### Device Preparation
-
-1. Flash BlueBuzzah v2 firmware to device
-2. Configure device as PRIMARY or SECONDARY (as needed)
-3. Verify BLE advertising (LED should pulse)
-4. Note device name (e.g., "BlueBuzzah-PRIMARY")
-5. Ensure battery >50% or connect USB power
 
 ---
 
 ## Running Tests
 
-### Installation
+### Native Unit Tests
 
-**Install BLE library:**
+**Run all unit tests:**
 
 ```bash
-# Option 1: Adafruit BLE
-pip install adafruit-blinka-bleio
-
-# Option 2: Bleak (cross-platform)
-pip install bleak
+pio test -e native
 ```
 
-### Connection Setup
+**Run with code coverage (macOS):**
 
-**Establish BLE connection** before running any test:
-
-```python
-from adafruit_ble import BLERadio
-from adafruit_ble.advertising.standard import ProvideServicesAdvertisement
-from adafruit_ble.services.nordic import UARTService
-
-# Initialize BLE radio
-ble = BLERadio()
-uart_connection = None
-
-# Scan for BlueBuzzah device
-print("Scanning for BlueBuzzah...")
-for advertisement in ble.start_scan(ProvideServicesAdvertisement):
-    if "BlueBuzzah" in advertisement.complete_name:
-        print(f"Found: {advertisement.complete_name}")
-        uart_connection = ble.connect(advertisement)
-        break
-
-ble.stop_scan()
-
-# Get UART service
-if uart_connection and uart_connection.connected:
-    uart_service = uart_connection[UARTService]
-    print("✓ Connected successfully")
-else:
-    print("✗ Connection failed")
-    exit(1)
+```bash
+pio test -e native_coverage
 ```
 
-### Running Individual Tests
+**Run with code coverage (Linux):**
 
-**Calibration Test:**
-
-```python
-import tests.calibrate_commands_test as calibrate_test
-
-# Run all calibration tests
-calibrate_test.run_all_tests(uart_service)
+```bash
+pio test -e native_coverage_gcc
 ```
 
-**Session Test:**
+**Run a specific test suite:**
 
-```python
-import tests.session_commands_test as session_test
-
-# Run session management tests (requires PRIMARY device)
-session_test.run_all_tests(uart_service)
+```bash
+pio test -e native -f test_sync_protocol
+pio test -e native -f test_therapy_engine
 ```
 
-**Memory Stress Test:**
+**Expected output (success):**
 
-```python
-import tests.memory_stress_test as mem_test
-
-# Run 2-hour memory monitoring
-mem_test.run_stress_test(uart_service, duration_hours=2)
+```
+test/test_sync_protocol/test_sync_protocol.cpp:217:test_initial_state:PASS
+test/test_sync_protocol/test_sync_protocol.cpp:218:test_ping_pong_sequence:PASS
+test/test_sync_protocol/test_sync_protocol.cpp:219:test_offset_calculation:PASS
+...
+-----------------------
+8 Tests 0 Failures 0 Ignored
+OK
 ```
 
-**Sync Accuracy Test:**
+### Test Output Locations
 
-```python
-import tests.sync_accuracy_test as sync_test
+Coverage reports are generated in:
 
-# Measure sync latency (100 trials)
-sync_test.measure_sync_latency(uart_service, trials=100)
+```
+.pio/test_results/native_coverage/
+├── coverage.info
+└── html/
+    └── index.html  # Open in browser for visual coverage
 ```
 
 ---
 
 ## Test Coverage
 
-### BLE Protocol Commands
+### Native Unit Tests - Module Coverage
 
-**Commands Tested (8/18 - 44% coverage):**
+| Module | Test Suite | Key Tests |
+|--------|------------|-----------|
+| `sync_protocol.cpp` | `test_sync_protocol` | PTP offset calculation, drift tracking, warm-start recovery |
+| `therapy_engine.cpp` | `test_therapy_engine` | Pattern generation, callback invocation, session timing |
+| `state_machine.cpp` | `test_state_machine` | FSM transitions, state validation |
+| `menu_controller.cpp` | `test_menu_controller` | Command parsing, response formatting |
+| `motor_event_buffer.cpp` | `test_motor_event_buffer` | Lock-free operations, overflow handling |
+| `profile_manager.cpp` | `test_profile_manager` | Profile serialization, validation |
+| `latency_metrics.cpp` | `test_latency_metrics` | RTT calculation, drift statistics |
+| `types.h` | `test_types` | Struct packing, enum values |
 
-| Command | Tested | Test File |
-|---------|--------|-----------|
-| CALIBRATE_START | ✓ | calibrate_commands_test.py |
-| CALIBRATE_BUZZ | ✓ | calibrate_commands_test.py |
-| CALIBRATE_STOP | ✓ | calibrate_commands_test.py |
-| SESSION_START | ✓ | session_commands_test.py |
-| SESSION_PAUSE | ✓ | session_commands_test.py |
-| SESSION_RESUME | ✓ | session_commands_test.py |
-| SESSION_STOP | ✓ | session_commands_test.py |
-| SESSION_STATUS | ✓ | session_commands_test.py |
+### Tested Functionality
 
-**Commands NOT Tested (10/18 - 56%):**
+- ✓ IEEE 1588 PTP clock offset calculation
+- ✓ Drift rate tracking and compensation
+- ✓ Warm-start sync recovery logic
+- ✓ Therapy state machine transitions
+- ✓ Pattern generation (random permutation, sequential)
+- ✓ Motor event buffer thread safety
+- ✓ Profile serialization/deserialization
+- ✓ Command parsing and response formatting
+- ✓ Latency metrics aggregation
 
-| Command | Status | Impact |
-|---------|--------|--------|
-| INFO | Not tested | Device info retrieval untested |
-| BATTERY | Not tested | Battery monitoring untested |
-| PING | Not tested | Connection health untested |
-| PROFILE_LIST | Not tested | Profile management untested |
-| PROFILE_LOAD | Not tested | Profile loading untested |
-| PROFILE_GET | Not tested | Profile retrieval untested |
-| PROFILE_CUSTOM | Not tested | Custom profiles untested |
-| PARAM_SET | Not tested | Parameter adjustment untested |
-| HELP | Not tested | Command help untested |
-| RESTART | Not tested | Device restart untested |
+### Not Tested (Requires Hardware)
 
-### Functional Coverage
-
-**Tested Functionality:**
-
-- ✓ BLE command/response protocol with EOT terminators
-- ✓ Haptic motor activation (8 motors)
-- ✓ Intensity scaling (25%, 50%, 75%, 100%)
-- ✓ Session state transitions (START → PAUSE → RESUME → STOP)
-- ✓ Memory monitoring over extended periods
-- ✓ Sync command latency measurement
-
-**Untested Functionality:**
-
-- ✗ Event system (EventBus, event handlers)
-- ✗ State machine transitions (TherapyStateMachine)
-- ✗ Pattern generators (RandomPermutation, Sequential, Mirrored)
-- ✗ Profile management (load, save, validate)
-- ✗ Configuration system
-- ✗ Battery monitoring logic
-- ✗ LED UI controllers
+- ✗ Actual BLE communication
 - ✗ I2C multiplexer operations
-- ✗ Error recovery mechanisms
-- ✗ Hardware fault detection
-
-**Estimated Coverage:** ~15-20% of total firmware functionality
-
----
-
-## Test Files
-
-### calibrate_commands_test.py
-
-**Purpose:** Validate haptic motor calibration workflow
-
-**Test Sequence:**
-1. Send `CALIBRATE_START` → Verify enters calibration mode
-2. For each motor (0-7):
-   - Send `CALIBRATE_BUZZ:motor:intensity:duration` at 25%, 50%, 75%, 100%
-   - Verify response with FINGER, INTENSITY, DURATION fields
-   - Confirm motor activates (human verification)
-3. Send `CALIBRATE_STOP` → Verify exits calibration mode
-
-**Success Criteria:**
-- All commands return valid responses within 2 seconds
-- Responses include EOT terminator (`\x04`)
-- Motors activate with perceptible intensity differences
-- No ERROR responses
-
-**Typical Output:**
-```
-Test 1: CALIBRATE_START
-----------------------------------------
-    Response: CALIBRATION:STARTED
-    ✓ PASS: Entered calibration mode
-
-Test 2: CALIBRATE_BUZZ (Motor 0, 100%, 500ms)
-----------------------------------------
-    Response: FINGER:0\nINTENSITY:100\nDURATION:500
-    ✓ PASS: Motor 0 responded
-
-...
-
-SUMMARY: 25/25 tests PASSED
-```
+- ✗ DRV2605 motor driver
+- ✗ LED controller patterns
+- ✗ Battery ADC readings
+- ✗ Real-time timing accuracy
 
 ---
 
-### session_commands_test.py
+## Native Unit Tests
 
-**Purpose:** Validate therapy session management commands
+### test_sync_protocol
 
-**Test Sequence:**
-1. `SESSION_START` → Start therapy session
-2. Wait 5 seconds
-3. `SESSION_STATUS` → Verify status reports "RUNNING"
-4. `SESSION_PAUSE` → Pause session
-5. `SESSION_STATUS` → Verify status reports "PAUSED"
-6. `SESSION_RESUME` → Resume session
-7. `SESSION_STATUS` → Verify status reports "RUNNING"
-8. `SESSION_STOP` → Stop session, get statistics
+Tests the IEEE 1588 PTP-style clock synchronization:
 
-**Success Criteria:**
-- State transitions occur correctly
-- STATUS responses match expected state
-- STOP command returns session statistics
-- All responses within 5 seconds
+```cpp
+void test_offset_calculation() {
+    // Verify 4-timestamp offset calculation
+    // offset = ((T2 - T1) + (T3 - T4)) / 2
+    syncProtocol.handlePingResponse(seq, 0, T2, T3);
+    TEST_ASSERT_INT_WITHIN(100, expectedOffset, syncProtocol.getClockOffset());
+}
 
-**Typical Output:**
+void test_drift_rate_tracking() {
+    // Verify drift compensation over time
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, expectedDrift, syncProtocol.getDriftRate());
+}
+
+void test_warm_start_recovery() {
+    // Verify cached sync state is used after brief disconnect
+    syncProtocol.disconnect();
+    delay(5000);  // Less than SYNC_WARM_START_VALIDITY_MS
+    syncProtocol.reconnect();
+    TEST_ASSERT_TRUE(syncProtocol.isWarmStart());
+}
 ```
-Test 1: SESSION_START
-----------------------------------------
-    Response: SESSION:STARTED
-    ✓ PASS: Session started successfully
 
-Test 2: SESSION_STATUS
-----------------------------------------
-    Response: STATUS:RUNNING
-    ✓ PASS: Status correct
+### test_therapy_engine
 
-...
+Tests pattern generation and callback invocation:
 
-SUMMARY: 8/8 tests PASSED
+```cpp
+void test_callback_invocation() {
+    bool activateCalled = false;
+    engine.setActivateCallback([&](int finger) { activateCalled = true; });
+    engine.update();
+    TEST_ASSERT_TRUE(activateCalled);
+}
+
+void test_pattern_generation() {
+    // Verify random permutation covers all fingers
+    TEST_ASSERT_EQUAL(8, uniqueFingersActivated);
+}
+```
+
+### test_motor_event_buffer
+
+Tests lock-free buffer operations:
+
+```cpp
+void test_overflow_handling() {
+    // Fill buffer beyond capacity
+    for (int i = 0; i < BUFFER_SIZE + 10; i++) {
+        buffer.push(event);
+    }
+    // Verify oldest events dropped, newest preserved
+    TEST_ASSERT_EQUAL(BUFFER_SIZE, buffer.count());
+}
+
+void test_concurrent_access() {
+    // Verify ISR-safe push with main-loop pop
+    // (simulated with interleaved operations)
+}
 ```
 
 ---
 
-### memory_stress_test.py
+## Hardware Integration Testing
 
-**Purpose:** Detect memory leaks during extended operation
+For testing that requires actual hardware, use manual verification:
 
-**Test Sequence:**
-1. Establish baseline memory reading via `dbgMemInfo()`
-2. Start therapy session
-3. Monitor free heap memory every 60 seconds
-4. Run for 2+ hours (configurable)
-5. Log memory trends and minimum free memory
+### Hardware Requirements
 
-**Success Criteria:**
-- Free memory stays above 10KB throughout
-- No continuous downward trend (leak indicator)
-- System remains stable and responsive
+1. **BlueBuzzah Device(s)**
+   - Adafruit Feather nRF52840 Express
+   - BlueBuzzah v2 firmware installed
+   - Charged battery or USB power
 
-**Typical Output:**
+2. **Host Computer**
+   - USB cable for serial console
+   - PlatformIO installed
+
+3. **Optional**
+   - Second BlueBuzzah for sync testing
+   - Logic analyzer for timing verification
+
+### Manual Test Procedures
+
+**Motor Calibration Test:**
+```bash
+# Connect via serial monitor
+pio device monitor
+
+# Enter calibration mode
+CALIBRATE_START
+
+# Test each finger (0-7)
+CALIBRATE_BUZZ:0:80:500
+CALIBRATE_BUZZ:1:80:500
+# ... verify each motor vibrates
+
+CALIBRATE_STOP
 ```
-Memory Stress Test - 2 hour duration
-========================================
-Baseline: 92,384 bytes free
 
-00:15:00 - 89,472 bytes free (-2.9 KB)
-00:30:00 - 91,136 bytes free (+1.7 KB)
-00:45:00 - 88,832 bytes free (-2.3 KB)
-...
-02:00:00 - 90,240 bytes free (-2.1 KB)
+**Latency Metrics Test:**
+```bash
+# Enable latency tracking
+LATENCY_ON_VERBOSE
 
-RESULT: PASS
-Minimum free memory: 85,760 bytes (>10KB threshold)
-No downward trend detected
+# Start therapy session via app or serial
+
+# Check metrics
+GET_LATENCY
+
+# Disable and see final report
+LATENCY_OFF
 ```
 
----
-
-### sync_accuracy_test.py
-
-**Purpose:** Measure synchronization command latency
-
-**Test Sequence:**
-1. Send `MACROCYCLE:seq:baseTime:12|events...` with batched motor events
-2. Record send timestamp
-3. Monitor SECONDARY serial output for execution confirmation
-4. Calculate command delivery latency (send to execution)
-5. Repeat for 100 trials (configurable)
-6. Calculate statistics (mean, median, min, max, jitter)
-
-**Success Criteria:**
-- Mean latency: 7.5-20ms (target range)
-- Max latency: <50ms
-- Jitter (std dev): <5ms
-- 95% of samples within acceptable range
-
-**Typical Output:**
-```
-Sync Latency Measurement
-========================================
-Trials: 100
-
-Results:
-  Mean:   12.3 ms
-  Median: 11.8 ms
-  Min:     8.1 ms
-  Max:    18.7 ms
-  Jitter:  2.4 ms (std dev)
-
-✓ PASS: 98/100 samples (98%) within 7.5-20ms range
-✓ PASS: Jitter < 5ms threshold
-✓ PASS: Max latency < 50ms
-```
+See [LATENCY_METRICS.md](LATENCY_METRICS.md) for detailed metrics interpretation.
 
 ---
 
@@ -554,7 +448,7 @@ The sync test measures jitter (latency variation):
 **Root Causes:**
 - Invalid command syntax - verify format matches protocol spec
 - Device not in correct state - check state requirements
-- SessionManager disabled - some commands require it enabled
+- StateMachine disabled - some commands require it enabled
 - Hardware fault - check serial console for hardware errors
 
 **Problem:** Inconsistent motor activation
@@ -619,7 +513,7 @@ Some tests may return **UNKNOWN** if:
 **Expected success rates on working hardware:**
 
 - Calibration tests: 95-100%
-- Session tests: 90-100% (depends on SessionManager config)
+- Session tests: 90-100% (depends on StateMachine config)
 - Memory tests: 100% (should never fail on stable firmware)
 - Sync tests: 95-100% (some variation from BLE jitter)
 
@@ -627,104 +521,92 @@ Some tests may return **UNKNOWN** if:
 
 ## Contributing
 
-### Adding New Tests
+### Adding New Native Tests
 
-When creating new hardware integration tests:
+When adding new PlatformIO native unit tests:
 
-1. **Follow existing patterns:**
-   - Use same command/response validation approach
-   - Include EOT terminators in all messages
-   - Implement timeout handling
-   - Print clear test output
+1. **Create test directory:**
+   ```
+   test/test_module_name/
+   └── test_module_name.cpp
+   ```
 
-2. **Document requirements:**
-   - Specify hardware needed (PRIMARY vs SECONDARY)
-   - List command dependencies
-   - Define success criteria
-   - Estimate execution time
+2. **Test file structure:**
+   ```cpp
+   #include <unity.h>
+   #include "module_under_test.h"
 
-3. **Update documentation:**
-   - Add test to tests/README.md table
-   - Update coverage statistics in this file
-   - Document new commands tested
-   - Add troubleshooting section if needed
+   void setUp() {
+       // Reset state before each test
+   }
 
-4. **Test file structure:**
-   ```python
-   """Test description and usage instructions."""
+   void tearDown() {
+       // Cleanup after each test
+   }
 
-   class TestClassName:
-       def __init__(self, ble_conn):
-           self.ble = ble_conn
-           self.test_results = {}
+   void test_specific_behavior() {
+       // Arrange
+       ModuleUnderTest module;
 
-       def send_command(self, command):
-           """Send command with EOT, wait for response."""
-           # Implementation
+       // Act
+       auto result = module.doSomething();
 
-       def test_feature_name(self):
-           """Test specific feature."""
-           # Test implementation
+       // Assert
+       TEST_ASSERT_EQUAL(expected, result);
+   }
 
-   def run_all_tests(ble_conn):
-       """Run complete test suite."""
-       # Test execution
+   int main(int argc, char **argv) {
+       UNITY_BEGIN();
+       RUN_TEST(test_specific_behavior);
+       return UNITY_END();
+   }
+   ```
+
+3. **Run new tests:**
+   ```bash
+   pio test -e native -f test_module_name
    ```
 
 ### Test Naming Conventions
 
-- **File:** `feature_commands_test.py` or `feature_test.py`
-- **Class:** `FeatureCommandsTester` or `FeatureTester`
-- **Methods:** `test_specific_behavior()`
-- **Runner:** `run_all_tests(ble_conn)`
+- **Directory:** `test/test_module_name/`
+- **File:** `test_module_name.cpp`
+- **Functions:** `test_specific_behavior()`, `test_edge_case()`
 
-### Documentation Requirements
+### Mock Requirements
 
-Every test file must include:
-- Module docstring with purpose and usage
-- Hardware requirements
-- Expected results
-- Example output
-- Troubleshooting tips (if applicable)
+If your test needs Arduino APIs, ensure they're mocked in `test/mocks/`:
+- Add declarations to `test/mocks/include/`
+- Add implementations to `test/mocks/src/`
 
 ---
 
 ## Future Testing Improvements
 
-To achieve comprehensive automated testing, the project would need:
+### Completed ✓
 
-### Short-Term (Manual Testing)
-- Add tests for remaining 10 BLE commands
-- Create multi-device sync test suite
-- Add battery monitoring validation
-- Test error recovery scenarios
+- ✓ PlatformIO native unit test framework
+- ✓ Arduino API mocks for host testing
+- ✓ Code coverage reporting
 
-### Medium-Term (Test Infrastructure)
-- Develop PlatformIO native unit test framework
-- Create hardware mock library
-- Implement automated BLE connection handling
-- Add test result logging and analysis
+### Planned
 
-### Long-Term (Full Automation)
-- Build pytest-based unit test suite
-- Create CI/CD integration
-- Implement code coverage reporting
-- Develop automated regression testing
-- Create test fixtures for all components
-- Build mock BLE services for isolated testing
+- CI/CD integration (GitHub Actions)
+- Automated regression testing on PRs
+- Hardware-in-the-loop test framework
+- BLE communication mock library
 
 ---
 
 ## Related Documentation
 
-- **tests/README.md** - Detailed test file documentation
 - **docs/BLE_PROTOCOL.md** - BLE protocol specification
 - **docs/SYNCHRONIZATION_PROTOCOL.md** - Sync protocol details
+- **docs/LATENCY_METRICS.md** - Performance measurement guide
 - **docs/API_REFERENCE.md** - Complete API documentation
-- **CLAUDE.md** - Arduino C++/PlatformIO development guidelines
 
 ---
 
-**Version:** 2.0.0 (Hardware Integration Testing)
-**Last Updated:** 2025-11-23
-**Test Coverage:** 8/18 BLE commands (44%), ~15-20% functional coverage
+**Version:** 2.0.0
+**Last Updated:** 2026-01-19
+**Test Suites:** 8 native unit test suites

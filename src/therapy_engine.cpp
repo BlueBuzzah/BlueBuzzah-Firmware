@@ -609,7 +609,6 @@ Macrocycle TherapyEngine::generateMacrocycle() {
 
 void TherapyEngine::executeMacrocycleStep() {
     uint32_t now = millis();
-    uint64_t nowUs = getMicros();  // Use overflow-safe 64-bit micros (raw micros() wraps at 71 min)
 
     // State machine for macrocycle batching with FreeRTOS motor task scheduling
     switch (_buzzFlowState) {
@@ -623,9 +622,13 @@ void TherapyEngine::executeMacrocycleStep() {
                 _macrocycleStartCallback(_cyclesCompleted);
             }
 
-            // Calculate lead time for scheduling using adaptive RTT-based calculation
+            // Calculate lead time FIRST (callback takes 50-200µs)
             // Falls back to 50ms if no callback registered
             uint32_t leadTimeUs = _getLeadTimeCallback ? _getLeadTimeCallback() : 50000;
+
+            // CRITICAL: Capture timestamp AFTER lead time calculation to minimize staleness
+            // Lead time callback can take 50-200µs; capturing before causes systematic lateness
+            uint64_t nowUs = getMicros();
             _macrocycleBaseTime = nowUs + leadTimeUs;
             _currentMacrocycle.baseTime = _macrocycleBaseTime;
 
