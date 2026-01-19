@@ -248,6 +248,9 @@ void BLEManager::update() {
                 conn->type = ConnectionType::PHONE;
                 conn->pendingIdentify = false;
 
+                // Query and log connection interval
+                queryConnectionInterval(conn->connHandle);
+
                 // Fire connect callback
                 if (_connectCallback) {
                     _connectCallback(conn->connHandle, ConnectionType::PHONE);
@@ -633,6 +636,58 @@ ConnectionType BLEManager::identifyConnectionType(uint16_t connHandle [[maybe_un
     }
 }
 
+void BLEManager::queryConnectionInterval(uint16_t connHandleParam) {
+    BBConnection* conn = findConnection(connHandleParam);
+    if (!conn || !conn->isConnected) return;
+
+    BLEConnection* bleConn = Bluefruit.Connection(connHandleParam);
+    if (!bleConn) {
+        Serial.printf("[BLE] WARN: Cannot query interval for handle %d\n", connHandleParam);
+        return;
+    }
+
+    uint16_t intervalUnits = bleConn->getConnectionInterval();
+    if (intervalUnits == 0) {
+        Serial.printf("[BLE] WARN: Interval query returned 0 for handle %d\n", connHandleParam);
+        return;
+    }
+
+    conn->negotiatedIntervalUnits = intervalUnits;
+    conn->intervalQueriedAt = millis();
+
+    float intervalMs = intervalUnits * 1.25f;
+    const char* typeName = (conn->type == ConnectionType::PHONE) ? "PHONE" :
+                           (conn->type == ConnectionType::SECONDARY) ? "SECONDARY" :
+                           (conn->type == ConnectionType::PRIMARY) ? "PRIMARY" : "UNKNOWN";
+
+    if (intervalMs > BLE_INTERVAL_WARNING_THRESHOLD_MS) {
+        Serial.printf("[BLE] WARN: %s interval %.1fms exceeds target (%.1f-%.1fms)\n",
+                      typeName, intervalMs, BLE_INTERVAL_MIN_MS, BLE_INTERVAL_MAX_MS);
+    } else {
+        Serial.printf("[BLE] %s connection interval: %.1fms\n", typeName, intervalMs);
+    }
+}
+
+float BLEManager::getConnectionIntervalMs(uint16_t connHandleParam) const {
+    for (int i = 0; i < MAX_CONNECTIONS; i++) {
+        if (_connections[i].connHandle == connHandleParam && _connections[i].isConnected) {
+            if (_connections[i].negotiatedIntervalUnits == 0) return 0.0f;
+            return _connections[i].negotiatedIntervalUnits * 1.25f;
+        }
+    }
+    return 0.0f;
+}
+
+float BLEManager::getSecondaryConnectionIntervalMs() const {
+    for (int i = 0; i < MAX_CONNECTIONS; i++) {
+        if (_connections[i].type == ConnectionType::SECONDARY && _connections[i].isConnected) {
+            if (_connections[i].negotiatedIntervalUnits == 0) return 0.0f;
+            return _connections[i].negotiatedIntervalUnits * 1.25f;
+        }
+    }
+    return 0.0f;
+}
+
 void BLEManager::processIncomingData(uint16_t connHandleParam, const uint8_t* data, uint16_t len, uint64_t rxTimestamp) {
     BBConnection* conn = findConnection(connHandleParam);
     if (!conn) return;
@@ -687,6 +742,7 @@ void BLEManager::deliverMessage(BBConnection* conn, uint16_t connHandleParam) {
             Serial.println(F("[BLE] Received IDENTIFY:SECONDARY"));
             conn->type = ConnectionType::SECONDARY;
             conn->pendingIdentify = false;
+            queryConnectionInterval(connHandleParam);
             if (_connectCallback) {
                 _connectCallback(connHandleParam, ConnectionType::SECONDARY);
             }
@@ -695,6 +751,7 @@ void BLEManager::deliverMessage(BBConnection* conn, uint16_t connHandleParam) {
             Serial.println(F("[BLE] Received IDENTIFY:PHONE"));
             conn->type = ConnectionType::PHONE;
             conn->pendingIdentify = false;
+            queryConnectionInterval(connHandleParam);
             if (_connectCallback) {
                 _connectCallback(connHandleParam, ConnectionType::PHONE);
             }
@@ -858,6 +915,9 @@ void BLEManager::_onCentralConnect(uint16_t connHandle) {
         Bluefruit.disconnect(connHandle);
         return;
     }
+
+    // Query and log connection interval
+    g_bleManager->queryConnectionInterval(connHandle);
 
     // Notify callback
     if (g_bleManager->_connectCallback) {

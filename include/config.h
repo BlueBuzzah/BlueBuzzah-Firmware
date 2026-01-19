@@ -64,6 +64,7 @@
 #define BLE_TIMEOUT_MS 6000          // Supervision timeout (6 seconds - increased for interference tolerance)
 #define BLE_ADV_INTERVAL_MS 500      // Advertising interval
 #define BLE_USE_2M_PHY 1             // Enable 2M PHY for faster BLE transmission
+#define BLE_INTERVAL_WARNING_THRESHOLD_MS 12.0f  // Warn if negotiated interval > 12ms
 
 // Sync protocol
 #define SYNC_INTERVAL_MS 1000        // Periodic sync interval during therapy
@@ -97,6 +98,12 @@
 #define SYNC_WARM_START_VALIDITY_MS 15000    // Cache valid for 15 seconds (reduced drift extrapolation window)
 #define SYNC_WARM_START_MIN_SAMPLES 3        // Confirmatory samples required for warm-start
 #define SYNC_WARM_START_TOLERANCE_US 5000    // 5ms tolerance for confirmatory sample validation
+
+// Path asymmetry compensation (Phase 1: measurement only)
+#define SYNC_ASYMMETRY_CORRECTION_ENABLED 0   // 0 = measure only, 1 = apply correction (Phase 2)
+#define SYNC_ASYMMETRY_MIN_SAMPLES 10         // Samples before correction applied
+#define SYNC_ASYMMETRY_STABLE_VARIANCE_US 3000 // Variance threshold for stable estimate
+#define SYNC_ASYMMETRY_MAX_CORRECTION_US 20000 // Maximum correction (20ms cap)
 
 // Unified keepalive + clock sync (PING/PONG)
 #define KEEPALIVE_INTERVAL_MS 1000   // 1 second between PING messages (unified keepalive + clock sync)

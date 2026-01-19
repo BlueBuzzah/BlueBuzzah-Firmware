@@ -706,7 +706,12 @@ SimpleSyncProtocol::SimpleSyncProtocol() :
     _lastOffsetTime(0),
     _driftRateUsPerMs(0.0f),
     _warmStartMode(false),
-    _warmStartConfirmed(0)
+    _warmStartConfirmed(0),
+    _lastAsymmetry(0),
+    _smoothedAsymmetry(0),
+    _asymmetryVariance(0),
+    _asymmetrySampleCount(0),
+    _phoneConnectedDuringSync(false)
 {
     memset(_offsetSamples, 0, sizeof(_offsetSamples));
     // _warmStartCache initialized by struct default constructor
@@ -1131,4 +1136,51 @@ uint32_t SimpleSyncProtocol::calculateAdaptiveLeadTime() const {
     }
 
     return leadTime;
+}
+
+// =============================================================================
+// PATH ASYMMETRY TRACKING - IMPLEMENTATION
+// =============================================================================
+
+void SimpleSyncProtocol::recordAsymmetry(uint64_t t1, uint64_t t2, uint64_t t3, uint64_t t4, bool phoneConnected) {
+    // Asymmetry = (outbound delay) - (return delay) = (T2-T1) - (T4-T3)
+    // Positive asymmetry means PRIMARY->SECONDARY path is slower than return
+    // This can happen when PRIMARY handles 2 connections (phone + SECONDARY)
+    // while SECONDARY only handles 1
+    int64_t outbound = static_cast<int64_t>(t2) - static_cast<int64_t>(t1);
+    int64_t returnPath = static_cast<int64_t>(t4) - static_cast<int64_t>(t3);
+    int64_t asymmetry = outbound - returnPath;
+
+    _lastAsymmetry = asymmetry;
+    _phoneConnectedDuringSync = phoneConnected;
+
+    // First sample - initialize
+    if (_asymmetrySampleCount == 0) {
+        _smoothedAsymmetry = asymmetry;
+        _asymmetryVariance = 0;
+        _asymmetrySampleCount = 1;
+        return;
+    }
+
+    // Calculate deviation from smoothed mean for variance tracking
+    int64_t deviation = asymmetry - _smoothedAsymmetry;
+    if (deviation < 0) deviation = -deviation;  // abs()
+
+    // EMA smooth the variance (same alpha as main latency: α = 0.3)
+    _asymmetryVariance = (EMA_ALPHA_NUM * static_cast<uint32_t>(deviation) +
+                          (EMA_ALPHA_DEN - EMA_ALPHA_NUM) * _asymmetryVariance) / EMA_ALPHA_DEN;
+
+    // EMA smooth the asymmetry (α = 0.3)
+    _smoothedAsymmetry = (EMA_ALPHA_NUM * asymmetry +
+                          (EMA_ALPHA_DEN - EMA_ALPHA_NUM) * _smoothedAsymmetry) / EMA_ALPHA_DEN;
+
+    if (_asymmetrySampleCount < 0xFFFF) _asymmetrySampleCount++;
+}
+
+void SimpleSyncProtocol::resetAsymmetryTracking() {
+    _lastAsymmetry = 0;
+    _smoothedAsymmetry = 0;
+    _asymmetryVariance = 0;
+    _asymmetrySampleCount = 0;
+    _phoneConnectedDuringSync = false;
 }

@@ -73,6 +73,10 @@ struct BBConnection {
     uint16_t rxIndex;
     uint64_t rxTimestamp;  // Timestamp when first byte of current message was received
 
+    // Connection interval tracking (for diagnostics)
+    uint16_t negotiatedIntervalUnits;    // Actual interval in 1.25ms units
+    uint32_t intervalQueriedAt;          // millis() when queried
+
     BBConnection() :
         connHandle(CONN_HANDLE_INVALID),
         type(ConnectionType::NONE),
@@ -81,7 +85,9 @@ struct BBConnection {
         pendingIdentify(false),
         identifyStartTime(0),
         rxIndex(0),
-        rxTimestamp(0) {
+        rxTimestamp(0),
+        negotiatedIntervalUnits(0),
+        intervalQueriedAt(0) {
         memset(rxBuffer, 0, sizeof(rxBuffer));
     }
 
@@ -94,6 +100,8 @@ struct BBConnection {
         identifyStartTime = 0;
         rxIndex = 0;
         rxTimestamp = 0;
+        negotiatedIntervalUnits = 0;
+        intervalQueriedAt = 0;
         memset(rxBuffer, 0, sizeof(rxBuffer));
     }
 };
@@ -322,6 +330,19 @@ public:
      */
     uint16_t getPrimaryHandle() const;
 
+    /**
+     * @brief Get connection interval in milliseconds
+     * @param connHandle Connection handle to query
+     * @return Interval in milliseconds (0 if not available)
+     */
+    float getConnectionIntervalMs(uint16_t connHandle) const;
+
+    /**
+     * @brief Get SECONDARY connection interval in milliseconds (PRIMARY mode)
+     * @return Interval in milliseconds (0 if not available)
+     */
+    float getSecondaryConnectionIntervalMs() const;
+
     // =========================================================================
     // STATIC CALLBACKS (for Bluefruit library)
     // =========================================================================
@@ -407,6 +428,12 @@ private:
     void processClientIncomingData(const uint8_t* data, uint16_t len, uint64_t rxTimestamp);
     void deliverMessage(BBConnection* conn, uint16_t connHandle);
     ConnectionType identifyConnectionType(uint16_t connHandle);
+
+    /**
+     * @brief Query and store actual connection interval from SoftDevice
+     * @param connHandle Connection handle to query
+     */
+    void queryConnectionInterval(uint16_t connHandle);
 };
 
 // Global instance (needed for static callbacks)

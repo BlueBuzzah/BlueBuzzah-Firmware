@@ -705,6 +705,52 @@ public:
      */
     int64_t getProjectedOffset() const;
 
+    // =========================================================================
+    // PATH ASYMMETRY TRACKING (Phase 1: Measurement Only)
+    // =========================================================================
+
+    /**
+     * @brief Record path asymmetry from PTP timestamps
+     *
+     * Asymmetry = (outbound delay) - (return delay) = (T2-T1) - (T4-T3)
+     * Positive asymmetry means PRIMARY->SECONDARY path is slower.
+     *
+     * @param t1 PRIMARY send timestamp
+     * @param t2 SECONDARY receive timestamp
+     * @param t3 SECONDARY send timestamp
+     * @param t4 PRIMARY receive timestamp
+     * @param phoneConnected Whether phone was connected during this measurement
+     */
+    void recordAsymmetry(uint64_t t1, uint64_t t2, uint64_t t3, uint64_t t4, bool phoneConnected);
+
+    /**
+     * @brief Get most recent raw asymmetry measurement
+     * @return Asymmetry in microseconds (positive = PRIMARY->SECONDARY slower)
+     */
+    int64_t getRawAsymmetry() const { return _lastAsymmetry; }
+
+    /**
+     * @brief Get EMA-smoothed asymmetry estimate
+     * @return Smoothed asymmetry in microseconds
+     */
+    int64_t getSmoothedAsymmetry() const { return _smoothedAsymmetry; }
+
+    /**
+     * @brief Get asymmetry variance estimate
+     * @return Variance in microseconds
+     */
+    uint32_t getAsymmetryVariance() const { return _asymmetryVariance; }
+
+    /**
+     * @brief Get number of asymmetry samples collected
+     */
+    uint16_t getAsymmetrySampleCount() const { return _asymmetrySampleCount; }
+
+    /**
+     * @brief Reset asymmetry tracking state
+     */
+    void resetAsymmetryTracking();
+
 private:
     // EMA tuning constants
     static constexpr uint16_t MIN_SAMPLES = 3;        // Minimum before using smoothed
@@ -749,6 +795,13 @@ private:
 
     bool _warmStartMode;             // Currently in warm-start recovery
     uint8_t _warmStartConfirmed;     // Number of validated confirmatory samples
+
+    // Path asymmetry tracking (Phase 1: measurement only)
+    int64_t _lastAsymmetry;          // Most recent asymmetry measurement (µs)
+    int64_t _smoothedAsymmetry;      // EMA-smoothed asymmetry (µs)
+    uint32_t _asymmetryVariance;     // EMA-smoothed variance (µs)
+    uint16_t _asymmetrySampleCount;  // Valid asymmetry samples collected
+    bool _phoneConnectedDuringSync;  // Phone connection state at measurement
 };
 
 #endif // SYNC_PROTOCOL_H

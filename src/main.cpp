@@ -116,6 +116,11 @@ LEDPattern savedLedPattern = LEDPattern::SOLID;
 static volatile bool g_pendingFlashActive = false;
 static volatile uint64_t g_pendingFlashTime = 0;
 
+// PHY change detection (SECONDARY only - resets RTT statistics on PHY upgrade)
+// Written in BLE event callback context, read in main loop
+static volatile bool g_phyChangeDetected = false;
+static volatile uint8_t g_newPhy = 0;  // 1=1M, 2=2M, 4=Coded
+
 // Finger names for display (4 fingers per hand - index through pinky, no thumb per v1)
 const char *FINGER_NAMES[] = {"Index", "Middle", "Ring", "Pinky"};
 
@@ -386,6 +391,9 @@ void executeDeferredWork(DeferredWorkType type, uint8_t p1, uint8_t p2, uint32_t
 
 // Serial-Only Commands (not available via BLE)
 void handleSerialCommand(const char *command);
+
+// BLE Event Callback (PHY change detection)
+void onBLEEvent(ble_evt_t* evt);
 
 // Role Configuration Wait (blocks until role is set)
 void waitForRoleConfiguration();
@@ -711,6 +719,29 @@ void loop()
     // Process BLE events (includes non-blocking TX queue)
     ble.update();
 
+    // Handle PHY change detection (SECONDARY only)
+    // When PHY upgrades from 1M to 2M, RTT changes significantly - reset statistics
+    if (g_phyChangeDetected)
+    {
+        g_phyChangeDetected = false;
+        uint8_t newPhy = g_newPhy;
+
+        const char* phyStr = (newPhy == 2) ? "2M" : (newPhy == 1) ? "1M" : "Coded";
+        Serial.printf("[BLE] PHY changed to %s - resetting RTT and asymmetry statistics\n", phyStr);
+
+        syncProtocol.resetLatency();
+        syncProtocol.resetAsymmetryTracking();
+
+        // Reset clock sync if few samples collected during PHY transition
+        // (samples before and after PHY change have inconsistent RTT)
+        if (syncProtocol.getOffsetSampleCount() > 0 &&
+            syncProtocol.getOffsetSampleCount() < SYNC_MIN_VALID_SAMPLES)
+        {
+            syncProtocol.resetClockSync();
+            Serial.println(F("[SYNC] Clock sync reset due to PHY transition"));
+        }
+    }
+
     // Motor events handled by motor task - no polling needed
 
     // Process Serial commands (uses serial-only handler for SET_ROLE, GET_ROLE)
@@ -996,6 +1027,14 @@ bool initializeBLE()
     {
         Serial.println(F("[ERROR] BLE begin() failed"));
         return false;
+    }
+
+    // Register PHY change callback (SECONDARY only)
+    // Detects 1M -> 2M PHY upgrades so we can reset RTT statistics
+    if (deviceRole == DeviceRole::SECONDARY)
+    {
+        Bluefruit.setEventCallback(onBLEEvent);
+        Serial.println(F("[BLE] PHY change event callback registered"));
     }
 
     // Start scanning for SECONDARY role
@@ -1682,15 +1721,19 @@ void onBLEMessage(uint16_t connHandle [[maybe_unused]], const char *message, uin
                     latencyMetrics.recordRtt(rtt);
                 }
 
-                // Enhanced logging (DEBUG only)
+                // Record path asymmetry for diagnostics (Phase 1: measurement only)
+                bool phoneConnected = ble.isPhoneConnected();
+                syncProtocol.recordAsymmetry(t1, t2, t3, t4, phoneConnected);
+
+                // Enhanced logging with asymmetry (DEBUG only)
                 if (profiles.getDebugMode())
                 {
-                    Serial.printf("[SYNC] RTT=%lu offset_raw=%ld offset_median=%ld offset_corrected=%ld valid=%d samples=%u %s\n",
+                    Serial.printf("[SYNC] RTT=%lu offset=%ld asym=%ld asym_sm=%ld phone=%d samples=%u %s\n",
                                   (unsigned long)rtt,
                                   (long)offset,
-                                  (long)syncProtocol.getMedianOffset(),
-                                  (long)syncProtocol.getCorrectedOffset(),
-                                  syncProtocol.isClockSyncValid() ? 1 : 0,
+                                  (long)syncProtocol.getRawAsymmetry(),
+                                  (long)syncProtocol.getSmoothedAsymmetry(),
+                                  phoneConnected ? 1 : 0,
                                   syncProtocol.getOffsetSampleCount(),
                                   sampleAccepted ? "" : "(rejected)");
                 }
@@ -2380,6 +2423,28 @@ void onMenuSendResponse(const char *response)
     {
         ble.sendToPhone(response);
     }
+}
+
+// =============================================================================
+// BLE EVENT CALLBACK (PHY Change Detection)
+// =============================================================================
+
+/**
+ * @brief BLE event callback for PHY change detection
+ *
+ * Runs in SoftDevice context - only sets flags, no I2C/Serial.
+ * When PHY upgrades from 1M to 2M, RTT changes significantly (~20ms to ~10-15ms).
+ * This callback detects the transition so main loop can reset RTT statistics.
+ */
+void onBLEEvent(ble_evt_t* evt)
+{
+    if (evt->header.evt_id != BLE_GAP_EVT_PHY_UPDATE) return;
+
+    ble_gap_evt_phy_update_t* phy = &evt->evt.gap_evt.params.phy_update;
+    if (phy->status != BLE_HCI_STATUS_CODE_SUCCESS) return;
+
+    g_newPhy = phy->tx_phy;
+    g_phyChangeDetected = true;
 }
 
 // =============================================================================

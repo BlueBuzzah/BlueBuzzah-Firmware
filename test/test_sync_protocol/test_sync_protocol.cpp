@@ -1095,6 +1095,81 @@ void test_SimpleSyncProtocol_invalidateWarmStartCache_clears_cache(void) {
 }
 
 // =============================================================================
+// PATH ASYMMETRY TRACKING TESTS
+// =============================================================================
+
+void test_SimpleSyncProtocol_recordAsymmetry_basic(void) {
+    SimpleSyncProtocol sync;
+
+    // Symmetric path: outbound = return = 10µs
+    // T1=1000, T2=1010, T3=1020, T4=1030
+    // asymmetry = (1010-1000) - (1030-1020) = 10 - 10 = 0
+    sync.recordAsymmetry(1000, 1010, 1020, 1030, false);
+
+    TEST_ASSERT_EQUAL_INT64(0, sync.getRawAsymmetry());
+    TEST_ASSERT_EQUAL_UINT16(1, sync.getAsymmetrySampleCount());
+}
+
+void test_SimpleSyncProtocol_recordAsymmetry_positive(void) {
+    SimpleSyncProtocol sync;
+
+    // Outbound slower: outbound=15µs, return=10µs
+    // T1=1000, T2=1015, T3=1020, T4=1030
+    // asymmetry = (1015-1000) - (1030-1020) = 15 - 10 = 5
+    sync.recordAsymmetry(1000, 1015, 1020, 1030, false);
+
+    TEST_ASSERT_EQUAL_INT64(5, sync.getRawAsymmetry());
+}
+
+void test_SimpleSyncProtocol_recordAsymmetry_negative(void) {
+    SimpleSyncProtocol sync;
+
+    // Return slower: outbound=10µs, return=15µs
+    // T1=1000, T2=1010, T3=1020, T4=1035
+    // asymmetry = (1010-1000) - (1035-1020) = 10 - 15 = -5
+    sync.recordAsymmetry(1000, 1010, 1020, 1035, false);
+
+    TEST_ASSERT_EQUAL_INT64(-5, sync.getRawAsymmetry());
+}
+
+void test_SimpleSyncProtocol_recordAsymmetry_ema_smoothing(void) {
+    SimpleSyncProtocol sync;
+
+    // First sample: asymmetry = 1000µs (outbound=1500, return=500)
+    // T1=0, T2=1500, T3=2000, T4=2500 -> (1500-0) - (2500-2000) = 1500 - 500 = 1000
+    sync.recordAsymmetry(0, 1500, 2000, 2500, false);
+    TEST_ASSERT_EQUAL_INT64(1000, sync.getSmoothedAsymmetry());
+
+    // Second sample: asymmetry = 0µs (symmetric)
+    // T1=3000, T2=3500, T3=4000, T4=4500 -> (500) - (500) = 0
+    // EMA with α=0.3: new = 0.3*0 + 0.7*1000 = 700
+    sync.recordAsymmetry(3000, 3500, 4000, 4500, false);
+    TEST_ASSERT_EQUAL_INT64(0, sync.getRawAsymmetry());
+
+    // Smoothed should be between 0 and 1000 due to EMA
+    int64_t smoothed = sync.getSmoothedAsymmetry();
+    TEST_ASSERT_TRUE(smoothed > 0 && smoothed < 1000);
+}
+
+void test_SimpleSyncProtocol_resetAsymmetryTracking(void) {
+    SimpleSyncProtocol sync;
+
+    // Record some asymmetry samples
+    sync.recordAsymmetry(1000, 1010, 1020, 1030, false);
+    sync.recordAsymmetry(2000, 2015, 2020, 2030, true);
+
+    TEST_ASSERT_GREATER_THAN(0, sync.getAsymmetrySampleCount());
+
+    // Reset
+    sync.resetAsymmetryTracking();
+
+    TEST_ASSERT_EQUAL_INT64(0, sync.getRawAsymmetry());
+    TEST_ASSERT_EQUAL_INT64(0, sync.getSmoothedAsymmetry());
+    TEST_ASSERT_EQUAL_UINT32(0, sync.getAsymmetryVariance());
+    TEST_ASSERT_EQUAL_UINT16(0, sync.getAsymmetrySampleCount());
+}
+
+// =============================================================================
 // ADAPTIVE LEAD TIME TESTS
 // =============================================================================
 
@@ -2100,6 +2175,13 @@ int main(int argc, char **argv) {
     RUN_TEST(test_SimpleSyncProtocol_warmStart_aborts_on_divergent_sample);
     RUN_TEST(test_SimpleSyncProtocol_getProjectedOffset_applies_drift);
     RUN_TEST(test_SimpleSyncProtocol_invalidateWarmStartCache_clears_cache);
+
+    // Path Asymmetry Tracking Tests
+    RUN_TEST(test_SimpleSyncProtocol_recordAsymmetry_basic);
+    RUN_TEST(test_SimpleSyncProtocol_recordAsymmetry_positive);
+    RUN_TEST(test_SimpleSyncProtocol_recordAsymmetry_negative);
+    RUN_TEST(test_SimpleSyncProtocol_recordAsymmetry_ema_smoothing);
+    RUN_TEST(test_SimpleSyncProtocol_resetAsymmetryTracking);
 
     // Adaptive Lead Time Tests
     RUN_TEST(test_SimpleSyncProtocol_calculateAdaptiveLeadTime_default_when_few_samples);
