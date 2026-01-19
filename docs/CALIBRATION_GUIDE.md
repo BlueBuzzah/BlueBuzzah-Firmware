@@ -366,6 +366,31 @@ void MenuController::buzzRemoteFinger(uint8_t finger, uint8_t intensity, uint16_
 **Message Flow**:
 
 ```mermaid
+%%{init: {'theme': 'base', 'themeVariables': {
+  'primaryColor': '#0d3a4d',
+  'primaryTextColor': '#fafafa',
+  'primaryBorderColor': '#35B6F2',
+  'lineColor': '#35B6F2',
+  'secondaryColor': '#05212D',
+  'tertiaryColor': '#0a0a0a',
+  'background': '#0a0a0a',
+  'actorBkg': '#0d3a4d',
+  'actorBorder': '#35B6F2',
+  'actorTextColor': '#fafafa',
+  'actorLineColor': '#35B6F2',
+  'signalColor': '#35B6F2',
+  'signalTextColor': '#fafafa',
+  'labelBoxBkgColor': '#05212D',
+  'labelBoxBorderColor': '#35B6F2',
+  'labelTextColor': '#fafafa',
+  'loopTextColor': '#fafafa',
+  'noteBkgColor': '#05212D',
+  'noteBorderColor': '#35B6F2',
+  'noteTextColor': '#fafafa',
+  'activationBkgColor': '#0d3a4d',
+  'activationBorderColor': '#35B6F2',
+  'sequenceNumberColor': '#fafafa'
+}}}%%
 sequenceDiagram
     participant Phone
     participant PRIMARY
