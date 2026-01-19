@@ -27,11 +27,36 @@ BlueBuzzah uses a bilateral synchronization protocol to coordinate haptic feedba
 ## Session Lifecycle
 
 ```mermaid
+%%{init: {'theme': 'base', 'themeVariables': {
+  'primaryColor': '#0d3a4d',
+  'primaryTextColor': '#fafafa',
+  'primaryBorderColor': '#35B6F2',
+  'lineColor': '#35B6F2',
+  'secondaryColor': '#05212D',
+  'tertiaryColor': '#0a0a0a',
+  'background': '#0a0a0a',
+  'actorBkg': '#0d3a4d',
+  'actorBorder': '#35B6F2',
+  'actorTextColor': '#fafafa',
+  'actorLineColor': '#35B6F2',
+  'signalColor': '#35B6F2',
+  'signalTextColor': '#fafafa',
+  'labelBoxBkgColor': '#05212D',
+  'labelBoxBorderColor': '#35B6F2',
+  'labelTextColor': '#fafafa',
+  'loopTextColor': '#fafafa',
+  'noteBkgColor': '#05212D',
+  'noteBorderColor': '#35B6F2',
+  'noteTextColor': '#fafafa',
+  'activationBkgColor': '#0d3a4d',
+  'activationBorderColor': '#35B6F2',
+  'sequenceNumberColor': '#fafafa'
+}}}%%
 sequenceDiagram
     participant P as PRIMARY
     participant S as SECONDARY
 
-    rect rgb(230, 245, 255)
+    rect rgba(5, 33, 45, 0.5)
         Note over P,S: Phase 1: Connection
         P->>P: Advertise "BlueBuzzah"
         S->>S: Scan for "BlueBuzzah"
@@ -39,7 +64,7 @@ sequenceDiagram
         S->>P: READY
     end
 
-    rect rgb(255, 245, 230)
+    rect rgba(5, 33, 45, 0.5)
         Note over P,S: Phase 2: Idle Clock Synchronization
         loop Every 1s (keepalive)
             P->>S: PING (T1)
@@ -49,7 +74,7 @@ sequenceDiagram
         Note over P: 5+ valid samples = sync ready (~5s)
     end
 
-    rect rgb(230, 255, 230)
+    rect rgba(5, 33, 45, 0.5)
         Note over P,S: Phase 3: Therapy Session
         P->>S: START_SESSION
         loop Every ~2s
@@ -64,7 +89,7 @@ sequenceDiagram
         end
     end
 
-    rect rgb(255, 230, 230)
+    rect rgba(5, 33, 45, 0.5)
         Note over P,S: Phase 4: Session End
         P->>S: STOP_SESSION
         Note over P,S: Motors off, connection maintained
@@ -89,6 +114,31 @@ sequenceDiagram
 The protocol uses IEEE 1588-inspired clock synchronization to measure the offset between PRIMARY and SECONDARY clocks, independent of network asymmetry.
 
 ```mermaid
+%%{init: {'theme': 'base', 'themeVariables': {
+  'primaryColor': '#0d3a4d',
+  'primaryTextColor': '#fafafa',
+  'primaryBorderColor': '#35B6F2',
+  'lineColor': '#35B6F2',
+  'secondaryColor': '#05212D',
+  'tertiaryColor': '#0a0a0a',
+  'background': '#0a0a0a',
+  'actorBkg': '#0d3a4d',
+  'actorBorder': '#35B6F2',
+  'actorTextColor': '#fafafa',
+  'actorLineColor': '#35B6F2',
+  'signalColor': '#35B6F2',
+  'signalTextColor': '#fafafa',
+  'labelBoxBkgColor': '#05212D',
+  'labelBoxBorderColor': '#35B6F2',
+  'labelTextColor': '#fafafa',
+  'loopTextColor': '#fafafa',
+  'noteBkgColor': '#05212D',
+  'noteBorderColor': '#35B6F2',
+  'noteTextColor': '#fafafa',
+  'activationBkgColor': '#0d3a4d',
+  'activationBorderColor': '#35B6F2',
+  'sequenceNumberColor': '#fafafa'
+}}}%%
 sequenceDiagram
     participant P as PRIMARY
     participant S as SECONDARY
@@ -144,7 +194,7 @@ Excluding processing time provides:
 - **Minimum valid:** At least 5 good samples required (~5s after connect)
 - **Drift compensation:** Ongoing sync every 1s corrects for crystal drift
 - **Smoothing:** Exponential moving average prevents sudden jumps
-- **Drift rate capping:** Maximum ±150 ppm (±0.15 µs/ms) to prevent runaway drift
+- **Drift rate capping:** Dual caps for safety (see below)
 
 ### Outlier Rejection
 
@@ -156,6 +206,29 @@ The clock sync algorithm uses MAD (Median Absolute Deviation) to filter outliers
 4. Require minimum 5 valid samples after filtering
 
 This improves robustness against BLE retransmissions and RF interference that cause anomalous RTT measurements.
+
+### Drift Rate Caps (Dual)
+
+The protocol uses **two separate drift rate caps** for safety:
+
+| Cap | Value | Application | Purpose |
+|-----|-------|-------------|---------|
+| Measurement cap | ±150 ppm (0.15 µs/ms) | `updateDriftRate()` | Reject implausible measurements |
+| Applied cap | ±100 ppm (0.10 µs/ms) | `getCorrectedOffset()`, `getProjectedOffset()` | Conservative correction limit |
+
+**Why two caps?**
+
+1. **Measurement cap (150 ppm):** Filters out measurements that exceed typical crystal drift (±20-50 ppm). A measurement of 150 ppm indicates BLE anomalies, not actual clock drift.
+
+2. **Applied cap (100 ppm):** More conservative limit for actual corrections. Even if measured drift is valid, applying too large a correction can cause over-compensation and oscillation.
+
+```cpp
+// From config.h:
+#define SYNC_MAX_DRIFT_RATE_US_PER_MS 0.15f       // Measurement cap (150 ppm)
+#define SYNC_MAX_APPLIED_DRIFT_RATE_US_PER_MS 0.1f  // Applied cap (100 ppm)
+```
+
+Typical nRF52840 crystal drift is ±20-50 ppm. The 100 ppm applied cap provides ~2× headroom while preventing runaway drift compensation.
 
 ### Warm-Start Sync (Quick Reconnection)
 
@@ -185,6 +258,21 @@ This reduces user-perceived disruption from 6-10+ seconds to ~3 seconds for brie
 ### MACROCYCLE Command Flow
 
 ```mermaid
+%%{init: {'theme': 'base', 'themeVariables': {
+  'primaryColor': '#0d3a4d',
+  'primaryTextColor': '#fafafa',
+  'primaryBorderColor': '#35B6F2',
+  'lineColor': '#35B6F2',
+  'secondaryColor': '#05212D',
+  'tertiaryColor': '#0a0a0a',
+  'background': '#0a0a0a',
+  'mainBkg': '#0d3a4d',
+  'nodeBorder': '#35B6F2',
+  'clusterBkg': '#05212D',
+  'clusterBorder': '#35B6F2',
+  'titleColor': '#fafafa',
+  'edgeLabelBackground': '#0a0a0a'
+}}}%%
 flowchart LR
     subgraph PRIMARY
         A[Generate 3 patterns<br/>12 events total] --> B[Calculate base time]
@@ -237,6 +325,21 @@ local_time = primary_time + clock_offset
 ## Therapy Event Cycle
 
 ```mermaid
+%%{init: {'theme': 'base', 'themeVariables': {
+  'primaryColor': '#0d3a4d',
+  'primaryTextColor': '#fafafa',
+  'primaryBorderColor': '#35B6F2',
+  'lineColor': '#35B6F2',
+  'secondaryColor': '#05212D',
+  'tertiaryColor': '#0a0a0a',
+  'background': '#0a0a0a',
+  'mainBkg': '#0d3a4d',
+  'nodeBorder': '#35B6F2',
+  'clusterBkg': '#05212D',
+  'clusterBorder': '#35B6F2',
+  'titleColor': '#fafafa',
+  'edgeLabelBackground': '#0a0a0a'
+}}}%%
 flowchart TD
     A[Therapy Pattern Generator] --> B{Macrocycle ready?}
     B -->|Yes| C[Generate 3 patterns<br/>12 events total]
@@ -293,6 +396,23 @@ SECONDARY's `ActivationQueue` schedules all 12 events with their local activatio
 ### Connection Loss Recovery
 
 ```mermaid
+%%{init: {'theme': 'base', 'themeVariables': {
+  'primaryColor': '#0d3a4d',
+  'primaryTextColor': '#fafafa',
+  'primaryBorderColor': '#35B6F2',
+  'lineColor': '#35B6F2',
+  'secondaryColor': '#05212D',
+  'tertiaryColor': '#0a0a0a',
+  'background': '#0a0a0a',
+  'labelTextColor': '#fafafa',
+  'stateBkg': '#0d3a4d',
+  'stateBorder': '#35B6F2',
+  'transitionColor': '#35B6F2',
+  'transitionLabelColor': '#a3a3a3',
+  'noteBkgColor': '#05212D',
+  'noteBorderColor': '#35B6F2',
+  'noteTextColor': '#fafafa'
+}}}%%
 stateDiagram-v2
     [*] --> Normal
 
@@ -431,7 +551,8 @@ The protocol includes several safety mechanisms to prevent incorrect synchroniza
 |------------|-----------|--------|
 | Offset magnitude | ±35 seconds | Reject samples with unreasonable clock drift |
 | baseTime freshness | ±30 seconds | Reject macrocycles with stale timestamps |
-| Drift rate | ±150 ppm | Cap drift rate to prevent runaway compensation |
+| Drift rate (measured) | ±150 ppm | Cap measured drift for plausibility |
+| Drift rate (applied) | ±100 ppm | Cap corrections to prevent oscillation |
 | Elapsed time | 10 seconds max | Cap EMA time delta to prevent overflow |
 | RTT quality | 60ms | Reject samples affected by retransmissions |
 
@@ -510,9 +631,10 @@ Sync state variables are accessed from both main loop and BLE callbacks. Key con
 | Keepalive timeout (PRIMARY) | 4s | During therapy (emergency shutdown) |
 | MACROCYCLE timeout | 10s | SECONDARY safety halt |
 | Lead time range | 70-150ms | Adaptive scheduling window |
-| Default lead time | 35ms | Used before RTT samples available |
+| Initial lead time | 35ms (clamped to 70ms) | Base value before RTT samples, clamped to min |
 | Processing overhead | 10ms | SECONDARY processing time allowance |
-| Max drift rate | ±150 ppm | Crystal drift rate cap for safety |
+| Max drift rate (measurement) | ±150 ppm | Measurement cap for plausibility |
+| Max drift rate (applied) | ±100 ppm | Conservative correction limit |
 | Warm-start validity | 15s | Cache valid after disconnect |
 | BLE connection interval | 7.5-10ms | Low-latency communication (6-8 BLE units) |
 

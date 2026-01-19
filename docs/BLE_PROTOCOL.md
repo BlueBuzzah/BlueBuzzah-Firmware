@@ -20,11 +20,12 @@
    - [Parameter Adjustment](#parameter-commands)
    - [Calibration](#calibration-commands)
    - [System](#system-commands)
-7. [Internal PRIMARY↔SECONDARY Commands](#internal-primarysecondary-commands)
-8. [Legacy Commands](#legacy-single-character-commands)
-9. [Response Format](#response-format)
-10. [Error Codes](#error-codes)
-11. [Message Interleaving](#message-interleaving)
+7. [Serial-Only Commands](#serial-only-commands)
+8. [Internal PRIMARY↔SECONDARY Commands](#internal-primarysecondary-commands)
+9. [Legacy Commands](#legacy-single-character-commands)
+10. [Response Format](#response-format)
+11. [Error Codes](#error-codes)
+12. [Message Interleaving](#message-interleaving)
 
 ---
 
@@ -105,12 +106,27 @@ Recv: BATP:3.72\nBATS:3.68\n\x04
 ## Command Processing Flow
 
 ```mermaid
+%%{init: {'theme': 'base', 'themeVariables': {
+  'primaryColor': '#0d3a4d',
+  'primaryTextColor': '#fafafa',
+  'primaryBorderColor': '#35B6F2',
+  'lineColor': '#35B6F2',
+  'secondaryColor': '#05212D',
+  'tertiaryColor': '#0a0a0a',
+  'background': '#0a0a0a',
+  'mainBkg': '#0d3a4d',
+  'nodeBorder': '#35B6F2',
+  'clusterBkg': '#05212D',
+  'clusterBorder': '#35B6F2',
+  'titleColor': '#fafafa',
+  'edgeLabelBackground': '#0a0a0a'
+}}}%%
 flowchart TD
     A[Phone sends command] --> B[PRIMARY receives via phone_uart]
     B --> C{Command type?}
     C -->|Device Info| D[Query local state]
     C -->|Profile| E{Session active?}
-    C -->|Session| F[Forward to SessionManager]
+    C -->|Session| F[Forward to StateMachine/TherapyEngine]
     C -->|Calibration| G[Forward to CalibrationMode]
     E -->|No| H[Modify profile]
     E -->|Yes| I[Return error]
@@ -216,8 +232,8 @@ All parameter names use shorthand notation to minimize BLE bandwidth.
 | Session Control | SESSION_START, SESSION_PAUSE, SESSION_RESUME, SESSION_STOP, SESSION_STATUS | 5 |
 | Parameter Adjustment | PARAM_SET | 1 |
 | Calibration | CALIBRATE_START, CALIBRATE_BUZZ, CALIBRATE_STOP | 3 |
-| System | HELP, RESTART | 2 |
-| **Total** | | **18** |
+| System | HELP, RESTART, THERAPY_LED_OFF, DEBUG | 4 |
+| **Total** | | **20** |
 
 ---
 
@@ -261,9 +277,11 @@ Get battery voltage for both gloves.
 **Response:**
 ```
 BATP:3.72
-BATS:3.68
+BATS:0.00
 \x04
 ```
+
+> **Note:** `BATS` (SECONDARY battery) is currently a placeholder returning `0.00`. SECONDARY battery reporting is not yet implemented - the actual BLE query/response mechanism requires additional protocol work.
 
 **Battery Thresholds:**
 | Status | Voltage | LED |
@@ -272,7 +290,7 @@ BATS:3.68
 | Low | 3.3-3.6V | Orange |
 | Critical | <3.3V | Red (therapy blocked) |
 
-**Implementation:** `menu_controller.cpp:cmdBattery()`
+**Implementation:** `menu_controller.cpp:handleBattery()`
 
 ---
 
@@ -284,11 +302,11 @@ Connection test for latency measurement.
 
 **Response:**
 ```
-PONG
+PONG:
 \x04
 ```
 
-**Implementation:** `menu_controller.cpp:cmdPing()`
+**Implementation:** `menu_controller.cpp:handlePing()`
 
 ---
 
@@ -316,6 +334,8 @@ PROFILE:3:Hybrid VCR
 
 Load therapy profile by ID.
 
+> **⚠️ Warning:** This command causes the device to **REBOOT** after saving the profile to flash storage. The phone app must handle BLE disconnection and reconnection.
+
 **Request:** `PROFILE_LOAD:2\x04`
 
 **Parameters:**
@@ -327,10 +347,11 @@ Load therapy profile by ID.
 
 **Response (Success):**
 ```
-STATUS:LOADED
+STATUS:REBOOTING
 PROFILE:Noisy VCR
 \x04
 ```
+*(Device reboots immediately after sending response)*
 
 **Response (Error):**
 ```
@@ -344,7 +365,13 @@ ERROR:Cannot modify parameters during active session
 
 **Restrictions:** Cannot load during active session. Send `SESSION_STOP` first.
 
-**Implementation:** `menu_controller.cpp:cmdProfileLoad()`
+**Important Behavior:**
+1. Profile is saved to LittleFS as `settings.json`
+2. Device sends `STATUS:REBOOTING` response
+3. Device reboots to apply new settings
+4. Phone app should expect BLE disconnection and reconnect after ~2-3 seconds
+
+**Implementation:** `menu_controller.cpp:handleProfileLoad()`
 
 ---
 
@@ -724,7 +751,129 @@ STATUS:REBOOTING
 
 **Note:** BLE connection will drop after this command.
 
-**Implementation:** `menu_controller.cpp:cmdRestart()`
+**Implementation:** `menu_controller.cpp:handleRestart()`
+
+---
+
+#### THERAPY_LED_OFF
+
+Enable or disable LED during therapy sessions.
+
+**Request (Query):** `THERAPY_LED_OFF\x04`
+
+**Response (Query):**
+```
+THERAPY_LED_OFF:false
+\x04
+```
+
+**Request (Set):** `THERAPY_LED_OFF:true\x04`
+
+**Response (Set):**
+```
+THERAPY_LED_OFF:true
+\x04
+```
+
+**Parameters:**
+| Value | Description |
+|-------|-------------|
+| `true` / `1` | Disable LED during therapy |
+| `false` / `0` | Enable LED during therapy (default) |
+
+**Use Case:** Some users find the LED distracting during therapy sessions. This setting persists across reboots.
+
+**Implementation:** `menu_controller.cpp:handleTherapyLedOff()`
+
+---
+
+#### DEBUG
+
+Enable or disable debug mode for synchronized LED flashing and diagnostics.
+
+**Request (Query):** `DEBUG\x04`
+
+**Response (Query):**
+```
+DEBUG:false
+\x04
+```
+
+**Request (Set):** `DEBUG:true\x04`
+
+**Response (Set):**
+```
+DEBUG:true
+\x04
+```
+
+**Parameters:**
+| Value | Description |
+|-------|-------------|
+| `true` / `1` | Enable debug mode |
+| `false` / `0` | Disable debug mode (default) |
+
+**Effect:** When enabled, PRIMARY sends `DEBUG_SYNC` messages to SECONDARY for synchronized LED flashing, useful for visual verification of clock synchronization accuracy.
+
+**Implementation:** `menu_controller.cpp:handleDebug()`
+
+---
+
+## Serial-Only Commands
+
+The following commands are available **only via USB Serial terminal** (115200 baud), not over BLE. Use `pio device monitor` or a serial terminal like `screen /dev/cu.usbmodem14101 115200`.
+
+#### LATENCY_ON
+
+Enable latency metrics collection (aggregated mode with auto-report every 30s).
+
+**Request:** `LATENCY_ON`
+
+**Response:** Console output confirming metrics enabled.
+
+---
+
+#### LATENCY_ON_VERBOSE
+
+Enable latency metrics with per-buzz logging to Serial.
+
+**Request:** `LATENCY_ON_VERBOSE`
+
+**Response:** Console output confirming verbose metrics enabled.
+
+---
+
+#### LATENCY_OFF
+
+Disable latency metrics collection and print final report.
+
+**Request:** `LATENCY_OFF`
+
+**Response:** Final metrics report printed to Serial.
+
+---
+
+#### GET_LATENCY
+
+Print current latency metrics report.
+
+**Request:** `GET_LATENCY`
+
+**Response:** Current metrics report (see [LATENCY_METRICS.md](LATENCY_METRICS.md) for format).
+
+---
+
+#### RESET_LATENCY
+
+Clear all latency metrics and counters.
+
+**Request:** `RESET_LATENCY`
+
+**Response:** Console output confirming metrics reset.
+
+---
+
+See [LATENCY_METRICS.md](LATENCY_METRICS.md) for detailed usage and interpreting results.
 
 ---
 

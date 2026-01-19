@@ -18,6 +18,23 @@ The BlueBuzzah system uses a dual-glove architecture with synchronized bilateral
 The therapy session follows an 11-state finite state machine with graceful error handling:
 
 ```mermaid
+%%{init: {'theme': 'base', 'themeVariables': {
+  'primaryColor': '#0d3a4d',
+  'primaryTextColor': '#fafafa',
+  'primaryBorderColor': '#35B6F2',
+  'lineColor': '#35B6F2',
+  'secondaryColor': '#05212D',
+  'tertiaryColor': '#0a0a0a',
+  'background': '#0a0a0a',
+  'labelTextColor': '#fafafa',
+  'stateBkg': '#0d3a4d',
+  'stateBorder': '#35B6F2',
+  'transitionColor': '#35B6F2',
+  'transitionLabelColor': '#a3a3a3',
+  'noteBkgColor': '#05212D',
+  'noteBorderColor': '#35B6F2',
+  'noteTextColor': '#fafafa'
+}}}%%
 stateDiagram-v2
     [*] --> IDLE: Boot
 
@@ -78,6 +95,31 @@ stateDiagram-v2
 Complete boot-to-ready sequence including connection establishment and clock synchronization:
 
 ```mermaid
+%%{init: {'theme': 'base', 'themeVariables': {
+  'primaryColor': '#0d3a4d',
+  'primaryTextColor': '#fafafa',
+  'primaryBorderColor': '#35B6F2',
+  'lineColor': '#35B6F2',
+  'secondaryColor': '#05212D',
+  'tertiaryColor': '#0a0a0a',
+  'background': '#0a0a0a',
+  'actorBkg': '#0d3a4d',
+  'actorBorder': '#35B6F2',
+  'actorTextColor': '#fafafa',
+  'actorLineColor': '#35B6F2',
+  'signalColor': '#35B6F2',
+  'signalTextColor': '#fafafa',
+  'labelBoxBkgColor': '#05212D',
+  'labelBoxBorderColor': '#35B6F2',
+  'labelTextColor': '#fafafa',
+  'loopTextColor': '#fafafa',
+  'noteBkgColor': '#05212D',
+  'noteBorderColor': '#35B6F2',
+  'noteTextColor': '#fafafa',
+  'activationBkgColor': '#0d3a4d',
+  'activationBorderColor': '#35B6F2',
+  'sequenceNumberColor': '#fafafa'
+}}}%%
 sequenceDiagram
     participant APP as Smartphone App
     participant P as PRIMARY Glove
@@ -122,6 +164,21 @@ sequenceDiagram
 Pattern generation, message batching, and motor scheduling during an active session:
 
 ```mermaid
+%%{init: {'theme': 'base', 'themeVariables': {
+  'primaryColor': '#0d3a4d',
+  'primaryTextColor': '#fafafa',
+  'primaryBorderColor': '#35B6F2',
+  'lineColor': '#35B6F2',
+  'secondaryColor': '#05212D',
+  'tertiaryColor': '#0a0a0a',
+  'background': '#0a0a0a',
+  'mainBkg': '#0d3a4d',
+  'nodeBorder': '#35B6F2',
+  'clusterBkg': '#05212D',
+  'clusterBorder': '#35B6F2',
+  'titleColor': '#fafafa',
+  'edgeLabelBackground': '#0a0a0a'
+}}}%%
 flowchart TD
     A["SESSION RUNNING<br/>(PRIMARY & SECONDARY both in RUNNING state)"]
 
@@ -163,10 +220,10 @@ flowchart TD
     R --> B
     S --> B
 
-    style A fill:#90EE90
-    style Q fill:#FFB6C6
-    style R fill:#FFD700
-    style S fill:#87CEEB
+    style A fill:#35B6F2,color:#0a0a0a
+    style Q fill:#17a2b8,color:#fafafa
+    style R fill:#35B6F2,color:#0a0a0a
+    style S fill:#05212D,color:#fafafa
 ```
 
 **Key Metrics:**
@@ -182,26 +239,51 @@ flowchart TD
 IEEE 1588 PTP-style clock offset calculation for sub-2ms bilateral synchronization:
 
 ```mermaid
+%%{init: {'theme': 'base', 'themeVariables': {
+  'primaryColor': '#0d3a4d',
+  'primaryTextColor': '#fafafa',
+  'primaryBorderColor': '#35B6F2',
+  'lineColor': '#35B6F2',
+  'secondaryColor': '#05212D',
+  'tertiaryColor': '#0a0a0a',
+  'background': '#0a0a0a',
+  'actorBkg': '#0d3a4d',
+  'actorBorder': '#35B6F2',
+  'actorTextColor': '#fafafa',
+  'actorLineColor': '#35B6F2',
+  'signalColor': '#35B6F2',
+  'signalTextColor': '#fafafa',
+  'labelBoxBkgColor': '#05212D',
+  'labelBoxBorderColor': '#35B6F2',
+  'labelTextColor': '#fafafa',
+  'loopTextColor': '#fafafa',
+  'noteBkgColor': '#05212D',
+  'noteBorderColor': '#35B6F2',
+  'noteTextColor': '#fafafa',
+  'activationBkgColor': '#0d3a4d',
+  'activationBorderColor': '#35B6F2',
+  'sequenceNumberColor': '#fafafa'
+}}}%%
 sequenceDiagram
     participant P as PRIMARY<br/>(Clock A)
     participant S as SECONDARY<br/>(Clock B)
 
     Note over P,S: IEEE 1588 PTP-Style Offset Calculation
 
-    rect rgb(240, 248, 255)
+    rect rgba(5, 33, 45, 0.5)
         Note over P: T1 = getMicros()
         P->>S: PING:42|T1
         Note over P: Wait for response
     end
 
-    rect rgb(240, 248, 255)
+    rect rgba(5, 33, 45, 0.5)
         Note over S: T2 = getMicros()<br/>(receive time on SECONDARY)
         Note over S: Process & prepare response
         Note over S: T3 = getMicros()<br/>(send time on SECONDARY)
         S->>P: PONG:42|0|T2|T3
     end
 
-    rect rgb(240, 248, 255)
+    rect rgba(5, 33, 45, 0.5)
         Note over P: T4 = getMicros()<br/>(receive response)
         Note over P: Calculate:<br/>offset = ((T2-T1) + (T3-T4)) / 2
         Note over P: offset > 0 → SECONDARY ahead
@@ -229,6 +311,94 @@ RTT = (T4 - T1) - (T3 - T2)
 - **Smoothing**: Exponential moving average (α = 0.2)
 - **Update frequency**: Every 1 second (with keepalive)
 
+### Warm-Start Sync Recovery
+
+After brief BLE disconnects, the firmware can skip full clock synchronization using cached sync state:
+
+```mermaid
+%%{init: {'theme': 'base', 'themeVariables': {
+  'primaryColor': '#0d3a4d',
+  'primaryTextColor': '#fafafa',
+  'primaryBorderColor': '#35B6F2',
+  'lineColor': '#35B6F2',
+  'secondaryColor': '#05212D',
+  'tertiaryColor': '#0a0a0a',
+  'background': '#0a0a0a',
+  'actorBkg': '#0d3a4d',
+  'actorBorder': '#35B6F2',
+  'actorTextColor': '#fafafa',
+  'actorLineColor': '#35B6F2',
+  'signalColor': '#35B6F2',
+  'signalTextColor': '#fafafa',
+  'labelBoxBkgColor': '#05212D',
+  'labelBoxBorderColor': '#35B6F2',
+  'labelTextColor': '#fafafa',
+  'loopTextColor': '#fafafa',
+  'noteBkgColor': '#05212D',
+  'noteBorderColor': '#35B6F2',
+  'noteTextColor': '#fafafa',
+  'activationBkgColor': '#0d3a4d',
+  'activationBorderColor': '#35B6F2',
+  'sequenceNumberColor': '#fafafa'
+}}}%%
+sequenceDiagram
+    participant P as PRIMARY
+    participant S as SECONDARY
+
+    Note over P,S: SCENARIO: Brief BLE disconnect (<15s)
+
+    P->>P: Connection lost
+    S->>S: Connection lost
+    Note over P: Cache sync state:<br/>• Last clock offset<br/>• Last drift rate<br/>• Cached timestamp
+    Note over S: Wait for reconnection
+
+    rect rgba(5, 33, 45, 0.5)
+        Note over P,S: Reconnection within 15 seconds
+        S->>P: BLE Reconnect
+        S->>P: READY message
+        P->>P: Check sync cache age
+        Note over P: Cache age < 15s?<br/>→ WARM START
+    end
+
+    P->>S: PING:seq|T1 (1st keepalive)
+    S->>P: PONG:seq|0|T2|T3
+    Note over P: Single sample + cached state<br/>= sync ready (~3s vs 5+s)
+
+    P->>P: STATE: READY → can resume
+```
+
+**Warm-Start Conditions:**
+
+| Condition | Warm-Start | Cold-Start |
+|-----------|:----------:|:----------:|
+| Disconnect duration < 15s | ✓ | ✗ |
+| Disconnect duration ≥ 15s | ✗ | ✓ |
+| First connection (no cache) | ✗ | ✓ |
+| Device reboot | ✗ | ✓ |
+
+**Recovery Time Comparison:**
+
+| Start Type | Required Samples | Time to Sync Ready |
+|------------|:----------------:|:------------------:|
+| Cold-Start | 5+ samples | ~5+ seconds |
+| Warm-Start | 1-2 samples | ~2-3 seconds |
+
+**Sync Cache Contents:**
+
+```cpp
+struct SyncCache {
+    int32_t lastClockOffset;      // Microseconds offset
+    float lastDriftRate;          // us/ms drift compensation
+    uint32_t cachedTimestamp;     // When cache was written
+    uint8_t confidenceLevel;      // Sample quality indicator
+};
+
+// From config.h:
+// SYNC_WARM_START_VALIDITY_MS = 15000 (15 seconds)
+```
+
+**Purpose:** Warm-start significantly improves therapy continuity after transient BLE issues (interference, temporary out-of-range) by avoiding full re-synchronization.
+
 ---
 
 ## 5. Synchronized Motor Activation
@@ -236,6 +406,21 @@ RTT = (T4 - T1) - (T3 - T2)
 How both gloves achieve sub-2ms synchronization despite BLE latency:
 
 ```mermaid
+%%{init: {'theme': 'base', 'themeVariables': {
+  'primaryColor': '#0d3a4d',
+  'primaryTextColor': '#fafafa',
+  'primaryBorderColor': '#35B6F2',
+  'lineColor': '#35B6F2',
+  'secondaryColor': '#05212D',
+  'tertiaryColor': '#0a0a0a',
+  'background': '#0a0a0a',
+  'mainBkg': '#0d3a4d',
+  'nodeBorder': '#35B6F2',
+  'clusterBkg': '#05212D',
+  'clusterBorder': '#35B6F2',
+  'titleColor': '#fafafa',
+  'edgeLabelBackground': '#0a0a0a'
+}}}%%
 flowchart LR
     subgraph PRIMARY["PRIMARY (0ms reference)"]
         A["1. Generate macrocycle<br/>t=500ms"]
@@ -274,6 +459,21 @@ flowchart LR
 All messages exchanged between devices during a therapy session:
 
 ```mermaid
+%%{init: {'theme': 'base', 'themeVariables': {
+  'primaryColor': '#0d3a4d',
+  'primaryTextColor': '#fafafa',
+  'primaryBorderColor': '#35B6F2',
+  'lineColor': '#35B6F2',
+  'secondaryColor': '#05212D',
+  'tertiaryColor': '#0a0a0a',
+  'background': '#0a0a0a',
+  'mainBkg': '#0d3a4d',
+  'nodeBorder': '#35B6F2',
+  'clusterBkg': '#05212D',
+  'clusterBorder': '#35B6F2',
+  'titleColor': '#fafafa',
+  'edgeLabelBackground': '#0a0a0a'
+}}}%%
 graph TD
     A["PRIMARY ← Phone Commands"]
 
@@ -325,6 +525,21 @@ graph TD
 How the firmware generates vibrotactile patterns (3 patterns = 1 macrocycle):
 
 ```mermaid
+%%{init: {'theme': 'base', 'themeVariables': {
+  'primaryColor': '#0d3a4d',
+  'primaryTextColor': '#fafafa',
+  'primaryBorderColor': '#35B6F2',
+  'lineColor': '#35B6F2',
+  'secondaryColor': '#05212D',
+  'tertiaryColor': '#0a0a0a',
+  'background': '#0a0a0a',
+  'mainBkg': '#0d3a4d',
+  'nodeBorder': '#35B6F2',
+  'clusterBkg': '#05212D',
+  'clusterBorder': '#35B6F2',
+  'titleColor': '#fafafa',
+  'edgeLabelBackground': '#0a0a0a'
+}}}%%
 flowchart TD
     A["Start Macrocycle<br/>(12 events total)"]
 
@@ -364,10 +579,10 @@ flowchart TD
     D --> E
     E --> A
 
-    style B fill:#FFE4B5
-    style C fill:#FFE4B5
-    style D fill:#FFE4B5
-    style E fill:#D3D3D3
+    style B fill:#0d3a4d,color:#fafafa
+    style C fill:#0d3a4d,color:#fafafa
+    style D fill:#0d3a4d,color:#fafafa
+    style E fill:#6c757d,color:#fafafa
 ```
 
 **Pattern Types:**
@@ -389,6 +604,23 @@ flowchart TD
 Battery monitoring and error recovery flows:
 
 ```mermaid
+%%{init: {'theme': 'base', 'themeVariables': {
+  'primaryColor': '#0d3a4d',
+  'primaryTextColor': '#fafafa',
+  'primaryBorderColor': '#35B6F2',
+  'lineColor': '#35B6F2',
+  'secondaryColor': '#05212D',
+  'tertiaryColor': '#0a0a0a',
+  'background': '#0a0a0a',
+  'labelTextColor': '#fafafa',
+  'stateBkg': '#0d3a4d',
+  'stateBorder': '#35B6F2',
+  'transitionColor': '#35B6F2',
+  'transitionLabelColor': '#a3a3a3',
+  'noteBkgColor': '#05212D',
+  'noteBorderColor': '#35B6F2',
+  'noteTextColor': '#fafafa'
+}}}%%
 stateDiagram-v2
     [*] --> RUNNING
 
@@ -439,6 +671,21 @@ stateDiagram-v2
 Dynamic lead time adjustment based on measured BLE latency:
 
 ```mermaid
+%%{init: {'theme': 'base', 'themeVariables': {
+  'primaryColor': '#0d3a4d',
+  'primaryTextColor': '#fafafa',
+  'primaryBorderColor': '#35B6F2',
+  'lineColor': '#35B6F2',
+  'secondaryColor': '#05212D',
+  'tertiaryColor': '#0a0a0a',
+  'background': '#0a0a0a',
+  'mainBkg': '#0d3a4d',
+  'nodeBorder': '#35B6F2',
+  'clusterBkg': '#05212D',
+  'clusterBorder': '#35B6F2',
+  'titleColor': '#fafafa',
+  'edgeLabelBackground': '#0a0a0a'
+}}}%%
 flowchart TD
     A["Receive RTT measurement<br/>from PING/PONG cycle"]
 
@@ -450,26 +697,34 @@ flowchart TD
 
     E["Compute lead time<br/>lead_time = smooth_lat + 3σ"]
 
-    F["Clamp to bounds<br/>15ms ≤ lead_time ≤ 50ms"]
+    F["Clamp to bounds<br/>70ms ≤ lead_time ≤ 150ms"]
 
     G["Use for MACROCYCLE events<br/>baseTime = now + lead_time"]
 
     A --> B --> C --> D --> E --> F --> G
 
-    Note over A: Minimum: 15ms<br/>Maximum: 50ms<br/>(must be < TIME_ON=100ms)
+    Note over A: Minimum: 70ms (SYNC_MIN_LEAD_TIME_US)<br/>Maximum: 150ms (SYNC_MAX_LEAD_TIME_US)
 
-    style E fill:#FFB6C6
-    style F fill:#FFD700
+    style E fill:#17a2b8,color:#fafafa
+    style F fill:#35B6F2,color:#0a0a0a
 ```
 
 **Lead Time Formula:**
 
 ```
-lead_time = smooth_latency + 3 × standard_deviation
-lead_time = clamp(lead_time, 15ms, 50ms)
+lead_time = RTT/2 + processing_overhead + margin
+lead_time = clamp(lead_time, 70ms, 150ms)
+
+// From config.h:
+// SYNC_MIN_LEAD_TIME_US = 70000  (70ms minimum)
+// SYNC_MAX_LEAD_TIME_US = 150000 (150ms maximum)
 ```
 
-**Purpose:** Ensures SECONDARY has sufficient time to receive and schedule events before activation, accounting for BLE latency variability.
+**Purpose:** Ensures SECONDARY has sufficient time to receive, deserialize, and schedule events before activation. The 70-150ms range accounts for:
+- BLE round-trip time (~16-24ms for 2M PHY)
+- Processing overhead (SYNC_PROCESSING_OVERHEAD_US = 10ms)
+- Generation overhead (SYNC_GENERATION_OVERHEAD_US = 5ms)
+- Safety margin for BLE retransmissions
 
 ---
 
@@ -478,6 +733,31 @@ lead_time = clamp(lead_time, 15ms, 50ms)
 Full message flow from phone command to synchronized motor execution:
 
 ```mermaid
+%%{init: {'theme': 'base', 'themeVariables': {
+  'primaryColor': '#0d3a4d',
+  'primaryTextColor': '#fafafa',
+  'primaryBorderColor': '#35B6F2',
+  'lineColor': '#35B6F2',
+  'secondaryColor': '#05212D',
+  'tertiaryColor': '#0a0a0a',
+  'background': '#0a0a0a',
+  'actorBkg': '#0d3a4d',
+  'actorBorder': '#35B6F2',
+  'actorTextColor': '#fafafa',
+  'actorLineColor': '#35B6F2',
+  'signalColor': '#35B6F2',
+  'signalTextColor': '#fafafa',
+  'labelBoxBkgColor': '#05212D',
+  'labelBoxBorderColor': '#35B6F2',
+  'labelTextColor': '#fafafa',
+  'loopTextColor': '#fafafa',
+  'noteBkgColor': '#05212D',
+  'noteBorderColor': '#35B6F2',
+  'noteTextColor': '#fafafa',
+  'activationBkgColor': '#0d3a4d',
+  'activationBorderColor': '#35B6F2',
+  'sequenceNumberColor': '#fafafa'
+}}}%%
 sequenceDiagram
     participant Ph as Phone
     participant P as PRIMARY
@@ -575,7 +855,7 @@ sequenceDiagram
 | --------------------- | ------- | ----------------------------------------- |
 | TIME_ON               | 100ms   | Motor activation duration (per event)     |
 | TIME_OFF              | 67ms    | Inter-burst interval (base value)         |
-| Lead time             | 15-50ms | Adaptive scheduling margin (RTT + 3σ)     |
+| Lead time             | 70-150ms | Adaptive scheduling margin (config.h bounds) |
 | Pattern duration      | ~668ms  | 4 events × (TIME_ON + TIME_OFF + jitter)  |
 | Macrocycle duration   | ~3.3s   | 3 patterns + inter-macrocycle relaxation  |
 | Relaxation period     | ~1336ms | 2× pattern duration (between macrocycles) |

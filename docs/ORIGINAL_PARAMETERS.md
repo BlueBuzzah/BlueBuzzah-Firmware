@@ -451,11 +451,79 @@ Complete reference for all presets:
 
 ---
 
+## V1 → V2 Migration Reference
+
+This section maps original V1 CircuitPython concepts to V2 C++ implementation.
+
+### Terminology Changes
+
+| V1 (CircuitPython) | V2 (Arduino C++) | Notes |
+|--------------------|------------------|-------|
+| VL (Left Master) | PRIMARY | Role-based, not hand-based |
+| VR (Right Slave) | SECONDARY | Role-based, not hand-based |
+| `SYNC_ADJ` | `PING/PONG` | IEEE 1588 PTP 4-timestamp protocol |
+| `defaults.py` | `config.h` | Compile-time configuration |
+| `menu_controller.py` | `menu_controller.cpp` | BLE command routing |
+| `uart_service` | `BLEManager` | BLE UART abstraction |
+
+### Timing Parameter Mapping
+
+| V1 Parameter | V2 Equivalent | V1 Value | V2 Default | Notes |
+|--------------|---------------|----------|------------|-------|
+| `TIME_ON` | `timeOnMs` | 100ms | 100ms | Unchanged |
+| `TIME_OFF` | `timeOffMs` | 67ms | 67ms | Unchanged |
+| `TIME_RELAX` | `relaxTimeMs` | 668ms | 668ms | Unchanged |
+| `TIME_SESSION` | `durationSec/60` | 120min | 120min | V2 uses seconds |
+| `JITTER` | `jitterPercent` | 23.5% | 24% | Rounded for integer storage |
+| `21ms BLE compensation` | Adaptive lead time | Fixed | 70-150ms | V2 uses measured RTT |
+
+### Synchronization Changes
+
+| Aspect | V1 | V2 |
+|--------|----|----|
+| Clock sync method | Single timestamp + fixed 21ms offset | IEEE 1588 PTP 4-timestamp |
+| Sync accuracy | ~20-50ms estimated | <2ms measured |
+| Drift compensation | None | EMA smoothing + drift rate tracking |
+| Sync frequency | Per-macrocycle | Continuous (1s keepalive) |
+| Warm-start recovery | None | 15s cache validity |
+
+### Motor Control Mapping
+
+| V1 | V2 | Change |
+|----|----|----|
+| `drivers[finger].realtime_value = X` | `hapticController.activate(finger, X)` | Abstracted I/O |
+| Direct delay (`time.sleep()`) | FreeRTOS scheduled events | Non-blocking |
+| Blocking motor execution | Callback-driven + ActivationQueue | Concurrent BLE |
+| I2C per-call mux selection | I2C pre-selection optimization | -400μs latency |
+
+### Configuration Mapping
+
+| V1 File | V2 File | Purpose |
+|---------|---------|---------|
+| `defaults.py` | `include/config.h` | Hardware constants, timing defaults |
+| `defaults_*.py` (presets) | `ProfileManager` + LittleFS | Profile storage |
+| `AMPLITUDE_MIN/MAX` | `TherapyConfig.amplitude` | Single value (per-finger planned) |
+| `RANDOM_FREQ` + `ACTUATOR_FREQ*` | `randomFreq`, `freqLow`, `freqHigh` | Same parameters |
+
+### Architecture Differences
+
+| Feature | V1 | V2 |
+|---------|----|----|
+| Language | CircuitPython | Arduino C++ |
+| RTOS | None (single-threaded) | FreeRTOS (multi-task) |
+| BLE stack | CircuitPython BLE | Bluefruit/SoftDevice |
+| Motor timing | Main loop delays | Dedicated FreeRTOS task |
+| Pattern generation | Runtime random | Pre-computed permutation table |
+| Message format | String-based | Binary-efficient with V5 MACROCYCLE |
+
+---
+
 ## Version History
 
 | Version | Date | Description |
 |---------|------|-------------|
 | 1.0 | Original | CircuitPython implementation in `temp/v1/` |
+| 2.0 | 2025-2026 | Complete rewrite in Arduino C++ with IEEE 1588 sync |
 
 ---
 

@@ -19,6 +19,7 @@ Last Updated: 2025-01-11
 - [BLE Communication](#ble-communication)
 - [Therapy Engine](#therapy-engine)
 - [Synchronization Protocol](#synchronization-protocol)
+- [FreeRTOS Integration](#freertos-integration)
 - [Application Layer](#application-layer)
 - [LED Controller](#led-controller)
 - [Usage Examples](#usage-examples)
@@ -31,10 +32,10 @@ BlueBuzzah v2 provides a clean, layered API for bilateral haptic therapy control
 
 - **Core**: Types, constants, and fundamental definitions (`types.h`, `config.h`)
 - **State**: Explicit state machine for therapy sessions (`state_machine.h`)
-- **Hardware**: Hardware abstraction for haptic controllers, battery, etc. (`hardware.h`)
+- **Hardware**: HapticController, LEDController, battery monitoring (`hardware.h`)
 - **Communication**: BLE protocol and message handling (`ble_manager.h`)
 - **Therapy**: Pattern generation and therapy execution (`therapy_engine.h`)
-- **Application**: High-level use cases and workflows (`session_manager.h`, `menu_controller.h`)
+- **Application**: Command routing and profile management (`menu_controller.h`, `profile_manager.h`)
 
 ---
 
@@ -670,7 +671,7 @@ stateMachine.reset();
 
 ### Header: `hardware.h`
 
-#### HardwareController Class
+#### HapticController Class
 
 Hardware control for motors, battery, and I2C multiplexer.
 
@@ -680,15 +681,15 @@ Hardware control for motors, battery, and I2C multiplexer.
 #include <Adafruit_DRV2605.h>
 #include <Adafruit_TCA9548A.h>
 
-class HardwareController {
+class HapticController {
 public:
     bool begin();
 
     // Motor control
     void activate(uint8_t finger, uint8_t amplitude);
     void deactivate(uint8_t finger);
-    void stopAllMotors();
-    bool isMotorActive(uint8_t finger) const;
+    void stopAll();
+    bool isActive(uint8_t finger) const;
 
     // DRV2605 configuration
     void setFrequency(uint8_t finger, uint16_t frequencyHz);
@@ -726,7 +727,7 @@ private:
 ```cpp
 #include "hardware.h"
 
-HardwareController hardware;
+HapticController hardware;
 
 // Initialize hardware
 if (!hardware.begin()) {
@@ -746,7 +747,7 @@ hardware.setFrequencyDirect(0, 250);  // Set frequency
 hardware.activatePreSelected(0, 100);  // ~100μs vs ~500μs
 
 // Stop all motors
-hardware.stopAllMotors();
+hardware.stopAll();
 
 // Check battery
 BatteryStatus status = hardware.getBatteryStatus();
@@ -760,12 +761,12 @@ if (hardware.isBatteryCritical()) {
 
 ---
 
-#### LED Controller
+#### LEDController Class
 
-NeoPixel LED control for visual feedback.
+NeoPixel LED control for visual feedback (defined in `hardware.h`).
 
 ```cpp
-// include/led_controller.h
+// include/hardware.h
 
 #include <Adafruit_NeoPixel.h>
 
@@ -806,7 +807,7 @@ private:
 
 **Usage:**
 ```cpp
-#include "led_controller.h"
+#include "hardware.h"  // LEDController is in hardware.h
 #include "config.h"
 
 LEDController led;
@@ -975,87 +976,115 @@ if (bleManager.isConnected()) {
 
 #### TherapyEngine Class
 
-Core therapy execution engine.
+Core therapy execution engine using a callback-driven architecture. TherapyEngine is decoupled from hardware—it uses callbacks to trigger motor activations, allowing flexible integration with HapticController, ActivationQueue, and SyncProtocol.
 
 ```cpp
 // include/therapy_engine.h
 
 class TherapyEngine {
 public:
-    TherapyEngine(HardwareController& hardware, StateMachine& stateMachine);
+    TherapyEngine();  // Default constructor, no parameters
 
-    // Session control
-    bool startSession(const TherapyConfig& config, uint32_t durationSec);
-    void pauseSession();
-    void resumeSession();
-    void stopSession();
+    // =========================================================================
+    // CALLBACKS - Set these before starting a session
+    // =========================================================================
 
-    // Main update (call in loop)
-    void update();
+    // Motor control callbacks
+    void setActivateCallback(ActivateCallback callback);      // Called to activate motor
+    void setDeactivateCallback(DeactivateCallback callback);  // Called to deactivate motor
 
-    // Status
+    // Event callbacks
+    void setCycleCompleteCallback(CycleCompleteCallback callback);      // After each cycle
+    void setSetFrequencyCallback(SetFrequencyCallback callback);        // For Custom vCR
+
+    // Sync protocol callbacks (PRIMARY)
+    void setMacrocycleStartCallback(MacrocycleStartCallback callback);  // Before macrocycle
+    void setSendMacrocycleCallback(SendMacrocycleCallback callback);    // To send batch
+
+    // FreeRTOS scheduling callbacks (PRIMARY motor task)
+    void setSchedulingCallbacks(ScheduleActivationCallback scheduleCallback,
+                                StartSchedulingCallback startCallback,
+                                IsSchedulingCompleteCallback isCompleteCallback);
+
+    // Adaptive lead time callback
+    void setGetLeadTimeCallback(GetLeadTimeCallback callback);
+
+    // =========================================================================
+    // SESSION CONTROL
+    // =========================================================================
+
+    void startSession(
+        uint32_t durationSec,
+        PatternType patternType = PatternType::RNDP,
+        float timeOnMs = 100.0f,
+        float timeOffMs = 67.0f,
+        float jitterPercent = 0.0f,
+        uint8_t numFingers = 4,
+        bool mirrorPattern = false,
+        uint8_t amplitudeMin = 100,
+        uint8_t amplitudeMax = 100,
+        bool isTestMode = false
+    );
+
+    void update();  // MUST be called frequently in loop()
+    void pause();
+    void resume();
+    void stop();
+
+    // =========================================================================
+    // STATUS
+    // =========================================================================
+
     bool isRunning() const;
     bool isPaused() const;
-    const SessionInfo& getSessionInfo() const;
+    bool isTestMode() const;
     uint32_t getCyclesCompleted() const;
-
-    // Callbacks
-    typedef void (*CycleCompleteCallback)(uint32_t cycleCount);
-    typedef void (*SessionCompleteCallback)(const SessionInfo& info);
-
-    void setCycleCompleteCallback(CycleCompleteCallback cb);
-    void setSessionCompleteCallback(SessionCompleteCallback cb);
-
-private:
-    HardwareController& _hardware;
-    StateMachine& _stateMachine;
-    TherapyConfig _config;
-    SessionInfo _session;
-
-    uint32_t _cycleCount;
-    uint32_t _lastCycleTime;
-    uint32_t _pauseStartTime;
-    uint32_t _totalPauseTime;
-
-    uint8_t _primarySequence[4];
-    uint8_t _secondarySequence[4];
-    uint8_t _currentBurst;
-
-    void generatePattern();
-    void executeBurst(uint8_t burstIndex);
-    uint16_t calculateJitter();
+    uint32_t getElapsedSeconds() const;
+    uint32_t getRemainingSeconds() const;
 };
 ```
+
+**Important:** The `update()` method MUST be called frequently in the main loop for therapy to progress.
 
 **Usage:**
 ```cpp
 #include "therapy_engine.h"
+#include "hardware.h"
 
-HardwareController hardware;
-StateMachine stateMachine;
-TherapyEngine engine(hardware, stateMachine);
+HapticController haptic;
+TherapyEngine engine;
 
-// Callbacks
-void onCycleComplete(uint32_t count) {
+// Set up callbacks before starting
+engine.setActivateCallback([](uint8_t finger, uint8_t amplitude) {
+    haptic.activate(finger, amplitude);
+});
+
+engine.setDeactivateCallback([](uint8_t finger) {
+    haptic.deactivate(finger);
+});
+
+engine.setCycleCompleteCallback([](uint32_t count) {
     Serial.printf("Cycle %lu complete\n", count);
-}
+});
 
-void onSessionComplete(const SessionInfo& info) {
-    Serial.printf("Session complete: %lu cycles\n", info.elapsedSec);
-}
+// Start session (noisy vCR: mirrored pattern)
+engine.startSession(
+    7200,                      // 2 hours
+    PatternType::RNDP,         // Random permutation
+    100.0f,                    // 100ms burst duration
+    67.0f,                     // 67ms inter-burst interval
+    23.5f,                     // 23.5% jitter
+    4,                         // 4 fingers
+    true                       // Mirror pattern (noisy vCR)
+);
 
-engine.setCycleCompleteCallback(onCycleComplete);
-engine.setSessionCompleteCallback(onSessionComplete);
-
-// Start session
-TherapyConfig config = getDefaultNoisyVCR();
-engine.startSession(config, 7200);  // 2 hours
-
-// Main loop
+// Main loop - update() is REQUIRED
 while (engine.isRunning()) {
-    engine.update();  // Call frequently
+    engine.update();
     yield();
 }
+
+Serial.printf("Completed %lu cycles\n", engine.getCyclesCompleted());
 ```
 
 ---
@@ -1211,92 +1240,317 @@ if (sync.isKeepaliveTimeout()) {
 
 ---
 
-## Application Layer
+## FreeRTOS Integration
 
-### Header: `session_manager.h`
+### Header: `activation_queue.h`
 
-#### SessionManager Class
+#### ActivationQueue Class
 
-High-level session lifecycle management.
+Unified motor event queue for FreeRTOS-based motor control. Manages scheduled motor activations and deactivations with sub-millisecond timing precision.
 
 ```cpp
-// include/session_manager.h
+// include/activation_queue.h
 
-class SessionManager {
-public:
-    SessionManager(TherapyEngine& engine, ProfileManager& profiles,
-                   StateMachine& stateMachine);
-
-    // Session control
-    bool startSession(const char* profileName, uint32_t durationSec);
-    void pauseSession();
-    void resumeSession();
-    void stopSession();
-
-    // Status
-    const SessionInfo* getCurrentSession() const;
-    bool hasActiveSession() const;
-    void getStatus(char* buffer, size_t size) const;
-
-private:
-    TherapyEngine& _engine;
-    ProfileManager& _profiles;
-    StateMachine& _stateMachine;
-    SessionInfo _currentSession;
-    bool _hasSession;
+enum class MotorEventType : uint8_t {
+    ACTIVATE,    // Turn motor ON
+    DEACTIVATE   // Turn motor OFF
 };
+
+struct MotorEvent {
+    uint64_t timeUs;        // Event time (local clock, microseconds)
+    uint8_t  finger;        // Motor index (0-3)
+    uint8_t  amplitude;     // Intensity (0-100), only used for ACTIVATE
+    uint16_t frequencyHz;   // Motor frequency, only used for ACTIVATE
+    MotorEventType type;    // ACTIVATE or DEACTIVATE
+    volatile bool active;   // Slot in use
+};
+
+class ActivationQueue {
+public:
+    static constexpr uint8_t MAX_EVENTS = 32;  // 12 activations + 12 deactivations + margin
+
+    // Initialize queue
+    void begin(HapticController* haptic, TaskHandle_t motorTaskHandle);
+
+    // Clear all scheduled events
+    void clear();
+
+    // Add motor activation (auto-enqueues corresponding deactivation)
+    bool enqueue(uint64_t activateTimeUs, uint8_t finger, uint8_t amplitude,
+                 uint16_t durationMs, uint16_t frequencyHz);
+
+    // Peek at next event without removing
+    bool peekNextEvent(MotorEvent& event) const;
+
+    // Get and remove next event
+    bool dequeueNextEvent(MotorEvent& event);
+
+    // Get time of next event (UINT64_MAX if empty)
+    uint64_t getNextEventTime() const;
+
+    // Query state
+    uint8_t eventCount() const;
+    bool isEmpty() const;
+
+    // Wake motor task when new event added
+    void notifyMotorTask();
+};
+
+// Global instance
+extern ActivationQueue activationQueue;
 ```
 
-**Usage:**
+**Usage Pattern:**
 ```cpp
-#include "session_manager.h"
+// In therapy engine callback:
+activationQueue.enqueue(executeTimeUs, finger, amplitude, durationMs, freqHz);
+activationQueue.notifyMotorTask();
 
-SessionManager sessionManager(engine, profiles, stateMachine);
-
-// Start session
-if (sessionManager.startSession("noisy_vcr", 7200)) {
-    Serial.println(F("Session started"));
+// Motor task (FreeRTOS) processes events:
+MotorEvent event;
+while (activationQueue.peekNextEvent(event)) {
+    // Sleep until event time, then execute
+    activationQueue.dequeueNextEvent(event);
+    executeEvent(event);
 }
-
-// Pause session
-sessionManager.pauseSession();
-
-// Resume session
-sessionManager.resumeSession();
-
-// Get status
-char status[256];
-sessionManager.getStatus(status, sizeof(status));
-Serial.println(status);
-
-// Stop session
-sessionManager.stopSession();
 ```
 
 ---
+
+### Header: `motor_event_buffer.h`
+
+#### MotorEventBuffer Class
+
+Lock-free ring buffer for staging motor events from BLE callbacks (ISR context) to main loop. Uses SPSC (single-producer, single-consumer) model with ARM memory barriers for thread safety.
+
+```cpp
+// include/motor_event_buffer.h
+
+struct StagedMotorEvent {
+    uint64_t activateTimeUs;   // Absolute activation time
+    uint8_t finger;            // Finger index (0-3)
+    uint8_t amplitude;         // Amplitude percentage (0-100)
+    uint16_t durationMs;       // Duration in milliseconds
+    uint16_t frequencyHz;      // Frequency in Hz
+    bool isMacrocycleLast;     // True if last event in macrocycle batch
+    volatile bool valid;       // Marks slot as ready
+};
+
+class MotorEventBuffer {
+public:
+    static constexpr uint8_t MAX_STAGED = 16;
+
+    // Stage a motor event from ISR/BLE callback (ISR-safe)
+    bool stage(uint64_t activateTimeUs, uint8_t finger, uint8_t amplitude,
+               uint16_t durationMs, uint16_t frequencyHz, bool isMacrocycleLast = false);
+
+    // Begin a new macrocycle batch (ISR-safe)
+    void beginMacrocycle();
+
+    // Check if macrocycle batch is pending
+    bool isMacrocyclePending() const;
+
+    // Unstage next event (main loop only)
+    bool unstage(StagedMotorEvent& event);
+
+    // Check if events pending (any context)
+    bool hasPending() const;
+    uint8_t getPendingCount() const;
+
+    // Clear all pending events (main loop only)
+    void clear();
+};
+
+// Global instance
+extern MotorEventBuffer motorEventBuffer;
+```
+
+**Usage Pattern:**
+```cpp
+// In BLE callback (ISR context):
+motorEventBuffer.beginMacrocycle();
+motorEventBuffer.stage(timeUs, finger, amp, dur, freq, isLast);
+
+// In main loop:
+if (motorEventBuffer.isMacrocyclePending()) {
+    activationQueue.clear();  // New macrocycle replaces old events
+}
+StagedMotorEvent event;
+while (motorEventBuffer.unstage(event)) {
+    activationQueue.enqueue(event.activateTimeUs, event.finger,
+                            event.amplitude, event.durationMs, event.frequencyHz);
+}
+```
+
+---
+
+### Header: `deferred_queue.h`
+
+#### DeferredQueue Class
+
+ISR-safe work queue for deferring operations that aren't safe in callback context (blocking I2C, delays) to main loop execution.
+
+```cpp
+// include/deferred_queue.h
+
+enum class DeferredWorkType : uint8_t {
+    NONE = 0,
+    HAPTIC_PULSE,        // finger, amplitude, duration_ms
+    HAPTIC_DOUBLE_PULSE, // finger, amplitude, duration_ms (double pulse)
+    HAPTIC_DEACTIVATE,   // finger, 0, 0
+    SCANNER_RESTART,     // 0, 0, delay_ms
+    LED_FLASH            // r, g, b (packed in params)
+};
+
+class DeferredQueue {
+public:
+    typedef void (*WorkExecutor)(DeferredWorkType type, uint8_t p1, uint8_t p2, uint32_t p3);
+
+    // Enqueue work (ISR-safe)
+    bool enqueue(DeferredWorkType type, uint8_t param1 = 0, uint8_t param2 = 0, uint32_t param3 = 0);
+
+    // Process one queued item (main loop)
+    bool processOne();
+
+    // Query state
+    bool hasPending() const;
+    uint8_t getPendingCount() const;
+    void clear();
+
+    // Set callback for executing work
+    void setExecutor(WorkExecutor executor);
+};
+
+// Global instance
+extern DeferredQueue deferredQueue;
+```
+
+**Usage Pattern:**
+```cpp
+// In BLE callback (ISR context) - can't do I2C here:
+deferredQueue.enqueue(DeferredWorkType::HAPTIC_PULSE, finger, amplitude, durationMs);
+
+// In main loop:
+deferredQueue.processOne();  // Executes one item per iteration
+```
+
+---
+
+### Header: `latency_metrics.h`
+
+#### LatencyMetrics Struct
+
+Runtime-toggleable latency measurement for execution drift, BLE RTT timing, and sync quality analysis.
+
+```cpp
+// include/latency_metrics.h
+
+struct LatencyMetrics {
+    // State
+    bool enabled;
+    bool verboseLogging;
+
+    // Execution drift (actual - scheduled, microseconds)
+    int32_t lastDrift_us;
+    int32_t minDrift_us;
+    int32_t maxDrift_us;
+    int64_t totalDrift_us;
+    uint32_t sampleCount;
+    uint32_t lateCount;     // Count of drift > LATENCY_LATE_THRESHOLD_US
+    uint32_t earlyCount;    // Count of negative drift
+
+    // BLE RTT (PRIMARY only)
+    uint32_t lastRtt_us;
+    uint32_t minRtt_us;
+    uint32_t maxRtt_us;
+    uint64_t totalRtt_us;
+    uint32_t rttSampleCount;
+
+    // Sync quality (from initial probing)
+    uint32_t syncProbeCount;
+    uint32_t syncMinRtt_us;
+    uint32_t syncMaxRtt_us;
+    uint32_t syncRttSpread_us;
+    int64_t calculatedOffset_us;
+
+    // Methods
+    void reset();
+    void enable(bool verbose = false);
+    void disable();
+
+    void recordExecution(int32_t drift_us);
+    void recordRtt(uint32_t rtt_us);
+    void recordSyncProbe(uint32_t rtt_us);
+    void finalizeSyncProbing(int64_t offset_us);
+
+    int32_t getAverageDrift() const;
+    uint32_t getAverageRtt() const;
+    uint32_t getJitter() const;
+    const char* getSyncConfidence() const;  // "HIGH", "MEDIUM", or "LOW"
+
+    void printReport() const;
+};
+
+// Global instance
+extern LatencyMetrics latencyMetrics;
+```
+
+**Usage Pattern:**
+```cpp
+// Enable via serial command:
+latencyMetrics.enable(true);  // true = verbose logging
+
+// In motor task after execution:
+int32_t drift = (int32_t)(actualTimeUs - scheduledTimeUs);
+latencyMetrics.recordExecution(drift);
+
+// Check metrics:
+Serial.printf("Avg drift: %ld us, Jitter: %lu us\n",
+              latencyMetrics.getAverageDrift(), latencyMetrics.getJitter());
+
+// Print full report:
+latencyMetrics.printReport();
+```
+
+See [LATENCY_METRICS.md](LATENCY_METRICS.md) for detailed metrics interpretation and serial commands.
+
+---
+
+## Application Layer
 
 ### Header: `menu_controller.h`
 
 #### MenuController Class
 
-BLE command processing and routing.
+BLE command processing and routing. Coordinates between TherapyEngine, HapticController, ProfileManager, and BLEManager.
 
 ```cpp
 // include/menu_controller.h
 
 class MenuController {
 public:
-    MenuController(SessionManager& session, HardwareController& hardware,
-                   ProfileManager& profiles, BLEManager& ble);
+    MenuController();
+
+    // Initialize with component references (call in setup)
+    void begin(
+        TherapyEngine* therapyEngine,
+        BatteryMonitor* batteryMonitor,
+        HapticController* hapticController,
+        TherapyStateMachine* stateMachine,
+        ProfileManager* profileManager = nullptr,
+        BLEManager* bleManager = nullptr
+    );
 
     // Process incoming command, returns response string
     void processCommand(const char* command, char* response, size_t responseSize);
 
 private:
-    SessionManager& _session;
-    HardwareController& _hardware;
-    ProfileManager& _profiles;
-    BLEManager& _ble;
+    TherapyEngine* _therapyEngine;
+    BatteryMonitor* _batteryMonitor;
+    HapticController* _hapticController;
+    TherapyStateMachine* _stateMachine;
+    ProfileManager* _profileManager;
+    BLEManager* _bleManager;
 
     // Command handlers
     void handleInfo(char* response, size_t size);
@@ -1317,59 +1571,15 @@ private:
 ```cpp
 #include "menu_controller.h"
 
-MenuController menu(sessionManager, hardware, profiles, bleManager);
+MenuController menu;
+
+// In setup(), after initializing other components:
+menu.begin(&therapyEngine, &batteryMonitor, &haptic, &stateMachine, &profileManager, &bleManager);
 
 // Process command string
 char response[256];
 menu.processCommand("SESSION_START:noisy_vcr:7200", response, sizeof(response));
 Serial.println(response);
-```
-
----
-
-### Header: `calibration_controller.h`
-
-#### CalibrationController Class
-
-Calibration mode for individual finger testing.
-
-```cpp
-// include/calibration_controller.h
-
-class CalibrationController {
-public:
-    CalibrationController(HardwareController& hardware);
-
-    void startCalibration();
-    void stopCalibration();
-    bool isCalibrating() const;
-
-    void testFinger(uint8_t finger, uint8_t amplitude, uint16_t durationMs);
-    void testAllFingers(uint8_t amplitude, uint16_t durationMs);
-
-private:
-    HardwareController& _hardware;
-    bool _isCalibrating;
-};
-```
-
-**Usage:**
-```cpp
-#include "calibration_controller.h"
-
-CalibrationController calibration(hardware);
-
-// Start calibration mode
-calibration.startCalibration();
-
-// Test individual finger
-calibration.testFinger(0, 100, 200);  // Index finger, amplitude 100, 200ms
-
-// Test all fingers sequentially
-calibration.testAllFingers(100, 100);
-
-// Stop calibration
-calibration.stopCalibration();
 ```
 
 ---
@@ -1418,23 +1628,20 @@ LED patterns for boot sequence and therapy states.
 #include "ble_manager.h"
 #include "therapy_engine.h"
 #include "state_machine.h"
-#include "led_controller.h"
 #include "menu_controller.h"
 #include "profile_manager.h"
-#include "session_manager.h"
 #include "sync_protocol.h"
 
 // Global instances
 DeviceConfig deviceConfig;
-HardwareController hardware;
+HapticController haptic;
+LEDController ledController;
 BLEManager bleManager;
 StateMachine stateMachine;
-LEDController ledController;
 ProfileManager profileManager;
-TherapyEngine* therapyEngine;
-SessionManager* sessionManager;
-MenuController* menuController;
-SyncProtocol* syncProtocol;
+TherapyEngine therapyEngine;
+SyncProtocol syncProtocol;
+MenuController menuController;
 BootResult bootResult;
 
 void setup() {
@@ -1451,7 +1658,7 @@ void setup() {
     Serial.printf("[INFO] Role: %s\n", deviceConfig.deviceTag);
 
     // 3. Initialize hardware
-    if (!hardware.begin()) {
+    if (!haptic.begin()) {
         ledController.indicateFailure();
         while (true) { delay(1000); }
     }
@@ -1459,11 +1666,13 @@ void setup() {
     ledController.begin();
     profileManager.begin();
 
-    // 4. Create engine instances
-    therapyEngine = new TherapyEngine(hardware, stateMachine);
-    sessionManager = new SessionManager(*therapyEngine, profileManager, stateMachine);
-    syncProtocol = new SyncProtocol(bleManager, deviceConfig.role);
-    menuController = new MenuController(*sessionManager, hardware, profileManager, bleManager);
+    // 4. Set up TherapyEngine callbacks (callback-driven architecture)
+    therapyEngine.setActivateCallback([](uint8_t finger, uint8_t amplitude) {
+        haptic.activate(finger, amplitude);
+    });
+    therapyEngine.setDeactivateCallback([](uint8_t finger) {
+        haptic.deactivate(finger);
+    });
 
     // 5. Initialize BLE
     bleManager.begin(deviceConfig);
@@ -1491,12 +1700,12 @@ void loop() {
 void runPrimaryLoop() {
     static uint32_t lastPing = 0;
 
-    // Update therapy engine
-    therapyEngine->update();
+    // Update therapy engine (REQUIRED for therapy to progress)
+    therapyEngine.update();
 
     // Send unified keepalive + clock sync PING (every 1s, all states)
     if (millis() - lastPing >= KEEPALIVE_INTERVAL_MS) {
-        sendPing();  // PING provides both keepalive and clock sync
+        syncProtocol.sendPing();  // PING provides both keepalive and clock sync
         lastPing = millis();
     }
 
@@ -1507,8 +1716,8 @@ void runPrimaryLoop() {
 
 void runSecondaryLoop() {
     // Check keepalive timeout (6s without PING/MACROCYCLE)
-    if (syncProtocol->isKeepaliveTimeout()) {
-        hardware.stopAllMotors();
+    if (syncProtocol.isKeepaliveTimeout()) {
+        haptic.stopAll();
         stateMachine.forceState(TherapyState::CONNECTION_LOST);
         ledController.indicateConnectionLost();
     }
@@ -1525,31 +1734,42 @@ void runSecondaryLoop() {
 ```cpp
 #include "hardware.h"
 #include "therapy_engine.h"
-#include "state_machine.h"
 #include "types.h"
 
-HardwareController hardware;
-StateMachine stateMachine;
+HapticController haptic;
+TherapyEngine engine;
 
 void setup() {
     Serial.begin(115200);
 
     // Initialize hardware
-    if (!hardware.begin()) {
+    if (!haptic.begin()) {
         Serial.println(F("[ERROR] Hardware init failed"));
         while (true) { delay(1000); }
     }
 
-    // Create engine
-    TherapyEngine engine(hardware, stateMachine);
+    // Set up callbacks (callback-driven architecture)
+    engine.setActivateCallback([](uint8_t finger, uint8_t amplitude) {
+        haptic.activate(finger, amplitude);
+    });
+    engine.setDeactivateCallback([](uint8_t finger) {
+        haptic.deactivate(finger);
+    });
 
-    // Start session with default profile
-    TherapyConfig config = getDefaultNoisyVCR();
-    engine.startSession(config, 60);  // 60 seconds
+    // Start session (noisy vCR parameters)
+    engine.startSession(
+        60,                        // 60 seconds
+        PatternType::RNDP,         // Random permutation
+        100.0f,                    // 100ms burst duration
+        67.0f,                     // 67ms inter-burst interval
+        23.5f,                     // 23.5% jitter
+        4,                         // 4 fingers
+        true                       // Mirror pattern (noisy vCR)
+    );
 
     Serial.println(F("Starting 60-second therapy session"));
 
-    // Run until complete
+    // Run until complete - update() is REQUIRED
     while (engine.isRunning()) {
         engine.update();
         yield();
@@ -1569,7 +1789,7 @@ void loop() {
 
 ```cpp
 #include "state_machine.h"
-#include "led_controller.h"
+#include "hardware.h"  // LEDController is in hardware.h
 
 StateMachine stateMachine;
 LEDController ledController;
@@ -1611,12 +1831,11 @@ void loop() {
 
 ```cpp
 // Core types
-#include "types.h"        // DeviceRole, TherapyState, TherapyConfig, etc.
+#include "types.h"        // DeviceRole, TherapyState, PatternType, etc.
 #include "config.h"       // Constants, pin definitions
 
 // Hardware
-#include "hardware.h"     // HardwareController (motors, battery, I2C)
-#include "led_controller.h"
+#include "hardware.h"     // HapticController, LEDController (motors, battery, I2C)
 
 // Communication
 #include "ble_manager.h"  // BLE radio and connection management
@@ -1625,10 +1844,14 @@ void loop() {
 // Application
 #include "state_machine.h"
 #include "therapy_engine.h"
-#include "session_manager.h"
 #include "menu_controller.h"
 #include "profile_manager.h"
-#include "calibration_controller.h"
+
+// FreeRTOS motor scheduling
+#include "activation_queue.h"     // Motor event scheduling queue
+#include "motor_event_buffer.h"   // Lock-free ring buffer (BLE→main thread)
+#include "deferred_queue.h"       // ISR-safe work queue
+#include "latency_metrics.h"      // Performance tracking
 ```
 
 ---

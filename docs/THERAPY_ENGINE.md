@@ -1,6 +1,6 @@
 # BlueBuzzah Therapy Engine
 **Version:** 2.0.0
-**Date:** 2025-01-23
+**Date:** 2026-01-19
 **Therapy Protocol:** Vibrotactile Coordinated Reset (vCR)
 **Platform:** Arduino C++ / PlatformIO
 
@@ -61,82 +61,137 @@ Both devices run identical firmware and advertise as "BlueBuzzah". Role is deter
 
 ### Class Interface
 
+TherapyEngine uses a **callback-driven architecture**. Hardware operations are decoupled from the engine—it generates patterns and timing, then invokes callbacks to perform actual motor activations.
+
 ```cpp
 // include/therapy_engine.h
 
+// Callback types
+using ActivateCallback = std::function<void(uint8_t finger, uint8_t amplitude, uint16_t durationMs, uint16_t freqHz)>;
+using DeactivateCallback = std::function<void(uint8_t finger)>;
+using CycleCompleteCallback = std::function<void()>;
+using SetFrequencyCallback = std::function<void(uint8_t finger, uint16_t freqHz)>;
+using MacrocycleStartCallback = std::function<void()>;
+using SendMacrocycleCallback = std::function<void(uint8_t sequenceNum, const MacrocycleMessage& msg)>;
+using GetLeadTimeCallback = std::function<uint32_t()>;
+
 class TherapyEngine {
 public:
-    TherapyEngine(HardwareController& hardware, BLEManager& ble, DeviceRole role);
+    TherapyEngine();  // Default constructor - no hardware dependencies
+
+    // CALLBACKS - Set these before starting a session
+    void setActivateCallback(ActivateCallback callback);
+    void setDeactivateCallback(DeactivateCallback callback);
+    void setCycleCompleteCallback(CycleCompleteCallback callback);
+    void setSetFrequencyCallback(SetFrequencyCallback callback);
+    void setMacrocycleStartCallback(MacrocycleStartCallback callback);
+    void setSendMacrocycleCallback(SendMacrocycleCallback callback);
+    void setSchedulingCallbacks(ScheduleActivationFn scheduleFn, GetMicrosecondsFn getMicrosFn);
+    void setGetLeadTimeCallback(GetLeadTimeCallback callback);
 
     // Session control
-    SessionResult runSession(const TherapyConfig& config);
+    void startSession(uint32_t durationSec, PatternType patternType, float timeOnMs,
+                      float timeOffMs, uint8_t amplitudeMin, uint8_t amplitudeMax,
+                      uint16_t freqHz, float jitterPercent, bool mirror, bool randomFreq,
+                      uint16_t freqLow, uint16_t freqHigh, bool isPrimary);
     void pause();
     void resume();
     void stop();
+
+    // CRITICAL: Must call in loop() - drives the state machine
+    void update();
 
     // State queries
     bool isRunning() const;
     bool isPaused() const;
     uint32_t getElapsedTime() const;
     uint32_t getMacrocycleCount() const;
+    TherapyState getState() const;
 
 private:
-    HardwareController& hardware_;
-    BLEManager& ble_;
-    DeviceRole role_;
+    // Callback storage
+    ActivateCallback _activateCallback;
+    DeactivateCallback _deactivateCallback;
+    CycleCompleteCallback _cycleCompleteCallback;
+    // ... (8 total callbacks)
 
     // Session state
-    bool running_;
-    bool paused_;
-    uint32_t sessionStartTime_;
-    uint32_t macrocycleCount_;
+    TherapyState _state;
+    uint32_t _sessionStartMs;
+    uint32_t _macrocycleCount;
 
     // Pattern generation
-    uint8_t patternBuffer_[4];
-    uint32_t randomSeed_;
+    uint8_t _currentPattern[4];
 
     // Internal methods
-    void generatePattern(bool mirror);
-    void executeBuzzSequence(const uint8_t* pattern);
-    bool synchronizeWithSecondary(uint8_t sequenceIndex);
-    void waitForPrimaryCommand();
+    void generatePattern();
+    void advanceState();
+    void scheduleNextActivation();
 };
 ```
 
-### Execution Flow
+> **IMPORTANT:** The `update()` method MUST be called frequently in `loop()`. TherapyEngine does not use blocking delays—it uses a state machine that advances each time `update()` is called.
+
+### Execution Flow (Callback-Driven)
+
+TherapyEngine uses a **non-blocking state machine** driven by repeated calls to `update()`. No blocking delays are used—timing is managed through state transitions and callback invocations.
 
 ```mermaid
+%%{init: {'theme': 'base', 'themeVariables': {
+  'primaryColor': '#0d3a4d',
+  'primaryTextColor': '#fafafa',
+  'primaryBorderColor': '#35B6F2',
+  'lineColor': '#35B6F2',
+  'secondaryColor': '#05212D',
+  'tertiaryColor': '#0a0a0a',
+  'background': '#0a0a0a',
+  'mainBkg': '#0d3a4d',
+  'nodeBorder': '#35B6F2',
+  'clusterBkg': '#05212D',
+  'clusterBorder': '#35B6F2',
+  'titleColor': '#fafafa',
+  'edgeLabelBackground': '#0a0a0a'
+}}}%%
 flowchart TD
-    A[Start] --> B[Display Battery Status]
-    B --> C[Initialize Pattern Generator]
-    C --> D{Jitter Enabled?}
-    D -->|Yes| E[PRIMARY: Generate Seed]
-    D -->|No| F[Use Default Seed]
-    E --> G[Broadcast Seed to SECONDARY]
-    G --> H[SECONDARY: Wait for Seed]
-    H --> I[Both: randomSeed(SHARED_SEED)]
-    F --> I
-    I --> J[Initialize Haptic Controller]
-    J --> K[Flash Blue LED 5x]
-    K --> L[Main Therapy Loop]
-    L --> M{Session Active?}
-    M -->|No| N[Session Complete]
-    M -->|Yes| O{Paused?}
-    O -->|Yes| P[Motors Off, Flash Yellow]
-    O -->|No| Q{Random Freq?}
-    Q -->|Yes| R[Reconfigure Drivers]
-    Q -->|No| S[Execute 3 Buzz Sequences]
-    R --> S
-    S --> T[Relax Breaks x2]
-    T --> U{Sync LED?}
-    U -->|Yes| V[Flash Dark Blue]
-    U -->|No| L
-    V --> L
-    P --> M
-    N --> W[Display Final Battery]
-    W --> X[All Motors Off]
-    X --> Y[End]
+    A[startSession called] --> B[Initialize state machine]
+    B --> C[Set session parameters]
+    C --> D[_state = RUNNING]
+
+    subgraph "loop() calls update()"
+        E[update called] --> F{Session Active?}
+        F -->|No| G[Return immediately]
+        F -->|Yes| H{Time for next event?}
+        H -->|No| G
+        H -->|Yes| I{Event type?}
+
+        I -->|Activate| J[Invoke _activateCallback]
+        I -->|Deactivate| K[Invoke _deactivateCallback]
+        I -->|Cycle complete| L[Invoke _cycleCompleteCallback]
+        I -->|Macrocycle start| M[Invoke _macrocycleStartCallback]
+        I -->|Send to SECONDARY| N[Invoke _sendMacrocycleCallback]
+
+        J --> O[Schedule deactivation]
+        K --> P[Advance to next finger]
+        L --> Q[Generate next pattern]
+        M --> R[Reset cycle counter]
+        N --> S[Continue execution]
+
+        O --> G
+        P --> G
+        Q --> G
+        R --> G
+        S --> G
+    end
+
+    T[stop called] --> U[_state = IDLE]
+    U --> V[Invoke deactivate for all fingers]
 ```
+
+**Key Points:**
+- `update()` MUST be called frequently in `loop()` (every 1-5ms)
+- No `delay()` calls inside TherapyEngine—uses `millis()` comparisons
+- All hardware operations are performed via callbacks, not direct calls
+- FreeRTOS motor task handles precise timing of activations
 
 ---
 
@@ -336,7 +391,7 @@ uint8_t sequence[8] = {2, 1, 0, 3, 3, 0, 1, 2};
 
 ## Haptic Control
 
-### HardwareController Class
+### HapticController Class
 
 **Files**:
 - `src/hardware.cpp` - Hardware implementation
@@ -345,9 +400,9 @@ uint8_t sequence[8] = {2, 1, 0, 3, 3, 0, 1, 2};
 **Initialization** (`src/hardware.cpp`):
 
 ```cpp
-class HardwareController {
+class HapticController {
 public:
-    HardwareController();
+    HapticController();
 
     bool begin();
 
@@ -380,7 +435,7 @@ private:
 **I2C Hardware Setup** (`src/hardware.cpp`):
 
 ```cpp
-bool HardwareController::begin() {
+bool HapticController::begin() {
     // 1. Initialize I2C bus at 400kHz
     Wire.begin();
     Wire.setClock(400000);
@@ -420,7 +475,7 @@ bool HardwareController::begin() {
 **Activate Fingers** (`src/hardware.cpp`):
 
 ```cpp
-void HardwareController::fingersOn(const uint8_t* fingers, uint8_t count,
+void HapticController::fingersOn(const uint8_t* fingers, uint8_t count,
                                     uint8_t amplitudeMin, uint8_t amplitudeMax) {
     for (uint8_t i = 0; i < count; i++) {
         uint8_t channel = fingers[i];
@@ -439,7 +494,7 @@ void HardwareController::fingersOn(const uint8_t* fingers, uint8_t count,
 **Deactivate Fingers** (`src/hardware.cpp`):
 
 ```cpp
-void HardwareController::fingersOff(const uint8_t* fingers, uint8_t count) {
+void HapticController::fingersOff(const uint8_t* fingers, uint8_t count) {
     for (uint8_t i = 0; i < count; i++) {
         uint8_t channel = fingers[i];
 
@@ -451,39 +506,45 @@ void HardwareController::fingersOff(const uint8_t* fingers, uint8_t count) {
 }
 ```
 
-**Buzz Sequence** (`src/therapy_engine.cpp`):
+**Scheduling Activations** (`src/therapy_engine.cpp`):
+
+The engine schedules activations via callbacks rather than executing them directly with blocking delays:
 
 ```cpp
-void TherapyEngine::executeBuzzSequence(const uint8_t* sequence) {
-    // Each sequence has 4 finger activations
+void TherapyEngine::scheduleActivationsForCycle() {
+    // Calculate base time for this cycle
+    uint64_t baseTimeUs = _getLeadTimeCallback ? _getLeadTimeCallback() : 0;
+    uint64_t currentTimeUs = _getMicrosCallback();
+
+    // Schedule all 4 finger activations for this cycle
     for (uint8_t i = 0; i < NUM_FINGERS; i++) {
-        uint8_t fingerIndex = sequence[i];
+        uint8_t fingerIndex = _currentPattern[i];
 
-        // 1. Activate finger
-        hardware_.setMotorAmplitude(fingerIndex, config_.amplitude);
-
-        // 2. Hold for TIME_ON
-        delay(config_.timeOnMs);
-
-        // 3. Deactivate finger
-        hardware_.setMotorAmplitude(fingerIndex, 0);
-
-        // 4. Wait TIME_OFF + jitter
-        int16_t jitterMs = 0;
-        if (config_.jitter > 0) {
-            int16_t maxJitter = (config_.timeOnMs + config_.timeOffMs) *
-                               config_.jitter / 200;
-            jitterMs = random(-maxJitter, maxJitter + 1);
+        // Calculate timing with jitter
+        uint32_t jitterUs = 0;
+        if (_jitterPercent > 0) {
+            int32_t maxJitter = (_timeOnMs + _timeOffMs) * _jitterPercent * 10 / 200;
+            jitterUs = random(-maxJitter, maxJitter + 1) * 1000;
         }
-        delay(config_.timeOffMs + jitterMs);
+
+        uint64_t activateTimeUs = currentTimeUs + baseTimeUs +
+                                  (i * (_timeOnMs + _timeOffMs) * 1000) + jitterUs;
+
+        // Invoke scheduling callback - queues to FreeRTOS motor task
+        if (_scheduleActivationCallback) {
+            _scheduleActivationCallback(activateTimeUs, fingerIndex,
+                                       _amplitude, _timeOnMs, _freqHz);
+        }
     }
 }
 ```
 
+> **Note:** No `delay()` calls are used. Timing is managed by the FreeRTOS motor task which executes events at their scheduled microsecond timestamps.
+
 **Emergency Stop** (`src/hardware.cpp`):
 
 ```cpp
-void HardwareController::allMotorsOff() {
+void HapticController::allMotorsOff() {
     for (uint8_t ch = 0; ch < NUM_FINGERS; ch++) {
         selectMuxChannel(ch);
         drivers_[ch].setRealtimeValue(0);
@@ -498,7 +559,7 @@ void HardwareController::allMotorsOff() {
 **Method** (`src/hardware.cpp`):
 
 ```cpp
-void HardwareController::reconfigureForRandomFrequency(const TherapyConfig& config) {
+void HapticController::reconfigureForRandomFrequency(const TherapyConfig& config) {
     if (!config.randomFreq) {
         return;
     }
@@ -540,108 +601,163 @@ void HardwareController::reconfigureForRandomFrequency(const TherapyConfig& conf
 
 ## Session Execution
 
-### Main Therapy Loop
+### Callback-Driven Architecture
 
-**Session Execution** (`src/therapy_engine.cpp`):
+TherapyEngine uses a **callback-driven architecture** where the engine generates patterns and timing decisions, then invokes registered callbacks for actual hardware operations. This decouples the therapy logic from hardware dependencies.
+
+**Callback Registration** (in `main.cpp`):
 
 ```cpp
-SessionResult TherapyEngine::runSession(const TherapyConfig& config) {
-    config_ = config;
-    running_ = true;
-    paused_ = false;
-    macrocycleCount_ = 0;
-    sessionStartTime_ = millis();
+void setup() {
+    // Initialize hardware controllers
+    hapticController.begin();
+    ledController.begin();
 
-    uint32_t sessionDurationMs = config_.sessionMinutes * 60UL * 1000UL;
-    uint32_t sessionEndTime = sessionStartTime_ + sessionDurationMs;
+    // Register callbacks - TherapyEngine never touches hardware directly
+    therapyEngine.setActivateCallback([](uint8_t finger, uint8_t amplitude,
+                                         uint16_t durationMs, uint16_t freqHz) {
+        // Queue activation through FreeRTOS motor task for precise timing
+        activationQueue.enqueue(getMicros() + leadTimeUs, finger, amplitude,
+                               durationMs, freqHz);
+    });
 
-    // Synchronize random seed if jitter enabled
-    if (role_ == DeviceRole::PRIMARY) {
-        synchronizeSeed();
-    } else {
-        waitForSeed();
+    therapyEngine.setDeactivateCallback([](uint8_t finger) {
+        hapticController.deactivate(finger);
+    });
+
+    therapyEngine.setCycleCompleteCallback([]() {
+        // Called after each 4-finger cycle completes
+        latencyMetrics.recordCycleComplete();
+    });
+
+    therapyEngine.setMacrocycleStartCallback([]() {
+        // Called at start of each macrocycle (3 cycles + relax)
+        if (syncLedEnabled) {
+            ledController.flash(COLOR_DARK_BLUE, 12);
+        }
+    });
+
+    therapyEngine.setSendMacrocycleCallback([](uint8_t seq, const MacrocycleMessage& msg) {
+        // PRIMARY: Send macrocycle to SECONDARY via BLE
+        bleManager.sendMacrocycle(seq, msg);
+    });
+
+    therapyEngine.setSchedulingCallbacks(
+        // Schedule activation function
+        [](uint64_t timeUs, uint8_t finger, uint8_t amplitude,
+           uint16_t durationMs, uint16_t freqHz) -> bool {
+            return activationQueue.enqueue(timeUs, finger, amplitude,
+                                          durationMs, freqHz);
+        },
+        // Get current microseconds function
+        []() -> uint64_t {
+            return getMicros();
+        }
+    );
+
+    therapyEngine.setGetLeadTimeCallback([]() -> uint32_t {
+        return syncProtocol.getLeadTimeUs();
+    });
+}
+```
+
+### Session Lifecycle
+
+**Starting a Session:**
+
+```cpp
+// Called from menu_controller.cpp when START_SESSION received
+void startTherapy(const TherapyConfig& config) {
+    therapyEngine.startSession(
+        config.sessionMinutes * 60,  // Duration in seconds
+        config.patternType,
+        config.timeOnMs,
+        config.timeOffMs,
+        config.amplitudeMin,
+        config.amplitudeMax,
+        config.freqHz,
+        config.jitterPercent,
+        config.mirror,
+        config.randomFreq,
+        config.freqLow,
+        config.freqHigh,
+        (deviceRole == DeviceRole::PRIMARY)
+    );
+}
+```
+
+**Main Loop Integration:**
+
+```cpp
+void loop() {
+    // CRITICAL: Must call update() frequently for therapy to progress
+    therapyEngine.update();
+
+    // Other loop tasks...
+    bleManager.update();
+    syncProtocol.update();
+}
+```
+
+**The `update()` Method:**
+
+```cpp
+void TherapyEngine::update() {
+    if (_state != TherapyState::RUNNING) {
+        return;  // Not active, nothing to do
     }
 
-    // Indicate session start
-    hardware_.flashLED(COLOR_BLUE, 100, 5);
+    uint32_t now = millis();
 
-    // Main therapy loop - COMMAND-BASED SYNCHRONIZATION
-    while (millis() < sessionEndTime && running_) {
+    // Check session duration
+    if (now - _sessionStartMs >= _durationMs) {
+        stop();
+        return;
+    }
 
-        // Handle pause state
-        if (paused_) {
-            hardware_.allMotorsOff();
-            hardware_.flashLED(COLOR_YELLOW, 100, 1);
-            delay(100);
-            continue;
-        }
+    // Check if it's time for the next event
+    if (now < _nextEventTimeMs) {
+        return;  // Not yet time
+    }
 
-        // Reconfigure for random frequency if enabled
-        if (config_.randomFreq) {
-            hardware_.reconfigureForRandomFrequency(config_);
-        }
-
-        macrocycleCount_++;
-
-        if (macrocycleCount_ == 1) {
-            // Indicate start of FIRST buzz cycle with white LED
-            hardware_.flashLED(COLOR_WHITE, 100, 1);
-        }
-
-        // Execute 3 buzz sequences with COMMAND-BASED SYNCHRONIZATION
-        for (uint8_t seqIdx = 0; seqIdx < 3; seqIdx++) {
-
-            if (role_ == DeviceRole::PRIMARY) {
-                // PRIMARY: Send MACROCYCLE with all 12 events
-                sendBuzz(seqIdx);
-
-                // PRIMARY executes its own buzz sequence
-                generatePattern(config_.mirror);
-                executeBuzzSequence(leftPattern_);
-
-            } else {  // SECONDARY
-                // SECONDARY: Wait for MACROCYCLE command (BLOCKING)
-                int8_t receivedIdx = receiveBuzz(10000);
-
-                if (receivedIdx < 0) {
-                    // Timeout - PRIMARY disconnected
-                    Serial.println(F("[SECONDARY] ERROR: MACROCYCLE timeout!"));
-                    hardware_.allMotorsOff();
-                    indicateError();
-                    return SessionResult::ERROR_DISCONNECTED;
-                }
-
-                if (receivedIdx != seqIdx) {
-                    Serial.print(F("[SECONDARY] WARNING: Sequence mismatch: expected "));
-                    Serial.print(seqIdx);
-                    Serial.print(F(", got "));
-                    Serial.println(receivedIdx);
-                }
-
-                // SECONDARY executes buzz sequence at scheduled time
-                generatePattern(config_.mirror);
-                executeBuzzSequence(leftPattern_);
+    // Execute the current event based on state machine
+    switch (_currentPhase) {
+        case Phase::ACTIVATE:
+            // Generate activation parameters
+            if (_activateCallback) {
+                _activateCallback(_currentFinger, _amplitude,
+                                 _durationMs, _freqHz);
             }
-        }
+            _currentPhase = Phase::WAIT_ON;
+            _nextEventTimeMs = now + _timeOnMs;
+            break;
 
-        // After all 3 sequences, take relax breaks
-        delay(config_.relaxTimeMs);
-        delay(config_.relaxTimeMs);
+        case Phase::WAIT_ON:
+            // Time to deactivate
+            if (_deactivateCallback) {
+                _deactivateCallback(_currentFinger);
+            }
+            advanceToNextFinger();
+            break;
 
-        // Optional SYNC_LED flash at end of buzz macrocycle
-        if (config_.syncLed) {
-            hardware_.flashLED(COLOR_DARK_BLUE, 12, 1);
-        }
+        case Phase::CYCLE_COMPLETE:
+            if (_cycleCompleteCallback) {
+                _cycleCompleteCallback();
+            }
+            startNextCycle();
+            break;
+
+        case Phase::MACROCYCLE_START:
+            if (_macrocycleStartCallback) {
+                _macrocycleStartCallback();
+            }
+            if (_isPrimary && _sendMacrocycleCallback) {
+                MacrocycleMessage msg = buildMacrocycleMessage();
+                _sendMacrocycleCallback(_sequenceNum, msg);
+            }
+            _currentPhase = Phase::ACTIVATE;
+            break;
     }
-
-    // Session complete
-    hardware_.displayBatteryStatus();
-    hardware_.allMotorsOff();
-
-    if (!running_) {
-        return SessionResult::STOPPED;
-    }
-    return SessionResult::COMPLETED;
 }
 ```
 
@@ -850,7 +966,7 @@ void MenuController::handleProfileLoad(uint8_t profileId) {
 **Method** (`src/hardware.cpp`):
 
 ```cpp
-void HardwareController::configureDriver(uint8_t channel, const TherapyConfig& config) {
+void HapticController::configureDriver(uint8_t channel, const TherapyConfig& config) {
     selectMuxChannel(channel);
     Adafruit_DRV2605& drv = drivers_[channel];
 
@@ -941,13 +1057,13 @@ nRF52840 I2C Bus (SCL/SDA)
 **Channel Selection** (`src/hardware.cpp`):
 
 ```cpp
-void HardwareController::selectMuxChannel(uint8_t channel) {
+void HapticController::selectMuxChannel(uint8_t channel) {
     if (channel >= NUM_FINGERS) return;
     mux_.selectChannel(channel);
 }
 
 // Usage example
-void HardwareController::setMotorAmplitude(uint8_t channel, uint8_t amplitude) {
+void HapticController::setMotorAmplitude(uint8_t channel, uint8_t amplitude) {
     selectMuxChannel(channel);
     drivers_[channel].setRealtimeValue(amplitude);
 }
@@ -991,23 +1107,39 @@ Available: 1MB flash, 256KB RAM -> Plenty of headroom
 
 ### Timing Optimization
 
-**Critical Path** (minimize jitter):
+**Critical Path** (FreeRTOS motor task):
 
 ```cpp
-// 1. Pattern generation: <1ms (array copy, no allocation)
-generatePattern(config_.mirror);
+// Motor task timing breakdown:
+// 1. Event dequeue: <10μs
+// 2. I2C channel select: ~100μs (pre-selection reduces from ~500μs)
+// 3. DRV2605 RTP write: ~100-200μs
+// 4. Total per activation: ~200-300μs
 
-// 2. Motor activation: 1-2ms (I2C write)
-hardware_.setMotorAmplitude(fingerIndex, amplitude);
+// Hybrid sleep + busy-wait for precision:
+void motorTaskFunction(void* pvParameters) {
+    while (true) {
+        MotorEvent event;
+        if (activationQueue.getNextEvent(event)) {
+            int64_t delayUs = event.timeUs - getMicros();
 
-// 3. Delay (non-critical): 100ms
-delay(config_.timeOnMs);
+            // Sleep for bulk of delay (saves power)
+            if (delayUs > 2000) {
+                vTaskDelay(pdMS_TO_TICKS((delayUs - 2000) / 1000));
+            }
 
-// 4. Motor deactivation: 1-2ms
-hardware_.setMotorAmplitude(fingerIndex, 0);
+            // Busy-wait for final precision (~1-2μs accuracy)
+            while (getMicros() < event.timeUs) { /* spin */ }
 
-// Total critical time: 2-4ms (well within 100ms budget)
+            // Execute - I2C channel pre-selected for speed
+            hapticController.activate(event.finger, event.amplitude);
+        }
+        vTaskDelay(1);
+    }
+}
 ```
+
+> **Note:** No blocking delays in TherapyEngine. All timing is managed by the FreeRTOS motor task which achieves sub-millisecond precision.
 
 **Non-Blocking BLE Handling**:
 
@@ -1042,7 +1174,7 @@ Wire.setClock(400000);
 
 ```cpp
 // Good: Minimize channel switches
-void HardwareController::allMotorsOff() {
+void HapticController::allMotorsOff() {
     for (uint8_t ch = 0; ch < NUM_FINGERS; ch++) {
         selectMuxChannel(ch);  // 1 switch per motor
         drivers_[ch].setRealtimeValue(0);
@@ -1197,6 +1329,6 @@ Update this document when:
 - Updating timing constants
 - Modifying haptic control logic
 
-**Last Updated:** 2025-01-23
+**Last Updated:** 2026-01-19
 **Therapy Protocol Version:** vCR 1.0
 **Platform:** Arduino C++ / PlatformIO

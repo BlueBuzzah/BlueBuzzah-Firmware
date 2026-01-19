@@ -14,6 +14,9 @@ All metrics are collected via software instrumentation with minimal overhead whe
 
 ## Serial Commands
 
+> **Note:** These commands are available via **USB Serial only** (115200 baud), not over BLE.
+> Use `pio device monitor` or a serial terminal like `screen` to access them.
+
 | Command | Description |
 |---------|-------------|
 | `LATENCY_ON` | Enable metrics collection (aggregated stats, auto-report every 30s) |
@@ -244,15 +247,17 @@ Defined in `include/config.h`:
 ```cpp
 #define LATENCY_REPORT_INTERVAL_MS 30000  // Auto-report every 30s
 #define LATENCY_LATE_THRESHOLD_US 1000    // >1ms considered "late"
-#define SYNC_PROBE_COUNT 10               // RTT probes during initial sync
-#define SYNC_PROBE_INTERVAL_MS 50         // Interval between probes
-#define SYNC_PROBE_TIMEOUT_MS 200         // Timeout for probe ACK
+
+// Clock sync uses unified PING/PONG keepalive (not separate probing):
+#define KEEPALIVE_INTERVAL_MS 1000        // PING/PONG every 1 second
+#define SYNC_MIN_VALID_SAMPLES 5          // Minimum samples before sync valid
+#define SYNC_RTT_QUALITY_THRESHOLD_US 60000  // Reject samples with RTT > 60ms
 ```
 
 ### Memory Usage
 
 - `LatencyMetrics` struct: ~100 bytes (static allocation)
-- RTT probe samples: 40 bytes (10 x uint32_t)
+- Clock sync uses EMA (exponential moving average), not sample arrays
 - Zero heap allocation
 
 ### Performance Impact

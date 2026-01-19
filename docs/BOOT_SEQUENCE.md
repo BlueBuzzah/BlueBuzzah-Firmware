@@ -80,6 +80,23 @@ The PRIMARY device acts as the central coordinator, advertising its presence and
 ### State Diagram
 
 ```mermaid
+%%{init: {'theme': 'base', 'themeVariables': {
+  'primaryColor': '#0d3a4d',
+  'primaryTextColor': '#fafafa',
+  'primaryBorderColor': '#35B6F2',
+  'lineColor': '#35B6F2',
+  'secondaryColor': '#05212D',
+  'tertiaryColor': '#0a0a0a',
+  'background': '#0a0a0a',
+  'labelTextColor': '#fafafa',
+  'stateBkg': '#0d3a4d',
+  'stateBorder': '#35B6F2',
+  'transitionColor': '#35B6F2',
+  'transitionLabelColor': '#a3a3a3',
+  'noteBkgColor': '#05212D',
+  'noteBorderColor': '#35B6F2',
+  'noteTextColor': '#fafafa'
+}}}%%
 stateDiagram-v2
     [*] --> Initializing: Power On
 
@@ -263,6 +280,23 @@ The SECONDARY device actively scans for and connects to the PRIMARY device adver
 ### State Diagram
 
 ```mermaid
+%%{init: {'theme': 'base', 'themeVariables': {
+  'primaryColor': '#0d3a4d',
+  'primaryTextColor': '#fafafa',
+  'primaryBorderColor': '#35B6F2',
+  'lineColor': '#35B6F2',
+  'secondaryColor': '#05212D',
+  'tertiaryColor': '#0a0a0a',
+  'background': '#0a0a0a',
+  'labelTextColor': '#fafafa',
+  'stateBkg': '#0d3a4d',
+  'stateBorder': '#35B6F2',
+  'transitionColor': '#35B6F2',
+  'transitionLabelColor': '#a3a3a3',
+  'noteBkgColor': '#05212D',
+  'noteBorderColor': '#35B6F2',
+  'noteTextColor': '#fafafa'
+}}}%%
 stateDiagram-v2
     [*] --> Initializing: Power On
 
@@ -605,40 +639,50 @@ bool BLEManager::validateConnection(uint16_t connHandle) {
 
 ---
 
-### Initial Time Synchronization
+### Initial Time Synchronization (IEEE 1588 PTP-style)
 
-After PRIMARY-SECONDARY connection, initial time sync is established:
+After PRIMARY-SECONDARY connection, clock synchronization is established using a PING/PONG protocol inspired by IEEE 1588 PTP (Precision Time Protocol):
 
-```cpp
-// src/sync_protocol.cpp
+```
+PING/PONG 4-Timestamp Synchronization:
 
-bool SyncProtocol::establishInitialSync() {
-    uint32_t primaryTime = millis();
+PRIMARY                              SECONDARY
+   |                                     |
+   |--- T1: Send PING:seq|T1 --------->  |
+   |                                  T2: Receive PING
+   |                                  T3: Send PONG
+   |  <-------- PONG:seq|0|T2|T3 --------|
+T4: Receive PONG                         |
+   |                                     |
 
-    // Send FIRST_SYNC message
-    char syncMsg[32];
-    snprintf(syncMsg, sizeof(syncMsg), "FIRST_SYNC:%lu\n", primaryTime);
-    _bleManager.sendToSecondary(syncMsg);
-
-    // Wait for ACK with SECONDARY timestamp
-    char response[64];
-    if (!receiveWithTimeout(response, sizeof(response), 2000)) {
-        return false;
-    }
-
-    // Parse response and calculate offset
-    uint32_t secondaryTime = 0;
-    if (sscanf(response, "ACK:%lu", &secondaryTime) == 1) {
-        _timeOffset = calculateOffset(primaryTime, secondaryTime);
-        Serial.printf("[SYNC] Initial offset: %ldms\n", _timeOffset);
-        return true;
-    }
-
-    return false;
-}
+Clock offset = ((T2 - T1) + (T3 - T4)) / 2
+RTT = (T4 - T1) - (T3 - T2)
 ```
 
-This ensures sub-10ms bilateral synchronization before therapy begins.
+**Configuration (from config.h):**
+```cpp
+#define KEEPALIVE_INTERVAL_MS 1000   // PING/PONG every 1 second
+#define SYNC_MIN_VALID_SAMPLES 5     // Minimum samples before sync valid
+#define SYNC_RTT_QUALITY_THRESHOLD_US 60000  // Reject samples with RTT > 60ms
+#define SYNC_OFFSET_EMA_ALPHA_NUM 1  // EMA smoothing α = 1/10 = 0.1
+#define SYNC_OFFSET_EMA_ALPHA_DEN 10
+```
+
+**Synchronization Quality:**
+- Clock synchronization is continuously maintained via PING/PONG (every 1 second)
+- EMA (Exponential Moving Average) smooths offset measurements
+- Outlier rejection filters samples with high RTT (>60ms)
+- Drift rate tracking compensates for crystal oscillator differences
+- Sub-millisecond precision achieved after 5+ valid samples
+
+**Warm-Start Recovery:**
+After brief disconnects (<15 seconds), sync state is cached and recovery is faster:
+```cpp
+#define SYNC_WARM_START_VALIDITY_MS 15000  // Cache valid for 15 seconds
+#define SYNC_WARM_START_MIN_SAMPLES 3      // Only 3 confirmatory samples needed
+```
+
+This ensures sub-millisecond bilateral synchronization during therapy.
 
 ---
 
@@ -683,6 +727,19 @@ if (timeoutReached) {
     }
 }
 ```
+
+#### Auto-Start Therapy (No Phone)
+
+When boot completes with `SUCCESS_NO_PHONE`, the system automatically starts default therapy:
+
+1. **Default Profile**: Uses the saved default therapy profile (or built-in fallback)
+2. **Duration**: Default 15-minute session
+3. **Pattern**: Standard bilateral alternating pattern
+4. **No User Intervention**: Therapy begins automatically ~5 seconds after boot complete
+
+This "auto-start" behavior allows the system to function as a standalone therapy device without requiring a phone app. Users can simply power on both devices and therapy will begin after the 30-second boot window.
+
+**To override auto-start**: Connect phone app before the 30-second boot timeout expires.
 
 ---
 
@@ -912,20 +969,25 @@ Boot Failed                    | 30.5s   | -        | 30.5s
 
 ### BLE Connection Latency
 
-**Connection Interval**: 7.5ms (BLE_INTERVAL)
-**Supervision Timeout**: 100ms (BLE_TIMEOUT)
-**Slave Latency**: 0 (BLE_LATENCY)
+**Configuration (from config.h):**
+```cpp
+#define BLE_INTERVAL_MIN_MS 7.5f     // Minimum connection interval (BLE spec minimum)
+#define BLE_INTERVAL_MAX_MS 10       // Maximum connection interval
+#define BLE_TIMEOUT_MS 6000          // Supervision timeout (6 seconds)
+#define BLE_INTERVAL_WARNING_THRESHOLD_MS 12.0f  // Warn if > 12ms
+```
 
 **Effective Latency**:
 - Minimum: 7.5ms (one connection interval)
-- Maximum: 15ms (two connection intervals)
+- Maximum: 20ms (two connection intervals at negotiated max)
 - Average: ~10ms
+- Warning threshold: 12ms (firmware logs warning if exceeded)
 
-**Sub-10ms Synchronization**: Achieved through:
-1. 7.5ms BLE connection interval
-2. Time offset calculation and compensation
-3. Predictive timing adjustment
-4. Periodic resynchronization (SYNC_ADJ every macrocycle)
+**Sub-millisecond Synchronization**: Achieved through:
+1. 7.5-10ms BLE connection interval
+2. IEEE 1588 PTP-style clock offset calculation
+3. EMA-smoothed offset tracking with drift compensation
+4. Periodic PING/PONG keepalive (every 1 second)
 
 ---
 

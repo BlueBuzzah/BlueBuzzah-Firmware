@@ -1,9 +1,11 @@
 # Timing Synchronization Baseline Metrics
 
-**Date**: December 13, 2025
-**Branch**: `feat/FreeRTOS-task-isolation`
+**Date**: December 13, 2025 (baseline measurement)
+**Branch**: `feat/FreeRTOS-task-isolation` (baseline), now `feat/sync-fault-correction`
 **Test Duration**: ~5 minutes
 **Environment**: Indoor, typical usage distance
+
+> **Note**: This baseline was established before the `feat/sync-fault-correction` branch which implements IEEE 1588 PTP clock synchronization, warm-start recovery, path asymmetry tracking, and microsecond precision timestamps. Most optimization phases have been completed. Current bilateral sync accuracy is <1ms average.
 
 ---
 
