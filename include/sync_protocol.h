@@ -706,7 +706,7 @@ public:
     int64_t getProjectedOffset() const;
 
     // =========================================================================
-    // PATH ASYMMETRY TRACKING (Phase 1: Measurement Only)
+    // PATH ASYMMETRY TRACKING (Measurement Only)
     // =========================================================================
 
     /**
@@ -749,7 +749,7 @@ public:
     /**
      * @brief Check if phone was connected during last asymmetry measurement
      * @return true if phone was connected
-     * @note Reserved for Phase 2 asymmetry compensation - correlates asymmetry with load state
+     * @note Reserved for future asymmetry compensation - correlates asymmetry with load state
      */
     bool wasPhoneConnectedDuringSync() const { return _phoneConnectedDuringSync; }
 
@@ -803,7 +803,7 @@ private:
     bool _warmStartMode;             // Currently in warm-start recovery
     uint8_t _warmStartConfirmed;     // Number of validated confirmatory samples
 
-    // Path asymmetry tracking (Phase 1: measurement only)
+    // Path asymmetry tracking (measurement only)
     int64_t _lastAsymmetry;          // Most recent asymmetry measurement (µs)
     int64_t _smoothedAsymmetry;      // EMA-smoothed asymmetry (µs)
     uint32_t _asymmetryVariance;     // EMA-smoothed variance (µs)

@@ -1604,7 +1604,7 @@ void test_SimpleSyncProtocol_addOffsetSample_outlier_rejection(void) {
 }
 
 // =============================================================================
-// 32-BIT WRAPAROUND TESTS (Phase 6.1)
+// 32-BIT WRAPAROUND TESTS
 // =============================================================================
 
 void test_getMicros_32bit_wraparound(void) {
@@ -1639,7 +1639,7 @@ void test_timestamp_subtraction_across_wraparound(void) {
 }
 
 // =============================================================================
-// PRIMARY-SECONDARY INTEGRATION TESTS (Phase 6.1)
+// PRIMARY-SECONDARY INTEGRATION TESTS
 // =============================================================================
 
 void test_full_ping_pong_exchange(void) {
@@ -1701,7 +1701,7 @@ void test_macrocycle_clock_offset_application(void) {
 }
 
 // =============================================================================
-// HIGH-JITTER STRESS TESTS (Phase 6.1)
+// HIGH-JITTER STRESS TESTS
 // =============================================================================
 
 void test_SimpleSyncProtocol_high_jitter_burst(void) {
@@ -1751,7 +1751,7 @@ void test_SimpleSyncProtocol_zero_rtt_handling(void) {
 }
 
 // =============================================================================
-// PRECISION TESTS (Phase 6.2)
+// PRECISION TESTS
 // =============================================================================
 
 void test_SimpleSyncProtocol_submillisecond_precision(void) {
@@ -1806,7 +1806,7 @@ void test_SimpleSyncProtocol_negative_offset_near_zero(void) {
 }
 
 // =============================================================================
-// LONG-TERM DRIFT TESTS (Phase 6.3)
+// LONG-TERM DRIFT TESTS
 // =============================================================================
 
 void test_SimpleSyncProtocol_long_term_drift_accumulation(void) {
@@ -1885,7 +1885,7 @@ void test_SimpleSyncProtocol_corrected_offset_bounds(void) {
 }
 
 // =============================================================================
-// FAILURE MODE TESTS (Phase 6.4)
+// FAILURE MODE TESTS
 // =============================================================================
 
 void test_SimpleSyncProtocol_sync_loss_timeout(void) {
@@ -1946,7 +1946,7 @@ void test_SyncCommand_deserialize_malformed_variations(void) {
 }
 
 // =============================================================================
-// MACROCYCLE EDGE CASE TESTS (Phase 6.5)
+// MACROCYCLE EDGE CASE TESTS
 // =============================================================================
 
 void test_Macrocycle_max_events(void) {
@@ -2230,37 +2230,37 @@ int main(int argc, char **argv) {
     // Offset sample edge cases
     RUN_TEST(test_SimpleSyncProtocol_addOffsetSample_outlier_rejection);
 
-    // 32-bit wraparound tests (Phase 6.1)
+    // 32-bit wraparound tests
     RUN_TEST(test_getMicros_32bit_wraparound);
     RUN_TEST(test_timestamp_subtraction_across_wraparound);
 
-    // PRIMARY-SECONDARY integration tests (Phase 6.1)
+    // PRIMARY-SECONDARY integration tests
     RUN_TEST(test_full_ping_pong_exchange);
     RUN_TEST(test_ptp_offset_asymmetric_delay);
     RUN_TEST(test_macrocycle_clock_offset_application);
 
-    // High-jitter stress tests (Phase 6.1)
+    // High-jitter stress tests
     RUN_TEST(test_SimpleSyncProtocol_high_jitter_burst);
     RUN_TEST(test_SimpleSyncProtocol_rapid_sample_bombardment);
     RUN_TEST(test_SimpleSyncProtocol_zero_rtt_handling);
 
-    // Precision tests (Phase 6.2)
+    // Precision tests
     RUN_TEST(test_SimpleSyncProtocol_submillisecond_precision);
     RUN_TEST(test_SimpleSyncProtocol_time_conversion_precision);
     RUN_TEST(test_SimpleSyncProtocol_negative_offset_near_zero);
 
-    // Long-term drift tests (Phase 6.3)
+    // Long-term drift tests
     RUN_TEST(test_SimpleSyncProtocol_long_term_drift_accumulation);
     RUN_TEST(test_SimpleSyncProtocol_drift_direction_reversal);
     RUN_TEST(test_SimpleSyncProtocol_corrected_offset_bounds);
 
-    // Failure mode tests (Phase 6.4)
+    // Failure mode tests
     RUN_TEST(test_SimpleSyncProtocol_sync_loss_timeout);
     RUN_TEST(test_SimpleSyncProtocol_all_samples_rejected_by_quality);
     RUN_TEST(test_SimpleSyncProtocol_latency_uint32_overflow);
     RUN_TEST(test_SyncCommand_deserialize_malformed_variations);
 
-    // Macrocycle edge case tests (Phase 6.5)
+    // Macrocycle edge case tests
     RUN_TEST(test_Macrocycle_max_events);
     RUN_TEST(test_Macrocycle_large_clock_offset);
     RUN_TEST(test_Macrocycle_negative_large_clock_offset);

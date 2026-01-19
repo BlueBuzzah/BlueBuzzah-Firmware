@@ -818,7 +818,7 @@ void SimpleSyncProtocol::addOffsetSample(int64_t offset) {
 
     // Compute median when we have enough samples
     if (_offsetSampleCount >= SYNC_MIN_VALID_SAMPLES) {
-        // Phase 5B: Outlier rejection using MAD (Median Absolute Deviation)
+        // Outlier rejection using MAD (Median Absolute Deviation)
         // Step 1: Compute preliminary median from all samples
         int64_t sorted[OFFSET_SAMPLE_COUNT];
         for (uint8_t i = 0; i < _offsetSampleCount; i++) {

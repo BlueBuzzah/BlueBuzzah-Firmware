@@ -124,7 +124,7 @@ bool BLEManager::begin(DeviceRole role, const char* deviceName) {
     Bluefruit.setTxPower(0);
 
     // Configure connection parameters for low-latency communication
-    // Phase 3: Reduced from 7.5ms to 5ms minimum for lower jitter
+    // Reduced from 7.5ms to 5ms minimum for lower jitter
     // Values in 1.25ms units (BLE spec): N * 1.25ms = actual interval
     // Both roles need this for proper PTP clock sync (RTT < 30ms required)
     constexpr uint16_t connIntervalMin = static_cast<uint16_t>((BLE_INTERVAL_MIN_MS * 1000) / 1250);  // 7.5ms -> 6 units

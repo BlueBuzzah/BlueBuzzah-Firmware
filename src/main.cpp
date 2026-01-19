@@ -181,14 +181,14 @@ static void preSelectNextActivation() {
  *
  * M1 fix: Captures lateness AFTER motor I2C operations for accurate timing.
  * H6 fix: Handles 64-bit lateness values correctly in printf.
- * Phase 2: Uses I2C pre-selection for faster activation when available.
+ * Uses I2C pre-selection for faster activation when available.
  */
 static void executeMotorEvent(const MotorEvent& event) {
     uint64_t beforeOp = getMicros();
 
     if (event.type == MotorEventType::ACTIVATE) {
         if (haptic.isEnabled(event.finger)) {
-            // Phase 2: Check if this finger is pre-selected for fast-path activation
+            // Check if this finger is pre-selected for fast-path activation
             bool usedFastPath = false;
             if (haptic.getPreSelectedFinger() == static_cast<int8_t>(event.finger)) {
                 // Fast path: Channel already selected, frequency already set
@@ -255,7 +255,7 @@ static void executeMotorEvent(const MotorEvent& event) {
             }
         }
 
-        // Phase 2: Pre-select next activation's channel while we have time
+        // Pre-select next activation's channel while we have time
         // This moves mux selection OFF the critical path for the next ACTIVATE
         preSelectNextActivation();
     }
@@ -1579,7 +1579,7 @@ void onBLEMessage(uint16_t connHandle [[maybe_unused]], const char *message, uin
         if (deviceRole == DeviceRole::PRIMARY)
         {
             lastSecondaryKeepalive = millis();
-            // TODO: TherapyEngine will handle ACK tracking in Phase 4
+            // TODO: TherapyEngine will handle ACK tracking (future enhancement)
             if (profiles.getDebugMode())
             {
                 // Parse sequence ID from message
@@ -1727,7 +1727,7 @@ void onBLEMessage(uint16_t connHandle [[maybe_unused]], const char *message, uin
                     latencyMetrics.recordRtt(rtt);
                 }
 
-                // Record path asymmetry for diagnostics (Phase 1: measurement only)
+                // Record path asymmetry for diagnostics (measurement only)
                 bool phoneConnected = ble.isPhoneConnected();
                 syncProtocol.recordAsymmetry(t1, t2, t3, t4, phoneConnected);
 
@@ -2697,18 +2697,18 @@ void handleSerialCommand(const char *command)
         Serial.printf("Time Since Sync:    %lu ms\n", (unsigned long)syncProtocol.getTimeSinceSync());
         Serial.println(F("-------------------------------------"));
 
-        // Path Asymmetry (Phase 1 diagnostics)
-        Serial.println(F("PATH ASYMMETRY (Phase 1):"));
+        // Path Asymmetry diagnostics
+        Serial.println(F("PATH ASYMMETRY:"));
         Serial.printf("  Raw (last):     %+ld μs\n", (long)syncProtocol.getRawAsymmetry());
         Serial.printf("  Smoothed:       %+ld μs\n", (long)syncProtocol.getSmoothedAsymmetry());
         Serial.printf("  Variance:       %lu μs\n", (unsigned long)syncProtocol.getAsymmetryVariance());
         Serial.printf("  Samples:        %u\n", syncProtocol.getAsymmetrySampleCount());
         Serial.printf("  Phone during:   %s\n", syncProtocol.wasPhoneConnectedDuringSync() ? "YES" : "NO");
 
-        // Phase 2 readiness check
+        // Correction readiness check
         bool varianceStable = syncProtocol.getAsymmetryVariance() < SYNC_ASYMMETRY_STABLE_VARIANCE_US;
         bool enoughSamples = syncProtocol.getAsymmetrySampleCount() >= SYNC_ASYMMETRY_MIN_SAMPLES;
-        Serial.printf("  Phase 2 Ready:  %s\n",
+        Serial.printf("  Correction Ready: %s\n",
                       (varianceStable && enoughSamples) ? "YES (variance stable)" :
                       (!enoughSamples) ? "NO (need more samples)" : "NO (variance too high)");
 

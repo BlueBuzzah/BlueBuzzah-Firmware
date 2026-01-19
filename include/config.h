@@ -102,8 +102,8 @@
 #define SYNC_WARM_START_MIN_SAMPLES 3        // Confirmatory samples required for warm-start
 #define SYNC_WARM_START_TOLERANCE_US 5000    // 5ms tolerance for confirmatory sample validation
 
-// Path asymmetry compensation (Phase 1: measurement only)
-#define SYNC_ASYMMETRY_CORRECTION_ENABLED 0   // 0 = measure only, 1 = apply correction (Phase 2)
+// Path asymmetry compensation (measurement mode - correction not yet implemented)
+#define SYNC_ASYMMETRY_CORRECTION_ENABLED 0   // 0 = measure only, 1 = apply correction
 #define SYNC_ASYMMETRY_MIN_SAMPLES 10         // Samples before correction applied
 #define SYNC_ASYMMETRY_STABLE_VARIANCE_US 3000 // Variance threshold for stable estimate
 #define SYNC_ASYMMETRY_MAX_CORRECTION_US 20000 // Maximum correction (20ms cap)
