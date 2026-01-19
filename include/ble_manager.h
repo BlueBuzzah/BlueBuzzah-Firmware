@@ -76,6 +76,8 @@ struct BBConnection {
     // Connection interval tracking (for diagnostics)
     uint16_t negotiatedIntervalUnits;    // Actual interval in 1.25ms units
     uint32_t intervalQueriedAt;          // millis() when queried
+    bool pendingIntervalRequery;         // True if interval query returned 0, needs retry
+    uint32_t intervalRequeryTime;        // millis() when to retry query
 
     BBConnection() :
         connHandle(CONN_HANDLE_INVALID),
@@ -87,7 +89,9 @@ struct BBConnection {
         rxIndex(0),
         rxTimestamp(0),
         negotiatedIntervalUnits(0),
-        intervalQueriedAt(0) {
+        intervalQueriedAt(0),
+        pendingIntervalRequery(false),
+        intervalRequeryTime(0) {
         memset(rxBuffer, 0, sizeof(rxBuffer));
     }
 
@@ -102,6 +106,8 @@ struct BBConnection {
         rxTimestamp = 0;
         negotiatedIntervalUnits = 0;
         intervalQueriedAt = 0;
+        pendingIntervalRequery = false;
+        intervalRequeryTime = 0;
         memset(rxBuffer, 0, sizeof(rxBuffer));
     }
 };

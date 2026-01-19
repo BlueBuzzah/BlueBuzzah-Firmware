@@ -85,6 +85,7 @@ bool autoStartTriggered = false; // Prevent repeated auto-starts (only accessed 
 // If sync not valid when auto-start triggers, retry after 1 second
 bool autoStartScheduled = false;   // Whether we're waiting to retry auto-start
 uint32_t autoStartTime = 0;        // When to retry auto-start (millis)
+uint8_t g_autoStartRetryCount = 0; // Auto-start sync retry counter (reset on SECONDARY disconnect)
 
 // Keepalive monitoring (bidirectional via PING/PONG)
 // MUST be volatile: updated in BLE callback context, read in main loop
@@ -1029,13 +1030,11 @@ bool initializeBLE()
         return false;
     }
 
-    // Register PHY change callback (SECONDARY only)
+    // Register PHY change callback (both roles)
     // Detects 1M -> 2M PHY upgrades so we can reset RTT statistics
-    if (deviceRole == DeviceRole::SECONDARY)
-    {
-        Bluefruit.setEventCallback(onBLEEvent);
-        Serial.println(F("[BLE] PHY change event callback registered"));
-    }
+    // PRIMARY also uses RTT for adaptive lead time calculation
+    Bluefruit.setEventCallback(onBLEEvent);
+    Serial.println(F("[BLE] PHY change event callback registered"));
 
     // Start scanning for SECONDARY role
     // Note: PRIMARY advertising is started in setupAdvertising() during ble.begin()
@@ -1271,6 +1270,13 @@ void onBLEDisconnect(uint16_t connHandle, ConnectionType type, uint8_t reason)
         {
             bootWindowActive = false;
             Serial.println(F("[BOOT] SECONDARY disconnected - boot window cancelled"));
+        }
+
+        // PRIMARY: Reset auto-start retry counter on SECONDARY disconnect
+        // Prevents stale counter from causing immediate give-up on reconnection
+        if (deviceRole == DeviceRole::PRIMARY)
+        {
+            g_autoStartRetryCount = 0;
         }
     }
     else if (deviceRole == DeviceRole::PRIMARY && type == ConnectionType::PHONE)
@@ -2152,19 +2158,18 @@ void autoStartTherapy()
 
     // Check sync validity before starting therapy (SECONDARY must be synced)
     // After reconnection, sync requires 5 samples (~5 seconds) to become valid
-    static uint8_t autoStartRetryCount = 0;
     if (ble.isSecondaryConnected() && !syncProtocol.isClockSyncValid())
     {
-        if (++autoStartRetryCount > 10)
+        if (++g_autoStartRetryCount > 10)
         {
             // Give up waiting for sync after 10 seconds - start anyway (degraded mode)
             Serial.println(F("[AUTO] Sync not valid after 10s - starting therapy (timing may be degraded)"));
-            autoStartRetryCount = 0;
+            g_autoStartRetryCount = 0;
             // Fall through to start therapy
         }
         else
         {
-            Serial.printf("[AUTO] Sync not valid (attempt %u/10) - retrying in 1 second\n", autoStartRetryCount);
+            Serial.printf("[AUTO] Sync not valid (attempt %u/10) - retrying in 1 second\n", g_autoStartRetryCount);
             // Schedule retry in 1 second
             autoStartScheduled = true;
             autoStartTime = millis() + 1000;
@@ -2174,7 +2179,7 @@ void autoStartTherapy()
     else
     {
         // Reset retry counter on successful sync or no SECONDARY connected
-        autoStartRetryCount = 0;
+        g_autoStartRetryCount = 0;
     }
 
     // Get current profile

@@ -747,6 +747,13 @@ public:
     uint16_t getAsymmetrySampleCount() const { return _asymmetrySampleCount; }
 
     /**
+     * @brief Check if phone was connected during last asymmetry measurement
+     * @return true if phone was connected
+     * @note Reserved for Phase 2 asymmetry compensation - correlates asymmetry with load state
+     */
+    bool wasPhoneConnectedDuringSync() const { return _phoneConnectedDuringSync; }
+
+    /**
      * @brief Reset asymmetry tracking state
      */
     void resetAsymmetryTracking();

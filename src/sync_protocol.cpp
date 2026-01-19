@@ -8,6 +8,7 @@
 #include "sync_protocol.h"
 #include <string.h>
 #include <stdlib.h>
+#include <cerrno>
 
 // =============================================================================
 // 64-BIT MICROSECOND TIMESTAMP WITH OVERFLOW TRACKING
@@ -260,10 +261,11 @@ bool SyncCommand::deserialize(const char* message) {
         return false;
     }
     char* endptr;
+    errno = 0;
     _sequenceId = strtoul(token, &endptr, 10);
-    // Validate that at least one digit was parsed
-    if (endptr == token) {
-        return false;  // No numeric characters consumed
+    // Validate that at least one digit was parsed and no overflow occurred
+    if (endptr == token || errno == ERANGE) {
+        return false;  // No digits consumed or overflow
     }
 
     // Parse timestamp (second pipe-delimited token)
@@ -271,10 +273,11 @@ bool SyncCommand::deserialize(const char* message) {
     if (!token) {
         return false;
     }
+    errno = 0;
     _timestamp = strtoull(token, &endptr, 10);
-    // Validate that at least one digit was parsed
-    if (endptr == token) {
-        return false;  // No numeric characters consumed
+    // Validate that at least one digit was parsed and no overflow occurred
+    if (endptr == token || errno == ERANGE) {
+        return false;  // No digits consumed or overflow
     }
 
     // Parse remaining pipe-delimited data parameters
@@ -402,7 +405,13 @@ int32_t SyncCommand::getDataInt(const char* key, int32_t defaultValue) const {
     if (!value) {
         return defaultValue;
     }
-    return strtol(value, nullptr, 10);
+    char* endptr;
+    errno = 0;
+    long result = strtol(value, &endptr, 10);
+    if (endptr == value || errno == ERANGE) {
+        return defaultValue;  // No digits or overflow
+    }
+    return static_cast<int32_t>(result);
 }
 
 uint32_t SyncCommand::getDataUnsigned(const char* key, uint32_t defaultValue) const {
@@ -411,7 +420,13 @@ uint32_t SyncCommand::getDataUnsigned(const char* key, uint32_t defaultValue) co
         return defaultValue;
     }
     // Use strtoul for unsigned parsing - avoids sign extension when values > 2^31
-    return static_cast<uint32_t>(strtoul(value, nullptr, 10));
+    char* endptr;
+    errno = 0;
+    unsigned long result = strtoul(value, &endptr, 10);
+    if (endptr == value || errno == ERANGE) {
+        return defaultValue;  // No digits or overflow
+    }
+    return static_cast<uint32_t>(result);
 }
 
 bool SyncCommand::hasData(const char* key) const {
@@ -925,7 +940,7 @@ void SimpleSyncProtocol::updateOffsetEMA(int64_t offset) {
         uint32_t elapsed = now - _lastOffsetTime;
         // Use 500ms minimum for better SNR (5x improvement over 100ms)
         // Matches natural PING cadence (1Hz) while tracking drift changes
-        if (elapsed >= 500) {
+        if (elapsed >= SYNC_MIN_DRIFT_INTERVAL_MS) {
             int64_t delta = offset - _lastMeasuredOffset;
             float newRate = (float)delta / (float)elapsed;  // μs per ms
 
@@ -939,7 +954,7 @@ void SimpleSyncProtocol::updateOffsetEMA(int64_t offset) {
             }
 
             // EMA smooth the CAPPED drift rate (α = 0.3 for reasonable responsiveness)
-            _driftRateUsPerMs = 0.3f * newRate + 0.7f * _driftRateUsPerMs;
+            _driftRateUsPerMs = SYNC_DRIFT_EMA_ALPHA * newRate + (1.0f - SYNC_DRIFT_EMA_ALPHA) * _driftRateUsPerMs;
         }
     }
 
@@ -973,16 +988,16 @@ int64_t SimpleSyncProtocol::getCorrectedOffset() const {
         // SAFETY: Cap elapsed time to prevent runaway drift correction
         // If we haven't had a sync update in >10s, something is wrong
         // Limit to 10 seconds max to prevent overflow
-        if (elapsed > 10000) {
-            elapsed = 10000;
+        if (elapsed > SYNC_MAX_CORRECTION_ELAPSED_MS) {
+            elapsed = SYNC_MAX_CORRECTION_ELAPSED_MS;
         }
 
         // SAFETY: Cap drift rate to reasonable bounds (±100 ppm = ±0.1 µs/ms)
         // Crystal oscillators typically drift ±20-50 ppm
         // Anything larger indicates bad measurements
         float cappedDriftRate = _driftRateUsPerMs;
-        if (cappedDriftRate > 0.1f) cappedDriftRate = 0.1f;
-        if (cappedDriftRate < -0.1f) cappedDriftRate = -0.1f;
+        if (cappedDriftRate > SYNC_MAX_APPLIED_DRIFT_RATE_US_PER_MS) cappedDriftRate = SYNC_MAX_APPLIED_DRIFT_RATE_US_PER_MS;
+        if (cappedDriftRate < -SYNC_MAX_APPLIED_DRIFT_RATE_US_PER_MS) cappedDriftRate = -SYNC_MAX_APPLIED_DRIFT_RATE_US_PER_MS;
 
         int64_t driftCorrection = (int64_t)(cappedDriftRate * (float)elapsed);
 
@@ -1061,8 +1076,8 @@ int64_t SimpleSyncProtocol::getProjectedOffset() const {
 
     // Cap drift rate for safety (100 ppm max = ±0.1 µs/ms)
     float cappedDriftRate = _warmStartCache.cachedDriftRate;
-    if (cappedDriftRate > 0.1f) cappedDriftRate = 0.1f;
-    if (cappedDriftRate < -0.1f) cappedDriftRate = -0.1f;
+    if (cappedDriftRate > SYNC_MAX_APPLIED_DRIFT_RATE_US_PER_MS) cappedDriftRate = SYNC_MAX_APPLIED_DRIFT_RATE_US_PER_MS;
+    if (cappedDriftRate < -SYNC_MAX_APPLIED_DRIFT_RATE_US_PER_MS) cappedDriftRate = -SYNC_MAX_APPLIED_DRIFT_RATE_US_PER_MS;
 
     int64_t driftCorrection = (int64_t)(cappedDriftRate * (float)elapsed);
     return _warmStartCache.cachedOffset + driftCorrection;
@@ -1129,10 +1144,10 @@ uint32_t SimpleSyncProtocol::calculateAdaptiveLeadTime() const {
     // Clamp to reasonable bounds:
     // - Minimum 70ms: Covers RTT (~40ms) + variance (~5ms) + processing (10ms) + generation (5ms) + margin (10ms)
     // - Maximum 150ms: Conservative upper bound for worst-case BLE conditions
-    if (leadTime < 70000) {
-        leadTime = 70000;
-    } else if (leadTime > 150000) {
-        leadTime = 150000;
+    if (leadTime < SYNC_MIN_LEAD_TIME_US) {
+        leadTime = SYNC_MIN_LEAD_TIME_US;
+    } else if (leadTime > SYNC_MAX_LEAD_TIME_US) {
+        leadTime = SYNC_MAX_LEAD_TIME_US;
     }
 
     return leadTime;

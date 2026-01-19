@@ -258,6 +258,16 @@ void BLEManager::update() {
             }
         }
     }
+
+    // Check for pending interval requeries
+    for (int i = 0; i < MAX_CONNECTIONS; i++) {
+        BBConnection* conn = &_connections[i];
+        if (conn->isConnected && conn->pendingIntervalRequery &&
+            now >= conn->intervalRequeryTime) {
+            conn->pendingIntervalRequery = false;
+            queryConnectionInterval(conn->connHandle);
+        }
+    }
 }
 
 // =============================================================================
@@ -648,9 +658,12 @@ void BLEManager::queryConnectionInterval(uint16_t connHandleParam) {
 
     uint16_t intervalUnits = bleConn->getConnectionInterval();
     if (intervalUnits == 0) {
-        Serial.printf("[BLE] WARN: Interval query returned 0 for handle %d\n", connHandleParam);
+        Serial.printf("[BLE] WARN: Interval query returned 0 for handle %d, scheduling retry\n", connHandleParam);
+        conn->pendingIntervalRequery = true;
+        conn->intervalRequeryTime = millis() + 200;  // Retry in 200ms
         return;
     }
+    conn->pendingIntervalRequery = false;  // Clear flag on success
 
     conn->negotiatedIntervalUnits = intervalUnits;
     conn->intervalQueriedAt = millis();

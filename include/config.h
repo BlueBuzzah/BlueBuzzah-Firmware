@@ -93,6 +93,9 @@
                                              // (reduced from 120ms for stricter quality filtering)
 #define SYNC_OUTLIER_THRESHOLD_US 5000   // 5ms threshold for offset outlier rejection (was hardcoded)
 #define SYNC_MAX_DRIFT_RATE_US_PER_MS 0.15f  // 150 ppm max drift rate (cap for safety)
+#define SYNC_MAX_APPLIED_DRIFT_RATE_US_PER_MS 0.1f  // 100 ppm max for corrections
+                                                     // More conservative than measurement cap (0.15f)
+                                                     // Applied in getCorrectedOffset() and getProjectedOffset()
 
 // Warm-start sync configuration (quick recovery after brief disconnects)
 #define SYNC_WARM_START_VALIDITY_MS 15000    // Cache valid for 15 seconds (reduced drift extrapolation window)
@@ -104,6 +107,13 @@
 #define SYNC_ASYMMETRY_MIN_SAMPLES 10         // Samples before correction applied
 #define SYNC_ASYMMETRY_STABLE_VARIANCE_US 3000 // Variance threshold for stable estimate
 #define SYNC_ASYMMETRY_MAX_CORRECTION_US 20000 // Maximum correction (20ms cap)
+
+// Drift rate and lead time calculation constants
+#define SYNC_MAX_CORRECTION_ELAPSED_MS 10000  // 10s max elapsed time for drift correction
+#define SYNC_MIN_DRIFT_INTERVAL_MS 500        // 500ms min interval for drift rate calculation
+#define SYNC_DRIFT_EMA_ALPHA 0.3f             // Drift rate EMA smoothing factor (α=0.3)
+#define SYNC_MIN_LEAD_TIME_US 70000           // 70ms minimum lead time for MACROCYCLE
+#define SYNC_MAX_LEAD_TIME_US 150000          // 150ms maximum lead time for MACROCYCLE
 
 // Unified keepalive + clock sync (PING/PONG)
 #define KEEPALIVE_INTERVAL_MS 1000   // 1 second between PING messages (unified keepalive + clock sync)
