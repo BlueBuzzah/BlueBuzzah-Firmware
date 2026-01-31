@@ -167,6 +167,9 @@ bool HapticController::initializeFinger(uint8_t finger) {
 }
 
 void HapticController::configureDRV2605(Adafruit_DRV2605& drv) {
+    // 0. Read register 0x00 in attempt to un-brick corrupted boards
+    drv.readRegister8(DRV2605_REG_STATUS);
+
     // 1. Configure for LRA (Linear Resonant Actuator)
     drv.useLRA();
 
