@@ -694,6 +694,9 @@ void loop()
     // Process deferred work queue (haptic operations from BLE callbacks)
     deferredQueue.processOne();
 
+    // Process SECONDARY battery response in main loop context (thread-safe)
+    menu.checkSecondaryBatteryResponse();
+
     // Check for SECONDARY battery response timeout (non-blocking)
     menu.checkSecondaryBatteryTimeout();
 
@@ -1450,10 +1453,11 @@ void onBLEMessage(uint16_t connHandle [[maybe_unused]], const char *message, uin
     }
 
     // Handle BATRESPONSE from SECONDARY (PRIMARY only)
+    // ISR-safe: only sets volatile fields; actual response is built in loop()
     if (deviceRole == DeviceRole::PRIMARY && strncmp(message, "BATRESPONSE:", 12) == 0)
     {
         float voltage = atof(message + 12);
-        menu.handleSecondaryBatteryResponse(voltage);
+        menu.setSecondaryBatteryVoltage(voltage);
         return;
     }
 

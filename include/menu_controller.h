@@ -167,13 +167,21 @@ public:
     void setSendToSecondaryCallback(SendToSecondaryCallback callback);
 
     /**
-     * @brief Handle SECONDARY battery voltage response
+     * @brief Set SECONDARY battery voltage from ISR/BLE callback context
      * @param voltage Battery voltage from SECONDARY glove
      *
-     * Called when BATRESPONSE is received from SECONDARY.
-     * Completes the deferred BATTERY or INFO response.
+     * ISR-safe: only writes volatile fields. The actual response buffer
+     * manipulation happens in checkSecondaryBatteryResponse() from loop().
      */
-    void handleSecondaryBatteryResponse(float voltage);
+    void setSecondaryBatteryVoltage(float voltage);
+
+    /**
+     * @brief Check for received SECONDARY battery response (call from loop)
+     *
+     * Processes the SECONDARY battery voltage in main loop context,
+     * where it is safe to manipulate the response buffer.
+     */
+    void checkSecondaryBatteryResponse();
 
     /**
      * @brief Check for SECONDARY battery response timeout
@@ -215,7 +223,8 @@ private:
     };
     DeferredCommand _deferredCommand;
     volatile float _secondaryBatteryVoltage;
-    bool _waitingForSecondaryBattery;
+    volatile bool _waitingForSecondaryBattery;
+    volatile bool _secondaryBatteryReceived;
     uint32_t _secondaryBatteryRequestTime;
 
     // State
@@ -268,6 +277,14 @@ private:
     // =========================================================================
     // COMMAND HANDLERS
     // =========================================================================
+
+    /**
+     * @brief Complete the deferred SECONDARY battery response
+     * @param voltage Battery voltage value
+     *
+     * MUST only be called from main loop context (manipulates _responseBuffer).
+     */
+    void handleSecondaryBatteryResponse(float voltage);
 
     void handleInfo();
     void handleBattery();

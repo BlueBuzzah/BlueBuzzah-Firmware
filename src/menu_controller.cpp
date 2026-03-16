@@ -62,6 +62,7 @@ MenuController::MenuController() :
     _deferredCommand(DeferredCommand::NONE),
     _secondaryBatteryVoltage(0.0f),
     _waitingForSecondaryBattery(false),
+    _secondaryBatteryReceived(false),
     _secondaryBatteryRequestTime(0),
     _isCalibrating(false),
     _calibrationStartTime(0)
@@ -329,6 +330,20 @@ void MenuController::sendError(const char* message) {
 // SECONDARY BATTERY RESPONSE HANDLING
 // =============================================================================
 
+void MenuController::setSecondaryBatteryVoltage(float voltage) {
+    _secondaryBatteryVoltage = voltage;   // volatile write
+    _secondaryBatteryReceived = true;     // volatile write — signals main loop
+}
+
+void MenuController::checkSecondaryBatteryResponse() {
+    if (!_waitingForSecondaryBattery || !_secondaryBatteryReceived) {
+        return;
+    }
+    _secondaryBatteryReceived = false;
+    // Now safe to call handleSecondaryBatteryResponse from main loop context
+    handleSecondaryBatteryResponse(_secondaryBatteryVoltage);
+}
+
 void MenuController::handleSecondaryBatteryResponse(float voltage) {
     if (!_waitingForSecondaryBattery) {
         return;  // No pending request
@@ -389,6 +404,24 @@ void MenuController::handleInfo() {
         addResponseLine("BATP", "0.00");
     }
 
+    // Guard: already waiting for SECONDARY — return 0.00 immediately
+    if (_waitingForSecondaryBattery) {
+        addResponseLine("BATS", "0.00");
+        const char* statusStr = "IDLE";
+        if (_stateMachine) {
+            if (_stateMachine->isRunning()) {
+                statusStr = "RUNNING";
+            } else if (_stateMachine->isPaused()) {
+                statusStr = "PAUSED";
+            } else if (_stateMachine->isReady()) {
+                statusStr = "READY";
+            }
+        }
+        addResponseLine("STATUS", statusStr);
+        sendResponse();
+        return;
+    }
+
     // Request SECONDARY battery if callback is available
     if (_sendToSecondaryCallback) {
         _deferredCommand = DeferredCommand::INFO;
@@ -425,6 +458,13 @@ void MenuController::handleBattery() {
         addResponseLine("BATP", status.voltage, 2);
     } else {
         addResponseLine("BATP", "0.00");
+    }
+
+    // Guard: already waiting for SECONDARY — return 0.00 immediately
+    if (_waitingForSecondaryBattery) {
+        addResponseLine("BATS", "0.00");
+        sendResponse();
+        return;
     }
 
     // Request SECONDARY battery if callback is available
