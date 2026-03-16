@@ -1153,6 +1153,65 @@ void test_handleInfo_includes_secondary_voltage() {
     TEST_ASSERT_TRUE(strstr(g_lastResponse, "STATUS:IDLE") != nullptr);
 }
 
+void test_handleBattery_timeout_returns_zero() {
+    // When no BATRESPONSE arrives within 1000ms, checkSecondaryBatteryTimeout
+    // should complete the deferred response with BATS:0.00
+
+    // Set up SECONDARY connection callback (triggers deferred path)
+    g_menu->setSendToSecondaryCallback(testSendToSecondaryCallback);
+
+    // Set PRIMARY battery voltage
+    g_battery->_status.voltage = 3.85f;
+
+    // Call handleBattery - defers waiting for SECONDARY response
+    g_menu->handleBattery();
+
+    // Verify GET_BATTERY was sent to SECONDARY
+    TEST_ASSERT_EQUAL_STRING("GET_BATTERY", g_lastSecondaryMessage);
+
+    // No response sent yet (deferred, waiting for BATRESPONSE)
+    TEST_ASSERT_EQUAL_INT(0, g_responseCount);
+
+    // Check timeout before 1000ms - should NOT trigger
+    mockAdvanceMillis(999);
+    g_menu->checkSecondaryBatteryTimeout();
+    TEST_ASSERT_EQUAL_INT(0, g_responseCount);
+
+    // Advance past the 1000ms timeout threshold
+    mockAdvanceMillis(2);  // Now at 1001ms total
+    g_menu->checkSecondaryBatteryTimeout();
+
+    // Response should now be sent with BATS:0.00 fallback
+    TEST_ASSERT_EQUAL_INT(1, g_responseCount);
+    TEST_ASSERT_TRUE(strstr(g_lastResponse, "BATP:3.85") != nullptr);
+    TEST_ASSERT_TRUE(strstr(g_lastResponse, "BATS:0.00") != nullptr);
+}
+
+void test_handleInfo_timeout_returns_zero_with_status() {
+    // When no BATRESPONSE arrives within 1000ms during INFO command,
+    // checkSecondaryBatteryTimeout should complete with BATS:0.00 and include STATUS
+
+    g_menu->setSendToSecondaryCallback(testSendToSecondaryCallback);
+    g_battery->_status.voltage = 4.05f;
+
+    // Call handleInfo - defers waiting for SECONDARY response
+    g_menu->handleInfo();
+
+    // No response yet
+    TEST_ASSERT_EQUAL_INT(0, g_responseCount);
+
+    // Advance past timeout
+    mockAdvanceMillis(1001);
+    g_menu->checkSecondaryBatteryTimeout();
+
+    // Response should include all INFO fields with BATS:0.00 fallback
+    TEST_ASSERT_EQUAL_INT(1, g_responseCount);
+    TEST_ASSERT_TRUE(strstr(g_lastResponse, "ROLE:PRIMARY") != nullptr);
+    TEST_ASSERT_TRUE(strstr(g_lastResponse, "BATP:4.05") != nullptr);
+    TEST_ASSERT_TRUE(strstr(g_lastResponse, "BATS:0.00") != nullptr);
+    TEST_ASSERT_TRUE(strstr(g_lastResponse, "STATUS:IDLE") != nullptr);
+}
+
 // =============================================================================
 // MAIN
 // =============================================================================
@@ -1236,6 +1295,8 @@ int main(int argc, char **argv) {
     RUN_TEST(test_handleBattery_returns_secondary_voltage);
     RUN_TEST(test_handleBattery_returns_zero_when_secondary_unavailable);
     RUN_TEST(test_handleInfo_includes_secondary_voltage);
+    RUN_TEST(test_handleBattery_timeout_returns_zero);
+    RUN_TEST(test_handleInfo_timeout_returns_zero_with_status);
 
     return UNITY_END();
 }

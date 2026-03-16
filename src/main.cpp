@@ -1435,6 +1435,20 @@ void onBLEMessage(uint16_t connHandle [[maybe_unused]], const char *message, uin
         return;
     }
 
+    // Handle GET_BATTERY from PRIMARY (SECONDARY only)
+    // SECONDARY reads its local battery and sends BATRESPONSE back
+    if (strcmp(message, "GET_BATTERY") == 0)
+    {
+        if (deviceRole == DeviceRole::SECONDARY)
+        {
+            BatteryStatus status = battery.getStatus();
+            char response[32];
+            snprintf(response, sizeof(response), "BATRESPONSE:%.2f", status.voltage);
+            ble.sendToPrimary(response);
+        }
+        return;
+    }
+
     // Handle BATRESPONSE from SECONDARY (PRIMARY only)
     if (deviceRole == DeviceRole::PRIMARY && strncmp(message, "BATRESPONSE:", 12) == 0)
     {
