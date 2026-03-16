@@ -543,7 +543,7 @@ SECONDARY applies clock offset once to baseTime, then schedules all 12 events vi
 | Message | Direction | Fields | Example |
 |---------|-----------|--------|---------|
 | `GET_BATTERY` | P → S | (none) | `GET_BATTERY` |
-| `BAT_RESPONSE` | S → P | voltage | `BAT_RESPONSE:3.68` |
+| `BATRESPONSE` | S → P | voltage | `BATRESPONSE:3.68` |
 
 ---
 
