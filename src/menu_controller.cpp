@@ -58,6 +58,11 @@ MenuController::MenuController() :
     _role(DeviceRole::PRIMARY),
     _sendCallback(nullptr),
     _restartCallback(nullptr),
+    _sendToSecondaryCallback(nullptr),
+    _deferredCommand(DeferredCommand::NONE),
+    _secondaryBatteryVoltage(0.0f),
+    _waitingForSecondaryBattery(false),
+    _secondaryBatteryRequestTime(0),
     _isCalibrating(false),
     _calibrationStartTime(0)
 {
@@ -108,6 +113,10 @@ void MenuController::setSendCallback(SendResponseCallback callback) {
 
 void MenuController::setRestartCallback(RestartCallback callback) {
     _restartCallback = callback;
+}
+
+void MenuController::setSendToSecondaryCallback(SendToSecondaryCallback callback) {
+    _sendToSecondaryCallback = callback;
 }
 
 // =============================================================================
@@ -317,6 +326,51 @@ void MenuController::sendError(const char* message) {
 }
 
 // =============================================================================
+// SECONDARY BATTERY RESPONSE HANDLING
+// =============================================================================
+
+void MenuController::handleSecondaryBatteryResponse(float voltage) {
+    if (!_waitingForSecondaryBattery) {
+        return;  // No pending request
+    }
+
+    _waitingForSecondaryBattery = false;
+    _secondaryBatteryVoltage = voltage;
+
+    // Complete the deferred response
+    addResponseLine("BATS", voltage, 2);
+
+    if (_deferredCommand == DeferredCommand::INFO) {
+        // INFO response needs STATUS after BATS
+        const char* statusStr = "IDLE";
+        if (_stateMachine) {
+            if (_stateMachine->isRunning()) {
+                statusStr = "RUNNING";
+            } else if (_stateMachine->isPaused()) {
+                statusStr = "PAUSED";
+            } else if (_stateMachine->isReady()) {
+                statusStr = "READY";
+            }
+        }
+        addResponseLine("STATUS", statusStr);
+    }
+
+    _deferredCommand = DeferredCommand::NONE;
+    sendResponse();
+}
+
+void MenuController::checkSecondaryBatteryTimeout() {
+    if (!_waitingForSecondaryBattery) {
+        return;
+    }
+
+    if (millis() - _secondaryBatteryRequestTime >= SECONDARY_BATTERY_TIMEOUT_MS) {
+        Serial.println(F("[MENU] SECONDARY battery response timeout"));
+        handleSecondaryBatteryResponse(0.0f);
+    }
+}
+
+// =============================================================================
 // DEVICE INFO COMMANDS
 // =============================================================================
 
@@ -334,7 +388,18 @@ void MenuController::handleInfo() {
     } else {
         addResponseLine("BATP", "0.00");
     }
-    addResponseLine("BATS", "0.00");  // SECONDARY battery (placeholder)
+
+    // Request SECONDARY battery if callback is available
+    if (_sendToSecondaryCallback) {
+        _deferredCommand = DeferredCommand::INFO;
+        _waitingForSecondaryBattery = true;
+        _secondaryBatteryRequestTime = millis();
+        _sendToSecondaryCallback("GET_BATTERY");
+        return;  // Response completed in handleSecondaryBatteryResponse()
+    }
+
+    // No SECONDARY connection - respond immediately with 0.00
+    addResponseLine("BATS", "0.00");
 
     // Get therapy status
     const char* statusStr = "IDLE";
@@ -361,7 +426,18 @@ void MenuController::handleBattery() {
     } else {
         addResponseLine("BATP", "0.00");
     }
-    addResponseLine("BATS", "0.00");  // SECONDARY battery (placeholder)
+
+    // Request SECONDARY battery if callback is available
+    if (_sendToSecondaryCallback) {
+        _deferredCommand = DeferredCommand::BATTERY;
+        _waitingForSecondaryBattery = true;
+        _secondaryBatteryRequestTime = millis();
+        _sendToSecondaryCallback("GET_BATTERY");
+        return;  // Response completed in handleSecondaryBatteryResponse()
+    }
+
+    // No SECONDARY connection - respond immediately with 0.00
+    addResponseLine("BATS", "0.00");
 
     sendResponse();
 }

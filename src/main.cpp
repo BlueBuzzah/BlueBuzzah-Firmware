@@ -378,8 +378,9 @@ uint32_t onGetLeadTime();
 // State Machine Callback
 void onStateChange(const StateTransition &transition);
 
-// Menu Controller Callback
+// Menu Controller Callbacks
 void onMenuSendResponse(const char *response);
+void onMenuSendToSecondary(const char *message);
 
 // SECONDARY Keepalive Timeout
 void handleKeepaliveTimeout();
@@ -598,6 +599,7 @@ void setup()
     menu.begin(&therapy, &battery, &haptic, &stateMachine, &profiles, &ble);
     menu.setDeviceInfo(deviceRole, FIRMWARE_VERSION, BLE_NAME);
     menu.setSendCallback(onMenuSendResponse);
+    menu.setSendToSecondaryCallback(onMenuSendToSecondary);
     Serial.println(F("[SUCCESS] Menu controller initialized"));
 
     // Initialize Deferred Queue (for ISR-safe callback operations)
@@ -691,6 +693,9 @@ void loop()
 
     // Process deferred work queue (haptic operations from BLE callbacks)
     deferredQueue.processOne();
+
+    // Check for SECONDARY battery response timeout (non-blocking)
+    menu.checkSecondaryBatteryTimeout();
 
     uint32_t now = millis();
 
@@ -1427,6 +1432,14 @@ void onBLEMessage(uint16_t connHandle [[maybe_unused]], const char *message, uin
                 led.setPattern(Colors::GREEN, LEDPattern::PULSE_SLOW);
             }
         }
+        return;
+    }
+
+    // Handle BATRESPONSE from SECONDARY (PRIMARY only)
+    if (deviceRole == DeviceRole::PRIMARY && strncmp(message, "BATRESPONSE:", 12) == 0)
+    {
+        float voltage = atof(message + 12);
+        menu.handleSecondaryBatteryResponse(voltage);
         return;
     }
 
@@ -2427,6 +2440,14 @@ void onMenuSendResponse(const char *response)
     if (ble.isPhoneConnected())
     {
         ble.sendToPhone(response);
+    }
+}
+
+void onMenuSendToSecondary(const char *message)
+{
+    if (ble.isSecondaryConnected())
+    {
+        ble.sendToSecondary(message);
     }
 }
 

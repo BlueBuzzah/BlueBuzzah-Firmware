@@ -262,6 +262,20 @@ public:
     uint32_t _calibrationStartTime;
     char _responseBuffer[RESPONSE_BUFFER_SIZE];
 
+    // Deferred command tracking for SECONDARY battery query
+    enum class DeferredCommand : uint8_t {
+        NONE = 0,
+        BATTERY,
+        INFO
+    };
+
+    typedef void (*SendToSecondaryCallback)(const char* message);
+    SendToSecondaryCallback _sendToSecondaryCallback;
+    DeferredCommand _deferredCommand;
+    volatile float _secondaryBatteryVoltage;
+    bool _waitingForSecondaryBattery;
+    uint32_t _secondaryBatteryRequestTime;
+
     // Track last processed command for testing
     char _lastCommand[32];
     uint8_t _lastParamCount;
@@ -275,6 +289,11 @@ public:
         _role(DeviceRole::PRIMARY),
         _sendCallback(nullptr),
         _restartCallback(nullptr),
+        _sendToSecondaryCallback(nullptr),
+        _deferredCommand(DeferredCommand::NONE),
+        _secondaryBatteryVoltage(0.0f),
+        _waitingForSecondaryBattery(false),
+        _secondaryBatteryRequestTime(0),
         _isCalibrating(false),
         _calibrationStartTime(0),
         _lastParamCount(0)
@@ -457,6 +476,115 @@ public:
     void stopCalibration() {
         _isCalibrating = false;
     }
+
+    void setSendToSecondaryCallback(SendToSecondaryCallback callback) {
+        _sendToSecondaryCallback = callback;
+    }
+
+    // Simulate handleBattery with deferred SECONDARY battery query
+    void handleBattery() {
+        beginResponse();
+
+        if (_battery) {
+            BatteryStatus status = _battery->getStatus();
+            addResponseLine("BATP", status.voltage, 2);
+        } else {
+            addResponseLine("BATP", "0.00");
+        }
+
+        // Request SECONDARY battery if callback is available
+        if (_sendToSecondaryCallback) {
+            _deferredCommand = DeferredCommand::BATTERY;
+            _waitingForSecondaryBattery = true;
+            _secondaryBatteryRequestTime = millis();
+            _sendToSecondaryCallback("GET_BATTERY");
+            return;
+        }
+
+        // No SECONDARY connection - respond immediately with 0.00
+        addResponseLine("BATS", "0.00");
+        sendResponse();
+    }
+
+    // Simulate handleInfo with deferred SECONDARY battery query
+    void handleInfo() {
+        beginResponse();
+
+        addResponseLine("ROLE", deviceRoleToString(_role));
+        addResponseLine("NAME", _deviceName);
+        addResponseLine("FW", _firmwareVersion);
+
+        if (_battery) {
+            BatteryStatus status = _battery->getStatus();
+            addResponseLine("BATP", status.voltage, 2);
+        } else {
+            addResponseLine("BATP", "0.00");
+        }
+
+        // Request SECONDARY battery if callback is available
+        if (_sendToSecondaryCallback) {
+            _deferredCommand = DeferredCommand::INFO;
+            _waitingForSecondaryBattery = true;
+            _secondaryBatteryRequestTime = millis();
+            _sendToSecondaryCallback("GET_BATTERY");
+            return;
+        }
+
+        // No SECONDARY connection - respond immediately with 0.00
+        addResponseLine("BATS", "0.00");
+
+        const char* statusStr = "IDLE";
+        if (_stateMachine) {
+            if (_stateMachine->isRunning()) {
+                statusStr = "RUNNING";
+            } else if (_stateMachine->isPaused()) {
+                statusStr = "PAUSED";
+            } else if (_stateMachine->isReady()) {
+                statusStr = "READY";
+            }
+        }
+        addResponseLine("STATUS", statusStr);
+
+        sendResponse();
+    }
+
+    void handleSecondaryBatteryResponse(float voltage) {
+        if (!_waitingForSecondaryBattery) {
+            return;
+        }
+
+        _waitingForSecondaryBattery = false;
+        _secondaryBatteryVoltage = voltage;
+
+        addResponseLine("BATS", voltage, 2);
+
+        if (_deferredCommand == DeferredCommand::INFO) {
+            const char* statusStr = "IDLE";
+            if (_stateMachine) {
+                if (_stateMachine->isRunning()) {
+                    statusStr = "RUNNING";
+                } else if (_stateMachine->isPaused()) {
+                    statusStr = "PAUSED";
+                } else if (_stateMachine->isReady()) {
+                    statusStr = "READY";
+                }
+            }
+            addResponseLine("STATUS", statusStr);
+        }
+
+        _deferredCommand = DeferredCommand::NONE;
+        sendResponse();
+    }
+
+    void checkSecondaryBatteryTimeout() {
+        if (!_waitingForSecondaryBattery) {
+            return;
+        }
+
+        if (millis() - _secondaryBatteryRequestTime >= 1000) {
+            handleSecondaryBatteryResponse(0.0f);
+        }
+    }
 };
 
 // =============================================================================
@@ -474,6 +602,8 @@ static ProfileManager* g_profiles = nullptr;
 static char g_lastResponse[RESPONSE_BUFFER_SIZE];
 static int g_responseCount = 0;
 static int g_restartCount = 0;
+static char g_lastSecondaryMessage[64];
+static int g_secondaryMessageCount = 0;
 
 void testSendCallback(const char* response) {
     strncpy(g_lastResponse, response, sizeof(g_lastResponse) - 1);
@@ -483,6 +613,12 @@ void testSendCallback(const char* response) {
 
 void testRestartCallback() {
     g_restartCount++;
+}
+
+void testSendToSecondaryCallback(const char* message) {
+    strncpy(g_lastSecondaryMessage, message, sizeof(g_lastSecondaryMessage) - 1);
+    g_lastSecondaryMessage[sizeof(g_lastSecondaryMessage) - 1] = '\0';
+    g_secondaryMessageCount++;
 }
 
 void setUp(void) {
@@ -500,6 +636,8 @@ void setUp(void) {
     memset(g_lastResponse, 0, sizeof(g_lastResponse));
     g_responseCount = 0;
     g_restartCount = 0;
+    memset(g_lastSecondaryMessage, 0, sizeof(g_lastSecondaryMessage));
+    g_secondaryMessageCount = 0;
 
     mockResetTime();
 }
@@ -945,6 +1083,77 @@ void test_default_role_is_primary() {
 }
 
 // =============================================================================
+// SECONDARY BATTERY QUERY TESTS
+// =============================================================================
+
+void test_handleBattery_returns_secondary_voltage() {
+    // Set up the send-to-secondary callback to simulate SECONDARY connection
+    g_menu->setSendToSecondaryCallback(testSendToSecondaryCallback);
+
+    // Set PRIMARY battery
+    g_battery->_status.voltage = 3.85f;
+
+    // Call handleBattery - should defer and send GET_BATTERY to SECONDARY
+    g_menu->handleBattery();
+
+    // Verify GET_BATTERY was sent to SECONDARY
+    TEST_ASSERT_EQUAL_STRING("GET_BATTERY", g_lastSecondaryMessage);
+    TEST_ASSERT_EQUAL_INT(1, g_secondaryMessageCount);
+
+    // No response sent yet (deferred)
+    TEST_ASSERT_EQUAL_INT(0, g_responseCount);
+
+    // Simulate SECONDARY responding with battery voltage
+    g_menu->handleSecondaryBatteryResponse(3.72f);
+
+    // Now the response should be sent
+    TEST_ASSERT_EQUAL_INT(1, g_responseCount);
+    TEST_ASSERT_TRUE(strstr(g_lastResponse, "BATP:3.85") != nullptr);
+    TEST_ASSERT_TRUE(strstr(g_lastResponse, "BATS:3.72") != nullptr);
+}
+
+void test_handleBattery_returns_zero_when_secondary_unavailable() {
+    // No send-to-secondary callback set - simulates no SECONDARY connection
+
+    // Set PRIMARY battery
+    g_battery->_status.voltage = 3.85f;
+
+    // Call handleBattery - should respond immediately with BATS:0.00
+    g_menu->handleBattery();
+
+    TEST_ASSERT_EQUAL_INT(1, g_responseCount);
+    TEST_ASSERT_TRUE(strstr(g_lastResponse, "BATP:3.85") != nullptr);
+    TEST_ASSERT_TRUE(strstr(g_lastResponse, "BATS:0.00") != nullptr);
+}
+
+void test_handleInfo_includes_secondary_voltage() {
+    // Set up the send-to-secondary callback
+    g_menu->setSendToSecondaryCallback(testSendToSecondaryCallback);
+
+    // Set PRIMARY battery
+    g_battery->_status.voltage = 4.10f;
+
+    // Call handleInfo - should defer
+    g_menu->handleInfo();
+
+    // Verify GET_BATTERY was sent
+    TEST_ASSERT_EQUAL_STRING("GET_BATTERY", g_lastSecondaryMessage);
+
+    // No response yet
+    TEST_ASSERT_EQUAL_INT(0, g_responseCount);
+
+    // Simulate SECONDARY battery response
+    g_menu->handleSecondaryBatteryResponse(3.92f);
+
+    // Response should include all INFO fields
+    TEST_ASSERT_EQUAL_INT(1, g_responseCount);
+    TEST_ASSERT_TRUE(strstr(g_lastResponse, "ROLE:PRIMARY") != nullptr);
+    TEST_ASSERT_TRUE(strstr(g_lastResponse, "BATP:4.10") != nullptr);
+    TEST_ASSERT_TRUE(strstr(g_lastResponse, "BATS:3.92") != nullptr);
+    TEST_ASSERT_TRUE(strstr(g_lastResponse, "STATUS:IDLE") != nullptr);
+}
+
+// =============================================================================
 // MAIN
 // =============================================================================
 
@@ -1022,6 +1231,11 @@ int main(int argc, char **argv) {
     RUN_TEST(test_default_firmware_version);
     RUN_TEST(test_default_device_name);
     RUN_TEST(test_default_role_is_primary);
+
+    // Secondary battery query tests
+    RUN_TEST(test_handleBattery_returns_secondary_voltage);
+    RUN_TEST(test_handleBattery_returns_zero_when_secondary_unavailable);
+    RUN_TEST(test_handleInfo_includes_secondary_voltage);
 
     return UNITY_END();
 }

@@ -38,6 +38,9 @@ class BLEManager;
 // Response buffer size
 #define RESPONSE_BUFFER_SIZE 512
 
+// Timeout for SECONDARY battery response (milliseconds)
+static constexpr uint32_t SECONDARY_BATTERY_TIMEOUT_MS = 1000;
+
 // Parameter buffer size
 #define PARAM_BUFFER_SIZE 64
 
@@ -65,6 +68,11 @@ typedef void (*SendResponseCallback)(const char* response);
  * @brief Callback for device restart
  */
 typedef void (*RestartCallback)();
+
+/**
+ * @brief Callback for sending a message to SECONDARY glove
+ */
+typedef void (*SendToSecondaryCallback)(const char* message);
 
 // =============================================================================
 // MENU CONTROLLER CLASS
@@ -154,6 +162,28 @@ public:
     // =========================================================================
 
     /**
+     * @brief Set callback for sending messages to SECONDARY glove
+     */
+    void setSendToSecondaryCallback(SendToSecondaryCallback callback);
+
+    /**
+     * @brief Handle SECONDARY battery voltage response
+     * @param voltage Battery voltage from SECONDARY glove
+     *
+     * Called when BATRESPONSE is received from SECONDARY.
+     * Completes the deferred BATTERY or INFO response.
+     */
+    void handleSecondaryBatteryResponse(float voltage);
+
+    /**
+     * @brief Check for SECONDARY battery response timeout
+     *
+     * Call from loop(). If waiting for SECONDARY battery and timeout
+     * has elapsed, completes the deferred response with 0.00.
+     */
+    void checkSecondaryBatteryTimeout();
+
+    /**
      * @brief Check if currently in calibration mode
      */
     bool isCalibrating() const { return _isCalibrating; }
@@ -175,6 +205,18 @@ private:
     // Callbacks
     SendResponseCallback _sendCallback;
     RestartCallback _restartCallback;
+    SendToSecondaryCallback _sendToSecondaryCallback;
+
+    // Deferred command tracking for SECONDARY battery query
+    enum class DeferredCommand : uint8_t {
+        NONE = 0,
+        BATTERY,
+        INFO
+    };
+    DeferredCommand _deferredCommand;
+    volatile float _secondaryBatteryVoltage;
+    bool _waitingForSecondaryBattery;
+    uint32_t _secondaryBatteryRequestTime;
 
     // State
     bool _isCalibrating;
