@@ -422,8 +422,8 @@ void MenuController::handleInfo() {
         return;
     }
 
-    // Request SECONDARY battery if callback is available
-    if (_sendToSecondaryCallback) {
+    // Request SECONDARY battery if callback is available and SECONDARY is connected
+    if (_sendToSecondaryCallback && _ble && _ble->isSecondaryConnected()) {
         _deferredCommand = DeferredCommand::INFO;
         _waitingForSecondaryBattery = true;
         _secondaryBatteryRequestTime = millis();
@@ -467,8 +467,8 @@ void MenuController::handleBattery() {
         return;
     }
 
-    // Request SECONDARY battery if callback is available
-    if (_sendToSecondaryCallback) {
+    // Request SECONDARY battery if callback is available and SECONDARY is connected
+    if (_sendToSecondaryCallback && _ble && _ble->isSecondaryConnected()) {
         _deferredCommand = DeferredCommand::BATTERY;
         _waitingForSecondaryBattery = true;
         _secondaryBatteryRequestTime = millis();

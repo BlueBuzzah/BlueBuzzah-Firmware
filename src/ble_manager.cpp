@@ -515,7 +515,8 @@ void BLEManager::processTxQueue() {
 
             // Check if complete
             if (entry->bytesSent >= entry->length) {
-                // Flush to ensure transmission
+                // Note: flush() clears the RX FIFO (not TX). With _tx_buffered=false,
+                // write() already sends via _txd.notify() immediately — no TX flush needed.
                 if (_role == DeviceRole::PRIMARY) {
                     _uartService.flush();
                 } else {
@@ -534,10 +535,11 @@ void BLEManager::processTxQueue() {
     }
 }
 
-size_t BLEManager::tryWriteImmediate(uint16_t connHandle [[maybe_unused]], const uint8_t* data, size_t len) {
-    // Non-blocking write attempt
+size_t BLEManager::tryWriteImmediate(uint16_t connHandle, const uint8_t* data, size_t len) {
+    // Non-blocking write attempt - use per-connection overload for PRIMARY
+    // to target the correct recipient (phone vs secondary)
     if (_role == DeviceRole::PRIMARY) {
-        return _uartService.write(data, len);
+        return _uartService.write(connHandle, data, len);
     } else {
         return _clientUart.write(data, len);
     }
