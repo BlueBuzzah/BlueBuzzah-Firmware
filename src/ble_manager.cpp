@@ -459,39 +459,48 @@ bool BLEManager::send(uint16_t connHandleParam, const char* message) {
 }
 
 bool BLEManager::enqueueTx(uint16_t connHandle, const char* message) {
-    // Check if queue is full
-    if (_txCount >= TX_QUEUE_SIZE) {
-        Serial.println(F("[BLE] TX queue full, dropping message"));
-        return false;
-    }
-
-    // Calculate message length
+    // Validate length before entering the critical section (no shared state read)
     size_t msgLen = strlen(message);
     if (msgLen >= MESSAGE_BUFFER_SIZE - 1) {
         Serial.println(F("[BLE] ERROR: Message too large for TX buffer"));
         return false;
     }
 
-    // Find free slot
+    // Claim a slot atomically: capacity check, pending flag, tail advance and count
+    // increment must be one unit to prevent a BLE-task enqueue racing the main-loop
+    // enqueue or processTxQueue between the check and the claim.
+    uint32_t primask = __get_PRIMASK();
+    __disable_irq();
+
+    if (_txCount >= TX_QUEUE_SIZE) {
+        __set_PRIMASK(primask);
+        Serial.println(F("[BLE] TX queue full, dropping message"));
+        return false;
+    }
+
     TxEntry* entry = &_txQueue[_txTail];
     if (entry->pending) {
-        // Should not happen if _txCount is accurate
+        __set_PRIMASK(primask);
         Serial.println(F("[BLE] TX queue corruption detected"));
         return false;
     }
 
-    // Copy message + EOT to entry buffer
+    entry->pending = true;
+    _txTail = static_cast<uint8_t>((_txTail + 1) % TX_QUEUE_SIZE);
+    _txCount++;
+
+    __set_PRIMASK(primask);
+
+    // Fill entry fields after releasing the critical section — safe because
+    // processTxQueue only consumes from _txHead and cannot reach this slot
+    // until it advances past all earlier entries. length and bytesSent must
+    // be set before returning.
     memcpy(entry->data, message, msgLen);
     entry->data[msgLen] = EOT_CHAR;
     entry->length = static_cast<uint16_t>(msgLen + 1);
     entry->bytesSent = 0;
     entry->connHandle = connHandle;
-    entry->pending = true;
     entry->stampKind = TxStampKind::NONE;
-
-    // Advance tail
-    _txTail = static_cast<uint8_t>((_txTail + 1) % TX_QUEUE_SIZE);
-    _txCount++;
 
     return true;
 }
@@ -502,7 +511,12 @@ void BLEManager::processTxQueue() {
         TxEntry* entry = &_txQueue[_txHead];
         if (!entry->pending) {
             // Advance head if slot is empty (shouldn't happen)
+            uint32_t primask = __get_PRIMASK();
+            __disable_irq();
+            entry->pending = false;
             _txHead = static_cast<uint8_t>((_txHead + 1) % TX_QUEUE_SIZE);
+            _txCount--;
+            __set_PRIMASK(primask);
             continue;
         }
 
@@ -517,12 +531,17 @@ void BLEManager::processTxQueue() {
                 ? SyncCommand::createPingWithT1(entry->stampSeqId, stampTime)
                 : SyncCommand::createPongWithTimestamps(entry->stampSeqId, entry->stampT2, stampTime);
 
+            // Worst case ~80 bytes: PONG with full 64-bit timestamp + 4 data fields
             char msg[128];
             if (!cmd.serialize(msg, sizeof(msg))) {
-                Serial.println(F("[BLE] ERROR: stamped sync serialize failed"));
+                uint32_t seqId = entry->stampSeqId;
+                uint32_t primask = __get_PRIMASK();
+                __disable_irq();
                 entry->pending = false;
                 _txHead = static_cast<uint8_t>((_txHead + 1) % TX_QUEUE_SIZE);
                 _txCount--;
+                __set_PRIMASK(primask);
+                Serial.printf("[BLE] ERROR: stamped sync serialize failed seq=%lu\n", (unsigned long)seqId);
                 continue;
             }
             size_t msgLen = strlen(msg);
@@ -534,7 +553,7 @@ void BLEManager::processTxQueue() {
         // Try to write remaining bytes (non-blocking)
         size_t remaining = entry->length - entry->bytesSent;
         size_t written = tryWriteImmediate(entry->connHandle,
-                                           (const uint8_t*)(entry->data + entry->bytesSent),
+                                           reinterpret_cast<const uint8_t*>(entry->data + entry->bytesSent),
                                            remaining);
 
         if (written > 0) {
@@ -559,9 +578,12 @@ void BLEManager::processTxQueue() {
                 }
 
                 // Mark slot free and advance head
+                uint32_t primask = __get_PRIMASK();
+                __disable_irq();
                 entry->pending = false;
                 _txHead = static_cast<uint8_t>((_txHead + 1) % TX_QUEUE_SIZE);
                 _txCount--;
+                __set_PRIMASK(primask);
             }
         } else {
             // Buffer full - stop processing this iteration, will retry next update()
@@ -656,17 +678,30 @@ bool BLEManager::sendPongStamped(uint16_t connHandle, uint32_t seqId, uint64_t t
 
 bool BLEManager::enqueueStamped(uint16_t connHandle, TxStampKind kind, uint32_t seqId,
                                 uint64_t t2, uint64_t anchorUs) {
+    // Claim a slot atomically — same pattern as enqueueTx.
+    uint32_t primask = __get_PRIMASK();
+    __disable_irq();
+
     if (_txCount >= TX_QUEUE_SIZE) {
+        __set_PRIMASK(primask);
         Serial.println(F("[BLE] TX queue full, dropping sync message"));
         return false;
     }
 
     TxEntry* entry = &_txQueue[_txTail];
     if (entry->pending) {
+        __set_PRIMASK(primask);
         Serial.println(F("[BLE] TX queue corruption detected"));
         return false;
     }
 
+    entry->pending = true;
+    _txTail = static_cast<uint8_t>((_txTail + 1) % TX_QUEUE_SIZE);
+    _txCount++;
+
+    __set_PRIMASK(primask);
+
+    // Fill stamp fields after releasing the critical section.
     entry->stampKind = kind;
     entry->stampSeqId = seqId;
     entry->stampT2 = t2;
@@ -674,10 +709,7 @@ bool BLEManager::enqueueStamped(uint16_t connHandle, TxStampKind kind, uint32_t 
     entry->length = 0;      // serialized at write time
     entry->bytesSent = 0;
     entry->connHandle = connHandle;
-    entry->pending = true;
 
-    _txTail = static_cast<uint8_t>((_txTail + 1) % TX_QUEUE_SIZE);
-    _txCount++;
     return true;
 }
 

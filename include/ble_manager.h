@@ -427,6 +427,8 @@ private:
         uint64_t stampAnchor;    // PONG only: rx anchor timestamp (0 = absent)
     };
 
+    // Accessed from BLE task (enqueue via rx callbacks) and main loop (enqueue + processTxQueue);
+    // all head/tail/count mutations PRIMASK-guarded.
     TxEntry _txQueue[TX_QUEUE_SIZE];
     uint8_t _txHead;
     uint8_t _txTail;
