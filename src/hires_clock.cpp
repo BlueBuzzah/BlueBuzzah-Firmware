@@ -38,15 +38,19 @@ bool hiresClockBegin() {
         delayMicroseconds(10);
     }
     if (!running) {
+        sd_clock_hfclk_release();  // balance the request - crystal never started
         return false;
     }
 
+    __DMB();
+    // Ensure timer is halted before reconfiguring
     NRF_TIMER4->TASKS_STOP = 1;
     NRF_TIMER4->MODE      = TIMER_MODE_MODE_Timer << TIMER_MODE_MODE_Pos;
     NRF_TIMER4->BITMODE   = TIMER_BITMODE_BITMODE_32Bit << TIMER_BITMODE_BITMODE_Pos;
     NRF_TIMER4->PRESCALER = 4;  // 16MHz / 2^4 = 1MHz -> 1 tick = 1us
     NRF_TIMER4->TASKS_CLEAR = 1;
     NRF_TIMER4->TASKS_START = 1;
+    __DMB();
 
     s_running = true;
     return true;
@@ -65,7 +69,9 @@ void hiresClockEnsureHfclk() {
     if (!running) {
         // Another module (e.g. TinyUSB on USB suspend) released the shared
         // HFCLK request - re-assert it so TIMER4 stays on the crystal
-        sd_clock_hfclk_request();
+        if (sd_clock_hfclk_request() != NRF_SUCCESS) {
+            Serial.println(F("[CLOCK] HFCLK re-request failed"));
+        }
     }
 }
 

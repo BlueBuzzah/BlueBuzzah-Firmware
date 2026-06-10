@@ -26,7 +26,7 @@
  *
  * @return true if the timer is running on the HF crystal
  */
-bool hiresClockBegin();
+[[nodiscard]] bool hiresClockBegin();
 
 /**
  * @brief Whether the hardware timebase is active
@@ -48,6 +48,6 @@ void hiresClockEnsureHfclk();
  * does this inside its IRQ-off section, which also makes it safe when
  * invoked from ISRs (the IRQ-off section cannot be preempted).
  */
-uint32_t hiresClockRead32();
+[[nodiscard]] uint32_t hiresClockRead32();
 
 #endif // HIRES_CLOCK_H
