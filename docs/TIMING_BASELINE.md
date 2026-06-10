@@ -237,3 +237,46 @@ The system is **already performing excellently** with <1ms average bilateral syn
 **Confidence Level**: HIGH that optimizations will achieve <500μs bilateral sync.
 
 **Recommended Path**: Proceed with Phase 2 (I2C Pre-Selection) immediately - this is the lowest-risk, highest-impact optimization available.
+
+---
+
+## 2026-06-10 — Timing rework (pre-bench)
+
+**Branch:** `feat/sub-50us-bilateral-sync`
+
+### Root Cause Identified
+
+The +473µs / +500µs average execution drift figures recorded in the December 2025 baseline were **not motor latency** — they were tick quantization. The FreeRTOS tick rate on nRF52840 (1024 Hz from the 32.768kHz LFCLK) produces a tick period of ~976µs, and DWT was never enabled. Every `micros()` call returned a value quantized to the nearest tick, so measured "drift" was largely the tick-alignment error of the timestamp itself. True sub-ms drift could not be observed or distinguished from the measurement floor.
+
+### Fixes Shipped
+
+| Area | Change |
+|------|--------|
+| **Hardware timebase** | NRF_TIMER4 configured as 1MHz free-running counter clocked from the HFXO crystal. `getMicros()` now reads this counter; falls back to the tick clock if TIMER4 init fails at boot. |
+| **HFXO watchdog** | `loop()` checks the oscillator each iteration; logs a warning if the HFXO is lost. |
+| **Late TX stamping** | PING T1 / PONG T3 are now stamped at SoftDevice handoff (deferred-stamp TX entries) instead of at message construction, removing main-loop queuing latency from PTP samples. |
+| **PONG sequence matching** | Stale / sequence-mismatched PONGs are discarded without clearing in-flight state or consuming keepalive credit. |
+| **RTT hard ceiling** | Samples with RTT > 60ms are discarded (unchanged value, now correctly measurable). |
+| **Lucky-packet gate** | Only exchanges within `SYNC_LUCKY_RTT_MARGIN_US` (10ms) of the tracked minimum RTT are accepted; minimum decays upward at `SYNC_MIN_RTT_DECAY_US` (200µs/sample). |
+| **Innovation gate** | Offset jumps > `SYNC_INNOVATION_GATE_US` (5ms) are rejected; if the same direction persists across `SYNC_INNOVATION_REJECT_LIMIT` (5) samples the protocol hard re-anchors instead of EMA-blending. |
+| **Drift anchor** | A dedicated anchor pair measures drift over windows ≥ `SYNC_MIN_DRIFT_INTERVAL_MS` (500ms), preventing 4Hz cadence from stalling drift estimation. |
+| **4Hz therapy cadence** | `SYNC_ACTIVE_INTERVAL_MS` = 250ms (was 1s for all states). |
+| **Motor path** | First macrocycle event gets I2C pre-selection in the motor task idle window; removed blocking serial read and critical-path `[LEADTIME]` printf from the therapy loop. |
+| **GPIO ground truth** | `SYNC_DEBUG_GPIO_ENABLED` toggles pin A0 on each ACTIVATE; see `docs/SYNC_VALIDATION.md` for the measurement protocol. |
+| **Anchor timestamping (experimental)** | Radio-notification ISR (SWI1, 800µs pre-event) anchors in a 16-slot ring; SECONDARY attaches its rx anchor to PONGs (6-field wire format); PRIMARY pairs with its first post-T1 tx anchor within 25ms; `anchorOffset = secondaryAnchor - primaryAnchor - SYNC_ANCHOR_BIAS_US` replaces PTP when within the 1.5ms pre-filter; PTP fallback per sample. Disabled by default (`SYNC_ANCHOR_TIMESTAMPING_ENABLED 0`). |
+
+### Expected Outcomes
+
+Per the `docs/SYNC_VALIDATION.md` acceptance gates:
+
+| Milestone | Target avg skew | Target P95 skew |
+|-----------|----------------|-----------------|
+| After timebase + TX-stamp + filter work | < 300 µs | < 1 ms |
+| After connection-anchor timestamping | < 50 µs | < 200 µs |
+
+### Bench Results (to be filled during validation)
+
+| Date | Config | Avg skew | P95 skew | Max skew | Notes |
+|------|--------|----------|----------|----------|-------|
+| — | timebase + TX-stamp + filters (anchor off) | — | — | — | pending |
+| — | anchor timestamping enabled | — | — | — | pending |
