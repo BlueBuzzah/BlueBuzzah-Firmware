@@ -2057,6 +2057,59 @@ void test_getMicros_no_false_overflow_after_reset(void) {
 }
 
 // =============================================================================
+// MAINTENANCE-MODE QUALITY-GATED EMA UPDATE TESTS
+// =============================================================================
+
+void test_maintenance_rejects_high_rtt(void) {
+    SimpleSyncProtocol sync;
+    for (int i = 0; i < 5; i++) sync.addOffsetSample(1000);
+    TEST_ASSERT_TRUE(sync.isClockSyncValid());
+
+    // Seed min-RTT with a clean sample
+    TEST_ASSERT_TRUE(sync.updateOffsetEMAWithQuality(1000, 10000));
+    // Sample far above min+margin is rejected even though below the 60ms ceiling
+    TEST_ASSERT_FALSE(sync.updateOffsetEMAWithQuality(4000, 35000));
+    // Sample above the hard ceiling is always rejected
+    TEST_ASSERT_FALSE(sync.updateOffsetEMAWithQuality(1000, 70000));
+}
+
+void test_maintenance_innovation_gate(void) {
+    SimpleSyncProtocol sync;
+    for (int i = 0; i < 5; i++) sync.addOffsetSample(0);
+    TEST_ASSERT_TRUE(sync.isClockSyncValid());
+    TEST_ASSERT_TRUE(sync.updateOffsetEMAWithQuality(0, 10000));
+
+    // A 20ms jump is rejected SYNC_INNOVATION_REJECT_LIMIT times...
+    for (int i = 0; i < SYNC_INNOVATION_REJECT_LIMIT; i++) {
+        TEST_ASSERT_FALSE(sync.updateOffsetEMAWithQuality(20000, 10000));
+    }
+    // ...then accepted as a genuine step change
+    TEST_ASSERT_TRUE(sync.updateOffsetEMAWithQuality(20000, 10000));
+}
+
+void test_maintenance_min_rtt_decay(void) {
+    SimpleSyncProtocol sync;
+    for (int i = 0; i < 5; i++) sync.addOffsetSample(0);
+    TEST_ASSERT_TRUE(sync.updateOffsetEMAWithQuality(0, 10000));  // min = 10ms
+
+    // Link degraded to 25ms RTT: initially rejected (25 > 10+10),
+    // but min creeps up by SYNC_MIN_RTT_DECAY_US per sample until accepted
+    bool accepted = false;
+    for (int i = 0; i < 40 && !accepted; i++) {
+        accepted = sync.updateOffsetEMAWithQuality(0, 25000);
+    }
+    TEST_ASSERT_TRUE(accepted);
+}
+
+void test_maintenance_routes_to_sample_collection_before_valid(void) {
+    SimpleSyncProtocol sync;
+    TEST_ASSERT_FALSE(sync.isClockSyncValid());
+    // Before convergence the method must behave like addOffsetSampleWithQuality
+    TEST_ASSERT_TRUE(sync.updateOffsetEMAWithQuality(500, 10000));
+    TEST_ASSERT_EQUAL_UINT8(1, sync.getOffsetSampleCount());
+}
+
+// =============================================================================
 // TEST RUNNER
 // =============================================================================
 
@@ -2288,6 +2341,12 @@ int main(int argc, char **argv) {
 
     // Clock-source switch regression guard
     RUN_TEST(test_getMicros_no_false_overflow_after_reset);
+
+    // Maintenance-mode quality-gated EMA update
+    RUN_TEST(test_maintenance_rejects_high_rtt);
+    RUN_TEST(test_maintenance_innovation_gate);
+    RUN_TEST(test_maintenance_min_rtt_decay);
+    RUN_TEST(test_maintenance_routes_to_sample_collection_before_valid);
 
     return UNITY_END();
 }

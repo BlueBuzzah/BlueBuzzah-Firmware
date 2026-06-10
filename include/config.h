@@ -92,6 +92,12 @@
 #define SYNC_RTT_QUALITY_THRESHOLD_US 60000 // 60ms RTT threshold - reject retransmission-affected samples
                                              // (reduced from 120ms for stricter quality filtering)
 #define SYNC_OUTLIER_THRESHOLD_US 5000   // 5ms threshold for offset outlier rejection (was hardcoded)
+
+// Maintenance-mode sample gating (post-convergence quality filters)
+#define SYNC_LUCKY_RTT_MARGIN_US 10000      // Accept only RTT <= minRTT + 10ms ("lucky packets")
+#define SYNC_MIN_RTT_DECAY_US 200           // Per-sample creep of tracked min RTT (adapts to degradation)
+#define SYNC_INNOVATION_GATE_US 5000        // Reject offset jumps > 5ms...
+#define SYNC_INNOVATION_REJECT_LIMIT 5      // ...unless persistent across this many samples
 #define SYNC_MAX_DRIFT_RATE_US_PER_MS 0.15f  // 150 ppm max drift rate (cap for safety)
 #define SYNC_MAX_APPLIED_DRIFT_RATE_US_PER_MS 0.1f  // 100 ppm max for corrections
                                                      // More conservative than measurement cap (0.15f)

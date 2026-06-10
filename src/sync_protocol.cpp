@@ -758,6 +758,7 @@ SimpleSyncProtocol::SimpleSyncProtocol() :
     _lastMeasuredOffset(0),
     _lastOffsetTime(0),
     _driftRateUsPerMs(0.0f),
+    _minRttUs(UINT32_MAX), _innovationRejects(0),
     _warmStartMode(false),
     _warmStartConfirmed(0),
     _lastAsymmetry(0),
@@ -1060,6 +1061,8 @@ void SimpleSyncProtocol::resetClockSync() {
     _lastOffsetTime = 0;
     _driftRateUsPerMs = 0.0f;
 
+    _innovationRejects = 0;
+
     // Reset warm-start mode but PRESERVE cache
     // Cache is only cleared by invalidateWarmStartCache() or expiration
     // This allows tryWarmStart() to restore from cached state
@@ -1140,6 +1143,46 @@ bool SimpleSyncProtocol::addOffsetSampleWithQuality(int64_t offset, uint32_t rtt
 
     // Sample accepted - add to median calculation
     addOffsetSample(offset);
+    return true;
+}
+
+bool SimpleSyncProtocol::updateOffsetEMAWithQuality(int64_t offset, uint32_t rttUs) {
+    if (!_clockSyncValid) {
+        // Still converging - use the initial sample-collection path
+        return addOffsetSampleWithQuality(offset, rttUs);
+    }
+
+    // Gate 1: hard RTT ceiling (retransmission-affected exchanges)
+    if (rttUs > SYNC_RTT_QUALITY_THRESHOLD_US) {
+        return false;
+    }
+
+    // Gate 2: lucky-packet selection. Track a slowly-decaying minimum RTT;
+    // only exchanges near it have minimal queuing in both directions, which
+    // is when the PTP symmetric-delay assumption actually holds.
+    if (rttUs < _minRttUs) {
+        _minRttUs = rttUs;
+    } else if (_minRttUs != UINT32_MAX) {
+        _minRttUs += SYNC_MIN_RTT_DECAY_US;  // creep up so the gate adapts if the link degrades
+    }
+    if (rttUs > _minRttUs + SYNC_LUCKY_RTT_MARGIN_US) {
+        return false;
+    }
+
+    // Gate 3: innovation gate. One implausible jump is noise; a persistent
+    // one means reality changed and we must re-converge.
+    int64_t innovation = offset - _medianOffset;
+    if (innovation < 0) innovation = -innovation;
+    if (innovation > static_cast<int64_t>(SYNC_INNOVATION_GATE_US)) {
+        if (_innovationRejects < SYNC_INNOVATION_REJECT_LIMIT) {
+            _innovationRejects++;
+            return false;
+        }
+        // Persistent: fall through and accept
+    }
+    _innovationRejects = 0;
+
+    updateOffsetEMA(offset);
     return true;
 }
 

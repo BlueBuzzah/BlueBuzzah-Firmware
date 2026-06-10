@@ -545,6 +545,7 @@ public:
         _measuredLatencyUs = 0;
         _smoothedLatencyUs = 0;
         _sampleCount = 0;
+        _minRttUs = UINT32_MAX;
     }
 
     // =========================================================================
@@ -605,6 +606,26 @@ public:
      * @param offset New offset measurement in microseconds
      */
     void updateOffsetEMA(int64_t offset);
+
+    /**
+     * @brief Quality-gated offset update for continuous maintenance
+     *
+     * Routes to addOffsetSampleWithQuality() until initial sync is valid.
+     * After convergence applies three gates before the EMA update:
+     *   1. Hard RTT ceiling (SYNC_RTT_QUALITY_THRESHOLD_US)
+     *   2. Lucky-packet gate: RTT must be near the tracked minimum
+     *      (minimal queuing both ways = PTP symmetry assumption holds)
+     *   3. Innovation gate: offset jumps > SYNC_INNOVATION_GATE_US rejected
+     *      unless persistent for SYNC_INNOVATION_REJECT_LIMIT samples
+     *
+     * @return true if the sample was accepted
+     */
+    bool updateOffsetEMAWithQuality(int64_t offset, uint32_t rttUs);
+
+    /**
+     * @brief Tracked minimum RTT used by the lucky-packet gate (µs)
+     */
+    uint32_t getMinRtt() const { return _minRttUs; }
 
     /**
      * @brief Reset clock synchronization state
@@ -788,6 +809,10 @@ private:
     int64_t _lastMeasuredOffset;  // Previous offset measurement for drift calculation
     uint32_t _lastOffsetTime;     // Time of last offset measurement (millis)
     float _driftRateUsPerMs;      // Estimated drift rate (microseconds per millisecond)
+
+    // Maintenance-mode gating state
+    uint32_t _minRttUs;           // Decaying minimum RTT (lucky-packet gate)
+    uint8_t _innovationRejects;   // Consecutive innovation-gate rejections
 
     // Warm-start cache for quick reconnection
     struct WarmStartCache {
