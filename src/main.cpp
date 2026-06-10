@@ -309,6 +309,20 @@ static void motorTask(void* pvParameters) {
         }
 
         if (delayUs > 2000) {
+            // Use the idle window to pre-select the upcoming activation's I2C
+            // channel + frequency. Covers the FIRST event of a macrocycle,
+            // which otherwise always takes the ~500us slow path (pre-selection
+            // normally only happens after a DEACTIVATE). All I2C stays in
+            // motor-task context.
+            if (event.type == MotorEventType::ACTIVATE &&
+                haptic.isEnabled(event.finger) &&
+                haptic.getPreSelectedFinger() != static_cast<int8_t>(event.finger)) {
+                if (haptic.selectChannelPersistent(event.finger)) {
+                    haptic.setFrequencyDirect(event.finger, event.frequencyHz);
+                }
+                continue;  // Re-evaluate timing - pre-selection took ~400us
+            }
+
             // Event is far away (>2ms) - use FreeRTOS sleep
             // Sleep until 1ms before event, then busy-wait
             TickType_t ticks = pdMS_TO_TICKS((delayUs - 1000) / 1000);
