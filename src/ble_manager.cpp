@@ -25,6 +25,7 @@ BLEManager::BLEManager() :
     _connectCallback(nullptr),
     _disconnectCallback(nullptr),
     _messageCallback(nullptr),
+    _txStampCallback(nullptr),
     _txHead(0),
     _txTail(0),
     _txCount(0)
@@ -486,6 +487,7 @@ bool BLEManager::enqueueTx(uint16_t connHandle, const char* message) {
     entry->bytesSent = 0;
     entry->connHandle = connHandle;
     entry->pending = true;
+    entry->stampKind = TxStampKind::NONE;
 
     // Advance tail
     _txTail = static_cast<uint8_t>((_txTail + 1) % TX_QUEUE_SIZE);
@@ -504,6 +506,31 @@ void BLEManager::processTxQueue() {
             continue;
         }
 
+        // Late timestamping: serialize sync messages at radio handoff so the
+        // embedded T1/T3 reflects when bytes actually reach the SoftDevice.
+        // Re-serialized with a fresh timestamp on every retry until the first
+        // byte is accepted.
+        uint64_t stampTime = 0;
+        if (entry->stampKind != TxStampKind::NONE && entry->bytesSent == 0) {
+            stampTime = getMicros();
+            SyncCommand cmd = (entry->stampKind == TxStampKind::PING_T1)
+                ? SyncCommand::createPingWithT1(entry->stampSeqId, stampTime)
+                : SyncCommand::createPongWithTimestamps(entry->stampSeqId, entry->stampT2, stampTime);
+
+            char msg[128];
+            if (!cmd.serialize(msg, sizeof(msg))) {
+                Serial.println(F("[BLE] ERROR: stamped sync serialize failed"));
+                entry->pending = false;
+                _txHead = static_cast<uint8_t>((_txHead + 1) % TX_QUEUE_SIZE);
+                _txCount--;
+                continue;
+            }
+            size_t msgLen = strlen(msg);
+            memcpy(entry->data, msg, msgLen);
+            entry->data[msgLen] = EOT_CHAR;
+            entry->length = static_cast<uint16_t>(msgLen + 1);
+        }
+
         // Try to write remaining bytes (non-blocking)
         size_t remaining = entry->length - entry->bytesSent;
         size_t written = tryWriteImmediate(entry->connHandle,
@@ -511,6 +538,14 @@ void BLEManager::processTxQueue() {
                                            remaining);
 
         if (written > 0) {
+            // First bytes accepted: the deferred stamp is now final
+            if (entry->stampKind != TxStampKind::NONE && entry->bytesSent == 0) {
+                if (_txStampCallback) {
+                    _txStampCallback(entry->stampKind, entry->stampSeqId, stampTime);
+                }
+                entry->stampKind = TxStampKind::NONE;
+            }
+
             entry->bytesSent = static_cast<uint16_t>(entry->bytesSent + written);
 
             // Check if complete
@@ -598,6 +633,52 @@ void BLEManager::setDisconnectCallback(BLEDisconnectCallback callback) {
 
 void BLEManager::setMessageCallback(BLEMessageCallback callback) {
     _messageCallback = callback;
+}
+
+void BLEManager::setTxStampCallback(BLETxStampCallback callback) {
+    _txStampCallback = callback;
+}
+
+bool BLEManager::sendPingStamped(uint32_t seqId) {
+    uint16_t handle = getSecondaryHandle();
+    if (handle == CONN_HANDLE_INVALID) {
+        return false;
+    }
+    return enqueueStamped(handle, TxStampKind::PING_T1, seqId, 0, 0);
+}
+
+bool BLEManager::sendPongStamped(uint16_t connHandle, uint32_t seqId, uint64_t t2, uint64_t anchorUs) {
+    if (connHandle == CONN_HANDLE_INVALID) {
+        return false;
+    }
+    return enqueueStamped(connHandle, TxStampKind::PONG_T3, seqId, t2, anchorUs);
+}
+
+bool BLEManager::enqueueStamped(uint16_t connHandle, TxStampKind kind, uint32_t seqId,
+                                uint64_t t2, uint64_t anchorUs) {
+    if (_txCount >= TX_QUEUE_SIZE) {
+        Serial.println(F("[BLE] TX queue full, dropping sync message"));
+        return false;
+    }
+
+    TxEntry* entry = &_txQueue[_txTail];
+    if (entry->pending) {
+        Serial.println(F("[BLE] TX queue corruption detected"));
+        return false;
+    }
+
+    entry->stampKind = kind;
+    entry->stampSeqId = seqId;
+    entry->stampT2 = t2;
+    entry->stampAnchor = anchorUs;
+    entry->length = 0;      // serialized at write time
+    entry->bytesSent = 0;
+    entry->connHandle = connHandle;
+    entry->pending = true;
+
+    _txTail = static_cast<uint8_t>((_txTail + 1) % TX_QUEUE_SIZE);
+    _txCount++;
+    return true;
 }
 
 // =============================================================================

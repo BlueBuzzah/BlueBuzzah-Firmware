@@ -121,6 +121,15 @@ typedef void (*BLEConnectCallback)(uint16_t connHandle, ConnectionType type);
 typedef void (*BLEDisconnectCallback)(uint16_t connHandle, ConnectionType type, uint8_t reason);
 typedef void (*BLEMessageCallback)(uint16_t connHandle, const char* message, uint64_t rxTimestamp);
 
+// Deferred-timestamp kinds for sync messages (serialized at radio handoff)
+enum class TxStampKind : uint8_t {
+    NONE = 0,
+    PING_T1,   // PRIMARY -> SECONDARY: stamp T1 at write time
+    PONG_T3    // SECONDARY -> PRIMARY: stamp T3 at write time
+};
+
+typedef void (*BLETxStampCallback)(TxStampKind kind, uint32_t seqId, uint64_t txTimeUs);
+
 // =============================================================================
 // BLE MANAGER CLASS
 // =============================================================================
@@ -293,6 +302,25 @@ public:
      */
     uint8_t broadcast(const char* message);
 
+    /**
+     * @brief Enqueue a PING whose T1 is stamped at SoftDevice handoff (PRIMARY)
+     * @return true if enqueued
+     */
+    bool sendPingStamped(uint32_t seqId);
+
+    /**
+     * @brief Enqueue a PONG whose T3 is stamped at SoftDevice handoff (SECONDARY)
+     * @param connHandle PRIMARY connection handle (from the message callback)
+     * @param t2 Receive timestamp of the corresponding PING
+     * @param anchorUs Optional rx connection-event anchor (0 = none; reserved for a later task)
+     */
+    bool sendPongStamped(uint16_t connHandle, uint32_t seqId, uint64_t t2, uint64_t anchorUs = 0);
+
+    /**
+     * @brief Register callback fired when a stamped message is handed to the SoftDevice
+     */
+    void setTxStampCallback(BLETxStampCallback callback);
+
     // =========================================================================
     // CALLBACKS
     // =========================================================================
@@ -393,12 +421,18 @@ private:
         uint16_t bytesSent;
         uint16_t connHandle;
         bool pending;
+        TxStampKind stampKind;   // NONE for normal messages
+        uint32_t stampSeqId;     // sequence id for deferred serialization
+        uint64_t stampT2;        // PONG only: T2 echoed back
+        uint64_t stampAnchor;    // PONG only: rx anchor timestamp (0 = absent)
     };
 
     TxEntry _txQueue[TX_QUEUE_SIZE];
     uint8_t _txHead;
     uint8_t _txTail;
     uint8_t _txCount;
+
+    BLETxStampCallback _txStampCallback;
 
     /**
      * @brief Enqueue message for non-blocking transmission
@@ -407,6 +441,12 @@ private:
      * @return true if enqueued successfully
      */
     bool enqueueTx(uint16_t connHandle, const char* message);
+
+    /**
+     * @brief Enqueue an unserialized sync message for stamping at write time
+     */
+    bool enqueueStamped(uint16_t connHandle, TxStampKind kind, uint32_t seqId,
+                        uint64_t t2, uint64_t anchorUs);
 
     /**
      * @brief Process pending TX queue entries
