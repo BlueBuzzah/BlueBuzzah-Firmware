@@ -6,6 +6,7 @@
  */
 
 #include "sync_protocol.h"
+#include "hires_clock.h"
 #include <string.h>
 #include <stdlib.h>
 #include <cerrno>
@@ -18,8 +19,24 @@
 // volatile for ISR visibility
 static volatile uint32_t s_lastMicros = 0;
 static volatile uint32_t s_overflowCount = 0;
+static volatile bool s_usingHires = false;
+
+static inline uint32_t readMicrosSource(bool hires) {
+#if defined(NRF52840_XXAA) && !defined(NATIVE_TEST_BUILD)
+    if (hires) {
+        return hiresClockRead32();
+    }
+#else
+    (void)hires;
+#endif
+    return micros();
+}
 
 uint64_t getMicros() {
+    // Interrupt-safe: called from main loop, BLE task, motor task and (later)
+    // the radio-notification ISR. The IRQ-off section makes overflow tracking
+    // and the TIMER4 CC[5] capture register exclusive.
+    //
     // CRITICAL: This function is called from both main loop and BLE callback context.
     // Must be interrupt-safe to prevent race conditions that cause false overflow detection.
     //
@@ -28,18 +45,30 @@ uint64_t getMicros() {
     // 2. ISR fires, calls getMicros(), sets s_lastMicros = 1,000,100
     // 3. Main loop: 1,000,000 < 1,000,100? YES → false overflow!
     // 4. s_overflowCount++ → timestamp jumps 71 minutes!
-
-    // Disable interrupts for atomic read-modify-write
     uint32_t primask = __get_PRIMASK();
     __disable_irq();
 
-    uint32_t now = micros();
+    bool hires = false;
+#if defined(NRF52840_XXAA) && !defined(NATIVE_TEST_BUILD)
+    hires = hiresClockIsRunning();
+#endif
 
-    // Detect overflow: if current value is less than last, we wrapped
-    if (now < s_lastMicros) {
-        s_overflowCount++;
+    uint32_t now = readMicrosSource(hires);
+
+    if (hires != s_usingHires) {
+        // Clock source switched (boot-time transition to TIMER4):
+        // re-seed the epoch instead of counting a false overflow.
+        // hiresClockBegin() is called before any sync traffic, so no
+        // cross-source timestamps are ever compared.
+        s_usingHires = hires;
+        s_lastMicros = now;
+        s_overflowCount = 0;
+    } else {
+        if (now < s_lastMicros) {
+            s_overflowCount++;
+        }
+        s_lastMicros = now;
     }
-    s_lastMicros = now;
 
     // Capture values before re-enabling interrupts
     uint32_t overflows = s_overflowCount;
@@ -57,6 +86,7 @@ void resetMicrosOverflow() {
 
     s_lastMicros = 0;
     s_overflowCount = 0;
+    s_usingHires = false;
 
     __set_PRIMASK(primask);
 }
@@ -702,6 +732,14 @@ bool SyncCommand::deserializeMacrocycle(const char* message, size_t messageLen, 
     return macrocycle.eventCount > 0;
 }
 
+// Milliseconds derived from the sync timebase. Using getMicros()/1000 instead
+// of millis() keeps drift-rate math in a single clock domain (HFXO) - millis()
+// is LFXO/tick-derived and differs by up to ~40ppm, the same magnitude as the
+// crystal drift being estimated.
+static inline uint32_t syncNowMs() {
+    return static_cast<uint32_t>(getMicros() / 1000ULL);
+}
+
 // =============================================================================
 // SIMPLE SYNC PROTOCOL - IMPLEMENTATION
 // =============================================================================
@@ -736,7 +774,7 @@ int64_t SimpleSyncProtocol::calculateOffset(uint64_t primaryTime, uint64_t secon
     // Simple offset calculation: secondary - primary
     // Positive offset means SECONDARY clock is ahead
     _currentOffset = (int64_t)secondaryTime - (int64_t)primaryTime;
-    _lastSyncTime = millis();
+    _lastSyncTime = syncNowMs();
     return _currentOffset;
 }
 
@@ -750,7 +788,7 @@ uint32_t SimpleSyncProtocol::getTimeSinceSync() const {
     if (_lastSyncTime == 0) {
         return UINT32_MAX;  // Never synced
     }
-    return millis() - _lastSyncTime;
+    return syncNowMs() - _lastSyncTime;
 }
 
 void SimpleSyncProtocol::reset() {
@@ -778,7 +816,7 @@ int64_t SimpleSyncProtocol::calculatePTPOffset(uint64_t t1, uint64_t t2, uint64_
 
     int64_t offset = (term1 + term2) / 2;
 
-    _lastSyncTime = millis();
+    _lastSyncTime = syncNowMs();
     return offset;
 }
 
@@ -933,7 +971,7 @@ void SimpleSyncProtocol::updateOffsetEMA(int64_t offset) {
 
     // CRITICAL: Use consistent timestamp throughout to avoid drift rate bias
     // Previously, mixing millis() calls at different times created 33-50 ppm systematic error
-    uint32_t now = millis();
+    uint32_t now = syncNowMs();
 
     // Update drift rate estimate if we have a previous measurement
     if (_lastOffsetTime > 0) {
@@ -983,7 +1021,7 @@ int64_t SimpleSyncProtocol::getCorrectedOffset() const {
 
     // Apply drift compensation based on time since last measurement
     if (_lastOffsetTime > 0) {
-        uint32_t elapsed = millis() - _lastOffsetTime;
+        uint32_t elapsed = syncNowMs() - _lastOffsetTime;
 
         // SAFETY: Cap elapsed time to prevent runaway drift correction
         // If we haven't had a sync update in >10s, something is wrong
@@ -1039,7 +1077,7 @@ bool SimpleSyncProtocol::tryWarmStart() {
         return false;
     }
 
-    uint32_t elapsed = millis() - _warmStartCache.cacheTimestamp;
+    uint32_t elapsed = syncNowMs() - _warmStartCache.cacheTimestamp;
     if (elapsed > SYNC_WARM_START_VALIDITY_MS) {
         // Cache expired - invalidate and require cold start
         _warmStartCache.isValid = false;
@@ -1056,7 +1094,7 @@ bool SimpleSyncProtocol::tryWarmStart() {
     // Seed the offset with projected value (starting point for validation)
     _medianOffset = projected;
     _lastMeasuredOffset = projected;
-    _lastOffsetTime = millis();
+    _lastOffsetTime = syncNowMs();
     _driftRateUsPerMs = _warmStartCache.cachedDriftRate;
 
     return true;
@@ -1067,7 +1105,7 @@ int64_t SimpleSyncProtocol::getProjectedOffset() const {
         return 0;
     }
 
-    uint32_t elapsed = millis() - _warmStartCache.cacheTimestamp;
+    uint32_t elapsed = syncNowMs() - _warmStartCache.cacheTimestamp;
 
     // Cap elapsed to prevent runaway projection
     if (elapsed > SYNC_WARM_START_VALIDITY_MS) {

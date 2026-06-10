@@ -2037,6 +2037,24 @@ void test_Macrocycle_baseTime_full_precision(void) {
 }
 
 // =============================================================================
+// CLOCK-SOURCE SWITCH REGRESSION TESTS
+// =============================================================================
+
+void test_getMicros_no_false_overflow_after_reset(void) {
+    // After resetMicrosOverflow(), a fresh low time value must not be
+    // interpreted as a wrap (regression guard for clock-source switching)
+    mockAdvanceMicros(4000000000UL);
+    (void)getMicros();
+    // Simulate a clock-source restart: tracking reset + time rebased lower
+    resetMicrosOverflow();
+    mockResetTime();
+    mockAdvanceMicros(100);
+    uint64_t t = getMicros();
+    TEST_ASSERT_EQUAL_UINT32(0, (uint32_t)(t >> 32));
+    TEST_ASSERT_EQUAL_UINT32(100, (uint32_t)t);
+}
+
+// =============================================================================
 // TEST RUNNER
 // =============================================================================
 
@@ -2265,6 +2283,9 @@ int main(int argc, char **argv) {
     RUN_TEST(test_Macrocycle_large_clock_offset);
     RUN_TEST(test_Macrocycle_negative_large_clock_offset);
     RUN_TEST(test_Macrocycle_baseTime_full_precision);
+
+    // Clock-source switch regression guard
+    RUN_TEST(test_getMicros_no_false_overflow_after_reset);
 
     return UNITY_END();
 }
