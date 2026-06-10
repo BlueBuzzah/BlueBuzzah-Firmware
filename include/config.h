@@ -229,6 +229,14 @@ constexpr uint32_t TEST_DURATION_SEC = 120;  // 2 minutes
 #define SKIP_BOOT_SEQUENCE 0
 #endif
 
+// Bilateral sync ground-truth instrumentation: toggles a GPIO on every motor
+// ACTIVATE so a logic analyzer across both gloves measures true skew.
+// Compile-time only - keep 0 for release builds.
+#ifndef SYNC_DEBUG_GPIO_ENABLED
+#define SYNC_DEBUG_GPIO_ENABLED 0
+#endif
+#define SYNC_DEBUG_GPIO_PIN PIN_A0
+
 // Debug macros
 #if DEBUG_ENABLED
     #define DEBUG_PRINT(x) Serial.print(x)

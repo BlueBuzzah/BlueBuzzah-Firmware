@@ -186,6 +186,11 @@ static void preSelectNextActivation() {
  * Uses I2C pre-selection for faster activation when available.
  */
 static void executeMotorEvent(const MotorEvent& event) {
+#if SYNC_DEBUG_GPIO_ENABLED
+    if (event.type == MotorEventType::ACTIVATE) {
+        digitalToggle(SYNC_DEBUG_GPIO_PIN);
+    }
+#endif
     uint64_t beforeOp = getMicros();
 
     if (event.type == MotorEventType::ACTIVATE) {
@@ -1014,6 +1019,11 @@ DeviceRole determineRole()
 bool initializeHardware()
 {
     bool success = true;
+
+#if SYNC_DEBUG_GPIO_ENABLED
+    pinMode(SYNC_DEBUG_GPIO_PIN, OUTPUT);
+    digitalWrite(SYNC_DEBUG_GPIO_PIN, LOW);
+#endif
 
     // Initialize haptic controller
     Serial.println(F("\nInitializing Haptic Controller..."));
