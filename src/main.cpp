@@ -320,7 +320,7 @@ static void motorTask(void* pvParameters) {
                 if (haptic.selectChannelPersistent(event.finger)) {
                     haptic.setFrequencyDirect(event.finger, event.frequencyHz);
                 }
-                continue;  // Re-evaluate timing - pre-selection took ~400us
+                continue;  // Re-evaluate timing - pre-selection took ~200-300us
             }
 
             // Event is far away (>2ms) - use FreeRTOS sleep
