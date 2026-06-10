@@ -1062,6 +1062,7 @@ void SimpleSyncProtocol::resetClockSync() {
     _driftRateUsPerMs = 0.0f;
 
     _innovationRejects = 0;
+    _minRttUs = UINT32_MAX;
 
     // Reset warm-start mode but PRESERVE cache
     // Cache is only cleared by invalidateWarmStartCache() or expiration
@@ -1163,6 +1164,8 @@ bool SimpleSyncProtocol::updateOffsetEMAWithQuality(int64_t offset, uint32_t rtt
     if (rttUs < _minRttUs) {
         _minRttUs = rttUs;
     } else if (_minRttUs != UINT32_MAX) {
+        // Note: decay also advances on samples Gate 2 will reject - intentional,
+        // so a sustained-worse link eventually re-admits (bounded by the 60ms ceiling).
         _minRttUs += SYNC_MIN_RTT_DECAY_US;  // creep up so the gate adapts if the link degrades
     }
     if (rttUs > _minRttUs + SYNC_LUCKY_RTT_MARGIN_US) {
@@ -1170,15 +1173,27 @@ bool SimpleSyncProtocol::updateOffsetEMAWithQuality(int64_t offset, uint32_t rtt
     }
 
     // Gate 3: innovation gate. One implausible jump is noise; a persistent
-    // one means reality changed and we must re-converge.
+    // one means reality changed (genuine clock step, e.g. warm-start
+    // projection error) and we re-anchor immediately.
     int64_t innovation = offset - _medianOffset;
     if (innovation < 0) innovation = -innovation;
     if (innovation > static_cast<int64_t>(SYNC_INNOVATION_GATE_US)) {
         if (_innovationRejects < SYNC_INNOVATION_REJECT_LIMIT) {
+            // Counts innovation rejections since the last accepted sample (Gate 1/2
+            // rejections leave it untouched) - conservative by design.
             _innovationRejects++;
             return false;
         }
-        // Persistent: fall through and accept
+        // Persistent for SYNC_INNOVATION_REJECT_LIMIT samples: trust the new
+        // value as ground truth. Hard-set instead of EMA - feeding a large
+        // step through alpha=0.1 would leave the gate re-closing on every
+        // subsequent sample (accept-1/reject-5 oscillation, ~130s to converge
+        // on a 20ms step at 1Hz).
+        _innovationRejects = 0;
+        updateOffsetEMA(offset);   // updates drift bookkeeping with the new sample
+        _medianOffset = offset;    // then re-anchor: overwrite the EMA blend
+        _warmStartCache.cachedOffset = offset;  // keep cache consistent with hard-set
+        return true;
     }
     _innovationRejects = 0;
 

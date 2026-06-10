@@ -620,7 +620,7 @@ public:
      *
      * @return true if the sample was accepted
      */
-    bool updateOffsetEMAWithQuality(int64_t offset, uint32_t rttUs);
+    [[nodiscard]] bool updateOffsetEMAWithQuality(int64_t offset, uint32_t rttUs);
 
     /**
      * @brief Tracked minimum RTT used by the lucky-packet gate (µs)

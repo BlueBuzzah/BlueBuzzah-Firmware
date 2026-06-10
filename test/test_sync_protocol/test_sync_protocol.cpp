@@ -2109,6 +2109,22 @@ void test_maintenance_routes_to_sample_collection_before_valid(void) {
     TEST_ASSERT_EQUAL_UINT8(1, sync.getOffsetSampleCount());
 }
 
+void test_maintenance_step_change_reanchors(void) {
+    SimpleSyncProtocol sync;
+    for (int i = 0; i < 5; i++) sync.addOffsetSample(0);
+    TEST_ASSERT_TRUE(sync.updateOffsetEMAWithQuality(0, 10000));
+
+    // Persistent 20ms step: 5 rejects, then accept must RE-ANCHOR (not EMA-blend)
+    for (int i = 0; i < SYNC_INNOVATION_REJECT_LIMIT; i++) {
+        TEST_ASSERT_FALSE(sync.updateOffsetEMAWithQuality(20000, 10000));
+    }
+    TEST_ASSERT_TRUE(sync.updateOffsetEMAWithQuality(20000, 10000));
+    // After re-anchor the median sits at the new value...
+    TEST_ASSERT_EQUAL_INT32(20000, (int32_t)sync.getMedianOffset());
+    // ...so the very next sample at the new level passes without rejection
+    TEST_ASSERT_TRUE(sync.updateOffsetEMAWithQuality(20000, 10000));
+}
+
 // =============================================================================
 // TEST RUNNER
 // =============================================================================
@@ -2347,6 +2363,7 @@ int main(int argc, char **argv) {
     RUN_TEST(test_maintenance_innovation_gate);
     RUN_TEST(test_maintenance_min_rtt_decay);
     RUN_TEST(test_maintenance_routes_to_sample_collection_before_valid);
+    RUN_TEST(test_maintenance_step_change_reanchors);
 
     return UNITY_END();
 }
