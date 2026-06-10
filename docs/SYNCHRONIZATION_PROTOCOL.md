@@ -501,9 +501,9 @@ COMMAND:field1|field2|field3|...
 |---------|-----------|--------|---------|
 | `PING` | P → S | seq, T1 | `PING:42\|1000000` |
 | `PONG` (legacy) | S → P | seq, 0, T2, T3 | `PONG:42\|0\|1000500\|1000600` |
-| `PONG` (anchor) | S → P | seq, 0, T2High, T2Low, T3High, T3Low, AnchorHigh, AnchorLow — *see anchor section* | `PONG:42\|0\|0\|1000500\|0\|1000600\|0\|999800` |
+| `PONG` (anchor, 6 data fields) | S → P | seq, 0, T2High, T2Low, T3High, T3Low, AnchorHigh, AnchorLow — *see anchor section* | `PONG:42\|0\|0\|1000500\|0\|1000600\|0\|999800` |
 
-PONG has two wire forms; see [Connection-Anchor Timestamping](#connection-anchor-timestamping-experimental) for the 6-field format and detection rules. When anchor timestamping is disabled (default), only the legacy 4-field form is used.
+PONG has two wire forms; see [Connection-Anchor Timestamping](#connection-anchor-timestamping-experimental) for the 6-data-field format and detection rules. When anchor timestamping is disabled (default), only the legacy 4-field form is used.
 
 **Unified Keepalive + Clock Sync:**
 
@@ -633,22 +633,22 @@ Standard PTP offset estimation averages out asymmetric BLE path delays. When the
 
 A radio-notification ISR (SWI1, priority 2) fires approximately 800µs before each connection event. The ISR records the local `getMicros()` value into a 16-slot ring buffer (`SYNC_ANCHOR_RING_SIZE`). Because the SoftDevice schedules connection events at the same wall-clock instant on both ends of a link, the difference between PRIMARY's anchor and SECONDARY's anchor is a direct measure of clock offset without any assumption about path symmetry.
 
-### 6-Field PONG Wire Format
+### 6-Data-Field PONG Wire Format
 
-When anchor timestamping is enabled, SECONDARY attaches its most recent rx anchor to the PONG reply using the extended wire format created by `createPongWithAnchor`:
+When anchor timestamping is enabled, SECONDARY attaches its most recent rx anchor to the PONG reply using the extended wire format created by `createPongWithAnchor`.
 
-| Field index | Name | Description |
-|-------------|------|-------------|
-| 0 | seq | Sequence number (matches PING) |
-| 1 | reserved | Always 0 |
-| 2 | T2High | High 32 bits of T2 (PING rx timestamp) |
-| 3 | T2Low | Low 32 bits of T2 |
-| 4 | T3High | High 32 bits of T3 (PONG tx timestamp) |
-| 5 | T3Low | Low 32 bits of T3 |
-| 6 | AnchorHigh | High 32 bits of SECONDARY rx anchor |
-| 7 | AnchorLow | Low 32 bits of SECONDARY rx anchor |
+> **Wire framing note:** The standard `PONG:seq|timestamp|...` framing header (sequence number and the legacy placeholder field) precedes these data fields. The table below describes the six data fields that follow that framing header.
 
-PRIMARY detects the anchor format by checking whether field index 4 is present (8-field PONG). The legacy 2- or 4-field PONG is silently handled as a plain PTP exchange.
+| Data field index | Name | Description |
+|-----------------|------|-------------|
+| 0 | T2High | High 32 bits of T2 (PING rx timestamp) |
+| 1 | T2Low | Low 32 bits of T2 |
+| 2 | T3High | High 32 bits of T3 (PONG tx timestamp) |
+| 3 | T3Low | Low 32 bits of T3 |
+| 4 | AnchorHigh | High 32 bits of SECONDARY rx anchor |
+| 5 | AnchorLow | Low 32 bits of SECONDARY rx anchor |
+
+PRIMARY detects the anchor format by the presence of data field index 4 (`hasData("4")`), which only the anchor form populates. The legacy 64-bit form stops at data field index 3; the legacy short form stops at data field index 1. The legacy forms are silently handled as plain PTP exchanges.
 
 ### Anchor Pairing Rules
 
@@ -672,7 +672,7 @@ Before an anchor offset is accepted, it is checked against the current converged
 
 ### Caveats
 
-- **Both-gloves-same-flag requirement:** A glove running with the anchor flag enabled will emit 8-field PONGs. A peer running without the flag will not parse field 4 and will ignore the anchor. This is safe (it falls back to PTP) but means anchor offsets will not be computed on the primary side. Mismatched builds must not be deployed together if anchor-based accuracy is the goal.
+- **Both-gloves-same-flag requirement:** A glove running with the anchor flag enabled will emit 6-data-field PONGs. A peer running without the flag will not find data field index 4 and will treat the exchange as a plain PTP sample. This is safe (it falls back to PTP) but means anchor offsets will not be computed on the primary side. Mismatched builds must not be deployed together if anchor-based accuracy is the goal.
 - **Dual-link suppression:** On nRF52840, when PRIMARY is simultaneously connected to a phone app and to SECONDARY, the SoftDevice schedules two separate connection intervals. The anchor ring may contain events from either link. The `SYNC_ANCHOR_RX_WINDOW_US` and `SYNC_ANCHOR_TX_WINDOW_US` windows are sized conservatively to select the correct event, but this has not been validated under all dual-link timing configurations. Use with caution on dual-connected hardware.
 
 ---
@@ -691,8 +691,8 @@ The SECONDARY glove operates statelessly—it receives macrocycles with clock of
 The firmware uses a dedicated 1MHz hardware timebase (`hires_clock` module) rather than the FreeRTOS tick clock:
 
 - **Hardware timebase:** NRF_TIMER4 is configured as a 1MHz free-running counter clocked from the on-board 32MHz HFXO crystal. This gives 1µs resolution independent of the FreeRTOS tick rate (previously ~976µs quantization because DWT was never enabled).
-- **HFXO watchdog:** `loop()` calls the HFXO watchdog each iteration to verify the crystal oscillator remains active. If the HFXO is lost the watchdog logs a warning; the clock continues from the last good counter value.
-- **Fallback path:** If `hires_clock_init()` fails at boot (e.g., SoftDevice pre-empts TIMER4 allocation), `getMicros()` falls back to the FreeRTOS tick clock and logs the degradation. All sync time math (`syncNowMs()` = `getMicros() / 1000`) uses a single unified clock domain in either case.
+- **HFXO watchdog:** `loop()` calls the HFXO watchdog once per second to verify the crystal oscillator remains active. If the HFXO is lost the watchdog logs a warning; the clock continues from the last good counter value.
+- **Fallback path:** If `hiresClockBegin()` fails at boot (e.g., SoftDevice pre-empts TIMER4 allocation), `getMicros()` falls back to the FreeRTOS tick clock and logs the degradation. All sync time math (`syncNowMs()` = `getMicros() / 1000`) uses a single unified clock domain in either case.
 - **Overflow safety:** `getMicros()` returns a `uint64_t`. At 1MHz the 64-bit counter wraps at ~584,000 years; no runtime overflow handling is needed beyond the 64-bit type.
 
 ### Interrupt Safety
@@ -720,7 +720,7 @@ Sync state variables are accessed from both main loop and BLE callbacks. Key con
 | PING/PONG interval (idle) | 1s | Keepalive + clock sync when no therapy session active |
 | PING/PONG interval during therapy (`SYNC_ACTIVE_INTERVAL_MS`) | 250ms (4Hz) | Higher cadence while therapy is running |
 | Keepalive timeout (SECONDARY) | 6s | 6 missed PINGs = connection lost |
-| Keepalive timeout (PRIMARY) | 4s | During therapy (emergency shutdown) |
+| Keepalive timeout (PRIMARY) | 6s | During therapy (emergency shutdown) |
 | MACROCYCLE timeout | 10s | SECONDARY safety halt |
 | Lead time range | 70-150ms | Adaptive scheduling window |
 | Initial lead time | 35ms (clamped to 70ms) | Base value before RTT samples, clamped to min |
