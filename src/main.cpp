@@ -34,6 +34,7 @@
 #include "activation_queue.h"
 #include "motor_event_buffer.h"
 #include "hires_clock.h"
+#include "radio_anchor.h"
 
 // =============================================================================
 // CONFIGURATION
@@ -1106,6 +1107,17 @@ bool initializeBLE()
         Serial.println(F("[CLOCK] WARNING: hardware timebase unavailable - falling back to tick clock (~1ms resolution)"));
     }
 
+#if SYNC_ANCHOR_TIMESTAMPING_ENABLED
+    if (radioAnchorBegin())
+    {
+        Serial.println(F("[SYNC] Radio-anchor timestamping active"));
+    }
+    else
+    {
+        Serial.println(F("[SYNC] WARNING: radio-anchor init failed - PTP-only sync"));
+    }
+#endif
+
     // Register PHY change callback (both roles)
     // Detects 1M -> 2M PHY upgrades so we can reset RTT statistics
     // PRIMARY also uses RTT for adaptive lead time calculation
@@ -1705,7 +1717,16 @@ void onBLEMessage(uint16_t connHandle, const char *message, uint64_t rxTimestamp
                 // Track connectivity - PING proves PRIMARY is alive
                 lastKeepaliveReceived = millis();
 
-                ble.sendPongStamped(connHandle, cmd.getSequenceId(), rxTimestamp);
+                uint64_t rxAnchor = 0;
+#if SYNC_ANCHOR_TIMESTAMPING_ENABLED
+                // Anchor of the connection event that delivered this PING.
+                // SECONDARY is a single-link central: anchors are unambiguous.
+                if (!radioAnchorFindBefore(rxTimestamp, SYNC_ANCHOR_RX_WINDOW_US, rxAnchor))
+                {
+                    rxAnchor = 0;  // No anchor - PRIMARY falls back to PTP
+                }
+#endif
+                ble.sendPongStamped(connHandle, cmd.getSequenceId(), rxTimestamp, rxAnchor);
             }
             break;
 
@@ -1747,15 +1768,21 @@ void onBLEMessage(uint16_t connHandle, const char *message, uint64_t rxTimestamp
                 // Format depends on whether high bits are used (see createPongWithTimestamps)
                 // C4 fix: Use getDataUnsigned to avoid sign extension when values > 2^31
                 uint64_t t2, t3;
+                uint64_t secondaryAnchor = 0;
                 if (cmd.hasData("2"))
                 {
-                    // Full 64-bit: T2High|T2Low|T3High|T3Low
+                    // Full 64-bit: T2High|T2Low|T3High|T3Low[|AnchHigh|AnchLow]
                     uint32_t t2High = cmd.getDataUnsigned("0", 0);
                     uint32_t t2Low = cmd.getDataUnsigned("1", 0);
                     uint32_t t3High = cmd.getDataUnsigned("2", 0);
                     uint32_t t3Low = cmd.getDataUnsigned("3", 0);
                     t2 = ((uint64_t)t2High << 32) | t2Low;
                     t3 = ((uint64_t)t3High << 32) | t3Low;
+                    if (cmd.hasData("4"))
+                    {
+                        secondaryAnchor = ((uint64_t)cmd.getDataUnsigned("4", 0) << 32) |
+                                          cmd.getDataUnsigned("5", 0);
+                    }
                 }
                 else
                 {
@@ -1763,6 +1790,7 @@ void onBLEMessage(uint16_t connHandle, const char *message, uint64_t rxTimestamp
                     t2 = static_cast<uint64_t>(cmd.getDataUnsigned("0", 0));
                     t3 = static_cast<uint64_t>(cmd.getDataUnsigned("1", 0));
                 }
+                (void)secondaryAnchor;  // no-op when anchor timestamping is compiled out
 
                 // Calculate RTT using IEEE 1588 PTP formula (excludes SECONDARY processing)
                 // RTT = (T4 - T1) - (T3 - T2)
@@ -1790,6 +1818,31 @@ void onBLEMessage(uint16_t connHandle, const char *message, uint64_t rxTimestamp
 
                 // Calculate PTP clock offset
                 int64_t offset = syncProtocol.calculatePTPOffset(t1, t2, t3, t4);
+
+#if SYNC_ANCHOR_TIMESTAMPING_ENABLED
+                // Anchor-paired offset: PRIMARY's anchor of the connection
+                // event that carried the PING (first anchor after the
+                // late-stamped T1 handoff) vs SECONDARY's anchor of the same
+                // event. Mispairs from phone-link/advertising anchors land
+                // ~one connection interval (>=7.5ms) off and are rejected by
+                // the innovation gate. Falls back to the PTP offset otherwise.
+                if (secondaryAnchor != 0)
+                {
+                    uint64_t primaryAnchor = 0;
+                    if (radioAnchorFindAfter(t1, SYNC_ANCHOR_TX_WINDOW_US, primaryAnchor))
+                    {
+                        int64_t anchorOffset = (int64_t)secondaryAnchor - (int64_t)primaryAnchor
+                                               - (int64_t)SYNC_ANCHOR_BIAS_US;
+                        if (profiles.getDebugMode())
+                        {
+                            Serial.printf("[SYNC] anchorOffset=%ld ptpOffset=%ld delta=%ld\n",
+                                          (long)anchorOffset, (long)offset,
+                                          (long)(anchorOffset - offset));
+                        }
+                        offset = anchorOffset;
+                    }
+                }
+#endif
 
                 // Quality-gated update: routes to initial sample collection
                 // until valid, then applies RTT + lucky-packet + innovation

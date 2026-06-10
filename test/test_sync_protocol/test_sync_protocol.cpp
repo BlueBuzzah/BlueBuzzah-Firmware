@@ -2143,6 +2143,31 @@ void test_drift_estimation_survives_fast_cadence(void) {
 }
 
 // =============================================================================
+// ANCHOR PONG FACTORY TESTS
+// =============================================================================
+
+void test_createPongWithAnchor_roundtrip(void) {
+    // 6-field format: T2High|T2Low|T3High|T3Low|AnchorHigh|AnchorLow
+    // (always full-width so the anchor fields are positionally unambiguous)
+    SyncCommand pong = SyncCommand::createPongWithAnchor(
+        7, 0x100000001ULL, 0x100000002ULL, 0x100000003ULL);
+    char buf[160];
+    TEST_ASSERT_TRUE(pong.serialize(buf, sizeof(buf)));
+
+    SyncCommand parsed;
+    TEST_ASSERT_TRUE(parsed.deserialize(buf));
+    TEST_ASSERT_TRUE(parsed.hasData("4"));
+    uint64_t t2 = ((uint64_t)parsed.getDataUnsigned("0", 0) << 32) | parsed.getDataUnsigned("1", 0);
+    uint64_t t3 = ((uint64_t)parsed.getDataUnsigned("2", 0) << 32) | parsed.getDataUnsigned("3", 0);
+    uint64_t anchor = ((uint64_t)parsed.getDataUnsigned("4", 0) << 32) | parsed.getDataUnsigned("5", 0);
+    TEST_ASSERT_EQUAL_UINT32(1, (uint32_t)t2);
+    TEST_ASSERT_EQUAL_UINT32(2, (uint32_t)t3);
+    TEST_ASSERT_EQUAL_UINT32(3, (uint32_t)anchor);
+    TEST_ASSERT_EQUAL_UINT32(1, (uint32_t)(t2 >> 32));
+    TEST_ASSERT_EQUAL_UINT32(1, (uint32_t)(anchor >> 32));
+}
+
+// =============================================================================
 // TEST RUNNER
 // =============================================================================
 
@@ -2384,6 +2409,9 @@ int main(int argc, char **argv) {
 
     // Drift estimation must survive fast (4Hz) accepted-sample cadence
     RUN_TEST(test_drift_estimation_survives_fast_cadence);
+
+    // Anchor-paired PONG factory: 6-field round-trip
+    RUN_TEST(test_createPongWithAnchor_roundtrip);
 
     return UNITY_END();
 }

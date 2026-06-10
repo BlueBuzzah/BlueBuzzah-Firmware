@@ -264,6 +264,16 @@ public:
     static SyncCommand createPongWithTimestamps(uint32_t sequenceId, uint64_t t2, uint64_t t3);
 
     /**
+     * @brief Create PONG carrying T2, T3 and the rx connection-event anchor
+     *
+     * Always uses full 64-bit field encoding (6 data fields) so the anchor
+     * fields are positionally unambiguous:
+     *   0=T2High 1=T2Low 2=T3High 3=T3Low 4=AnchorHigh 5=AnchorLow
+     */
+    static SyncCommand createPongWithAnchor(uint32_t sequenceId, uint64_t t2,
+                                            uint64_t t3, uint64_t anchorUs);
+
+    /**
      * @brief Create DEBUG_FLASH command for synchronized LED flash
      * @param sequenceId Sequence ID for the command
      */

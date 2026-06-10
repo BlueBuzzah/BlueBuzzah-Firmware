@@ -528,11 +528,17 @@ void BLEManager::processTxQueue() {
         // bytesSent stays 0 until tryWriteImmediate accepts at least one byte, so this re-serializes on every retry
         if (entry->stampKind != TxStampKind::NONE && entry->bytesSent == 0) {
             stampTime = getMicros();
-            SyncCommand cmd = (entry->stampKind == TxStampKind::PING_T1)
-                ? SyncCommand::createPingWithT1(entry->stampSeqId, stampTime)
-                : SyncCommand::createPongWithTimestamps(entry->stampSeqId, entry->stampT2, stampTime);
+            SyncCommand cmd;
+            if (entry->stampKind == TxStampKind::PING_T1) {
+                cmd = SyncCommand::createPingWithT1(entry->stampSeqId, stampTime);
+            } else if (entry->stampAnchor != 0) {
+                cmd = SyncCommand::createPongWithAnchor(entry->stampSeqId, entry->stampT2,
+                                                        stampTime, entry->stampAnchor);
+            } else {
+                cmd = SyncCommand::createPongWithTimestamps(entry->stampSeqId, entry->stampT2, stampTime);
+            }
 
-            // Worst case ~80 bytes: PONG with full 64-bit timestamp + 4 data fields
+            // Worst case ~105 bytes: PONG with full 64-bit timestamp + 6 data fields (anchor format)
             char msg[128];
             if (!cmd.serialize(msg, sizeof(msg))) {
                 uint32_t seqId = entry->stampSeqId;

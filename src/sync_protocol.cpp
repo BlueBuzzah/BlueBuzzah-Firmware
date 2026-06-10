@@ -534,6 +534,20 @@ SyncCommand SyncCommand::createPongWithTimestamps(uint32_t sequenceId, uint64_t 
     return cmd;
 }
 
+SyncCommand SyncCommand::createPongWithAnchor(uint32_t sequenceId, uint64_t t2,
+                                              uint64_t t3, uint64_t anchorUs) {
+    SyncCommand cmd(SyncCommandType::PONG, sequenceId);
+    // Full-width encoding always (unlike createPongWithTimestamps) so the
+    // receiver can detect the anchor format via hasData("4")
+    cmd.setDataUnsigned("0", (uint32_t)(t2 >> 32));
+    cmd.setDataUnsigned("1", (uint32_t)(t2 & 0xFFFFFFFF));
+    cmd.setDataUnsigned("2", (uint32_t)(t3 >> 32));
+    cmd.setDataUnsigned("3", (uint32_t)(t3 & 0xFFFFFFFF));
+    cmd.setDataUnsigned("4", (uint32_t)(anchorUs >> 32));
+    cmd.setDataUnsigned("5", (uint32_t)(anchorUs & 0xFFFFFFFF));
+    return cmd;
+}
+
 SyncCommand SyncCommand::createDebugFlash(uint32_t sequenceId) {
     return SyncCommand(SyncCommandType::DEBUG_FLASH, sequenceId);
 }
