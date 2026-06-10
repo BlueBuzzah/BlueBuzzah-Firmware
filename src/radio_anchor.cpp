@@ -21,10 +21,18 @@ static volatile uint8_t s_anchorHead = 0;
 static volatile bool s_active = false;
 
 extern "C" void SWI1_EGU1_IRQHandler(void) {
+    // SWI1_EGU1_IRQHandler is the canonical MDK handler name for nRF52840.
+    // nrf_soc.h defines RADIO_NOTIFICATION_IRQHandler as (SWI1_IRQHandler) —
+    // parenthesised, so unusable as a function definition name. Using the MDK
+    // symbol directly is both correct and the most portable spelling available.
+
     // Fires a fixed notification distance before every radio event.
     // getMicros() is interrupt-safe (IRQ-off section protects overflow state
     // and the TIMER4 capture register) and keeps anchors in the same 64-bit
     // epoch as every other sync timestamp.
+    if (!s_active) {
+        return;  // May drop one anchor in the begin() window between cfg_set and s_active=true - harmless.
+    }
     uint64_t now = getMicros();
     uint8_t idx = s_anchorHead;
     s_anchors[idx] = now;
@@ -62,6 +70,7 @@ bool radioAnchorBegin() {
     // handled as PTP fallback by the consumer.
     if (sd_radio_notification_cfg_set(NRF_RADIO_NOTIFICATION_TYPE_INT_ON_ACTIVE,
                                       NRF_RADIO_NOTIFICATION_DISTANCE_800US) != NRF_SUCCESS) {
+        sd_nvic_DisableIRQ(SWI1_EGU1_IRQn);  // roll back the NVIC enable
         return false;
     }
 
