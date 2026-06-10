@@ -361,6 +361,7 @@ void sendPing();
 void onBLEConnect(uint16_t connHandle, ConnectionType type);
 void onBLEDisconnect(uint16_t connHandle, ConnectionType type, uint8_t reason);
 void onBLEMessage(uint16_t connHandle, const char *message, uint64_t rxTimestamp);
+void onTxStamped(TxStampKind kind, uint32_t seqId, uint64_t txTimeUs);
 
 // Therapy Callbacks
 void onSendMacrocycle(const Macrocycle& macrocycle);
@@ -1040,6 +1041,7 @@ bool initializeBLE()
     ble.setConnectCallback(onBLEConnect);
     ble.setDisconnectCallback(onBLEDisconnect);
     ble.setMessageCallback(onBLEMessage);
+    ble.setTxStampCallback(onTxStamped);
 
     // Initialize BLE with appropriate role
     if (!ble.begin(deviceRole, BLE_NAME))
@@ -1408,7 +1410,7 @@ void executeDeferredWork(DeferredWorkType type, uint8_t p1, uint8_t p2, uint32_t
     }
 }
 
-void onBLEMessage(uint16_t connHandle [[maybe_unused]], const char *message, uint64_t rxTimestamp)
+void onBLEMessage(uint16_t connHandle, const char *message, uint64_t rxTimestamp)
 {
     // rxTimestamp is captured at the earliest possible point in the BLE stack
     // (immediately when data is received in _onUartRx/_onClientUartRx)
@@ -1651,40 +1653,15 @@ void onBLEMessage(uint16_t connHandle [[maybe_unused]], const char *message, uin
         switch (cmd.getType())
         {
         case SyncCommandType::PING:
-            // SECONDARY: Reply with PONG including T2 (early capture), T3 (just before send)
-            // Also tracks connectivity - PING proves PRIMARY is alive
+            // SECONDARY: Reply with PONG. T2 = rxTimestamp (earliest BLE-stack
+            // capture); T3 is stamped by the BLE manager at SoftDevice handoff
+            // so SECONDARY main-loop latency no longer inflates measured RTT.
             if (deviceRole == DeviceRole::SECONDARY)
             {
                 // Track connectivity - PING proves PRIMARY is alive
                 lastKeepaliveReceived = millis();
 
-                // T2 = rxTimestamp captured at callback entry (before parsing)
-                // This gives us the most accurate receive timestamp
-                uint64_t t2 = rxTimestamp;
-
-                // Prepare buffer first, then capture T3 right before send
-                char buffer[64];
-                uint32_t seqId = cmd.getSequenceId();
-
-                // Capture T3 as late as possible before sending
-                // Note: T3 must be captured BEFORE send since it goes in the message
-                // Best we can do is minimize work between T3 capture and send call
-                uint64_t t3 = getMicros();
-                SyncCommand pong = SyncCommand::createPongWithTimestamps(seqId, t2, t3);
-                if (pong.serialize(buffer, sizeof(buffer)))
-                {
-                    ble.sendToPrimary(buffer);
-
-                    // Debug logging (matches PRIMARY's PONG handler logging)
-                    if (profiles.getDebugMode())
-                    {
-                        // Arduino printf doesn't support %llu - cast to uint32_t (timestamps fit in 32-bit for ~71 minutes)
-                        Serial.printf("[SYNC] PING seq=%lu T2=%lu T3=%lu -> PONG sent\n",
-                                      (unsigned long)seqId,
-                                      (unsigned long)(t2 / 1000),  // Convert to ms for readability
-                                      (unsigned long)(t3 / 1000));
-                    }
-                }
+                ble.sendPongStamped(connHandle, cmd.getSequenceId(), rxTimestamp);
             }
             break;
 
@@ -2343,9 +2320,11 @@ void triggerDebugFlash()
  * @brief Send PING to SECONDARY to measure BLE latency and clock offset
  *
  * Uses PTP-style 4-timestamp protocol:
- * - T1: PRIMARY send time (stored in pingT1, included in PING)
+ * - T1: PRIMARY send time (stamped by BLE manager at SoftDevice handoff,
+ *       reported via onTxStamped() — not captured here to avoid adding
+ *       main-loop latency to every PTP sample)
  * - T2: SECONDARY receive time (returned in PONG)
- * - T3: SECONDARY send time (returned in PONG)
+ * - T3: SECONDARY send time (stamped by BLE manager at SoftDevice handoff)
  * - T4: PRIMARY receive time (recorded on PONG receipt)
  */
 void sendPing()
@@ -2354,19 +2333,20 @@ void sendPing()
     {
         return;
     }
+    // T1 is stamped by the BLE manager at SoftDevice handoff and reported via
+    // onTxStamped() - not here. Stamping at creation time added one main-loop
+    // iteration of asymmetric delay to every PTP sample.
+    ble.sendPingStamped(g_sequenceGenerator.next());
+}
 
-    // Record T1 for PTP offset calculation
-    // Use atomic writes to prevent torn reads on 32-bit ARM
-    uint64_t t1 = getMicros();
-    atomicWrite64(&pingT1, t1);
-    atomicWrite64(&pingStartTime, t1); // Keep for backward compat
-
-    SyncCommand cmd = SyncCommand::createPingWithT1(g_sequenceGenerator.next(), t1);
-
-    char buffer[64];
-    if (cmd.serialize(buffer, sizeof(buffer)))
+void onTxStamped(TxStampKind kind, uint32_t seqId, uint64_t txTimeUs)
+{
+    (void)seqId;
+    // Runs in main-loop context (processTxQueue via ble.update())
+    if (kind == TxStampKind::PING_T1)
     {
-        ble.sendToSecondary(buffer);
+        atomicWrite64(&pingT1, txTimeUs);
+        atomicWrite64(&pingStartTime, txTimeUs);
     }
 }
 
