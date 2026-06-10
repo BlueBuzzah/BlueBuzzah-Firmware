@@ -88,7 +88,8 @@
 #define SYNC_MIN_VALID_SAMPLES 5     // Minimum samples before clock sync is valid
 #define SYNC_OFFSET_EMA_ALPHA_NUM 1  // Slow EMA α = 1/10 = 0.1 for continuous updates
 #define SYNC_OFFSET_EMA_ALPHA_DEN 10
-#define SYNC_MAINTENANCE_INTERVAL_MS 500  // Periodic sync interval during therapy (reduces drift)
+#define SYNC_ACTIVE_INTERVAL_MS 250       // PING cadence while therapy is running (4Hz)
+                                           // Idle cadence stays KEEPALIVE_INTERVAL_MS (1Hz)
 #define SYNC_RTT_QUALITY_THRESHOLD_US 60000 // 60ms RTT threshold - reject retransmission-affected samples
                                              // (reduced from 120ms for stricter quality filtering)
 #define SYNC_OUTLIER_THRESHOLD_US 5000   // 5ms threshold for offset outlier rejection (was hardcoded)

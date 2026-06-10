@@ -102,6 +102,7 @@ static constexpr uint32_t PRIMARY_KEEPALIVE_TIMEOUT_MS = 6000; // 6 seconds
 // MUST be volatile: written in main loop, read in BLE callback
 volatile uint64_t pingStartTime = 0; // Timestamp when PING was sent (micros)
 volatile uint64_t pingT1 = 0;        // T1 for PTP offset calculation
+volatile uint32_t pingSeq = 0;       // Sequence id of the in-flight PING (32-bit: naturally atomic on Cortex-M4)
 
 // SP-C5 fix: Use binary semaphore instead of volatile bool to prevent missed signals
 // Old pattern had race: callback sets true, loop reads+clears, callback sets again, signal lost
@@ -908,12 +909,13 @@ void loop()
         hiresClockEnsureHfclk();
     }
 
-    // Unified keepalive + clock sync: PING every 1 second when connected (PRIMARY only)
-    // PING/PONG provides both connection monitoring and continuous clock synchronization
-    // Clock sync becomes valid after 3 samples (~3 seconds from connection)
+    // Unified keepalive + clock sync (PRIMARY only). 4Hz during therapy for
+    // tighter drift tracking and more samples for the quality gates; 1Hz idle.
+    // More PINGs only strengthens keepalive semantics (timeouts unchanged).
+    uint32_t pingIntervalMs = therapy.isRunning() ? SYNC_ACTIVE_INTERVAL_MS : KEEPALIVE_INTERVAL_MS;
     if (deviceRole == DeviceRole::PRIMARY &&
         isConnected &&
-        (now - lastKeepalive >= KEEPALIVE_INTERVAL_MS))
+        (now - lastKeepalive >= pingIntervalMs))
     {
         lastKeepalive = now;
         sendPing();
@@ -1680,6 +1682,19 @@ void onBLEMessage(uint16_t connHandle, const char *message, uint64_t rxTimestamp
             uint64_t t1_atomic = atomicRead64(&pingT1);
             if (deviceRole == DeviceRole::PRIMARY && t1_atomic > 0)
             {
+                // Reject cross-exchange pairing: a late PONG from a previous
+                // PING must not be paired with the current in-flight T1
+                uint32_t expectedSeq = pingSeq;
+                if (cmd.getSequenceId() != expectedSeq)
+                {
+                    if (profiles.getDebugMode())
+                    {
+                        Serial.printf("[SYNC] Stale PONG seq=%lu (expected %lu) - ignored\n",
+                                      (unsigned long)cmd.getSequenceId(),
+                                      (unsigned long)expectedSeq);
+                    }
+                    break;
+                }
 
                 // T4 = rxTimestamp captured at callback entry (before parsing)
                 // This gives us the most accurate receive timestamp
@@ -1734,20 +1749,11 @@ void onBLEMessage(uint16_t connHandle, const char *message, uint64_t rxTimestamp
                 // Calculate PTP clock offset
                 int64_t offset = syncProtocol.calculatePTPOffset(t1, t2, t3, t4);
 
-                // Add sample with RTT-based quality filtering
-                // High-RTT samples are rejected as they likely have asymmetric delays
-                bool sampleAccepted = false;
-                if (syncProtocol.isClockSyncValid())
-                {
-                    // Already synced - use EMA update (no RTT filtering for maintenance)
-                    syncProtocol.updateOffsetEMA(offset);
-                    sampleAccepted = true;
-                }
-                else
-                {
-                    // Building initial sync - use quality filtering
-                    sampleAccepted = syncProtocol.addOffsetSampleWithQuality(offset, rtt);
-                }
+                // Quality-gated update: routes to initial sample collection
+                // until valid, then applies RTT + lucky-packet + innovation
+                // gates before the maintenance EMA (a single retransmission-
+                // affected exchange must not corrupt the offset mid-therapy)
+                bool sampleAccepted = syncProtocol.updateOffsetEMAWithQuality(offset, rtt);
 
                 // Also update RTT-based latency for backward compatibility
                 syncProtocol.updateLatency(rtt);
@@ -2344,7 +2350,6 @@ void sendPing()
 
 void onTxStamped(TxStampKind kind, uint32_t seqId, uint64_t txTimeUs)
 {
-    (void)seqId;  // Sequence matching against PONGs lands with the 4Hz cadence change
     // Runs in main-loop context (processTxQueue via ble.update()). The PONG
     // handler reads pingT1 from the SD/BLE task via atomicRead64; both helpers
     // use __disable_irq, so the 64-bit access is coherent across tasks.
@@ -2352,6 +2357,8 @@ void onTxStamped(TxStampKind kind, uint32_t seqId, uint64_t txTimeUs)
     {
         atomicWrite64(&pingT1, txTimeUs);
         atomicWrite64(&pingStartTime, txTimeUs);
+        // pingSeq written after pingT1: a racing reader sees old seq + new T1 and safely rejects
+        pingSeq = seqId;
     }
     // TxStampKind::PONG_T3 is intentionally ignored here: it only fires on
     // SECONDARY, where no T1 pairing state exists.
