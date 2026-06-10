@@ -2125,6 +2125,23 @@ void test_maintenance_step_change_reanchors(void) {
     TEST_ASSERT_TRUE(sync.updateOffsetEMAWithQuality(20000, 10000));
 }
 
+void test_drift_estimation_survives_fast_cadence(void) {
+    SimpleSyncProtocol sync;
+    for (int i = 0; i < 5; i++) sync.addOffsetSample(0);
+    TEST_ASSERT_TRUE(sync.isClockSyncValid());
+
+    // Accepted samples every 250ms (4Hz) with a steady +25us/250ms ramp
+    // (= 100 ppm drift). With the per-sample anchor advance, elapsed never
+    // reaches SYNC_MIN_DRIFT_INTERVAL_MS and the rate stays 0 forever.
+    int64_t offset = 0;
+    for (int i = 0; i < 12; i++) {
+        mockAdvanceMillis(250);
+        offset += 25;
+        sync.updateOffsetEMAWithQuality(offset, 10000);
+    }
+    TEST_ASSERT_TRUE(sync.getDriftRate() > 0.0f);
+}
+
 // =============================================================================
 // TEST RUNNER
 // =============================================================================
@@ -2364,6 +2381,9 @@ int main(int argc, char **argv) {
     RUN_TEST(test_maintenance_min_rtt_decay);
     RUN_TEST(test_maintenance_routes_to_sample_collection_before_valid);
     RUN_TEST(test_maintenance_step_change_reanchors);
+
+    // Drift estimation must survive fast (4Hz) accepted-sample cadence
+    RUN_TEST(test_drift_estimation_survives_fast_cadence);
 
     return UNITY_END();
 }

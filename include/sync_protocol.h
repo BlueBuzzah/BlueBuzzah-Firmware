@@ -809,6 +809,8 @@ private:
     int64_t _lastMeasuredOffset;  // Previous offset measurement for drift calculation
     uint32_t _lastOffsetTime;     // Time of last offset measurement (millis)
     float _driftRateUsPerMs;      // Estimated drift rate (microseconds per millisecond)
+    int64_t _driftAnchorOffset;   // Offset at the start of the current drift-measurement window
+    uint32_t _driftAnchorTime;    // syncNowMs() at the start of the window (0 = unset)
 
     // Maintenance-mode gating state
     uint32_t _minRttUs;           // Decaying minimum RTT (lucky-packet gate)

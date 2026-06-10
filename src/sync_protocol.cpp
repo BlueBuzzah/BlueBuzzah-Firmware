@@ -758,6 +758,8 @@ SimpleSyncProtocol::SimpleSyncProtocol() :
     _lastMeasuredOffset(0),
     _lastOffsetTime(0),
     _driftRateUsPerMs(0.0f),
+    _driftAnchorOffset(0),
+    _driftAnchorTime(0),
     _minRttUs(UINT32_MAX), _innovationRejects(0),
     _warmStartMode(false),
     _warmStartConfirmed(0),
@@ -974,13 +976,14 @@ void SimpleSyncProtocol::updateOffsetEMA(int64_t offset) {
     // Previously, mixing millis() calls at different times created 33-50 ppm systematic error
     uint32_t now = syncNowMs();
 
-    // Update drift rate estimate if we have a previous measurement
-    if (_lastOffsetTime > 0) {
-        uint32_t elapsed = now - _lastOffsetTime;
-        // Use 500ms minimum for better SNR (5x improvement over 100ms)
-        // Matches natural PING cadence (1Hz) while tracking drift changes
+    // Drift measurement uses a dedicated anchor pair so the >=500ms window
+    // accumulates in wall time even when accepted samples arrive faster
+    // (4Hz therapy cadence) - advancing the anchor every sample would keep
+    // elapsed below the window forever and stall drift estimation.
+    if (_driftAnchorTime > 0) {
+        uint32_t elapsed = now - _driftAnchorTime;
         if (elapsed >= SYNC_MIN_DRIFT_INTERVAL_MS) {
-            int64_t delta = offset - _lastMeasuredOffset;
+            int64_t delta = offset - _driftAnchorOffset;
             float newRate = (float)delta / (float)elapsed;  // μs per ms
 
             // Cap newRate before EMA smoothing to prevent outlier corruption
@@ -994,12 +997,19 @@ void SimpleSyncProtocol::updateOffsetEMA(int64_t offset) {
 
             // EMA smooth the CAPPED drift rate (α = 0.3 for reasonable responsiveness)
             _driftRateUsPerMs = SYNC_DRIFT_EMA_ALPHA * newRate + (1.0f - SYNC_DRIFT_EMA_ALPHA) * _driftRateUsPerMs;
+
+            _driftAnchorOffset = offset;
+            _driftAnchorTime = now;
         }
+    } else {
+        _driftAnchorOffset = offset;
+        _driftAnchorTime = now;
     }
 
-    // Store for next drift calculation - use consistent 'now' value
+    // _lastMeasuredOffset/_lastOffsetTime retain every-sample semantics:
+    // getCorrectedOffset() extrapolates drift from the most recent sample.
     _lastMeasuredOffset = offset;
-    _lastOffsetTime = now;  // FIXED: Use same timestamp as elapsed calculation
+    _lastOffsetTime = now;
 
     // EMA: new = α * measured + (1-α) * previous
     _medianOffset = (SYNC_OFFSET_EMA_ALPHA_NUM * offset +
@@ -1060,6 +1070,8 @@ void SimpleSyncProtocol::resetClockSync() {
     _lastMeasuredOffset = 0;
     _lastOffsetTime = 0;
     _driftRateUsPerMs = 0.0f;
+    _driftAnchorOffset = 0;
+    _driftAnchorTime = 0;
 
     _innovationRejects = 0;
     _minRttUs = UINT32_MAX;
@@ -1100,6 +1112,8 @@ bool SimpleSyncProtocol::tryWarmStart() {
     _lastMeasuredOffset = projected;
     _lastOffsetTime = syncNowMs();
     _driftRateUsPerMs = _warmStartCache.cachedDriftRate;
+    _driftAnchorOffset = projected;
+    _driftAnchorTime = syncNowMs();
 
     return true;
 }
