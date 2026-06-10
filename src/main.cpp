@@ -1823,9 +1823,7 @@ void onBLEMessage(uint16_t connHandle, const char *message, uint64_t rxTimestamp
                 // Anchor-paired offset: PRIMARY's anchor of the connection
                 // event that carried the PING (first anchor after the
                 // late-stamped T1 handoff) vs SECONDARY's anchor of the same
-                // event. Mispairs from phone-link/advertising anchors land
-                // ~one connection interval (>=7.5ms) off and are rejected by
-                // the innovation gate. Falls back to the PTP offset otherwise.
+                // event. Falls back to the PTP offset otherwise.
                 if (secondaryAnchor != 0)
                 {
                     uint64_t primaryAnchor = 0;
@@ -1833,13 +1831,38 @@ void onBLEMessage(uint16_t connHandle, const char *message, uint64_t rxTimestamp
                     {
                         int64_t anchorOffset = (int64_t)secondaryAnchor - (int64_t)primaryAnchor
                                                - (int64_t)SYNC_ANCHOR_BIAS_US;
-                        if (profiles.getDebugMode())
+
+                        // Mispair pre-filter: a phone-link/advertising anchor caught
+                        // between the T1 handoff and the glove-link event lands the
+                        // pairing 1-4ms off - inside the innovation gate. Once sync
+                        // has converged, reject anchor pairs that deviate implausibly
+                        // from the current offset and fall back to PTP for this sample.
+                        // Pre-convergence, anchors pass through: the initial median/MAD
+                        // filtering handles outliers, and getMedianOffset() would be 0
+                        // (meaningless to compare against).
+                        bool anchorPlausible = true;
+                        if (syncProtocol.isClockSyncValid())
                         {
-                            Serial.printf("[SYNC] anchorOffset=%ld ptpOffset=%ld delta=%ld\n",
-                                          (long)anchorOffset, (long)offset,
-                                          (long)(anchorOffset - offset));
+                            int64_t deviation = anchorOffset - syncProtocol.getMedianOffset();
+                            if (deviation < 0) deviation = -deviation;
+                            anchorPlausible = (deviation <= static_cast<int64_t>(SYNC_ANCHOR_PREFILTER_US));
                         }
-                        offset = anchorOffset;
+
+                        if (anchorPlausible)
+                        {
+                            if (profiles.getDebugMode())
+                            {
+                                Serial.printf("[SYNC] anchorOffset=%ld ptpOffset=%ld delta=%ld\n",
+                                              (long)anchorOffset, (long)offset,
+                                              (long)(anchorOffset - offset));
+                            }
+                            offset = anchorOffset;
+                        }
+                        else if (profiles.getDebugMode())
+                        {
+                            Serial.printf("[SYNC] anchor mispair rejected: anchorOffset=%ld median=%ld\n",
+                                          (long)anchorOffset, (long)syncProtocol.getMedianOffset());
+                        }
                     }
                 }
 #endif

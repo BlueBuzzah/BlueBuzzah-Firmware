@@ -538,7 +538,7 @@ void BLEManager::processTxQueue() {
                 cmd = SyncCommand::createPongWithTimestamps(entry->stampSeqId, entry->stampT2, stampTime);
             }
 
-            // Worst case ~105 bytes: PONG with full 64-bit timestamp + 6 data fields (anchor format)
+            // Worst case ~82 bytes: PONG with 64-bit timestamp + 6 anchor-format data fields
             char msg[128];
             if (!cmd.serialize(msg, sizeof(msg))) {
                 uint32_t seqId = entry->stampSeqId;
