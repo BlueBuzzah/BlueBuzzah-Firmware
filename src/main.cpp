@@ -2336,18 +2336,25 @@ void sendPing()
     // T1 is stamped by the BLE manager at SoftDevice handoff and reported via
     // onTxStamped() - not here. Stamping at creation time added one main-loop
     // iteration of asymmetric delay to every PTP sample.
+    // Return value intentionally ignored: not-connected is excluded by the guard
+    // above, and a queue-full drop just defers this PTP sample one interval -
+    // keepalive timeouts are driven by received traffic, not sent PINGs.
     ble.sendPingStamped(g_sequenceGenerator.next());
 }
 
 void onTxStamped(TxStampKind kind, uint32_t seqId, uint64_t txTimeUs)
 {
-    (void)seqId;
-    // Runs in main-loop context (processTxQueue via ble.update())
+    (void)seqId;  // Sequence matching against PONGs lands with the 4Hz cadence change
+    // Runs in main-loop context (processTxQueue via ble.update()). The PONG
+    // handler reads pingT1 from the SD/BLE task via atomicRead64; both helpers
+    // use __disable_irq, so the 64-bit access is coherent across tasks.
     if (kind == TxStampKind::PING_T1)
     {
         atomicWrite64(&pingT1, txTimeUs);
         atomicWrite64(&pingStartTime, txTimeUs);
     }
+    // TxStampKind::PONG_T3 is intentionally ignored here: it only fires on
+    // SECONDARY, where no T1 pairing state exists.
 }
 
 // =============================================================================

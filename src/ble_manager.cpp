@@ -525,6 +525,7 @@ void BLEManager::processTxQueue() {
         // Re-serialized with a fresh timestamp on every retry until the first
         // byte is accepted.
         uint64_t stampTime = 0;
+        // bytesSent stays 0 until tryWriteImmediate accepts at least one byte, so this re-serializes on every retry
         if (entry->stampKind != TxStampKind::NONE && entry->bytesSent == 0) {
             stampTime = getMicros();
             SyncCommand cmd = (entry->stampKind == TxStampKind::PING_T1)
