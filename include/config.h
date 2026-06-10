@@ -109,6 +109,18 @@
 #define SYNC_WARM_START_MIN_SAMPLES 3        // Confirmatory samples required for warm-start
 #define SYNC_WARM_START_TOLERANCE_US 5000    // 5ms tolerance for confirmatory sample validation
 
+// Connection-anchor timestamping (EXPERIMENTAL)
+// Hardware-timestamps BLE radio events via SoftDevice radio notifications and
+// derives clock offset from paired anchors. Falls back to PTP per-sample.
+// Both gloves MUST run the same setting (PONG payload format changes).
+#ifndef SYNC_ANCHOR_TIMESTAMPING_ENABLED
+#define SYNC_ANCHOR_TIMESTAMPING_ENABLED 0
+#endif
+#define SYNC_ANCHOR_RING_SIZE 16              // Recent radio-event timestamps kept
+#define SYNC_ANCHOR_RX_WINDOW_US 15000        // Max age of rx anchor vs rx callback (event len 12.5ms + margin)
+#define SYNC_ANCHOR_TX_WINDOW_US 25000        // Max lookahead from PING handoff to its tx anchor (2x max CI + margin)
+#define SYNC_ANCHOR_BIAS_US 0                 // Calibrated central-vs-peripheral constant (set during bench validation)
+
 // Path asymmetry compensation (measurement mode - correction not yet implemented)
 #define SYNC_ASYMMETRY_CORRECTION_ENABLED 0   // 0 = measure only, 1 = apply correction
 #define SYNC_ASYMMETRY_MIN_SAMPLES 10         // Samples before correction applied
