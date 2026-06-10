@@ -2043,6 +2043,8 @@ void test_Macrocycle_baseTime_full_precision(void) {
 void test_getMicros_no_false_overflow_after_reset(void) {
     // After resetMicrosOverflow(), a fresh low time value must not be
     // interpreted as a wrap (regression guard for clock-source switching)
+    // NB: native stubs always report hires=false, so the s_usingHires switch branch
+    // is hardware-only; this exercises the reset+rebase analog.
     mockAdvanceMicros(4000000000UL);
     (void)getMicros();
     // Simulate a clock-source restart: tracking reset + time rebased lower

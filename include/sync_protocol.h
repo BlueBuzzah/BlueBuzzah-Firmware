@@ -447,10 +447,10 @@ public:
     /**
      * @brief Check if sync has been performed
      */
-    bool isSynced() const { return _lastSyncTime != 0; }
+    bool isSynced() const { return _lastSyncTime != UINT32_MAX; }
 
     /**
-     * @brief Get the time of last sync measurement (millis)
+     * @brief Get the syncNowMs() epoch timestamp of last sync (UINT32_MAX if never synced)
      */
     uint32_t getLastSyncTime() const { return _lastSyncTime; }
 
@@ -769,7 +769,7 @@ private:
     static constexpr uint8_t OFFSET_SAMPLE_COUNT = 10;
 
     int64_t _currentOffset;       // Current clock offset (microseconds)
-    uint32_t _lastSyncTime;       // Time of last sync (millis)
+    uint32_t _lastSyncTime;       // syncNowMs() epoch of last sync; UINT32_MAX = never synced
 
     // Latency measurement with EMA smoothing
     uint32_t _measuredLatencyUs;  // Raw one-way latency (most recent)
@@ -793,7 +793,7 @@ private:
     struct WarmStartCache {
         int64_t cachedOffset;        // Last known median offset
         float cachedDriftRate;       // Last known drift rate (us/ms)
-        uint32_t cacheTimestamp;     // millis() when cached
+        uint32_t cacheTimestamp;     // syncNowMs() epoch (getMicros()/1000) when cached
         bool isValid;                // Cache contains usable data
 
         WarmStartCache() : cachedOffset(0), cachedDriftRate(0.0f),

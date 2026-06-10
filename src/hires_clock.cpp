@@ -56,7 +56,9 @@ bool hiresClockBegin() {
     return true;
 }
 
-bool hiresClockIsRunning() {
+// noinline: s_running is volatile; inlining across TUs under LTO would allow
+// the compiler to hoist or cache the load, defeating volatile semantics.
+__attribute__((noinline)) bool hiresClockIsRunning() {
     return s_running;
 }
 

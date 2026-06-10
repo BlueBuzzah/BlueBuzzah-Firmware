@@ -746,7 +746,7 @@ static inline uint32_t syncNowMs() {
 
 SimpleSyncProtocol::SimpleSyncProtocol() :
     _currentOffset(0),
-    _lastSyncTime(0),
+    _lastSyncTime(UINT32_MAX),
     _measuredLatencyUs(0),
     _smoothedLatencyUs(0),
     _rttVariance(0),
@@ -785,7 +785,7 @@ uint64_t SimpleSyncProtocol::applyCompensation(uint64_t timestamp) const {
 }
 
 uint32_t SimpleSyncProtocol::getTimeSinceSync() const {
-    if (_lastSyncTime == 0) {
+    if (_lastSyncTime == UINT32_MAX) {
         return UINT32_MAX;  // Never synced
     }
     return syncNowMs() - _lastSyncTime;
@@ -793,7 +793,7 @@ uint32_t SimpleSyncProtocol::getTimeSinceSync() const {
 
 void SimpleSyncProtocol::reset() {
     _currentOffset = 0;
-    _lastSyncTime = 0;
+    _lastSyncTime = UINT32_MAX;
     _measuredLatencyUs = 0;
     _smoothedLatencyUs = 0;
     _sampleCount = 0;
