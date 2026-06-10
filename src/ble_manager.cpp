@@ -701,7 +701,11 @@ bool BLEManager::enqueueStamped(uint16_t connHandle, TxStampKind kind, uint32_t 
 
     __set_PRIMASK(primask);
 
-    // Fill stamp fields after releasing the critical section.
+    // Fill stamp fields after releasing the critical section. Safe because:
+    // (a) the consumer (processTxQueue) runs in the loop task (prio 1) and can
+    //     never preempt the BLE task (prio 3), the only other caller of this path;
+    // (b) the fill is straight-line code with no blocking call, so it completes
+    //     before this task yields and the consumer can observe the claimed slot.
     entry->stampKind = kind;
     entry->stampSeqId = seqId;
     entry->stampT2 = t2;
