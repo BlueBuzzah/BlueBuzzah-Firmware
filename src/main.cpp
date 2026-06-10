@@ -33,6 +33,7 @@
 #include "deferred_queue.h"
 #include "activation_queue.h"
 #include "motor_event_buffer.h"
+#include "hires_clock.h"
 
 // =============================================================================
 // CONFIGURATION
@@ -897,6 +898,14 @@ void loop()
         Serial.println(isConnected ? F("[STATE] Connected!") : F("[STATE] Disconnected"));
     }
 
+    // HFXO watchdog: the SoftDevice HFCLK request is a single shared flag and
+    // TinyUSB releases it on USB suspend - re-assert so TIMER4 stays accurate
+    static uint32_t lastClockCheck = 0;
+    if (now - lastClockCheck >= 1000) {
+        lastClockCheck = now;
+        hiresClockEnsureHfclk();
+    }
+
     // Unified keepalive + clock sync: PING every 1 second when connected (PRIMARY only)
     // PING/PONG provides both connection monitoring and continuous clock synchronization
     // Clock sync becomes valid after 3 samples (~3 seconds from connection)
@@ -1036,6 +1045,15 @@ bool initializeBLE()
     {
         Serial.println(F("[ERROR] BLE begin() failed"));
         return false;
+    }
+
+    // Start the 1MHz hardware timebase now that the SoftDevice is enabled.
+    // Must happen before any connection/sync traffic (getMicros() re-seeds
+    // its epoch on the source switch).
+    if (hiresClockBegin()) {
+        Serial.println(F("[CLOCK] 1MHz hardware timebase active (TIMER4 + HFXO)"));
+    } else {
+        Serial.println(F("[CLOCK] WARNING: hardware timebase unavailable - falling back to tick clock (~1ms resolution)"));
     }
 
     // Register PHY change callback (both roles)
