@@ -510,10 +510,10 @@ void BLEManager::processTxQueue() {
     for (uint8_t i = 0; i < 4 && _txCount > 0; i++) {
         TxEntry* entry = &_txQueue[_txHead];
         if (!entry->pending) {
-            // Advance head if slot is empty (shouldn't happen)
+            // Advance head if slot is empty (shouldn't happen). pending is
+            // already false here; only the head/count bookkeeping needs fixing.
             uint32_t primask = __get_PRIMASK();
             __disable_irq();
-            entry->pending = false;
             _txHead = static_cast<uint8_t>((_txHead + 1) % TX_QUEUE_SIZE);
             _txCount--;
             __set_PRIMASK(primask);

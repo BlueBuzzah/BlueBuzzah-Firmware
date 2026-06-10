@@ -67,7 +67,6 @@
 #define BLE_INTERVAL_WARNING_THRESHOLD_MS 12.0f  // Warn if negotiated interval > 12ms
 
 // Sync protocol
-#define SYNC_INTERVAL_MS 1000        // Periodic sync interval during therapy
 #define SYNC_TIMEOUT_MS 2000         // Sync command timeout
 #define COMMAND_TIMEOUT_MS 5000      // General BLE command timeout
 
