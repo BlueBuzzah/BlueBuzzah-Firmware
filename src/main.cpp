@@ -901,7 +901,8 @@ void loop()
     // HFXO watchdog: the SoftDevice HFCLK request is a single shared flag and
     // TinyUSB releases it on USB suspend - re-assert so TIMER4 stays accurate
     static uint32_t lastClockCheck = 0;
-    if (now - lastClockCheck >= 1000) {
+    if (now - lastClockCheck >= 1000)
+    {
         lastClockCheck = now;
         hiresClockEnsureHfclk();
     }
@@ -1050,9 +1051,12 @@ bool initializeBLE()
     // Start the 1MHz hardware timebase now that the SoftDevice is enabled.
     // Must happen before any connection/sync traffic (getMicros() re-seeds
     // its epoch on the source switch).
-    if (hiresClockBegin()) {
+    if (hiresClockBegin())
+    {
         Serial.println(F("[CLOCK] 1MHz hardware timebase active (TIMER4 + HFXO)"));
-    } else {
+    }
+    else
+    {
         Serial.println(F("[CLOCK] WARNING: hardware timebase unavailable - falling back to tick clock (~1ms resolution)"));
     }
 
