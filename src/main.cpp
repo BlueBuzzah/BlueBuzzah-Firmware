@@ -770,15 +770,33 @@ void loop()
 
     // Motor events handled by motor task - no polling needed
 
-    // Process Serial commands (uses serial-only handler for SET_ROLE, GET_ROLE)
-    if (Serial.available())
+    // Process Serial commands (non-blocking accumulation - readStringUntil()
+    // blocks up to 1s on partial input, which would blow the 70-150ms
+    // macrocycle lead window mid-therapy)
     {
-        String input = Serial.readStringUntil('\n');
-        input.trim();
-        if (input.length() > 0)
+        static char serialBuf[96];
+        static uint8_t serialLen = 0;
+        while (Serial.available())
         {
-            Serial.printf("[SERIAL] Command: %s\n", input.c_str());
-            handleSerialCommand(input.c_str());
+            char c = static_cast<char>(Serial.read());
+            if (c == '\n' || c == '\r')
+            {
+                if (serialLen > 0)
+                {
+                    serialBuf[serialLen] = '\0';
+                    serialLen = 0;
+                    Serial.printf("[SERIAL] Command: %s\n", serialBuf);
+                    handleSerialCommand(serialBuf);
+                }
+            }
+            else if (serialLen < sizeof(serialBuf) - 1)
+            {
+                serialBuf[serialLen++] = c;
+            }
+            else
+            {
+                serialLen = 0;  // Overflow - discard the line
+            }
         }
     }
 
