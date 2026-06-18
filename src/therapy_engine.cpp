@@ -632,12 +632,6 @@ void TherapyEngine::executeMacrocycleStep() {
             _macrocycleBaseTime = nowUs + leadTimeUs;
             _currentMacrocycle.baseTime = _macrocycleBaseTime;
 
-            // DEBUG: Log lead time calculation
-            Serial.printf("[LEADTIME] leadTime=%lu nowUs=%lu baseTime=%lu\n",
-                          (unsigned long)leadTimeUs,
-                          (unsigned long)(nowUs / 1000),
-                          (unsigned long)(_macrocycleBaseTime / 1000));
-
             // Send macrocycle to SECONDARY
             if (_sendMacrocycleCallback) {
                 _sendMacrocycleCallback(_currentMacrocycle);

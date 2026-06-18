@@ -25,6 +25,7 @@ BLEManager::BLEManager() :
     _connectCallback(nullptr),
     _disconnectCallback(nullptr),
     _messageCallback(nullptr),
+    _txStampCallback(nullptr),
     _txHead(0),
     _txTail(0),
     _txCount(0)
@@ -458,38 +459,48 @@ bool BLEManager::send(uint16_t connHandleParam, const char* message) {
 }
 
 bool BLEManager::enqueueTx(uint16_t connHandle, const char* message) {
-    // Check if queue is full
-    if (_txCount >= TX_QUEUE_SIZE) {
-        Serial.println(F("[BLE] TX queue full, dropping message"));
-        return false;
-    }
-
-    // Calculate message length
+    // Validate length before entering the critical section (no shared state read)
     size_t msgLen = strlen(message);
     if (msgLen >= MESSAGE_BUFFER_SIZE - 1) {
         Serial.println(F("[BLE] ERROR: Message too large for TX buffer"));
         return false;
     }
 
-    // Find free slot
+    // Claim a slot atomically: capacity check, pending flag, tail advance and count
+    // increment must be one unit to prevent a BLE-task enqueue racing the main-loop
+    // enqueue or processTxQueue between the check and the claim.
+    uint32_t primask = __get_PRIMASK();
+    __disable_irq();
+
+    if (_txCount >= TX_QUEUE_SIZE) {
+        __set_PRIMASK(primask);
+        Serial.println(F("[BLE] TX queue full, dropping message"));
+        return false;
+    }
+
     TxEntry* entry = &_txQueue[_txTail];
     if (entry->pending) {
-        // Should not happen if _txCount is accurate
+        __set_PRIMASK(primask);
         Serial.println(F("[BLE] TX queue corruption detected"));
         return false;
     }
 
-    // Copy message + EOT to entry buffer
+    entry->pending = true;
+    _txTail = static_cast<uint8_t>((_txTail + 1) % TX_QUEUE_SIZE);
+    _txCount++;
+
+    __set_PRIMASK(primask);
+
+    // Fill entry fields after releasing the critical section — safe because
+    // processTxQueue only consumes from _txHead and cannot reach this slot
+    // until it advances past all earlier entries. length and bytesSent must
+    // be set before returning.
     memcpy(entry->data, message, msgLen);
     entry->data[msgLen] = EOT_CHAR;
     entry->length = static_cast<uint16_t>(msgLen + 1);
     entry->bytesSent = 0;
     entry->connHandle = connHandle;
-    entry->pending = true;
-
-    // Advance tail
-    _txTail = static_cast<uint8_t>((_txTail + 1) % TX_QUEUE_SIZE);
-    _txCount++;
+    entry->stampKind = TxStampKind::NONE;
 
     return true;
 }
@@ -499,18 +510,68 @@ void BLEManager::processTxQueue() {
     for (uint8_t i = 0; i < 4 && _txCount > 0; i++) {
         TxEntry* entry = &_txQueue[_txHead];
         if (!entry->pending) {
-            // Advance head if slot is empty (shouldn't happen)
+            // Advance head if slot is empty (shouldn't happen). pending is
+            // already false here; only the head/count bookkeeping needs fixing.
+            uint32_t primask = __get_PRIMASK();
+            __disable_irq();
             _txHead = static_cast<uint8_t>((_txHead + 1) % TX_QUEUE_SIZE);
+            _txCount--;
+            __set_PRIMASK(primask);
             continue;
+        }
+
+        // Late timestamping: serialize sync messages at radio handoff so the
+        // embedded T1/T3 reflects when bytes actually reach the SoftDevice.
+        // Re-serialized with a fresh timestamp on every retry until the first
+        // byte is accepted.
+        uint64_t stampTime = 0;
+        // bytesSent stays 0 until tryWriteImmediate accepts at least one byte, so this re-serializes on every retry
+        if (entry->stampKind != TxStampKind::NONE && entry->bytesSent == 0) {
+            stampTime = getMicros();
+            SyncCommand cmd;
+            if (entry->stampKind == TxStampKind::PING_T1) {
+                cmd = SyncCommand::createPingWithT1(entry->stampSeqId, stampTime);
+            } else if (entry->stampAnchor != 0) {
+                cmd = SyncCommand::createPongWithAnchor(entry->stampSeqId, entry->stampT2,
+                                                        stampTime, entry->stampAnchor);
+            } else {
+                cmd = SyncCommand::createPongWithTimestamps(entry->stampSeqId, entry->stampT2, stampTime);
+            }
+
+            // Worst case ~82 bytes: PONG with 64-bit timestamp + 6 anchor-format data fields
+            char msg[128];
+            if (!cmd.serialize(msg, sizeof(msg))) {
+                uint32_t seqId = entry->stampSeqId;
+                uint32_t primask = __get_PRIMASK();
+                __disable_irq();
+                entry->pending = false;
+                _txHead = static_cast<uint8_t>((_txHead + 1) % TX_QUEUE_SIZE);
+                _txCount--;
+                __set_PRIMASK(primask);
+                Serial.printf("[BLE] ERROR: stamped sync serialize failed seq=%lu\n", (unsigned long)seqId);
+                continue;
+            }
+            size_t msgLen = strlen(msg);
+            memcpy(entry->data, msg, msgLen);
+            entry->data[msgLen] = EOT_CHAR;
+            entry->length = static_cast<uint16_t>(msgLen + 1);
         }
 
         // Try to write remaining bytes (non-blocking)
         size_t remaining = entry->length - entry->bytesSent;
         size_t written = tryWriteImmediate(entry->connHandle,
-                                           (const uint8_t*)(entry->data + entry->bytesSent),
+                                           reinterpret_cast<const uint8_t*>(entry->data + entry->bytesSent),
                                            remaining);
 
         if (written > 0) {
+            // First bytes accepted: the deferred stamp is now final
+            if (entry->stampKind != TxStampKind::NONE && entry->bytesSent == 0) {
+                if (_txStampCallback) {
+                    _txStampCallback(entry->stampKind, entry->stampSeqId, stampTime);
+                }
+                entry->stampKind = TxStampKind::NONE;
+            }
+
             entry->bytesSent = static_cast<uint16_t>(entry->bytesSent + written);
 
             // Check if complete
@@ -524,9 +585,12 @@ void BLEManager::processTxQueue() {
                 }
 
                 // Mark slot free and advance head
+                uint32_t primask = __get_PRIMASK();
+                __disable_irq();
                 entry->pending = false;
                 _txHead = static_cast<uint8_t>((_txHead + 1) % TX_QUEUE_SIZE);
                 _txCount--;
+                __set_PRIMASK(primask);
             }
         } else {
             // Buffer full - stop processing this iteration, will retry next update()
@@ -598,6 +662,66 @@ void BLEManager::setDisconnectCallback(BLEDisconnectCallback callback) {
 
 void BLEManager::setMessageCallback(BLEMessageCallback callback) {
     _messageCallback = callback;
+}
+
+void BLEManager::setTxStampCallback(BLETxStampCallback callback) {
+    _txStampCallback = callback;
+}
+
+bool BLEManager::sendPingStamped(uint32_t seqId) {
+    uint16_t handle = getSecondaryHandle();
+    if (handle == CONN_HANDLE_INVALID) {
+        return false;
+    }
+    return enqueueStamped(handle, TxStampKind::PING_T1, seqId, 0, 0);
+}
+
+bool BLEManager::sendPongStamped(uint16_t connHandle, uint32_t seqId, uint64_t t2, uint64_t anchorUs) {
+    if (connHandle == CONN_HANDLE_INVALID) {
+        return false;
+    }
+    return enqueueStamped(connHandle, TxStampKind::PONG_T3, seqId, t2, anchorUs);
+}
+
+bool BLEManager::enqueueStamped(uint16_t connHandle, TxStampKind kind, uint32_t seqId,
+                                uint64_t t2, uint64_t anchorUs) {
+    // Claim a slot atomically — same pattern as enqueueTx.
+    uint32_t primask = __get_PRIMASK();
+    __disable_irq();
+
+    if (_txCount >= TX_QUEUE_SIZE) {
+        __set_PRIMASK(primask);
+        Serial.println(F("[BLE] TX queue full, dropping sync message"));
+        return false;
+    }
+
+    TxEntry* entry = &_txQueue[_txTail];
+    if (entry->pending) {
+        __set_PRIMASK(primask);
+        Serial.println(F("[BLE] TX queue corruption detected"));
+        return false;
+    }
+
+    entry->pending = true;
+    _txTail = static_cast<uint8_t>((_txTail + 1) % TX_QUEUE_SIZE);
+    _txCount++;
+
+    __set_PRIMASK(primask);
+
+    // Fill stamp fields after releasing the critical section. Safe because:
+    // (a) the consumer (processTxQueue) runs in the loop task (prio 1) and can
+    //     never preempt the BLE task (prio 3), the only other caller of this path;
+    // (b) the fill is straight-line code with no blocking call, so it completes
+    //     before this task yields and the consumer can observe the claimed slot.
+    entry->stampKind = kind;
+    entry->stampSeqId = seqId;
+    entry->stampT2 = t2;
+    entry->stampAnchor = anchorUs;
+    entry->length = 0;      // serialized at write time
+    entry->bytesSent = 0;
+    entry->connHandle = connHandle;
+
+    return true;
 }
 
 // =============================================================================

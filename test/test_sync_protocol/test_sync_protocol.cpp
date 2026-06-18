@@ -2037,6 +2037,137 @@ void test_Macrocycle_baseTime_full_precision(void) {
 }
 
 // =============================================================================
+// CLOCK-SOURCE SWITCH REGRESSION TESTS
+// =============================================================================
+
+void test_getMicros_no_false_overflow_after_reset(void) {
+    // After resetMicrosOverflow(), a fresh low time value must not be
+    // interpreted as a wrap (regression guard for clock-source switching)
+    // NB: native stubs always report hires=false, so the s_usingHires switch branch
+    // is hardware-only; this exercises the reset+rebase analog.
+    mockAdvanceMicros(4000000000UL);
+    (void)getMicros();
+    // Simulate a clock-source restart: tracking reset + time rebased lower
+    resetMicrosOverflow();
+    mockResetTime();
+    mockAdvanceMicros(100);
+    uint64_t t = getMicros();
+    TEST_ASSERT_EQUAL_UINT32(0, (uint32_t)(t >> 32));
+    TEST_ASSERT_EQUAL_UINT32(100, (uint32_t)t);
+}
+
+// =============================================================================
+// MAINTENANCE-MODE QUALITY-GATED EMA UPDATE TESTS
+// =============================================================================
+
+void test_maintenance_rejects_high_rtt(void) {
+    SimpleSyncProtocol sync;
+    for (int i = 0; i < 5; i++) sync.addOffsetSample(1000);
+    TEST_ASSERT_TRUE(sync.isClockSyncValid());
+
+    // Seed min-RTT with a clean sample
+    TEST_ASSERT_TRUE(sync.updateOffsetEMAWithQuality(1000, 10000));
+    // Sample far above min+margin is rejected even though below the 60ms ceiling
+    TEST_ASSERT_FALSE(sync.updateOffsetEMAWithQuality(4000, 35000));
+    // Sample above the hard ceiling is always rejected
+    TEST_ASSERT_FALSE(sync.updateOffsetEMAWithQuality(1000, 70000));
+}
+
+void test_maintenance_innovation_gate(void) {
+    SimpleSyncProtocol sync;
+    for (int i = 0; i < 5; i++) sync.addOffsetSample(0);
+    TEST_ASSERT_TRUE(sync.isClockSyncValid());
+    TEST_ASSERT_TRUE(sync.updateOffsetEMAWithQuality(0, 10000));
+
+    // A 20ms jump is rejected SYNC_INNOVATION_REJECT_LIMIT times...
+    for (int i = 0; i < SYNC_INNOVATION_REJECT_LIMIT; i++) {
+        TEST_ASSERT_FALSE(sync.updateOffsetEMAWithQuality(20000, 10000));
+    }
+    // ...then accepted as a genuine step change
+    TEST_ASSERT_TRUE(sync.updateOffsetEMAWithQuality(20000, 10000));
+}
+
+void test_maintenance_min_rtt_decay(void) {
+    SimpleSyncProtocol sync;
+    for (int i = 0; i < 5; i++) sync.addOffsetSample(0);
+    TEST_ASSERT_TRUE(sync.updateOffsetEMAWithQuality(0, 10000));  // min = 10ms
+
+    // Link degraded to 25ms RTT: initially rejected (25 > 10+10),
+    // but min creeps up by SYNC_MIN_RTT_DECAY_US per sample until accepted
+    bool accepted = false;
+    for (int i = 0; i < 40 && !accepted; i++) {
+        accepted = sync.updateOffsetEMAWithQuality(0, 25000);
+    }
+    TEST_ASSERT_TRUE(accepted);
+}
+
+void test_maintenance_routes_to_sample_collection_before_valid(void) {
+    SimpleSyncProtocol sync;
+    TEST_ASSERT_FALSE(sync.isClockSyncValid());
+    // Before convergence the method must behave like addOffsetSampleWithQuality
+    TEST_ASSERT_TRUE(sync.updateOffsetEMAWithQuality(500, 10000));
+    TEST_ASSERT_EQUAL_UINT8(1, sync.getOffsetSampleCount());
+}
+
+void test_maintenance_step_change_reanchors(void) {
+    SimpleSyncProtocol sync;
+    for (int i = 0; i < 5; i++) sync.addOffsetSample(0);
+    TEST_ASSERT_TRUE(sync.updateOffsetEMAWithQuality(0, 10000));
+
+    // Persistent 20ms step: 5 rejects, then accept must RE-ANCHOR (not EMA-blend)
+    for (int i = 0; i < SYNC_INNOVATION_REJECT_LIMIT; i++) {
+        TEST_ASSERT_FALSE(sync.updateOffsetEMAWithQuality(20000, 10000));
+    }
+    TEST_ASSERT_TRUE(sync.updateOffsetEMAWithQuality(20000, 10000));
+    // After re-anchor the median sits at the new value...
+    TEST_ASSERT_EQUAL_INT32(20000, (int32_t)sync.getMedianOffset());
+    // ...so the very next sample at the new level passes without rejection
+    TEST_ASSERT_TRUE(sync.updateOffsetEMAWithQuality(20000, 10000));
+}
+
+void test_drift_estimation_survives_fast_cadence(void) {
+    SimpleSyncProtocol sync;
+    for (int i = 0; i < 5; i++) sync.addOffsetSample(0);
+    TEST_ASSERT_TRUE(sync.isClockSyncValid());
+
+    // Accepted samples every 250ms (4Hz) with a steady +25us/250ms ramp
+    // (= 100 ppm drift). With the per-sample anchor advance, elapsed never
+    // reaches SYNC_MIN_DRIFT_INTERVAL_MS and the rate stays 0 forever.
+    int64_t offset = 0;
+    for (int i = 0; i < 12; i++) {
+        mockAdvanceMillis(250);
+        offset += 25;
+        sync.updateOffsetEMAWithQuality(offset, 10000);
+    }
+    TEST_ASSERT_TRUE(sync.getDriftRate() > 0.0f);
+}
+
+// =============================================================================
+// ANCHOR PONG FACTORY TESTS
+// =============================================================================
+
+void test_createPongWithAnchor_roundtrip(void) {
+    // 6-field format: T2High|T2Low|T3High|T3Low|AnchorHigh|AnchorLow
+    // (always full-width so the anchor fields are positionally unambiguous)
+    SyncCommand pong = SyncCommand::createPongWithAnchor(
+        7, 0x100000001ULL, 0x100000002ULL, 0x100000003ULL);
+    char buf[160];
+    TEST_ASSERT_TRUE(pong.serialize(buf, sizeof(buf)));
+
+    SyncCommand parsed;
+    TEST_ASSERT_TRUE(parsed.deserialize(buf));
+    TEST_ASSERT_TRUE(parsed.hasData("4"));
+    uint64_t t2 = ((uint64_t)parsed.getDataUnsigned("0", 0) << 32) | parsed.getDataUnsigned("1", 0);
+    uint64_t t3 = ((uint64_t)parsed.getDataUnsigned("2", 0) << 32) | parsed.getDataUnsigned("3", 0);
+    uint64_t anchor = ((uint64_t)parsed.getDataUnsigned("4", 0) << 32) | parsed.getDataUnsigned("5", 0);
+    TEST_ASSERT_EQUAL_UINT32(1, (uint32_t)t2);
+    TEST_ASSERT_EQUAL_UINT32(2, (uint32_t)t3);
+    TEST_ASSERT_EQUAL_UINT32(3, (uint32_t)anchor);
+    TEST_ASSERT_EQUAL_UINT32(1, (uint32_t)(t2 >> 32));
+    TEST_ASSERT_EQUAL_UINT32(1, (uint32_t)(anchor >> 32));
+}
+
+// =============================================================================
 // TEST RUNNER
 // =============================================================================
 
@@ -2265,6 +2396,22 @@ int main(int argc, char **argv) {
     RUN_TEST(test_Macrocycle_large_clock_offset);
     RUN_TEST(test_Macrocycle_negative_large_clock_offset);
     RUN_TEST(test_Macrocycle_baseTime_full_precision);
+
+    // Clock-source switch regression guard
+    RUN_TEST(test_getMicros_no_false_overflow_after_reset);
+
+    // Maintenance-mode quality-gated EMA update
+    RUN_TEST(test_maintenance_rejects_high_rtt);
+    RUN_TEST(test_maintenance_innovation_gate);
+    RUN_TEST(test_maintenance_min_rtt_decay);
+    RUN_TEST(test_maintenance_routes_to_sample_collection_before_valid);
+    RUN_TEST(test_maintenance_step_change_reanchors);
+
+    // Drift estimation must survive fast (4Hz) accepted-sample cadence
+    RUN_TEST(test_drift_estimation_survives_fast_cadence);
+
+    // Anchor-paired PONG factory: 6-field round-trip
+    RUN_TEST(test_createPongWithAnchor_roundtrip);
 
     return UNITY_END();
 }

@@ -300,6 +300,18 @@ For precise inter-device latency measurement, external equipment is required:
 2. **Contact microphone** - Record vibrations, analyze onset timing (~100µs accuracy)
 3. **High-speed camera** - 240fps smartphone slow-mo (~4ms resolution)
 
+---
+
+## 2026-06-10 — Hardware timebase note
+
+The accuracy figures in the "Accuracy Bounds" table above (clock sync ±500µs, total bilateral sync <1ms) were originally derived from measurements taken against the FreeRTOS tick clock. Because DWT was never enabled, `micros()` on nRF52840 was tick-quantized at ~976µs resolution; those figures cannot be interpreted as true sub-millisecond measurements.
+
+As of the hardware timebase rework, `getMicros()` reads a 1MHz NRF_TIMER4 counter clocked from the HFXO crystal (1µs resolution). The accuracy figures are pending re-measurement on the new timebase — see `docs/SYNC_VALIDATION.md` for the measurement protocol and acceptance gates, and `docs/TIMING_BASELINE.md` for results as they are recorded.
+
+The execution-drift numbers in `docs/TIMING_BASELINE.md` (December 2025 baseline: +473µs PRIMARY, +500µs SECONDARY average) are similarly affected: a significant portion of those averages was tick-quantization error, not actual motor activation latency.
+
+---
+
 ## Related Documentation
 
 - [SYNCHRONIZATION_PROTOCOL.md](SYNCHRONIZATION_PROTOCOL.md) - Clock sync protocol details

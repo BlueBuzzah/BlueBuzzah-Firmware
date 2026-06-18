@@ -264,6 +264,16 @@ public:
     static SyncCommand createPongWithTimestamps(uint32_t sequenceId, uint64_t t2, uint64_t t3);
 
     /**
+     * @brief Create PONG carrying T2, T3 and the rx connection-event anchor
+     *
+     * Always uses full 64-bit field encoding (6 data fields) so the anchor
+     * fields are positionally unambiguous:
+     *   0=T2High 1=T2Low 2=T3High 3=T3Low 4=AnchorHigh 5=AnchorLow
+     */
+    static SyncCommand createPongWithAnchor(uint32_t sequenceId, uint64_t t2,
+                                            uint64_t t3, uint64_t anchorUs);
+
+    /**
      * @brief Create DEBUG_FLASH command for synchronized LED flash
      * @param sequenceId Sequence ID for the command
      */
@@ -447,10 +457,10 @@ public:
     /**
      * @brief Check if sync has been performed
      */
-    bool isSynced() const { return _lastSyncTime != 0; }
+    bool isSynced() const { return _lastSyncTime != UINT32_MAX; }
 
     /**
-     * @brief Get the time of last sync measurement (millis)
+     * @brief Get the syncNowMs() epoch timestamp of last sync (UINT32_MAX if never synced)
      */
     uint32_t getLastSyncTime() const { return _lastSyncTime; }
 
@@ -545,6 +555,7 @@ public:
         _measuredLatencyUs = 0;
         _smoothedLatencyUs = 0;
         _sampleCount = 0;
+        _minRttUs = UINT32_MAX;
     }
 
     // =========================================================================
@@ -605,6 +616,26 @@ public:
      * @param offset New offset measurement in microseconds
      */
     void updateOffsetEMA(int64_t offset);
+
+    /**
+     * @brief Quality-gated offset update for continuous maintenance
+     *
+     * Routes to addOffsetSampleWithQuality() until initial sync is valid.
+     * After convergence applies three gates before the EMA update:
+     *   1. Hard RTT ceiling (SYNC_RTT_QUALITY_THRESHOLD_US)
+     *   2. Lucky-packet gate: RTT must be near the tracked minimum
+     *      (minimal queuing both ways = PTP symmetry assumption holds)
+     *   3. Innovation gate: offset jumps > SYNC_INNOVATION_GATE_US rejected
+     *      unless persistent for SYNC_INNOVATION_REJECT_LIMIT samples
+     *
+     * @return true if the sample was accepted
+     */
+    [[nodiscard]] bool updateOffsetEMAWithQuality(int64_t offset, uint32_t rttUs);
+
+    /**
+     * @brief Tracked minimum RTT used by the lucky-packet gate (µs)
+     */
+    uint32_t getMinRtt() const { return _minRttUs; }
 
     /**
      * @brief Reset clock synchronization state
@@ -769,7 +800,7 @@ private:
     static constexpr uint8_t OFFSET_SAMPLE_COUNT = 10;
 
     int64_t _currentOffset;       // Current clock offset (microseconds)
-    uint32_t _lastSyncTime;       // Time of last sync (millis)
+    uint32_t _lastSyncTime;       // syncNowMs() epoch of last sync; UINT32_MAX = never synced
 
     // Latency measurement with EMA smoothing
     uint32_t _measuredLatencyUs;  // Raw one-way latency (most recent)
@@ -788,12 +819,18 @@ private:
     int64_t _lastMeasuredOffset;  // Previous offset measurement for drift calculation
     uint32_t _lastOffsetTime;     // Time of last offset measurement (millis)
     float _driftRateUsPerMs;      // Estimated drift rate (microseconds per millisecond)
+    int64_t _driftAnchorOffset;   // Offset at the start of the current drift-measurement window
+    uint32_t _driftAnchorTime;    // syncNowMs() at the start of the window (0 = unset)
+
+    // Maintenance-mode gating state
+    uint32_t _minRttUs;           // Decaying minimum RTT (lucky-packet gate)
+    uint8_t _innovationRejects;   // Consecutive innovation-gate rejections
 
     // Warm-start cache for quick reconnection
     struct WarmStartCache {
         int64_t cachedOffset;        // Last known median offset
         float cachedDriftRate;       // Last known drift rate (us/ms)
-        uint32_t cacheTimestamp;     // millis() when cached
+        uint32_t cacheTimestamp;     // syncNowMs() epoch (getMicros()/1000) when cached
         bool isValid;                // Cache contains usable data
 
         WarmStartCache() : cachedOffset(0), cachedDriftRate(0.0f),

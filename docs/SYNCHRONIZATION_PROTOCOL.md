@@ -1,7 +1,7 @@
 # BlueBuzzah Synchronization Protocol
 
-**Version:** 2.5.0
-**Last Updated:** 2026-01-18
+**Version:** 2.6.0
+**Last Updated:** 2026-06-10
 
 ---
 
@@ -11,9 +11,11 @@ BlueBuzzah uses a bilateral synchronization protocol to coordinate haptic feedba
 
 | Metric | Target | Achieved |
 |--------|--------|----------|
-| Bilateral sync accuracy | <50ms | <1ms |
-| Clock offset precision | <5ms | <500µs |
+| Bilateral sync accuracy | <50ms | pending re-validation (see SYNC_VALIDATION.md) |
+| Clock offset precision | <5ms | pending re-validation (see SYNC_VALIDATION.md) |
 | BLE latency compensation | Yes | PTP 4-timestamp |
+
+> **Note on previous figures:** The "<1ms" and "<500µs" values cited in earlier revisions were measured against the FreeRTOS tick clock, which has ~976µs quantization because DWT was never enabled. Those numbers reflect tick-quantized timestamps, not true sub-millisecond resolution. The system is being re-baselined on the 1MHz hardware timebase introduced in this revision; see SYNC_VALIDATION.md for acceptance gates.
 
 ### Core Principles
 
@@ -82,7 +84,7 @@ sequenceDiagram
             S->>P: MACROCYCLE_ACK
             Note over P,S: Both gloves execute 12 events with <2ms sync
         end
-        loop Every 1s (unified keepalive + sync)
+        loop Every 250ms during therapy (4Hz)
             P->>S: PING (T1)
             S->>P: PONG (T2, T3)
             Note over P: Continuous clock offset maintenance
@@ -187,14 +189,37 @@ Excluding processing time provides:
 - Better quality filtering (rejects poor BLE conditions, not slow processing)
 - Improved lead time precision (adapts to actual network conditions)
 
+### Transmit Timestamping
+
+T1 (PING sent) and T3 (PONG sent) are stamped at **SoftDevice handoff** rather than at message creation. Both PING and PONG are enqueued as deferred-stamp TX entries; the timestamp is filled by the `onTxStamped` callback inside `processTxQueue` at the moment the BLE stack accepts the packet for transmission.
+
+**Why this matters:** Between message construction and the BLE radio actually picking up a packet, the main loop may run other work (sensor reads, state-machine ticks, motor-queue processing). Stamping at creation captures that variable queuing delay as apparent propagation time, introducing an asymmetric bias into PTP offset samples. Stamping at handoff removes that latency from the measurement.
+
+`onTxStamped` records `pingT1` and `pingSeq` for PING packets so the offset calculation can correlate the correct T1 with the matching PONG response.
+
+**PONG sequence matching:** The PONG handler validates that the received sequence number matches the in-flight `pingSeq`. A sequence-mismatched (stale) PONG is discarded without clearing in-flight state or consuming the keepalive credit, preventing stale replies from poisoning offset samples or triggering a false keepalive timeout.
+
 ### Filtering and Maintenance
 
 - **Initial sync:** Idle keepalive (1s) accumulates samples, median offset selected
-- **Quality filter:** Exchanges with RTT > 60ms are discarded (network latency only)
 - **Minimum valid:** At least 5 good samples required (~5s after connect)
-- **Drift compensation:** Ongoing sync every 1s corrects for crystal drift
+- **Drift compensation:** Ongoing sync at 4Hz during therapy / 1Hz idle corrects for crystal drift
 - **Smoothing:** Exponential moving average prevents sudden jumps
 - **Drift rate capping:** Dual caps for safety (see below)
+
+#### Maintenance Sample Quality Gates
+
+Three gates are applied in order before a maintenance sample updates the EMA:
+
+1. **RTT hard ceiling (60ms):** Any exchange with RTT > 60ms is discarded. This rejects samples polluted by BLE retransmissions where the network path is too lossy to yield a reliable offset.
+
+2. **Lucky-packet gate (decaying minimum RTT):** A tracked per-session minimum RTT (`minRTT`) is maintained and decays upward by `SYNC_MIN_RTT_DECAY_US` (200µs) per sample to allow gradual adaptation. Only exchanges with `RTT <= minRTT + SYNC_LUCKY_RTT_MARGIN_US` (10ms) are accepted. This gate selects low-jitter "lucky" packets whose round-trip approximates the true one-way propagation time, providing better offset estimates.
+
+3. **Innovation gate with hard re-anchor on persistence:** If a candidate offset deviates from the current EMA by more than `SYNC_INNOVATION_GATE_US` (5ms) it is initially rejected. If the same direction of deviation persists across `SYNC_INNOVATION_REJECT_LIMIT` (5) consecutive samples, the protocol interprets this as a true step change (e.g., from a long disconnect or oscillator retrim) and **hard re-anchors** the offset to the new value rather than blending it in via EMA. This prevents the EMA from chasing transient noise while still tracking genuine clock jumps.
+
+#### Dedicated Drift-Measurement Anchor
+
+Drift rate is measured over wall-time windows of at least `SYNC_MIN_DRIFT_INTERVAL_MS` (500ms) using a dedicated anchor pair (`_driftAnchorOffset` / `_driftAnchorTime`). This is separate from the EMA update path, so the 4Hz sync cadence during therapy does not stall drift estimation by providing too-short intervals.
 
 ### Outlier Rejection
 
@@ -475,7 +500,10 @@ COMMAND:field1|field2|field3|...
 | Message | Direction | Fields | Example |
 |---------|-----------|--------|---------|
 | `PING` | P → S | seq, T1 | `PING:42\|1000000` |
-| `PONG` | S → P | seq, 0, T2, T3 | `PONG:42\|0\|1000500\|1000600` |
+| `PONG` (legacy) | S → P | seq, 0, T2, T3 | `PONG:42\|0\|1000500\|1000600` |
+| `PONG` (anchor, 6 data fields) | S → P | seq, 0, T2High, T2Low, T3High, T3Low, AnchorHigh, AnchorLow — *see anchor section* | `PONG:42\|0\|0\|1000500\|0\|1000600\|0\|999800` |
+
+PONG has two wire forms; see [Connection-Anchor Timestamping](#connection-anchor-timestamping-experimental) for the 6-data-field format and detection rules. When anchor timestamping is disabled (default), only the legacy 4-field form is used.
 
 **Unified Keepalive + Clock Sync:**
 
@@ -483,14 +511,15 @@ The protocol uses a single unified mechanism for both keepalive and clock synchr
 
 | State | Mechanism | Interval | Purpose |
 |-------|-----------|----------|---------|
-| All states | PING/PONG | 1 second | Clock sync + keepalive (unified) |
+| Idle / no session | PING/PONG | 1 second | Clock sync + keepalive (unified) |
+| Therapy active | PING/PONG | 250ms (4Hz) | Higher-cadence sync during therapy |
 
 - **PING** provides: Clock sync timestamp (T1) + proof PRIMARY is alive
 - **PONG** provides: Clock sync response (T2, T3) + proof SECONDARY is alive
-- **Continuous sync:** Clock offset is maintained every second, even during therapy
+- **Continuous sync:** Clock offset is maintained throughout all states
 - **No separate keepalive:** PING/PONG serves both purposes efficiently
 
-This unified approach provides continuous clock synchronization (max 1s between samples) throughout all session states, eliminating clock drift during therapy.
+This unified approach provides continuous clock synchronization throughout all session states. The increased 4Hz cadence during therapy reduces the maximum interval between offset updates from 1s to 250ms, improving drift-compensation responsiveness.
 
 ### Therapy Messages
 
@@ -592,6 +621,62 @@ The outlier rejection uses MAD (Median Absolute Deviation) with minimum 5ms:
 
 ---
 
+## Connection-Anchor Timestamping (Experimental)
+
+> **Status:** Off by default (`SYNC_ANCHOR_TIMESTAMPING_ENABLED 0`). Both gloves must be built with the same flag value; mismatched builds will produce incompatible PONG wire formats.
+
+### Motivation
+
+Standard PTP offset estimation averages out asymmetric BLE path delays. When the SoftDevice schedules the radio connection event at a predictable wall-clock instant on both devices, each glove can record an independent "anchor" timestamp of that event and use the difference as a direct physical clock comparison — bypassing the asymmetry problem entirely.
+
+### Radio Notification Anchors
+
+A radio-notification ISR (SWI1, priority 2) fires approximately 800µs before each connection event. The ISR records the local `getMicros()` value into a 16-slot ring buffer (`SYNC_ANCHOR_RING_SIZE`). Because the SoftDevice schedules connection events at the same wall-clock instant on both ends of a link, the difference between PRIMARY's anchor and SECONDARY's anchor is a direct measure of clock offset without any assumption about path symmetry.
+
+### 6-Data-Field PONG Wire Format
+
+When anchor timestamping is enabled, SECONDARY attaches its most recent rx anchor to the PONG reply using the extended wire format created by `createPongWithAnchor`.
+
+> **Wire framing note:** The standard `PONG:seq|timestamp|...` framing header (sequence number and the legacy placeholder field) precedes these data fields. The table below describes the six data fields that follow that framing header.
+
+| Data field index | Name | Description |
+|-----------------|------|-------------|
+| 0 | T2High | High 32 bits of T2 (PING rx timestamp) |
+| 1 | T2Low | Low 32 bits of T2 |
+| 2 | T3High | High 32 bits of T3 (PONG tx timestamp) |
+| 3 | T3Low | Low 32 bits of T3 |
+| 4 | AnchorHigh | High 32 bits of SECONDARY rx anchor |
+| 5 | AnchorLow | Low 32 bits of SECONDARY rx anchor |
+
+PRIMARY detects the anchor format by the presence of data field index 4 (`hasData("4")`), which only the anchor form populates. The legacy 64-bit form stops at data field index 3; the legacy short form stops at data field index 1. The legacy forms are silently handled as plain PTP exchanges.
+
+### Anchor Pairing Rules
+
+**SECONDARY (rx anchor):** The rx anchor attached to each PONG is unambiguous — it is the most recent anchor that arrived within `SYNC_ANCHOR_RX_WINDOW_US` (15ms) before the PONG rx callback. Because connection events are regular, there is normally exactly one candidate.
+
+**PRIMARY (tx anchor):** After T1 is stamped at SoftDevice handoff, PRIMARY searches its anchor ring for the first anchor that arrives within `SYNC_ANCHOR_TX_WINDOW_US` (25ms) of T1. The 25ms window is approximately 2× the maximum BLE connection interval, which is long enough to always capture the next connection event after the PING is handed off.
+
+### Offset Calculation
+
+```text
+anchorOffset = secondaryAnchor - primaryAnchor - SYNC_ANCHOR_BIAS_US
+```
+
+`SYNC_ANCHOR_BIAS_US` is a calibrated constant (default 0) that corrects for any systematic asymmetry between the central (PRIMARY) and peripheral (SECONDARY) radio-event timing. Positive values correct for peripheral RX-window widening where PRIMARY's anchor fires slightly early relative to SECONDARY's.
+
+The anchor offset replaces the PTP offset for that sample when it is considered plausible (see pre-filter below). PTP is still calculated on every exchange and used as the fallback.
+
+### Pre-filter Against Converged Median
+
+Before an anchor offset is accepted, it is checked against the current converged PTP median. If the deviation exceeds `SYNC_ANCHOR_PREFILTER_US` (1.5ms), the anchor pair is rejected and the PTP offset for that exchange is used instead. This prevents implausible anchor readings (missed connection event, ring-wrap collision) from corrupting the EMA.
+
+### Caveats
+
+- **Both-gloves-same-flag requirement:** A glove running with the anchor flag enabled will emit 6-data-field PONGs. A peer running without the flag will not find data field index 4 and will treat the exchange as a plain PTP sample. This is safe (it falls back to PTP) but means anchor offsets will not be computed on the primary side. Mismatched builds must not be deployed together if anchor-based accuracy is the goal.
+- **Dual-link suppression:** On nRF52840, when PRIMARY is simultaneously connected to a phone app and to SECONDARY, the SoftDevice schedules two separate connection intervals. The anchor ring may contain events from either link. The `SYNC_ANCHOR_RX_WINDOW_US` and `SYNC_ANCHOR_TX_WINDOW_US` windows are sized conservatively to select the correct event, but this has not been validated under all dual-link timing configurations. Use with caution on dual-connected hardware.
+
+---
+
 ## Known Limitations
 
 ### SECONDARY Stateless Design
@@ -603,10 +688,12 @@ The SECONDARY glove operates statelessly—it receives macrocycles with clock of
 
 ### Timestamp Precision
 
-- `micros()` on nRF52840 has ~1µs resolution
-- `micros()` overflows at ~71 minutes (32-bit wraparound)
-- `getMicros()` wrapper detects and handles overflow using 64-bit counters
-- Maximum uptime before overflow issues: ~584 years (64-bit)
+The firmware uses a dedicated 1MHz hardware timebase (`hires_clock` module) rather than the FreeRTOS tick clock:
+
+- **Hardware timebase:** NRF_TIMER4 is configured as a 1MHz free-running counter clocked from the on-board 32MHz HFXO crystal. This gives 1µs resolution independent of the FreeRTOS tick rate (previously ~976µs quantization because DWT was never enabled).
+- **HFXO watchdog:** `loop()` calls the HFXO watchdog once per second to verify the crystal oscillator remains active. If the HFXO is lost the watchdog logs a warning; the clock continues from the last good counter value.
+- **Fallback path:** If `hiresClockBegin()` fails at boot (e.g., SoftDevice pre-empts TIMER4 allocation), `getMicros()` falls back to the FreeRTOS tick clock and logs the degradation. All sync time math (`syncNowMs()` = `getMicros() / 1000`) uses a single unified clock domain in either case.
+- **Overflow safety:** `getMicros()` returns a `uint64_t`. At 1MHz the 64-bit counter wraps at ~584,000 years; no runtime overflow handling is needed beyond the 64-bit type.
 
 ### Interrupt Safety
 
@@ -627,20 +714,31 @@ Sync state variables are accessed from both main loop and BLE callbacks. Key con
 
 | Parameter | Value | Description |
 |-----------|-------|-------------|
-| RTT quality threshold | 60ms | Discard samples with higher RTT |
-| Minimum valid samples | 5 | Required for valid sync (~5s from connect) |
-| Outlier threshold | 5ms | Offset outlier rejection (MAD-based filtering) |
-| PING/PONG interval | 1s | Unified keepalive + clock sync (all states) |
+| RTT quality threshold (`SYNC_RTT_QUALITY_THRESHOLD_US`) | 60ms | Hard ceiling — discard samples with higher RTT |
+| Minimum valid samples (`SYNC_MIN_VALID_SAMPLES`) | 5 | Required for valid sync (~5s from connect) |
+| Outlier threshold (`SYNC_OUTLIER_THRESHOLD_US`) | 5ms | Offset outlier rejection (MAD-based filtering) |
+| PING/PONG interval (idle) | 1s | Keepalive + clock sync when no therapy session active |
+| PING/PONG interval during therapy (`SYNC_ACTIVE_INTERVAL_MS`) | 250ms (4Hz) | Higher cadence while therapy is running |
 | Keepalive timeout (SECONDARY) | 6s | 6 missed PINGs = connection lost |
-| Keepalive timeout (PRIMARY) | 4s | During therapy (emergency shutdown) |
+| Keepalive timeout (PRIMARY) | 6s | During therapy (emergency shutdown) |
 | MACROCYCLE timeout | 10s | SECONDARY safety halt |
 | Lead time range | 70-150ms | Adaptive scheduling window |
 | Initial lead time | 35ms (clamped to 70ms) | Base value before RTT samples, clamped to min |
 | Processing overhead | 10ms | SECONDARY processing time allowance |
-| Max drift rate (measurement) | ±150 ppm | Measurement cap for plausibility |
-| Max drift rate (applied) | ±100 ppm | Conservative correction limit |
+| Max drift rate (measurement) (`SYNC_MAX_DRIFT_RATE_US_PER_MS`) | ±150 ppm | Measurement cap for plausibility |
+| Max drift rate (applied) (`SYNC_MAX_APPLIED_DRIFT_RATE_US_PER_MS`) | ±100 ppm | Conservative correction limit |
 | Warm-start validity | 15s | Cache valid after disconnect |
 | BLE connection interval | 7.5-10ms | Low-latency communication (6-8 BLE units) |
+| Lucky-packet RTT margin (`SYNC_LUCKY_RTT_MARGIN_US`) | 10ms | Accept only RTT ≤ minRTT + 10ms |
+| Minimum RTT decay (`SYNC_MIN_RTT_DECAY_US`) | 200µs/sample | Per-sample upward creep of tracked minRTT |
+| Innovation gate (`SYNC_INNOVATION_GATE_US`) | 5ms | Reject offset jumps larger than this threshold |
+| Innovation reject limit (`SYNC_INNOVATION_REJECT_LIMIT`) | 5 samples | Persistent deviation triggers hard re-anchor |
+| Min drift measurement interval (`SYNC_MIN_DRIFT_INTERVAL_MS`) | 500ms | Minimum window for drift rate estimation |
+| Anchor ring size (`SYNC_ANCHOR_RING_SIZE`) [experimental] | 16 slots | Radio-notification timestamps retained |
+| Anchor RX window (`SYNC_ANCHOR_RX_WINDOW_US`) [experimental] | 15ms | Max age of rx anchor vs rx callback |
+| Anchor TX window (`SYNC_ANCHOR_TX_WINDOW_US`) [experimental] | 25ms | Max lookahead from PING handoff to tx anchor |
+| Anchor bias (`SYNC_ANCHOR_BIAS_US`) [experimental] | 0µs | Calibrated central-vs-peripheral constant (set during bench validation) |
+| Anchor pre-filter (`SYNC_ANCHOR_PREFILTER_US`) [experimental] | 1.5ms | Reject anchor pairs deviating more than this from converged median |
 
 ---
 

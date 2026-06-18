@@ -33,6 +33,8 @@
 #include "deferred_queue.h"
 #include "activation_queue.h"
 #include "motor_event_buffer.h"
+#include "hires_clock.h"
+#include "radio_anchor.h"
 
 // =============================================================================
 // CONFIGURATION
@@ -101,6 +103,7 @@ static constexpr uint32_t PRIMARY_KEEPALIVE_TIMEOUT_MS = 6000; // 6 seconds
 // MUST be volatile: written in main loop, read in BLE callback
 volatile uint64_t pingStartTime = 0; // Timestamp when PING was sent (micros)
 volatile uint64_t pingT1 = 0;        // T1 for PTP offset calculation
+volatile uint32_t pingSeq = 0;       // Sequence id of the in-flight PING (32-bit: naturally atomic on Cortex-M4)
 
 // SP-C5 fix: Use binary semaphore instead of volatile bool to prevent missed signals
 // Old pattern had race: callback sets true, loop reads+clears, callback sets again, signal lost
@@ -184,6 +187,11 @@ static void preSelectNextActivation() {
  * Uses I2C pre-selection for faster activation when available.
  */
 static void executeMotorEvent(const MotorEvent& event) {
+#if SYNC_DEBUG_GPIO_ENABLED
+    if (event.type == MotorEventType::ACTIVATE) {
+        digitalToggle(SYNC_DEBUG_GPIO_PIN);
+    }
+#endif
     uint64_t beforeOp = getMicros();
 
     if (event.type == MotorEventType::ACTIVATE) {
@@ -307,6 +315,20 @@ static void motorTask(void* pvParameters) {
         }
 
         if (delayUs > 2000) {
+            // Use the idle window to pre-select the upcoming activation's I2C
+            // channel + frequency. Covers the FIRST event of a macrocycle,
+            // which otherwise always takes the ~500us slow path (pre-selection
+            // normally only happens after a DEACTIVATE). All I2C stays in
+            // motor-task context.
+            if (event.type == MotorEventType::ACTIVATE &&
+                haptic.isEnabled(event.finger) &&
+                haptic.getPreSelectedFinger() != static_cast<int8_t>(event.finger)) {
+                if (haptic.selectChannelPersistent(event.finger)) {
+                    haptic.setFrequencyDirect(event.finger, event.frequencyHz);
+                }
+                continue;  // Re-evaluate timing - pre-selection took ~200-300us
+            }
+
             // Event is far away (>2ms) - use FreeRTOS sleep
             // Sleep until 1ms before event, then busy-wait
             TickType_t ticks = pdMS_TO_TICKS((delayUs - 1000) / 1000);
@@ -360,6 +382,7 @@ void sendPing();
 void onBLEConnect(uint16_t connHandle, ConnectionType type);
 void onBLEDisconnect(uint16_t connHandle, ConnectionType type, uint8_t reason);
 void onBLEMessage(uint16_t connHandle, const char *message, uint64_t rxTimestamp);
+void onTxStamped(TxStampKind kind, uint32_t seqId, uint64_t txTimeUs);
 
 // Therapy Callbacks
 void onSendMacrocycle(const Macrocycle& macrocycle);
@@ -753,15 +776,33 @@ void loop()
 
     // Motor events handled by motor task - no polling needed
 
-    // Process Serial commands (uses serial-only handler for SET_ROLE, GET_ROLE)
-    if (Serial.available())
+    // Process Serial commands (non-blocking accumulation - readStringUntil()
+    // blocks up to 1s on partial input, which would blow the 70-150ms
+    // macrocycle lead window mid-therapy)
     {
-        String input = Serial.readStringUntil('\n');
-        input.trim();
-        if (input.length() > 0)
+        static char serialBuf[96];
+        static uint8_t serialLen = 0;
+        while (Serial.available())
         {
-            Serial.printf("[SERIAL] Command: %s\n", input.c_str());
-            handleSerialCommand(input.c_str());
+            char c = static_cast<char>(Serial.read());
+            if (c == '\n' || c == '\r')
+            {
+                if (serialLen > 0)
+                {
+                    serialBuf[serialLen] = '\0';
+                    serialLen = 0;
+                    Serial.printf("[SERIAL] Command: %s\n", serialBuf);
+                    handleSerialCommand(serialBuf);
+                }
+            }
+            else if (serialLen < sizeof(serialBuf) - 1)
+            {
+                serialBuf[serialLen++] = c;
+            }
+            else
+            {
+                serialLen = 0;  // Overflow - discard the line
+            }
         }
     }
 
@@ -897,12 +938,22 @@ void loop()
         Serial.println(isConnected ? F("[STATE] Connected!") : F("[STATE] Disconnected"));
     }
 
-    // Unified keepalive + clock sync: PING every 1 second when connected (PRIMARY only)
-    // PING/PONG provides both connection monitoring and continuous clock synchronization
-    // Clock sync becomes valid after 3 samples (~3 seconds from connection)
+    // HFXO watchdog: the SoftDevice HFCLK request is a single shared flag and
+    // TinyUSB releases it on USB suspend - re-assert so TIMER4 stays accurate
+    static uint32_t lastClockCheck = 0;
+    if (now - lastClockCheck >= 1000)
+    {
+        lastClockCheck = now;
+        hiresClockEnsureHfclk();
+    }
+
+    // Unified keepalive + clock sync (PRIMARY only). 4Hz during therapy for
+    // tighter drift tracking and more samples for the quality gates; 1Hz idle.
+    // More PINGs only strengthens keepalive semantics (timeouts unchanged).
+    uint32_t pingIntervalMs = therapy.isRunning() ? SYNC_ACTIVE_INTERVAL_MS : KEEPALIVE_INTERVAL_MS;
     if (deviceRole == DeviceRole::PRIMARY &&
         isConnected &&
-        (now - lastKeepalive >= KEEPALIVE_INTERVAL_MS))
+        (now - lastKeepalive >= pingIntervalMs))
     {
         lastKeepalive = now;
         sendPing();
@@ -970,6 +1021,11 @@ bool initializeHardware()
 {
     bool success = true;
 
+#if SYNC_DEBUG_GPIO_ENABLED
+    pinMode(SYNC_DEBUG_GPIO_PIN, OUTPUT);
+    digitalWrite(SYNC_DEBUG_GPIO_PIN, LOW);
+#endif
+
     // Initialize haptic controller
     Serial.println(F("\nInitializing Haptic Controller..."));
     if (!haptic.begin())
@@ -1030,6 +1086,7 @@ bool initializeBLE()
     ble.setConnectCallback(onBLEConnect);
     ble.setDisconnectCallback(onBLEDisconnect);
     ble.setMessageCallback(onBLEMessage);
+    ble.setTxStampCallback(onTxStamped);
 
     // Initialize BLE with appropriate role
     if (!ble.begin(deviceRole, BLE_NAME))
@@ -1037,6 +1094,29 @@ bool initializeBLE()
         Serial.println(F("[ERROR] BLE begin() failed"));
         return false;
     }
+
+    // Start the 1MHz hardware timebase now that the SoftDevice is enabled.
+    // Must happen before any connection/sync traffic (getMicros() re-seeds
+    // its epoch on the source switch).
+    if (hiresClockBegin())
+    {
+        Serial.println(F("[CLOCK] 1MHz hardware timebase active (TIMER4 + HFXO)"));
+    }
+    else
+    {
+        Serial.println(F("[CLOCK] WARNING: hardware timebase unavailable - falling back to tick clock (~1ms resolution)"));
+    }
+
+#if SYNC_ANCHOR_TIMESTAMPING_ENABLED
+    if (radioAnchorBegin())
+    {
+        Serial.println(F("[SYNC] Radio-anchor timestamping active"));
+    }
+    else
+    {
+        Serial.println(F("[SYNC] WARNING: radio-anchor init failed - PTP-only sync"));
+    }
+#endif
 
     // Register PHY change callback (both roles)
     // Detects 1M -> 2M PHY upgrades so we can reset RTT statistics
@@ -1386,7 +1466,7 @@ void executeDeferredWork(DeferredWorkType type, uint8_t p1, uint8_t p2, uint32_t
     }
 }
 
-void onBLEMessage(uint16_t connHandle [[maybe_unused]], const char *message, uint64_t rxTimestamp)
+void onBLEMessage(uint16_t connHandle, const char *message, uint64_t rxTimestamp)
 {
     // rxTimestamp is captured at the earliest possible point in the BLE stack
     // (immediately when data is received in _onUartRx/_onClientUartRx)
@@ -1629,40 +1709,24 @@ void onBLEMessage(uint16_t connHandle [[maybe_unused]], const char *message, uin
         switch (cmd.getType())
         {
         case SyncCommandType::PING:
-            // SECONDARY: Reply with PONG including T2 (early capture), T3 (just before send)
-            // Also tracks connectivity - PING proves PRIMARY is alive
+            // SECONDARY: Reply with PONG. T2 = rxTimestamp (earliest BLE-stack
+            // capture); T3 is stamped by the BLE manager at SoftDevice handoff
+            // so SECONDARY main-loop latency no longer inflates measured RTT.
             if (deviceRole == DeviceRole::SECONDARY)
             {
                 // Track connectivity - PING proves PRIMARY is alive
                 lastKeepaliveReceived = millis();
 
-                // T2 = rxTimestamp captured at callback entry (before parsing)
-                // This gives us the most accurate receive timestamp
-                uint64_t t2 = rxTimestamp;
-
-                // Prepare buffer first, then capture T3 right before send
-                char buffer[64];
-                uint32_t seqId = cmd.getSequenceId();
-
-                // Capture T3 as late as possible before sending
-                // Note: T3 must be captured BEFORE send since it goes in the message
-                // Best we can do is minimize work between T3 capture and send call
-                uint64_t t3 = getMicros();
-                SyncCommand pong = SyncCommand::createPongWithTimestamps(seqId, t2, t3);
-                if (pong.serialize(buffer, sizeof(buffer)))
+                uint64_t rxAnchor = 0;
+#if SYNC_ANCHOR_TIMESTAMPING_ENABLED
+                // Anchor of the connection event that delivered this PING.
+                // SECONDARY is a single-link central: anchors are unambiguous.
+                if (!radioAnchorFindBefore(rxTimestamp, SYNC_ANCHOR_RX_WINDOW_US, rxAnchor))
                 {
-                    ble.sendToPrimary(buffer);
-
-                    // Debug logging (matches PRIMARY's PONG handler logging)
-                    if (profiles.getDebugMode())
-                    {
-                        // Arduino printf doesn't support %llu - cast to uint32_t (timestamps fit in 32-bit for ~71 minutes)
-                        Serial.printf("[SYNC] PING seq=%lu T2=%lu T3=%lu -> PONG sent\n",
-                                      (unsigned long)seqId,
-                                      (unsigned long)(t2 / 1000),  // Convert to ms for readability
-                                      (unsigned long)(t3 / 1000));
-                    }
+                    rxAnchor = 0;  // No anchor - PRIMARY falls back to PTP
                 }
+#endif
+                ble.sendPongStamped(connHandle, cmd.getSequenceId(), rxTimestamp, rxAnchor);
             }
             break;
 
@@ -1681,6 +1745,19 @@ void onBLEMessage(uint16_t connHandle [[maybe_unused]], const char *message, uin
             uint64_t t1_atomic = atomicRead64(&pingT1);
             if (deviceRole == DeviceRole::PRIMARY && t1_atomic > 0)
             {
+                // Reject cross-exchange pairing: a late PONG from a previous
+                // PING must not be paired with the current in-flight T1
+                uint32_t expectedSeq = pingSeq;
+                if (cmd.getSequenceId() != expectedSeq)
+                {
+                    if (profiles.getDebugMode())
+                    {
+                        Serial.printf("[SYNC] Stale PONG seq=%lu (expected %lu) - ignored\n",
+                                      (unsigned long)cmd.getSequenceId(),
+                                      (unsigned long)expectedSeq);
+                    }
+                    break;
+                }
 
                 // T4 = rxTimestamp captured at callback entry (before parsing)
                 // This gives us the most accurate receive timestamp
@@ -1691,15 +1768,21 @@ void onBLEMessage(uint16_t connHandle [[maybe_unused]], const char *message, uin
                 // Format depends on whether high bits are used (see createPongWithTimestamps)
                 // C4 fix: Use getDataUnsigned to avoid sign extension when values > 2^31
                 uint64_t t2, t3;
+                uint64_t secondaryAnchor = 0;
                 if (cmd.hasData("2"))
                 {
-                    // Full 64-bit: T2High|T2Low|T3High|T3Low
+                    // Full 64-bit: T2High|T2Low|T3High|T3Low[|AnchHigh|AnchLow]
                     uint32_t t2High = cmd.getDataUnsigned("0", 0);
                     uint32_t t2Low = cmd.getDataUnsigned("1", 0);
                     uint32_t t3High = cmd.getDataUnsigned("2", 0);
                     uint32_t t3Low = cmd.getDataUnsigned("3", 0);
                     t2 = ((uint64_t)t2High << 32) | t2Low;
                     t3 = ((uint64_t)t3High << 32) | t3Low;
+                    if (cmd.hasData("4"))
+                    {
+                        secondaryAnchor = ((uint64_t)cmd.getDataUnsigned("4", 0) << 32) |
+                                          cmd.getDataUnsigned("5", 0);
+                    }
                 }
                 else
                 {
@@ -1707,6 +1790,7 @@ void onBLEMessage(uint16_t connHandle [[maybe_unused]], const char *message, uin
                     t2 = static_cast<uint64_t>(cmd.getDataUnsigned("0", 0));
                     t3 = static_cast<uint64_t>(cmd.getDataUnsigned("1", 0));
                 }
+                (void)secondaryAnchor;  // no-op when anchor timestamping is compiled out
 
                 // Calculate RTT using IEEE 1588 PTP formula (excludes SECONDARY processing)
                 // RTT = (T4 - T1) - (T3 - T2)
@@ -1735,20 +1819,59 @@ void onBLEMessage(uint16_t connHandle [[maybe_unused]], const char *message, uin
                 // Calculate PTP clock offset
                 int64_t offset = syncProtocol.calculatePTPOffset(t1, t2, t3, t4);
 
-                // Add sample with RTT-based quality filtering
-                // High-RTT samples are rejected as they likely have asymmetric delays
-                bool sampleAccepted = false;
-                if (syncProtocol.isClockSyncValid())
+#if SYNC_ANCHOR_TIMESTAMPING_ENABLED
+                // Anchor-paired offset: PRIMARY's anchor of the connection
+                // event that carried the PING (first anchor after the
+                // late-stamped T1 handoff) vs SECONDARY's anchor of the same
+                // event. Falls back to the PTP offset otherwise.
+                if (secondaryAnchor != 0)
                 {
-                    // Already synced - use EMA update (no RTT filtering for maintenance)
-                    syncProtocol.updateOffsetEMA(offset);
-                    sampleAccepted = true;
+                    uint64_t primaryAnchor = 0;
+                    if (radioAnchorFindAfter(t1, SYNC_ANCHOR_TX_WINDOW_US, primaryAnchor))
+                    {
+                        int64_t anchorOffset = (int64_t)secondaryAnchor - (int64_t)primaryAnchor
+                                               - (int64_t)SYNC_ANCHOR_BIAS_US;
+
+                        // Mispair pre-filter: a phone-link/advertising anchor caught
+                        // between the T1 handoff and the glove-link event lands the
+                        // pairing 1-4ms off - inside the innovation gate. Once sync
+                        // has converged, reject anchor pairs that deviate implausibly
+                        // from the current offset and fall back to PTP for this sample.
+                        // Pre-convergence, anchors pass through: the initial median/MAD
+                        // filtering handles outliers, and getMedianOffset() would be 0
+                        // (meaningless to compare against).
+                        bool anchorPlausible = true;
+                        if (syncProtocol.isClockSyncValid())
+                        {
+                            int64_t deviation = anchorOffset - syncProtocol.getMedianOffset();
+                            if (deviation < 0) deviation = -deviation;
+                            anchorPlausible = (deviation <= static_cast<int64_t>(SYNC_ANCHOR_PREFILTER_US));
+                        }
+
+                        if (anchorPlausible)
+                        {
+                            if (profiles.getDebugMode())
+                            {
+                                Serial.printf("[SYNC] anchorOffset=%ld ptpOffset=%ld delta=%ld\n",
+                                              (long)anchorOffset, (long)offset,
+                                              (long)(anchorOffset - offset));
+                            }
+                            offset = anchorOffset;
+                        }
+                        else if (profiles.getDebugMode())
+                        {
+                            Serial.printf("[SYNC] anchor mispair rejected: anchorOffset=%ld median=%ld\n",
+                                          (long)anchorOffset, (long)syncProtocol.getMedianOffset());
+                        }
+                    }
                 }
-                else
-                {
-                    // Building initial sync - use quality filtering
-                    sampleAccepted = syncProtocol.addOffsetSampleWithQuality(offset, rtt);
-                }
+#endif
+
+                // Quality-gated update: routes to initial sample collection
+                // until valid, then applies RTT + lucky-packet + innovation
+                // gates before the maintenance EMA (a single retransmission-
+                // affected exchange must not corrupt the offset mid-therapy)
+                bool sampleAccepted = syncProtocol.updateOffsetEMAWithQuality(offset, rtt);
 
                 // Also update RTT-based latency for backward compatibility
                 syncProtocol.updateLatency(rtt);
@@ -2321,9 +2444,11 @@ void triggerDebugFlash()
  * @brief Send PING to SECONDARY to measure BLE latency and clock offset
  *
  * Uses PTP-style 4-timestamp protocol:
- * - T1: PRIMARY send time (stored in pingT1, included in PING)
+ * - T1: PRIMARY send time (stamped by BLE manager at SoftDevice handoff,
+ *       reported via onTxStamped() — not captured here to avoid adding
+ *       main-loop latency to every PTP sample)
  * - T2: SECONDARY receive time (returned in PONG)
- * - T3: SECONDARY send time (returned in PONG)
+ * - T3: SECONDARY send time (stamped by BLE manager at SoftDevice handoff)
  * - T4: PRIMARY receive time (recorded on PONG receipt)
  */
 void sendPing()
@@ -2332,20 +2457,36 @@ void sendPing()
     {
         return;
     }
+    // T1 is stamped by the BLE manager at SoftDevice handoff and reported via
+    // onTxStamped() - not here. Stamping at creation time added one main-loop
+    // iteration of asymmetric delay to every PTP sample.
+    // Return value intentionally ignored: not-connected is excluded by the guard
+    // above, and a queue-full drop just defers this PTP sample one interval -
+    // keepalive timeouts are driven by received traffic, not sent PINGs.
+    ble.sendPingStamped(g_sequenceGenerator.next());
+}
 
-    // Record T1 for PTP offset calculation
-    // Use atomic writes to prevent torn reads on 32-bit ARM
-    uint64_t t1 = getMicros();
-    atomicWrite64(&pingT1, t1);
-    atomicWrite64(&pingStartTime, t1); // Keep for backward compat
-
-    SyncCommand cmd = SyncCommand::createPingWithT1(g_sequenceGenerator.next(), t1);
-
-    char buffer[64];
-    if (cmd.serialize(buffer, sizeof(buffer)))
+void onTxStamped(TxStampKind kind, uint32_t seqId, uint64_t txTimeUs)
+{
+    // Runs in main-loop context (processTxQueue via ble.update()), FreeRTOS
+    // loop task (prio 1). The PONG handler runs in the higher-priority BLE
+    // task (prio 3) and can preempt this code mid-update. pingT1 and pingSeq
+    // must be published as ONE unit: a split update would let the reader pair
+    // a stale PONG (matching the old pingSeq) with the freshly written T1.
+    // A single critical section masks the PendSV context switch (PRIMASK), so
+    // the BLE task cannot observe the triple half-updated. Per-store atomicity
+    // (atomicWrite64) is insufficient here — the invariant spans variables.
+    if (kind == TxStampKind::PING_T1)
     {
-        ble.sendToSecondary(buffer);
+        uint32_t primask = __get_PRIMASK();
+        __disable_irq();
+        pingT1 = txTimeUs;
+        pingStartTime = txTimeUs;
+        pingSeq = seqId;
+        __set_PRIMASK(primask);
     }
+    // TxStampKind::PONG_T3 is intentionally ignored here: it only fires on
+    // SECONDARY, where no T1 pairing state exists.
 }
 
 // =============================================================================

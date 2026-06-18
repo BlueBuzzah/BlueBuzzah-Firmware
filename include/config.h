@@ -67,7 +67,6 @@
 #define BLE_INTERVAL_WARNING_THRESHOLD_MS 12.0f  // Warn if negotiated interval > 12ms
 
 // Sync protocol
-#define SYNC_INTERVAL_MS 1000        // Periodic sync interval during therapy
 #define SYNC_TIMEOUT_MS 2000         // Sync command timeout
 #define COMMAND_TIMEOUT_MS 5000      // General BLE command timeout
 
@@ -88,10 +87,17 @@
 #define SYNC_MIN_VALID_SAMPLES 5     // Minimum samples before clock sync is valid
 #define SYNC_OFFSET_EMA_ALPHA_NUM 1  // Slow EMA α = 1/10 = 0.1 for continuous updates
 #define SYNC_OFFSET_EMA_ALPHA_DEN 10
-#define SYNC_MAINTENANCE_INTERVAL_MS 500  // Periodic sync interval during therapy (reduces drift)
+#define SYNC_ACTIVE_INTERVAL_MS 250       // PING cadence while therapy is running (4Hz)
+                                           // Idle cadence stays KEEPALIVE_INTERVAL_MS (1Hz)
 #define SYNC_RTT_QUALITY_THRESHOLD_US 60000 // 60ms RTT threshold - reject retransmission-affected samples
                                              // (reduced from 120ms for stricter quality filtering)
 #define SYNC_OUTLIER_THRESHOLD_US 5000   // 5ms threshold for offset outlier rejection (was hardcoded)
+
+// Maintenance-mode sample gating (post-convergence quality filters)
+#define SYNC_LUCKY_RTT_MARGIN_US 10000      // Accept only RTT <= minRTT + 10ms ("lucky packets")
+#define SYNC_MIN_RTT_DECAY_US 200           // Per-sample creep of tracked min RTT (adapts to degradation)
+#define SYNC_INNOVATION_GATE_US 5000        // Reject offset jumps > 5ms...
+#define SYNC_INNOVATION_REJECT_LIMIT 5      // ...unless persistent across this many samples
 #define SYNC_MAX_DRIFT_RATE_US_PER_MS 0.15f  // 150 ppm max drift rate (cap for safety)
 #define SYNC_MAX_APPLIED_DRIFT_RATE_US_PER_MS 0.1f  // 100 ppm max for corrections
                                                      // More conservative than measurement cap (0.15f)
@@ -101,6 +107,21 @@
 #define SYNC_WARM_START_VALIDITY_MS 15000    // Cache valid for 15 seconds (reduced drift extrapolation window)
 #define SYNC_WARM_START_MIN_SAMPLES 3        // Confirmatory samples required for warm-start
 #define SYNC_WARM_START_TOLERANCE_US 5000    // 5ms tolerance for confirmatory sample validation
+
+// Connection-anchor timestamping (EXPERIMENTAL)
+// Hardware-timestamps BLE radio events via SoftDevice radio notifications and
+// derives clock offset from paired anchors. Falls back to PTP per-sample.
+// Both gloves MUST run the same setting (PONG payload format changes).
+#ifndef SYNC_ANCHOR_TIMESTAMPING_ENABLED
+#define SYNC_ANCHOR_TIMESTAMPING_ENABLED 0
+#endif
+#define SYNC_ANCHOR_RING_SIZE 16              // Recent radio-event timestamps kept
+#define SYNC_ANCHOR_RX_WINDOW_US 15000        // Max age of rx anchor vs rx callback (event len 12.5ms + margin)
+#define SYNC_ANCHOR_TX_WINDOW_US 25000        // Max lookahead from PING handoff to its tx anchor (2x max CI + margin)
+#define SYNC_ANCHOR_BIAS_US 0                 // Calibrated central-vs-peripheral constant (set during bench validation). Positive corrects for peripheral RX-window widening - PRIMARY's anchor fires slightly early.
+#define SYNC_ANCHOR_PREFILTER_US 1500         // Reject anchor pairs deviating > 1.5ms from the
+                                               // converged offset (catches within-gate mispairs
+                                               // from phone-link/advertising anchors on PRIMARY)
 
 // Path asymmetry compensation (measurement mode - correction not yet implemented)
 #define SYNC_ASYMMETRY_CORRECTION_ENABLED 0   // 0 = measure only, 1 = apply correction
@@ -221,6 +242,14 @@ constexpr uint32_t TEST_DURATION_SEC = 120;  // 2 minutes
 #ifndef SKIP_BOOT_SEQUENCE
 #define SKIP_BOOT_SEQUENCE 0
 #endif
+
+// Bilateral sync ground-truth instrumentation: toggles a GPIO on every motor
+// ACTIVATE so a logic analyzer across both gloves measures true skew.
+// Compile-time only - keep 0 for release builds.
+#ifndef SYNC_DEBUG_GPIO_ENABLED
+#define SYNC_DEBUG_GPIO_ENABLED 0
+#endif
+#define SYNC_DEBUG_GPIO_PIN PIN_A0
 
 // Debug macros
 #if DEBUG_ENABLED
