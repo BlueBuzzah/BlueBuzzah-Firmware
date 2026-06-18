@@ -2468,15 +2468,22 @@ void sendPing()
 
 void onTxStamped(TxStampKind kind, uint32_t seqId, uint64_t txTimeUs)
 {
-    // Runs in main-loop context (processTxQueue via ble.update()). The PONG
-    // handler reads pingT1 from the SD/BLE task via atomicRead64; both helpers
-    // use __disable_irq, so the 64-bit access is coherent across tasks.
+    // Runs in main-loop context (processTxQueue via ble.update()), FreeRTOS
+    // loop task (prio 1). The PONG handler runs in the higher-priority BLE
+    // task (prio 3) and can preempt this code mid-update. pingT1 and pingSeq
+    // must be published as ONE unit: a split update would let the reader pair
+    // a stale PONG (matching the old pingSeq) with the freshly written T1.
+    // A single critical section masks the PendSV context switch (PRIMASK), so
+    // the BLE task cannot observe the triple half-updated. Per-store atomicity
+    // (atomicWrite64) is insufficient here — the invariant spans variables.
     if (kind == TxStampKind::PING_T1)
     {
-        atomicWrite64(&pingT1, txTimeUs);
-        atomicWrite64(&pingStartTime, txTimeUs);
-        // pingSeq written after pingT1: a racing reader sees old seq + new T1 and safely rejects
+        uint32_t primask = __get_PRIMASK();
+        __disable_irq();
+        pingT1 = txTimeUs;
+        pingStartTime = txTimeUs;
         pingSeq = seqId;
+        __set_PRIMASK(primask);
     }
     // TxStampKind::PONG_T3 is intentionally ignored here: it only fires on
     // SECONDARY, where no T1 pairing state exists.
