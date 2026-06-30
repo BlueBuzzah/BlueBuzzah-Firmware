@@ -150,7 +150,7 @@ sequenceDiagram
     Note over S: Record T2
 
     Note over S: Record T3
-    S->>P: PONG:seq|0|T2|T3
+    S->>P: PONG:seq|tx_micros|T2|T3
     Note over P: Record T4
 
     Note over P: offset = ((T2-T1) + (T3-T4)) / 2
@@ -466,10 +466,10 @@ stateDiagram-v2
 
 | Event | Timeout | Action |
 |-------|---------|--------|
-| No SECONDARY found | 15s | Abort startup |
-| No READY received | 8s | Abort startup |
-| No MACROCYCLE received | 10s | Emergency stop |
-| No PING/PONG | 6s | Emergency stop + reconnect |
+| No PING/PONG (keepalive) | 6s (`KEEPALIVE_TIMEOUT_MS`) | Emergency stop; SECONDARY → connection-lost |
+| Boot window elapses with SECONDARY connected but no phone (PRIMARY) | 30s (`STARTUP_WINDOW_MS`) | Auto-start therapy |
+
+> **Note:** There is no dedicated "no SECONDARY found", "no READY", or "no MACROCYCLE" timeout in the current firmware — a stalled or lost link is caught by the 6s keepalive, which triggers the emergency stop. The 30s `STARTUP_WINDOW_MS` is the PRIMARY auto-start window (it begins therapy when no phone has connected), not a startup-abort timeout. Detailed connection/boot timing lives in [BOOT_SEQUENCE.md](BOOT_SEQUENCE.md).
 
 ---
 
@@ -500,10 +500,12 @@ COMMAND:field1|field2|field3|...
 | Message | Direction | Fields | Example |
 |---------|-----------|--------|---------|
 | `PING` | P → S | seq, T1 | `PING:42\|1000000` |
-| `PONG` (legacy) | S → P | seq, 0, T2, T3 | `PONG:42\|0\|1000500\|1000600` |
-| `PONG` (anchor, 6 data fields) | S → P | seq, 0, T2High, T2Low, T3High, T3Low, AnchorHigh, AnchorLow — *see anchor section* | `PONG:42\|0\|0\|1000500\|0\|1000600\|0\|999800` |
+| `PONG` (legacy) | S → P | seq, tx_micros, T2, T3 | `PONG:42\|1000550\|1000500\|1000600` |
+| `PONG` (anchor, 6 data fields) | S → P | seq, tx_micros, T2High, T2Low, T3High, T3Low, AnchorHigh, AnchorLow — *see anchor section* | `PONG:42\|1000550\|0\|1000500\|0\|1000600\|0\|999800` |
 
 PONG has two wire forms; see [Connection-Anchor Timestamping](#connection-anchor-timestamping-experimental) for the 6-data-field format and detection rules. When anchor timestamping is disabled (default), only the legacy 4-field form is used.
+
+> **The PONG `timestamp` field is the message construction time, not `0`.** The `SyncCommand` constructor stamps `getMicros()` and `createPongWithTimestamps` / `createPongWithAnchor` never override it, so the field carries the PONG's build time (between T2 and T3). The PTP math reads T2/T3 from the positional data fields and ignores this field. Earlier doc revisions that showed `PONG:…|0|…` were inaccurate.
 
 **Unified Keepalive + Clock Sync:**
 
@@ -526,8 +528,12 @@ This unified approach provides continuous clock synchronization throughout all s
 | Message | Direction | Fields | Example |
 |---------|-----------|--------|---------|
 | `MACROCYCLE` | P → S | seq, baseTime, count, events... | See below |
-| `MACROCYCLE_ACK` | S → P | seq | `MC_ACK:42` |
-| `DEACTIVATE` | P → S | seq, timestamp | `DEACTIVATE:43\|5100000` |
+| `MACROCYCLE_ACK` | S → P | seq, tx_micros | `MC_ACK:42\|5050120` |
+| `DEACTIVATE` (reserved) | — | seq, tx_micros | `DEACTIVATE:43\|5050120` |
+
+> **`serialize()` always emits the `seq|timestamp` pair**, and the timestamp is the message construction time (`getMicros()`), **never `0`**. The 2-arg `SyncCommand` constructor calls `setTimestampNow()`, so `createMacrocycleAck` produces `MC_ACK:42|<micros>` (not `MC_ACK:42` and not `MC_ACK:42|0`). PRIMARY ignores the field for `MC_ACK` — ACK matching keys on `seq`.
+>
+> **`DEACTIVATE` is reserved/unused.** The `SyncCommandType::DEACTIVATE` value and `createDeactivate()` factory exist, but no `DEACTIVATE` message is sent over BLE: SECONDARY turns motors off locally via its paired activate/deactivate `ActivationQueue`. The factory does not override the construction timestamp, so if it were ever serialized it would be `DEACTIVATE:43|<micros>`. The same applies to the `BUZZ` type, which was superseded by `MACROCYCLE` batching.
 
 **MACROCYCLE format (V5):**
 
@@ -552,8 +558,10 @@ MC:seq|baseHigh|baseLow|offHigh|offLow|dur|count|d,f,a[,fo]|d,f,a[,fo]|...
 **Example MACROCYCLE:**
 
 ```text
-MC:1|0|5050000|0|12345|100|12|0,0,100|167,1,100|334,2,100|...
+MC:1|0|5050000|0|12345|100|12|0,0,100|167,1,100|334,2,100,7|...
 ```
+
+The third event carries `fo=7`, decoded as `200 + 7×5 = 235 Hz`; events without an `fo` field leave the frequency unchanged.
 
 **Note:** The V5 format preserves full microsecond precision for baseTime by splitting the 64-bit value into two 32-bit parts, avoiding the up to 999µs precision loss in the previous millisecond-based format.
 
@@ -637,7 +645,7 @@ A radio-notification ISR (SWI1, priority 2) fires approximately 800µs before ea
 
 When anchor timestamping is enabled, SECONDARY attaches its most recent rx anchor to the PONG reply using the extended wire format created by `createPongWithAnchor`.
 
-> **Wire framing note:** The standard `PONG:seq|timestamp|...` framing header (sequence number and the legacy placeholder field) precedes these data fields. The table below describes the six data fields that follow that framing header.
+> **Wire framing note:** The standard `PONG:seq|timestamp|...` framing header (sequence number and the construction-time `timestamp` field — non-zero, ignored by the PTP math) precedes these data fields. The table below describes the six data fields that follow that framing header.
 
 | Data field index | Name | Description |
 |-----------------|------|-------------|
@@ -691,8 +699,8 @@ The SECONDARY glove operates statelessly—it receives macrocycles with clock of
 The firmware uses a dedicated 1MHz hardware timebase (`hires_clock` module) rather than the FreeRTOS tick clock:
 
 - **Hardware timebase:** NRF_TIMER4 is configured as a 1MHz free-running counter clocked from the on-board 32MHz HFXO crystal. This gives 1µs resolution independent of the FreeRTOS tick rate (previously ~976µs quantization because DWT was never enabled).
-- **HFXO watchdog:** `loop()` calls the HFXO watchdog once per second to verify the crystal oscillator remains active. If the HFXO is lost the watchdog logs a warning; the clock continues from the last good counter value.
-- **Fallback path:** If `hiresClockBegin()` fails at boot (e.g., SoftDevice pre-empts TIMER4 allocation), `getMicros()` falls back to the FreeRTOS tick clock and logs the degradation. All sync time math (`syncNowMs()` = `getMicros() / 1000`) uses a single unified clock domain in either case.
+- **HFXO watchdog:** `loop()` calls `hiresClockEnsureHfclk()` once per second. It checks whether the HFCLK is still running and, if not, **re-asserts** the HFCLK request (`sd_clock_hfclk_request()`) so TIMER4 stays on the crystal. It logs only on failure — `[CLOCK] HFCLK re-request failed` — and is otherwise silent; the counter keeps advancing throughout.
+- **Fallback path:** If `hiresClockBegin()` fails at boot (e.g., SoftDevice pre-empts TIMER4 allocation), `setup()` logs the degradation once (`[CLOCK] WARNING: hardware timebase unavailable - falling back to tick clock (~1ms resolution)`). `getMicros()` then switches sources **silently** based on `hiresClockIsRunning()`. All sync time math (`syncNowMs()` = `getMicros() / 1000`) uses a single unified clock domain in either case.
 - **Overflow safety:** `getMicros()` returns a `uint64_t`. At 1MHz the 64-bit counter wraps at ~584,000 years; no runtime overflow handling is needed beyond the 64-bit type.
 
 ### Interrupt Safety
@@ -719,9 +727,8 @@ Sync state variables are accessed from both main loop and BLE callbacks. Key con
 | Outlier threshold (`SYNC_OUTLIER_THRESHOLD_US`) | 5ms | Offset outlier rejection (MAD-based filtering) |
 | PING/PONG interval (idle) | 1s | Keepalive + clock sync when no therapy session active |
 | PING/PONG interval during therapy (`SYNC_ACTIVE_INTERVAL_MS`) | 250ms (4Hz) | Higher cadence while therapy is running |
-| Keepalive timeout (SECONDARY) | 6s | 6 missed PINGs = connection lost |
+| Keepalive timeout (SECONDARY, `KEEPALIVE_TIMEOUT_MS`) | 6s | 6 missed PINGs = connection lost |
 | Keepalive timeout (PRIMARY) | 6s | During therapy (emergency shutdown) |
-| MACROCYCLE timeout | 10s | SECONDARY safety halt |
 | Lead time range | 70-150ms | Adaptive scheduling window |
 | Initial lead time | 35ms (clamped to 70ms) | Base value before RTT samples, clamped to min |
 | Processing overhead | 10ms | SECONDARY processing time allowance |
