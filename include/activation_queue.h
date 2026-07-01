@@ -17,7 +17,7 @@
 #define ACTIVATION_QUEUE_H
 
 #include <Arduino.h>
-#include "rtos.h"
+#include "platform.h"
 
 // Forward declarations
 class HapticController;

@@ -19,7 +19,7 @@
 #include <Arduino.h>
 #include <Adafruit_LittleFS.h>
 #include <InternalFileSystem.h>
-#include "rtos.h"  // FreeRTOS for motor task
+#include "platform.h"  // Platform primitives + FreeRTOS for motor task
 #include "config.h"
 #include "types.h"
 #include "hardware.h"
@@ -40,8 +40,10 @@
 // CONFIGURATION
 // =============================================================================
 
-// USER button pin (active LOW on Feather nRF52840)
-#define USER_BUTTON_PIN 7
+// USER button (active LOW; only present on boards with USER_BUTTON_ENABLED)
+#if USER_BUTTON_ENABLED
+#define USER_BUTTON_PIN USER_BUTTON_PIN_OVERRIDE
+#endif
 
 // =============================================================================
 // GLOBAL INSTANCES
@@ -514,15 +516,20 @@ void safeMotorShutdown()
 
 void setup()
 {
-    // Configure USB device descriptors (must be before Serial.begin)
+#if defined(BOARD_BLUEBUZZAH_NRF52)
+    // Configure USB device descriptors (must be before Serial.begin).
+    // The ESP32-S3 hardware USB-CDC has fixed descriptors, so this is nRF-only.
     TinyUSBDevice.setManufacturerDescriptor("BlueBuzzah Partners");
     TinyUSBDevice.setProductDescriptor("BlueBuzzah");
+#endif
 
     // Initialize serial
     Serial.begin(115200);
 
+#if USER_BUTTON_ENABLED
     // Configure USER button
     pinMode(USER_BUTTON_PIN, INPUT_PULLUP);
+#endif
 
     // Wait for serial with timeout
     uint32_t serialWaitStart = millis();
@@ -990,12 +997,17 @@ void printBanner()
     Serial.println(F("|                  BlueBuzzah Firmware                       |"));
     Serial.println(F("+============================================================+"));
     Serial.printf("|  Firmware: %-47s |\n", FIRMWARE_VERSION);
+#if defined(BOARD_BLUEBUZZAH_NRF52)
     Serial.println(F("|  Platform: Adafruit Feather nRF52840 Express              |"));
+#else
+    Serial.println(F("|  Platform: PentaBuzzer XIAO ESP32-S3                       |"));
+#endif
     Serial.println(F("+============================================================+"));
 }
 
 DeviceRole determineRole()
 {
+#if USER_BUTTON_ENABLED
     // Check if USER button is held (active LOW)
     // Button held = SECONDARY mode (emergency override)
     if (digitalRead(USER_BUTTON_PIN) == LOW)
@@ -1004,6 +1016,7 @@ DeviceRole determineRole()
         delay(500); // Debounce
         return DeviceRole::SECONDARY;
     }
+#endif
 
     // Check if role was loaded from settings.json
     if (profiles.hasStoredRole())
@@ -2689,7 +2702,7 @@ void handleSerialCommand(const char *command)
             Serial.println(F("[CONFIG] Role set to PRIMARY - restarting..."));
             Serial.flush();
             delay(100);
-            NVIC_SystemReset();
+            platformSystemReset();
         }
         else if (strcasecmp(roleStr, "SECONDARY") == 0)
         {
@@ -2699,7 +2712,7 @@ void handleSerialCommand(const char *command)
             Serial.println(F("[CONFIG] Role set to SECONDARY - restarting..."));
             Serial.flush();
             delay(100);
-            NVIC_SystemReset();
+            platformSystemReset();
         }
         else
         {
@@ -2758,7 +2771,7 @@ void handleSerialCommand(const char *command)
             Serial.printf("[CONFIG] Profile set to %s - restarting...\n", profileStr);
             Serial.flush();
             delay(100);
-            NVIC_SystemReset();
+            platformSystemReset();
         }
         else
         {
@@ -2923,7 +2936,7 @@ void handleSerialCommand(const char *command)
         Serial.println(F("[CONFIG] Rebooting..."));
         Serial.flush();
         delay(100);
-        NVIC_SystemReset();
+        platformSystemReset();
         return;
     }
 
@@ -2934,7 +2947,7 @@ void handleSerialCommand(const char *command)
         Serial.println(F("[CONFIG] Rebooting..."));
         Serial.flush();
         delay(100);
-        NVIC_SystemReset();
+        platformSystemReset();
         return;
     }
 

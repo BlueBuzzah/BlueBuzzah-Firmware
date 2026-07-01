@@ -12,6 +12,7 @@
 #include "profile_manager.h"
 #include "ble_manager.h"
 #include "sync_protocol.h"
+#include "platform.h"
 
 // =============================================================================
 // INTERNAL MESSAGE PREFIXES
@@ -557,7 +558,7 @@ void MenuController::handleProfileLoad(const char params[][PARAM_BUFFER_SIZE], u
     if (_restartCallback) {
         _restartCallback();
     } else {
-        NVIC_SystemReset();
+        platformSystemReset();
     }
 }
 
@@ -972,7 +973,7 @@ void MenuController::handleRestart() {
         _restartCallback();
     } else {
         // Use NVIC system reset
-        NVIC_SystemReset();
+        platformSystemReset();
     }
 }
 

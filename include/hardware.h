@@ -20,7 +20,7 @@
 #include <Adafruit_DRV2605.h>
 #include <Adafruit_NeoPixel.h>
 
-#include "rtos.h"  // FreeRTOS for I2C mutex
+#include "platform.h"  // Platform primitives + FreeRTOS for I2C mutex
 #include "config.h"
 #include "types.h"
 
