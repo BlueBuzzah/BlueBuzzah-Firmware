@@ -25,7 +25,8 @@
   #define PLATFORM_CRITICAL_ENTER()   portENTER_CRITICAL(&g_platformMux)
   #define PLATFORM_CRITICAL_EXIT()    portEXIT_CRITICAL(&g_platformMux)
   #define PLATFORM_HAS_HIRES_CLOCK    1
-  // Adafruit nRF52 core task priority alias (motor task preempts loop @ prio 1)
+  // ESP-IDF has no TASK_PRIO_HIGHEST (that's an Adafruit-nRF52-core macro);
+  // provide the same value so the motor task preempts the loop task (prio 1)
   #ifndef TASK_PRIO_HIGHEST
   #define TASK_PRIO_HIGHEST           4
   #endif

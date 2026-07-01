@@ -1068,12 +1068,18 @@ bool initializeHardware()
 
         // Create high-priority motor task for preemptive activations
         // Priority 4 (HIGHEST) ensures motor timing isn't blocked by Serial/BLE
-        // Stack size: 512 words (2KB) - increased from 256 to prevent stack overflow
-        // that was causing crashes during BLE initialization
+        // Stack depth units differ per FreeRTOS port: WORDS on the nRF52 core
+        // (512 words = 2KB, increased from 256 to prevent stack overflow during
+        // BLE initialization), BYTES on ESP-IDF (4KB for headroom).
+#if defined(BOARD_PENTABUZZER_ESP32S3)
+        constexpr uint32_t MOTOR_TASK_STACK = 4096;  // bytes (ESP-IDF units)
+#else
+        constexpr uint32_t MOTOR_TASK_STACK = 512;   // words = 2KB (nRF52 core units)
+#endif
         BaseType_t taskCreated = xTaskCreate(
             motorTask,           // Task function
             "Motor",             // Name (for debugging)
-            512,                 // Stack size (words = 2KB) - increased for safety
+            MOTOR_TASK_STACK,    // Stack size (per-port units, see above)
             nullptr,             // Parameters
             TASK_PRIO_HIGHEST,   // Priority 4 - preempts main loop
             &motorTaskHandle     // Handle
@@ -2023,7 +2029,8 @@ void onBLEMessage(uint16_t connHandle, const char *message, uint64_t rxTimestamp
 
 void onSendMacrocycle(const Macrocycle& macrocycle)
 {
-    // PRIMARY: Send entire macrocycle (12 events) to SECONDARY in a single message
+    // PRIMARY: Send entire macrocycle (up to MACROCYCLE_MAX_EVENTS events) to
+    // SECONDARY in a single message
     // SECONDARY will apply clock offset once and schedule all activations
 
     if (deviceRole != DeviceRole::PRIMARY || !ble.isSecondaryConnected())
