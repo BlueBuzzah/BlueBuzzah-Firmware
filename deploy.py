@@ -121,6 +121,9 @@ C = Colors()
 # Adafruit Vendor ID
 ADAFRUIT_VID = 0x239A
 
+# Espressif Vendor ID (XIAO ESP32-S3 hardware USB-CDC/JTAG = PentaBuzzer)
+ESPRESSIF_VID = 0x303A
+
 # Known Feather nRF52840 Product IDs
 FEATHER_PIDS = [
     0x8029,  # Feather nRF52840 Express
@@ -129,18 +132,37 @@ FEATHER_PIDS = [
     0x002A,  # Feather nRF52840 Sense (bootloader)
 ]
 
+# PlatformIO environments per board
+ENV_NRF52 = "adafruit_feather_nrf52840"
+ENV_PENTA = "pentabuzzer_esp32s3"
+
+# port -> env mapping populated by find_devices()
+_port_envs = {}
+
 
 def find_devices():
-    """Find connected Feather nRF52840 devices (cross-platform)"""
+    """Find connected BlueBuzzah/PentaBuzzah devices (cross-platform)"""
     devices = []
+    _port_envs.clear()
     for port in serial.tools.list_ports.comports():
-        # Match by Adafruit VID and known PIDs
+        # Match by Adafruit VID and known PIDs (BlueBuzzah nRF52840)
         if port.vid == ADAFRUIT_VID and port.pid in FEATHER_PIDS:
             devices.append(port.device)
+            _port_envs[port.device] = ENV_NRF52
+        # Espressif USB-CDC (PentaBuzzer XIAO ESP32-S3)
+        elif port.vid == ESPRESSIF_VID:
+            devices.append(port.device)
+            _port_envs[port.device] = ENV_PENTA
         # Fallback: match by description
         elif port.description and "nRF52" in port.description:
             devices.append(port.device)
+            _port_envs[port.device] = ENV_NRF52
     return sorted(devices)
+
+
+def env_for_port(port):
+    """PlatformIO environment for a detected port (defaults to nRF52)"""
+    return _port_envs.get(port, ENV_NRF52)
 
 
 def list_devices():
@@ -338,20 +360,23 @@ def run_pio_command(args):
 
 
 def build_firmware():
-    """Build the firmware"""
-    print(f"\n{C.CYAN}Building firmware...{C.NC}\n")
-    if run_pio_command(["run", "-e", "adafruit_feather_nrf52840"]):
-        print(f"\n{C.GREEN}Build complete!{C.NC}")
-        return True
-    else:
-        print(f"\n{C.RED}Build failed!{C.NC}")
-        return False
+    """Build firmware for every detected board type (defaults to nRF52)"""
+    find_devices()
+    envs = sorted(set(_port_envs.values())) or [ENV_NRF52]
+    for env_name in envs:
+        print(f"\n{C.CYAN}Building firmware ({env_name})...{C.NC}\n")
+        if not run_pio_command(["run", "-e", env_name]):
+            print(f"\n{C.RED}Build failed!{C.NC}")
+            return False
+    print(f"\n{C.GREEN}Build complete!{C.NC}")
+    return True
 
 
 def upload_firmware(port):
-    """Upload firmware to specified port"""
-    print(f"\n{C.YELLOW}Uploading firmware to {port}...{C.NC}\n")
-    if run_pio_command(["run", "-e", "adafruit_feather_nrf52840", "-t", "upload", "--upload-port", port]):
+    """Upload firmware to specified port using the board's environment"""
+    env_name = env_for_port(port)
+    print(f"\n{C.YELLOW}Uploading firmware to {port} ({env_name})...{C.NC}\n")
+    if run_pio_command(["run", "-e", env_name, "-t", "upload", "--upload-port", port]):
         print(f"\n{C.GREEN}Upload complete!{C.NC}")
         return True
     else:

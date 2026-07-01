@@ -2,8 +2,10 @@
 
 This document provides a detailed explanation of the BlueBuzzah v2 system architecture, design patterns, and component interactions.
 
-**Platform**: Arduino C++ on Adafruit Feather nRF52840 Express
-**Build System**: PlatformIO with Adafruit nRF52 BSP
+**Platforms**: Arduino C++ on Adafruit Feather nRF52840 Express (BlueBuzzah, 4 motors) and Seeed XIAO ESP32-S3 (PentaBuzzer, 5 motors)
+**Build System**: PlatformIO — one codebase, two device environments (`adafruit_feather_nrf52840`, `pentabuzzer_esp32s3`) selected by board macro
+
+Platform-specific code is isolated behind compile-time seams: `board_config.h` (pins, `MAX_ACTUATORS`, battery availability), `platform.h` (critical sections, memory barrier, system reset, RTOS headers), a split `BLEManager` backend (`ble_manager_nrf52.cpp` Bluefruit / `ble_manager_esp32.cpp` NimBLE — identical Nordic-UART protocol, MTU 200, 7.5-10 ms connection interval, 0 dBm TX, 2M PHY), an `fs_backend` filesystem shim, and a `build_src_filter`-selected `PowerController` (PentaBuzzer power switch + deep sleep; no-op on nRF). Everything below the seams — therapy engine, sync protocol, state machine, menus, profiles — is shared and platform-neutral.
 
 ## Table of Contents
 

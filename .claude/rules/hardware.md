@@ -1,19 +1,20 @@
 ---
 paths: "src/hardware.{cpp,h}"
-description: Hardware abstraction patterns for nRF52840
+description: Hardware abstraction patterns (nRF52840 + ESP32-S3)
 ---
 # Hardware Module Guidelines
 
 ## I2C Architecture
 
 ```
-nRF52840 MCU
+MCU (nRF52840 default pins / ESP32-S3 SDA=GPIO5, SCL=GPIO6)
 └── I2C Bus @ 400kHz
     └── TCA9548A Multiplexer (0x70)
         ├── Ch0: DRV2605 - Index finger
         ├── Ch1: DRV2605 - Middle finger
         ├── Ch2: DRV2605 - Ring finger
-        └── Ch3: DRV2605 - Pinky finger
+        ├── Ch3: DRV2605 - Pinky finger
+        └── Ch4: DRV2605 - Thumb (PentaBuzzer only, MAX_ACTUATORS == 5)
 ```
 
 ## I2C Multiplexer Rules
