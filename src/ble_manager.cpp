@@ -7,6 +7,7 @@
 
 #include "ble_manager.h"
 #include "sync_protocol.h"  // For getMicros() - overflow-safe 64-bit timestamp
+#include "platform.h"
 
 // =============================================================================
 // GLOBAL INSTANCE (needed for static callbacks)
@@ -469,18 +470,17 @@ bool BLEManager::enqueueTx(uint16_t connHandle, const char* message) {
     // Claim a slot atomically: capacity check, pending flag, tail advance and count
     // increment must be one unit to prevent a BLE-task enqueue racing the main-loop
     // enqueue or processTxQueue between the check and the claim.
-    uint32_t primask = __get_PRIMASK();
-    __disable_irq();
+    PLATFORM_CRITICAL_ENTER();
 
     if (_txCount >= TX_QUEUE_SIZE) {
-        __set_PRIMASK(primask);
+        PLATFORM_CRITICAL_EXIT();
         Serial.println(F("[BLE] TX queue full, dropping message"));
         return false;
     }
 
     TxEntry* entry = &_txQueue[_txTail];
     if (entry->pending) {
-        __set_PRIMASK(primask);
+        PLATFORM_CRITICAL_EXIT();
         Serial.println(F("[BLE] TX queue corruption detected"));
         return false;
     }
@@ -489,7 +489,7 @@ bool BLEManager::enqueueTx(uint16_t connHandle, const char* message) {
     _txTail = static_cast<uint8_t>((_txTail + 1) % TX_QUEUE_SIZE);
     _txCount++;
 
-    __set_PRIMASK(primask);
+    PLATFORM_CRITICAL_EXIT();
 
     // Fill entry fields after releasing the critical section — safe because
     // processTxQueue only consumes from _txHead and cannot reach this slot
@@ -512,11 +512,10 @@ void BLEManager::processTxQueue() {
         if (!entry->pending) {
             // Advance head if slot is empty (shouldn't happen). pending is
             // already false here; only the head/count bookkeeping needs fixing.
-            uint32_t primask = __get_PRIMASK();
-            __disable_irq();
+            PLATFORM_CRITICAL_ENTER();
             _txHead = static_cast<uint8_t>((_txHead + 1) % TX_QUEUE_SIZE);
             _txCount--;
-            __set_PRIMASK(primask);
+            PLATFORM_CRITICAL_EXIT();
             continue;
         }
 
@@ -542,12 +541,11 @@ void BLEManager::processTxQueue() {
             char msg[128];
             if (!cmd.serialize(msg, sizeof(msg))) {
                 uint32_t seqId = entry->stampSeqId;
-                uint32_t primask = __get_PRIMASK();
-                __disable_irq();
+                PLATFORM_CRITICAL_ENTER();
                 entry->pending = false;
                 _txHead = static_cast<uint8_t>((_txHead + 1) % TX_QUEUE_SIZE);
                 _txCount--;
-                __set_PRIMASK(primask);
+                PLATFORM_CRITICAL_EXIT();
                 Serial.printf("[BLE] ERROR: stamped sync serialize failed seq=%lu\n", (unsigned long)seqId);
                 continue;
             }
@@ -585,12 +583,11 @@ void BLEManager::processTxQueue() {
                 }
 
                 // Mark slot free and advance head
-                uint32_t primask = __get_PRIMASK();
-                __disable_irq();
+                PLATFORM_CRITICAL_ENTER();
                 entry->pending = false;
                 _txHead = static_cast<uint8_t>((_txHead + 1) % TX_QUEUE_SIZE);
                 _txCount--;
-                __set_PRIMASK(primask);
+                PLATFORM_CRITICAL_EXIT();
             }
         } else {
             // Buffer full - stop processing this iteration, will retry next update()
@@ -686,18 +683,17 @@ bool BLEManager::sendPongStamped(uint16_t connHandle, uint32_t seqId, uint64_t t
 bool BLEManager::enqueueStamped(uint16_t connHandle, TxStampKind kind, uint32_t seqId,
                                 uint64_t t2, uint64_t anchorUs) {
     // Claim a slot atomically — same pattern as enqueueTx.
-    uint32_t primask = __get_PRIMASK();
-    __disable_irq();
+    PLATFORM_CRITICAL_ENTER();
 
     if (_txCount >= TX_QUEUE_SIZE) {
-        __set_PRIMASK(primask);
+        PLATFORM_CRITICAL_EXIT();
         Serial.println(F("[BLE] TX queue full, dropping sync message"));
         return false;
     }
 
     TxEntry* entry = &_txQueue[_txTail];
     if (entry->pending) {
-        __set_PRIMASK(primask);
+        PLATFORM_CRITICAL_EXIT();
         Serial.println(F("[BLE] TX queue corruption detected"));
         return false;
     }
@@ -706,7 +702,7 @@ bool BLEManager::enqueueStamped(uint16_t connHandle, TxStampKind kind, uint32_t 
     _txTail = static_cast<uint8_t>((_txTail + 1) % TX_QUEUE_SIZE);
     _txCount++;
 
-    __set_PRIMASK(primask);
+    PLATFORM_CRITICAL_EXIT();
 
     // Fill stamp fields after releasing the critical section. Safe because:
     // (a) the consumer (processTxQueue) runs in the loop task (prio 1) and can

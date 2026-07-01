@@ -7,6 +7,7 @@
 
 #include "sync_protocol.h"
 #include "hires_clock.h"
+#include "platform.h"
 #include <string.h>
 #include <stdlib.h>
 #include <cerrno>
@@ -45,8 +46,7 @@ uint64_t getMicros() {
     // 2. ISR fires, calls getMicros(), sets s_lastMicros = 1,000,100
     // 3. Main loop: 1,000,000 < 1,000,100? YES → false overflow!
     // 4. s_overflowCount++ → timestamp jumps 71 minutes!
-    uint32_t primask = __get_PRIMASK();
-    __disable_irq();
+    PLATFORM_CRITICAL_ENTER();
 
     bool hires = false;
 #if defined(NRF52840_XXAA) && !defined(NATIVE_TEST_BUILD)
@@ -74,21 +74,20 @@ uint64_t getMicros() {
     uint32_t overflows = s_overflowCount;
 
     // Restore interrupt state (only re-enable if they were enabled before)
-    __set_PRIMASK(primask);
+    PLATFORM_CRITICAL_EXIT();
 
     // Combine overflow count (upper 32 bits) with current micros (lower 32 bits)
     return ((uint64_t)overflows << 32) | now;
 }
 
 void resetMicrosOverflow() {
-    uint32_t primask = __get_PRIMASK();
-    __disable_irq();
+    PLATFORM_CRITICAL_ENTER();
 
     s_lastMicros = 0;
     s_overflowCount = 0;
     s_usingHires = false;
 
-    __set_PRIMASK(primask);
+    PLATFORM_CRITICAL_EXIT();
 }
 
 // =============================================================================
@@ -103,8 +102,7 @@ static volatile uint32_t s_millisOverflowCount = 0;
 uint64_t getMillis64() {
     // Interrupt-safe 64-bit millis - same pattern as getMicros()
     // millis() wraps every 49.7 days; this tracks wraps for true 64-bit timestamp
-    uint32_t primask = __get_PRIMASK();
-    __disable_irq();
+    PLATFORM_CRITICAL_ENTER();
 
     uint32_t now = millis();
 
@@ -118,7 +116,7 @@ uint64_t getMillis64() {
     uint32_t overflows = s_millisOverflowCount;
 
     // Restore interrupt state
-    __set_PRIMASK(primask);
+    PLATFORM_CRITICAL_EXIT();
 
     // Combine overflow count (upper 32 bits) with current millis (lower 32 bits)
     return ((uint64_t)overflows << 32) | now;
