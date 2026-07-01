@@ -1,14 +1,17 @@
 /**
  * @file config.h
- * @brief BlueBuzzah firmware configuration - Pin definitions, constants, and parameters
+ * @brief BlueBuzzah firmware configuration - Constants and parameters
  * @version 2.0.0
- * @platform Adafruit Feather nRF52840 Express
+ *
+ * Board-specific values (pins, actuator count, ADC/battery hardware) live in
+ * board_config.h and are selected by the build environment's board macro.
  */
 
 #ifndef CONFIG_H
 #define CONFIG_H
 
 #include <Arduino.h>
+#include "board_config.h"
 
 // =============================================================================
 // FIRMWARE VERSION
@@ -18,31 +21,25 @@
 #define FIRMWARE_NAME "BlueBuzzah"
 
 // =============================================================================
-// PIN DEFINITIONS (nRF52840 Feather)
+// PIN DEFINITIONS (per-board values from board_config.h)
 // =============================================================================
 
-// NeoPixel LED - Uses built-in PIN_NEOPIXEL on Feather nRF52840
-#define NEOPIXEL_PIN PIN_NEOPIXEL
+// NeoPixel status LED
+#define NEOPIXEL_PIN NEOPIXEL_PIN_OVERRIDE
 #define NEOPIXEL_COUNT 1
 
-// Battery voltage monitor - Uses built-in voltage divider on A6/VBAT
-#define BATTERY_PIN PIN_VBAT
-
-// I2C pins - Uses default Wire (SDA/SCL)
-// SDA = PIN_WIRE_SDA
-// SCL = PIN_WIRE_SCL
+// Battery voltage monitor (only on boards with battery sense hardware)
+#if BATTERY_SENSE_ENABLED
+#define BATTERY_PIN BATTERY_PIN_OVERRIDE
+#endif
 
 // =============================================================================
 // I2C CONFIGURATION
 // =============================================================================
+// TCA9548A_ADDRESS / DRV2605_ADDRESS come from board_config.h (identical on
+// both boards).
 
 #define I2C_FREQUENCY 400000  // 400kHz Fast Mode
-
-// TCA9548A I2C Multiplexer
-#define TCA9548A_ADDRESS 0x70
-
-// DRV2605 Haptic Driver (same address on all channels)
-#define DRV2605_ADDRESS 0x5A
 
 // I2C timing
 #define I2C_INIT_DELAY_MS 5      // Delay after channel select (fingers 0-3)
@@ -160,18 +157,15 @@ constexpr uint32_t TEST_DURATION_SEC = 120;  // 2 minutes
 #define BATTERY_FULL_VOLTAGE 4.2f       // Fully charged voltage (V)
 #define BATTERY_EMPTY_VOLTAGE 3.27f     // Empty battery voltage (V)
 
-// ADC configuration for nRF52840
-#define ADC_RESOLUTION_BITS 14          // nRF52840 has 14-bit ADC
-#define ADC_MAX_VALUE 16383             // 2^14 - 1
-#define ADC_REFERENCE_VOLTAGE 3.6f      // nRF52840 reference voltage
-#define BATTERY_VOLTAGE_DIVIDER 2.0f    // Voltage divider ratio (4.2V -> 2.1V)
+// ADC configuration comes from board_config.h (ADC_RESOLUTION_BITS,
+// ADC_MAX_VALUE, ADC_REFERENCE_VOLTAGE, BATTERY_VOLTAGE_DIVIDER).
 #define BATTERY_SAMPLE_COUNT 10         // Number of samples to average
 
 // =============================================================================
 // HAPTIC CONFIGURATION
 // =============================================================================
 
-#define MAX_ACTUATORS 4                 // Number of fingers (index through pinky, no thumb per v1)
+// MAX_ACTUATORS comes from board_config.h (4 on BlueBuzzah, 5 on PentaBuzzer)
 #define MAX_AMPLITUDE 100               // Maximum amplitude percentage (0-100)
 #define DRV2605_MAX_RTP 127             // DRV2605 RTP register max value
 
