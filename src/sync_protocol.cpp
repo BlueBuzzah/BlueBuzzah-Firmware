@@ -23,7 +23,7 @@ static volatile uint32_t s_overflowCount = 0;
 static volatile bool s_usingHires = false;
 
 static inline uint32_t readMicrosSource(bool hires) {
-#if defined(NRF52840_XXAA) && !defined(NATIVE_TEST_BUILD)
+#if PLATFORM_HAS_HIRES_CLOCK
     if (hires) {
         return hiresClockRead32();
     }
@@ -49,7 +49,7 @@ uint64_t getMicros() {
     PLATFORM_CRITICAL_ENTER();
 
     bool hires = false;
-#if defined(NRF52840_XXAA) && !defined(NATIVE_TEST_BUILD)
+#if PLATFORM_HAS_HIRES_CLOCK
     hires = hiresClockIsRunning();
 #endif
 
