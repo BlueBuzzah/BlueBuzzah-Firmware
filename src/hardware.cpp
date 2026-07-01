@@ -86,7 +86,11 @@ bool HapticController::begin() {
     }
 
     // Initialize I2C at 400kHz
+#if defined(BOARD_PENTABUZZER_ESP32S3)
+    Wire.begin(SDA_PIN_OVERRIDE, SCL_PIN_OVERRIDE);
+#else
     Wire.begin();
+#endif
     Wire.setClock(I2C_FREQUENCY);
 
     // Initialize TCA9548A multiplexer
@@ -506,6 +510,7 @@ BatteryMonitor::BatteryMonitor() : _initialized(false) {
 }
 
 bool BatteryMonitor::begin() {
+#if BATTERY_SENSE_ENABLED
     // Configure ADC resolution
     analogReadResolution(ADC_RESOLUTION_BITS);
 
@@ -518,6 +523,13 @@ bool BatteryMonitor::begin() {
     Serial.println(F("[INFO] Battery monitor initialized"));
 
     return _initialized;
+#else
+    // No battery-sense hardware on this board: report a permanently healthy
+    // pack so state/LED logic never triggers low/critical battery handling
+    _initialized = true;
+    Serial.println(F("[INFO] Battery monitoring not available on this board"));
+    return true;
+#endif
 }
 
 float BatteryMonitor::readVoltage() {
@@ -525,6 +537,7 @@ float BatteryMonitor::readVoltage() {
         return 0.0f;
     }
 
+#if BATTERY_SENSE_ENABLED
     // Take multiple samples and average for stability
     uint32_t total = 0;
     for (uint8_t i = 0; i < BATTERY_SAMPLE_COUNT; i++) {
@@ -539,6 +552,9 @@ float BatteryMonitor::readVoltage() {
     float voltage = (average / (float)ADC_MAX_VALUE) * ADC_REFERENCE_VOLTAGE * BATTERY_VOLTAGE_DIVIDER;
 
     return voltage;
+#else
+    return 4.2f;  // Healthy sentinel (100%); no hardware to read
+#endif
 }
 
 uint8_t BatteryMonitor::getPercentage(float voltage) {

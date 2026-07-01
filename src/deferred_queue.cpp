@@ -4,6 +4,7 @@
  */
 
 #include "deferred_queue.h"
+#include "platform.h"
 
 // Global instance
 DeferredQueue deferredQueue;
@@ -26,7 +27,7 @@ bool DeferredQueue::enqueue(DeferredWorkType type, uint8_t param1, uint8_t param
     uint8_t nextHead = static_cast<uint8_t>((_head + 1) % MAX_WORK);
 
     // SP-H4 fix: Memory barrier before reading _tail to ensure we see consumer's updates
-    __DMB();
+    platformMemoryBarrier();
 
     // Check if queue is full
     if (nextHead == _tail) {
@@ -40,7 +41,7 @@ bool DeferredQueue::enqueue(DeferredWorkType type, uint8_t param1, uint8_t param
     _queue[_head].param3 = param3;
 
     // Memory barrier to ensure stores complete before head update
-    __DMB();
+    platformMemoryBarrier();
 
     // Advance head (makes item visible to consumer)
     _head = nextHead;
@@ -50,7 +51,7 @@ bool DeferredQueue::enqueue(DeferredWorkType type, uint8_t param1, uint8_t param
 
 bool DeferredQueue::processOne() {
     // SP-H4 fix: Memory barrier before reading _head to ensure we see producer's updates
-    __DMB();
+    platformMemoryBarrier();
 
     // Check if queue is empty
     if (_tail == _head) {
@@ -58,7 +59,7 @@ bool DeferredQueue::processOne() {
     }
 
     // SP-H4 fix: Another barrier to ensure we read data AFTER producer finished writing
-    __DMB();
+    platformMemoryBarrier();
 
     // Read work item
     DeferredWorkType type = _queue[_tail].type;
@@ -67,7 +68,7 @@ bool DeferredQueue::processOne() {
     uint32_t p3 = _queue[_tail].param3;
 
     // Memory barrier before advancing tail
-    __DMB();
+    platformMemoryBarrier();
 
     // Advance tail (frees slot)
     _tail = static_cast<uint8_t>((_tail + 1) % MAX_WORK);

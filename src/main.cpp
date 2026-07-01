@@ -137,18 +137,16 @@ const char *FINGER_NAMES[] = {"Index", "Middle", "Ring", "Pinky", "Thumb"};
 // These helpers disable interrupts to ensure atomic access.
 
 static inline uint64_t atomicRead64(volatile uint64_t* ptr) {
-    uint32_t primask = __get_PRIMASK();
-    __disable_irq();
+    PLATFORM_CRITICAL_ENTER();
     uint64_t val = *ptr;
-    __set_PRIMASK(primask);
+    PLATFORM_CRITICAL_EXIT();
     return val;
 }
 
 static inline void atomicWrite64(volatile uint64_t* ptr, uint64_t val) {
-    uint32_t primask = __get_PRIMASK();
-    __disable_irq();
+    PLATFORM_CRITICAL_ENTER();
     *ptr = val;
-    __set_PRIMASK(primask);
+    PLATFORM_CRITICAL_EXIT();
 }
 
 // =============================================================================
@@ -418,8 +416,10 @@ void executeDeferredWork(DeferredWorkType type, uint8_t p1, uint8_t p2, uint32_t
 // Serial-Only Commands (not available via BLE)
 void handleSerialCommand(const char *command);
 
-// BLE Event Callback (PHY change detection)
+#if defined(BOARD_BLUEBUZZAH_NRF52)
+// BLE Event Callback (PHY change detection; SoftDevice-specific)
 void onBLEEvent(ble_evt_t* evt);
+#endif
 
 // Role Configuration Wait (blocks until role is set)
 void waitForRoleConfiguration();
@@ -1130,11 +1130,13 @@ bool initializeBLE()
     }
 #endif
 
+#if defined(BOARD_BLUEBUZZAH_NRF52)
     // Register PHY change callback (both roles)
     // Detects 1M -> 2M PHY upgrades so we can reset RTT statistics
     // PRIMARY also uses RTT for adaptive lead time calculation
     Bluefruit.setEventCallback(onBLEEvent);
     Serial.println(F("[BLE] PHY change event callback registered"));
+#endif
 
     // Start scanning for SECONDARY role
     // Note: PRIMARY advertising is started in setupAdvertising() during ble.begin()
@@ -2490,12 +2492,11 @@ void onTxStamped(TxStampKind kind, uint32_t seqId, uint64_t txTimeUs)
     // (atomicWrite64) is insufficient here — the invariant spans variables.
     if (kind == TxStampKind::PING_T1)
     {
-        uint32_t primask = __get_PRIMASK();
-        __disable_irq();
+        PLATFORM_CRITICAL_ENTER();
         pingT1 = txTimeUs;
         pingStartTime = txTimeUs;
         pingSeq = seqId;
-        __set_PRIMASK(primask);
+        PLATFORM_CRITICAL_EXIT();
     }
     // TxStampKind::PONG_T3 is intentionally ignored here: it only fires on
     // SECONDARY, where no T1 pairing state exists.
@@ -2626,12 +2627,15 @@ void onMenuSendToSecondary(const char *message)
 // BLE EVENT CALLBACK (PHY Change Detection)
 // =============================================================================
 
+#if defined(BOARD_BLUEBUZZAH_NRF52)
 /**
  * @brief BLE event callback for PHY change detection
  *
  * Runs in SoftDevice context - only sets flags, no I2C/Serial.
  * When PHY upgrades from 1M to 2M, RTT changes significantly (~20ms to ~10-15ms).
  * This callback detects the transition so main loop can reset RTT statistics.
+ * (NimBLE requests 2M at connect time before sync traffic starts, so the
+ * RTT-reset hook is not needed on the ESP32 backend.)
  */
 void onBLEEvent(ble_evt_t* evt)
 {
@@ -2643,6 +2647,7 @@ void onBLEEvent(ble_evt_t* evt)
     g_newPhy = phy->tx_phy;
     g_phyChangeDetected = true;
 }
+#endif
 
 // =============================================================================
 // SECONDARY KEEPALIVE TIMEOUT HANDLER

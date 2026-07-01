@@ -6,11 +6,7 @@
  */
 
 #include "motor_event_buffer.h"
-
-// ARM CMSIS intrinsics for memory barriers
-extern "C" {
-    void __DMB(void);  // Data Memory Barrier
-}
+#include "platform.h"
 
 // =============================================================================
 // GLOBAL INSTANCE
@@ -39,7 +35,7 @@ MotorEventBuffer::MotorEventBuffer() :
 bool MotorEventBuffer::stage(uint64_t activateTimeUs, uint8_t finger, uint8_t amplitude,
                               uint16_t durationMs, uint16_t frequencyHz, bool isMacrocycleLast) {
     // Memory barrier before reading consumer index (tail)
-    __DMB();
+    platformMemoryBarrier();
 
     // Calculate next head position
     uint8_t currentHead = _head;
@@ -61,13 +57,13 @@ bool MotorEventBuffer::stage(uint64_t activateTimeUs, uint8_t finger, uint8_t am
     slot.isMacrocycleLast = isMacrocycleLast;
 
     // Memory barrier to ensure all data writes complete before marking valid
-    __DMB();
+    platformMemoryBarrier();
 
     // Mark slot as valid (consumer can now read it)
     slot.valid = true;
 
     // Memory barrier before updating head
-    __DMB();
+    platformMemoryBarrier();
 
     // Advance head
     _head = nextHead;
@@ -76,13 +72,13 @@ bool MotorEventBuffer::stage(uint64_t activateTimeUs, uint8_t finger, uint8_t am
 }
 
 void MotorEventBuffer::beginMacrocycle() {
-    __DMB();
+    platformMemoryBarrier();
     _macrocyclePending = true;
-    __DMB();
+    platformMemoryBarrier();
 }
 
 bool MotorEventBuffer::isMacrocyclePending() const {
-    __DMB();
+    platformMemoryBarrier();
     return _macrocyclePending;
 }
 
@@ -92,7 +88,7 @@ bool MotorEventBuffer::isMacrocyclePending() const {
 
 bool MotorEventBuffer::unstage(StagedMotorEvent& event) {
     // Memory barrier before reading producer index (head)
-    __DMB();
+    platformMemoryBarrier();
 
     uint8_t currentTail = _tail;
 
@@ -102,7 +98,7 @@ bool MotorEventBuffer::unstage(StagedMotorEvent& event) {
     }
 
     // Memory barrier before reading data
-    __DMB();
+    platformMemoryBarrier();
 
     // Read event data from current tail position
     StagedMotorEvent& slot = _buffer[currentTail];
@@ -131,7 +127,7 @@ bool MotorEventBuffer::unstage(StagedMotorEvent& event) {
     slot.clear();
 
     // Memory barrier before advancing tail
-    __DMB();
+    platformMemoryBarrier();
 
     // Advance tail
     _tail = (currentTail + 1) % MAX_STAGED;
@@ -144,12 +140,12 @@ bool MotorEventBuffer::unstage(StagedMotorEvent& event) {
 // =============================================================================
 
 bool MotorEventBuffer::hasPending() const {
-    __DMB();
+    platformMemoryBarrier();
     return _head != _tail;
 }
 
 uint8_t MotorEventBuffer::getPendingCount() const {
-    __DMB();
+    platformMemoryBarrier();
     uint8_t h = _head;
     uint8_t t = _tail;
     if (h >= t) {
