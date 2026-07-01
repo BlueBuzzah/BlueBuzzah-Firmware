@@ -1975,6 +1975,54 @@ void test_Macrocycle_max_events(void) {
     TEST_ASSERT_EQUAL_UINT8(MACROCYCLE_MAX_EVENTS, mc2.eventCount);
 }
 
+void test_Macrocycle_worst_case_fits_message_buffer(void) {
+    // Regression guard: a full macrocycle with maximum-width field encodings
+    // must serialize into the production MESSAGE_BUFFER_SIZE without
+    // truncation (serializeMacrocycle returns false rather than truncating).
+    Macrocycle mc;
+    mc.sequenceId = 4294967295UL;                                // 10 digits
+    mc.baseTime = 0xFFFFFFFFFFFFFFFFULL;                         // 10+10 digit halves
+    mc.clockOffset = static_cast<int64_t>(0x80000000FFFFFFFFULL); // -2147483648 | 4294967295
+    mc.durationMs = 255;
+    mc.eventCount = MACROCYCLE_MAX_EVENTS;
+
+    for (int i = 0; i < MACROCYCLE_MAX_EVENTS; i++) {
+        mc.events[i].deltaTimeMs = 65535;                        // 5 digits
+        mc.events[i].finger = MAX_ACTUATORS - 1;
+        mc.events[i].amplitude = 100;                            // 3 digits
+        mc.events[i].freqOffset = 51;                            // 455 Hz (encoding max)
+    }
+
+    char buffer[MESSAGE_BUFFER_SIZE];
+    TEST_ASSERT_TRUE(SyncCommand::serializeMacrocycle(buffer, sizeof(buffer), mc));
+
+    Macrocycle mc2;
+    TEST_ASSERT_TRUE(SyncCommand::deserializeMacrocycle(buffer, strlen(buffer), mc2));
+    TEST_ASSERT_EQUAL_UINT8(MACROCYCLE_MAX_EVENTS, mc2.eventCount);
+    TEST_ASSERT_EQUAL_UINT16(65535, mc2.events[MACROCYCLE_MAX_EVENTS - 1].deltaTimeMs);
+    TEST_ASSERT_EQUAL_UINT8(51, mc2.events[MACROCYCLE_MAX_EVENTS - 1].freqOffset);
+}
+
+void test_Macrocycle_serialize_truncation_returns_false(void) {
+    // A buffer too small for the full event list must be rejected outright,
+    // never sent partially (the receiver would silently drop motor events).
+    Macrocycle mc;
+    mc.sequenceId = 1;
+    mc.baseTime = 1000000;
+    mc.clockOffset = 0;
+    mc.durationMs = 100;
+    mc.eventCount = MACROCYCLE_MAX_EVENTS;
+    for (int i = 0; i < MACROCYCLE_MAX_EVENTS; i++) {
+        mc.events[i].deltaTimeMs = static_cast<uint16_t>(10000 + i * 167);
+        mc.events[i].finger = static_cast<uint8_t>(i % MAX_ACTUATORS);
+        mc.events[i].amplitude = 100;
+        mc.events[i].freqOffset = 10;
+    }
+
+    char buffer[200];  // >= the 200-byte minimum, but too small for all events
+    TEST_ASSERT_FALSE(SyncCommand::serializeMacrocycle(buffer, sizeof(buffer), mc));
+}
+
 void test_Macrocycle_large_clock_offset(void) {
     Macrocycle mc;
     mc.sequenceId = 1;
@@ -2393,6 +2441,8 @@ int main(int argc, char **argv) {
 
     // Macrocycle edge case tests
     RUN_TEST(test_Macrocycle_max_events);
+    RUN_TEST(test_Macrocycle_worst_case_fits_message_buffer);
+    RUN_TEST(test_Macrocycle_serialize_truncation_returns_false);
     RUN_TEST(test_Macrocycle_large_clock_offset);
     RUN_TEST(test_Macrocycle_negative_large_clock_offset);
     RUN_TEST(test_Macrocycle_baseTime_full_precision);

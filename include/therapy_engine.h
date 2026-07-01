@@ -208,7 +208,7 @@ typedef void (*SetFrequencyCallback)(uint8_t finger, uint16_t frequencyHz);
 // Called at the start of each macrocycle before the first pattern
 typedef void (*MacrocycleStartCallback)(uint32_t macrocycleCount);
 
-// Callback for sending entire macrocycle (batch of 12 events)
+// Callback for sending an entire macrocycle (up to MACROCYCLE_MAX_EVENTS events)
 // Called when a new macrocycle is generated, sends all events to SECONDARY
 typedef void (*SendMacrocycleCallback)(const Macrocycle& macrocycle);
 
@@ -413,7 +413,7 @@ public:
 
     /**
      * @brief Get current frequency for a finger
-     * @param finger Finger index (0-3)
+     * @param finger Finger index (0 to MAX_ACTUATORS-1)
      * @return Current frequency in Hz
      */
     uint16_t getFrequency(uint8_t finger) const {
@@ -487,7 +487,7 @@ private:
     // Internal methods
     void generateNextPattern();
     void applyFrequencyRandomization();  // Called at start of each pattern cycle
-    Macrocycle generateMacrocycle();     // Generate all 12 events for a macrocycle
+    Macrocycle generateMacrocycle();     // Generate 3*numFingers events for a macrocycle
     void executeMacrocycleStep();        // State machine for macrocycle batching mode
 };
 

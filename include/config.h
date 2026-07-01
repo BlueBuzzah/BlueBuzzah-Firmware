@@ -269,9 +269,12 @@ constexpr uint32_t TEST_DURATION_SEC = 120;  // 2 minutes
 // MEMORY MANAGEMENT
 // =============================================================================
 
-// Buffer sizes for static allocation
-#define RX_BUFFER_SIZE 256              // BLE receive buffer
-#define TX_BUFFER_SIZE 256              // BLE transmit buffer
-#define MESSAGE_BUFFER_SIZE 256         // General message buffer (increased for MACROCYCLE batching)
+// Buffer sizes for static allocation.
+// The largest message is a serialized macrocycle: ~65-byte worst-case header
+// plus up to 16 bytes per event, 3 events per actuator (12 events -> 272,
+// 15 events -> 320). RX must hold the same message on the receiving glove.
+#define MESSAGE_BUFFER_SIZE (80 + (48 * MAX_ACTUATORS))
+#define RX_BUFFER_SIZE MESSAGE_BUFFER_SIZE  // BLE receive buffer
+#define TX_BUFFER_SIZE MESSAGE_BUFFER_SIZE  // BLE transmit buffer
 
 #endif // CONFIG_H

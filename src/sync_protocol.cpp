@@ -611,7 +611,7 @@ bool SyncCommand::serializeMacrocycle(char* buffer, size_t bufferSize, const Mac
 
     // Append events: |deltaTimeMs,finger,amplitude[,freqOffset]
     // Omit freqOffset when 0 for compression
-    for (uint8_t i = 0; i < macrocycle.eventCount && (size_t)written < bufferSize - 15; i++) {
+    for (uint8_t i = 0; i < macrocycle.eventCount; i++) {
         const MacrocycleEvent& evt = macrocycle.events[i];
         int evtWritten;
 
@@ -625,7 +625,10 @@ bool SyncCommand::serializeMacrocycle(char* buffer, size_t bufferSize, const Mac
                                   evt.deltaTimeMs, evt.finger, evt.amplitude);
         }
 
-        if (evtWritten < 0) {
+        // snprintf returns the WOULD-BE length: >= remaining space means the
+        // event was truncated. A truncated macrocycle must never be sent - the
+        // receiver would silently schedule fewer motor events.
+        if (evtWritten < 0 || (size_t)evtWritten >= bufferSize - (size_t)written) {
             return false;
         }
         written += evtWritten;
