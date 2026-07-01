@@ -19,6 +19,7 @@
 #include <Arduino.h>
 #include "platform.h"  // Platform primitives + FreeRTOS for motor task
 #include "fs_backend.h"
+#include "power_controller.h"
 #include "config.h"
 #include "types.h"
 #include "hardware.h"
@@ -51,6 +52,7 @@
 HapticController haptic;
 BatteryMonitor battery;
 LEDController led;
+PowerController power;
 BLEManager ble;
 TherapyEngine therapy;
 TherapyStateMachine stateMachine;
@@ -550,6 +552,10 @@ void setup()
 
     printBanner();
 
+    // Enable the board power path FIRST (Penta: peripheral 3V3 rail feeds the
+    // LED, mux, and motor drivers; no-op on nRF)
+    power.begin();
+
     // Initialize LED FIRST (needed for configuration feedback)
     Serial.println(F("\n--- LED Initialization ---"));
     if (led.begin())
@@ -753,6 +759,13 @@ void loop()
 
     // Update LED pattern animation
     led.update();
+
+    // Power-switch shutdown request (PentaBuzzer only; no-op on nRF)
+    if (power.powerOffRequested())
+    {
+        safeMotorShutdown();
+        power.enterDeepSleep(led);
+    }
 
     // Process BLE events (includes non-blocking TX queue)
     ble.update();
