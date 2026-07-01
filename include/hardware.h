@@ -2,11 +2,11 @@
  * @file hardware.h
  * @brief BlueBuzzah hardware abstraction layer - Class declarations
  * @version 2.0.0
- * @platform Adafruit Feather nRF52840 Express
+ * @platform Adafruit Feather nRF52840 / Seeed XIAO ESP32-S3 (PentaBuzzer)
  *
  * Hardware components:
  * - TCA9548A I2C multiplexer @ 0x70
- * - 5x DRV2605 haptic drivers @ 0x5A (one per finger via multiplexer)
+ * - MAX_ACTUATORS x DRV2605 haptic drivers @ 0x5A (one per finger via multiplexer)
  * - Battery voltage monitor via ADC
  * - NeoPixel RGB LED for status indication
  */
@@ -29,7 +29,7 @@
 // =============================================================================
 
 /**
- * @brief Controls 4 DRV2605 haptic drivers via TCA9548A I2C multiplexer
+ * @brief Controls MAX_ACTUATORS DRV2605 haptic drivers via TCA9548A I2C multiplexer
  *
  * Each finger (index through pinky) has a dedicated DRV2605 driver connected
  * to the TCA9548A multiplexer on channels 0-3. All drivers share the same
@@ -55,14 +55,14 @@ public:
 
     /**
      * @brief Initialize a specific finger's DRV2605 driver
-     * @param finger Finger index (0-3: index through pinky)
+     * @param finger Finger index (0 to MAX_ACTUATORS-1)
      * @return true if initialization successful
      */
     bool initializeFinger(uint8_t finger);
 
     /**
      * @brief Activate motor on specified finger
-     * @param finger Finger index (0-3)
+     * @param finger Finger index (0 to MAX_ACTUATORS-1)
      * @param amplitude Amplitude percentage (0-100)
      * @return Result code indicating success or error
      */
@@ -70,7 +70,7 @@ public:
 
     /**
      * @brief Deactivate motor on specified finger
-     * @param finger Finger index (0-4)
+     * @param finger Finger index (0 to MAX_ACTUATORS-1)
      * @return Result code indicating success or error
      */
     Result deactivate(uint8_t finger);
@@ -87,21 +87,21 @@ public:
 
     /**
      * @brief Check if a finger's motor is currently active
-     * @param finger Finger index (0-4)
+     * @param finger Finger index (0 to MAX_ACTUATORS-1)
      * @return true if motor is active
      */
     bool isActive(uint8_t finger) const;
 
     /**
      * @brief Check if a finger's driver is enabled (initialized successfully)
-     * @param finger Finger index (0-4)
+     * @param finger Finger index (0 to MAX_ACTUATORS-1)
      * @return true if driver is enabled
      */
     bool isEnabled(uint8_t finger) const;
 
     /**
      * @brief Set resonant frequency for LRA actuator
-     * @param finger Finger index (0-3)
+     * @param finger Finger index (0 to MAX_ACTUATORS-1)
      * @param frequencyHz Frequency in Hz (150-250)
      * @return Result code indicating success or error
      */
@@ -109,7 +109,7 @@ public:
 
     /**
      * @brief Get number of successfully initialized fingers
-     * @return Count of enabled fingers (0-4)
+     * @return Count of enabled fingers (0 to MAX_ACTUATORS)
      */
     uint8_t getEnabledCount() const;
 
@@ -122,7 +122,7 @@ public:
 
     /**
      * @brief Select mux channel and keep it open (for pre-selection)
-     * @param finger Finger index (0-3)
+     * @param finger Finger index (0 to MAX_ACTUATORS-1)
      * @return true if channel selected successfully
      *
      * Unlike selectChannel(), this does NOT close the channel after use.
@@ -132,7 +132,7 @@ public:
 
     /**
      * @brief Set frequency without mux open/close (channel must be pre-selected)
-     * @param finger Finger index (0-3)
+     * @param finger Finger index (0 to MAX_ACTUATORS-1)
      * @param frequencyHz Frequency in Hz (150-250)
      * @return Result code indicating success or error
      *
@@ -142,7 +142,7 @@ public:
 
     /**
      * @brief Activate motor without mux operations (channel must be pre-selected)
-     * @param finger Finger index (0-3)
+     * @param finger Finger index (0 to MAX_ACTUATORS-1)
      * @param amplitude Amplitude percentage (0-100)
      * @return Result code indicating success or error
      *
@@ -158,7 +158,7 @@ public:
 
     /**
      * @brief Check which finger has mux channel pre-selected
-     * @return Finger index (0-3) or -1 if none pre-selected
+     * @return Finger index or -1 if none pre-selected
      */
     int8_t getPreSelectedFinger() const { return _preSelectedFinger; }
 
@@ -174,7 +174,7 @@ private:
 
     /**
      * @brief Select multiplexer channel and prepare for DRV2605 communication
-     * @param finger Finger index (0-3)
+     * @param finger Finger index (0 to MAX_ACTUATORS-1)
      * @return true if channel selected successfully
      */
     bool selectChannel(uint8_t finger);

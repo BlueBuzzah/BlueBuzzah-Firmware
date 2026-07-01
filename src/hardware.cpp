@@ -146,8 +146,9 @@ bool HapticController::initializeFinger(uint8_t finger) {
             continue;
         }
 
-        // Apply initialization delay for I2C stabilization
-        delay(I2C_INIT_DELAY_MS);
+        // Apply initialization delay for I2C stabilization (channel 4 has the
+        // longest PCB trace and needs extra settling time)
+        delay(finger == 4 ? I2C_INIT_DELAY_CH4_MS : I2C_INIT_DELAY_MS);
 
         // Configure for LRA + RTP mode
         configureDRV2605(_drv[finger]);
