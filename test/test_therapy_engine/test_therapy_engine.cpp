@@ -137,7 +137,7 @@ void test_shuffleArray_maintains_all_elements(void) {
 void test_Pattern_default_constructor(void) {
     Pattern p;
 
-    TEST_ASSERT_EQUAL_UINT8(4, p.numFingers);
+    TEST_ASSERT_EQUAL_UINT8(MAX_ACTUATORS, p.numFingers);
     TEST_ASSERT_FLOAT_WITHIN(0.1f, 100.0f, p.burstDurationMs);
     TEST_ASSERT_FLOAT_WITHIN(0.1f, 668.0f, p.interBurstIntervalMs);
 

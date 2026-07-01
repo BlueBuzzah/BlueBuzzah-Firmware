@@ -197,7 +197,7 @@ TherapyEngine::TherapyEngine() :
     _timeOnMs(100.0f),
     _timeOffMs(67.0f),
     _jitterPercent(0.0f),
-    _numFingers(4),
+    _numFingers(MAX_ACTUATORS),
     _mirrorPattern(false),
     _amplitudeMin(100),
     _amplitudeMax(100),
@@ -531,7 +531,7 @@ void TherapyEngine::applyFrequencyRandomization() {
 // =============================================================================
 
 Macrocycle TherapyEngine::generateMacrocycle() {
-    // Generate 3 patterns × 4 fingers = 12 events
+    // Generate 3 patterns × numFingers events (12 at 4 fingers, 15 at 5)
     // Each event has a delta time relative to baseTime
 
     Macrocycle mc;

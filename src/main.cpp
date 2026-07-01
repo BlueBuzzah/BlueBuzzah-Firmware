@@ -127,8 +127,8 @@ static volatile uint64_t g_pendingFlashTime = 0;
 static volatile bool g_phyChangeDetected = false;
 static volatile uint8_t g_newPhy = 0;  // 1=1M, 2=2M, 4=Coded
 
-// Finger names for display (4 fingers per hand - index through pinky, no thumb per v1)
-const char *FINGER_NAMES[] = {"Index", "Middle", "Ring", "Pinky"};
+// Finger names for display, indexed by finger id (thumb only used at 5 actuators)
+const char *FINGER_NAMES[] = {"Index", "Middle", "Ring", "Pinky", "Thumb"};
 
 // =============================================================================
 // ATOMIC 64-BIT ACCESS HELPERS

@@ -64,7 +64,7 @@ struct __attribute__((packed)) SettingsData {
     uint16_t sessionDurationMin; // Minutes
     char patternType[16];        // "rndp", "sequential", "mirrored"
     uint8_t mirrorPattern;       // 0 or 1
-    uint8_t numFingers;          // 1-4 (index through pinky)
+    uint8_t numFingers;          // 1-MAX_ACTUATORS
     uint8_t therapyLedOff;       // 0 = LED on (default), 1 = LED off during therapy
     uint8_t debugMode;           // 0 = off (default), 1 = debug mode enabled
     uint8_t reserved[2];         // Future use, padding
@@ -126,7 +126,7 @@ struct TherapyProfile {
         amplitudeMax(100),
         sessionDurationMin(120),  // 2 hours
         mirrorPattern(true),
-        numFingers(4),
+        numFingers(MAX_ACTUATORS),
         isDefault(false),
         frequencyRandomization(false),
         frequencyMin(210),
@@ -291,7 +291,7 @@ public:
      * - PATTERN: rndp, sequential, or mirrored
      * - MIRROR: 0 or 1
      * - JITTER: Jitter percent (0-100)
-     * - FINGERS: Number of fingers (1-4)
+     * - FINGERS: Number of fingers (1-MAX_ACTUATORS)
      */
     bool setParameter(const char* paramName, const char* value);
 

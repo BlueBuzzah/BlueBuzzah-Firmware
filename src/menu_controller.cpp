@@ -650,7 +650,7 @@ void MenuController::handleSessionStart() {
     float timeOnMs = 100.0f;
     float timeOffMs = 67.0f;
     float jitterPercent = 23.5f;
-    uint8_t numFingers = 4;  // 4 fingers per hand (index, middle, ring, pinky)
+    uint8_t numFingers = MAX_ACTUATORS;  // Fallback when no profile is active
     bool mirror = true;
 
     if (_profiles) {
@@ -660,6 +660,7 @@ void MenuController::handleSessionStart() {
             timeOnMs = profile->timeOnMs;
             timeOffMs = profile->timeOffMs;
             jitterPercent = profile->jitterPercent;
+            numFingers = profile->numFingers;
             mirror = profile->mirrorPattern;
 
             if (strcmp(profile->patternType, "rndp") == 0) {

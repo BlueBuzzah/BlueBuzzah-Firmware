@@ -81,7 +81,7 @@ void ProfileManager::initBuiltInProfiles() {
     regular.sessionDurationMin = 120;
     strcpy(regular.patternType, "rndp");
     regular.mirrorPattern = false;
-    regular.numFingers = 4;
+    regular.numFingers = MAX_ACTUATORS;
     regular.isDefault = true;
     regular.frequencyRandomization = false;
     regular.frequencyMin = 210;
@@ -104,7 +104,7 @@ void ProfileManager::initBuiltInProfiles() {
     noisy.sessionDurationMin = 120;
     strcpy(noisy.patternType, "rndp");
     noisy.mirrorPattern = true;
-    noisy.numFingers = 4;
+    noisy.numFingers = MAX_ACTUATORS;
     noisy.isDefault = false;
     noisy.frequencyRandomization = false;
     noisy.frequencyMin = 210;
@@ -127,7 +127,7 @@ void ProfileManager::initBuiltInProfiles() {
     hybrid.sessionDurationMin = 120;
     strcpy(hybrid.patternType, "rndp");
     hybrid.mirrorPattern = false;
-    hybrid.numFingers = 4;
+    hybrid.numFingers = MAX_ACTUATORS;
     hybrid.isDefault = false;
     hybrid.frequencyRandomization = false;
     hybrid.frequencyMin = 210;
@@ -150,7 +150,7 @@ void ProfileManager::initBuiltInProfiles() {
     custom.sessionDurationMin = 120;
     strcpy(custom.patternType, "rndp");
     custom.mirrorPattern = false;
-    custom.numFingers = 4;
+    custom.numFingers = MAX_ACTUATORS;
     custom.isDefault = false;
     custom.frequencyRandomization = true;
     custom.frequencyMin = 210;
@@ -176,7 +176,7 @@ void ProfileManager::initBuiltInProfiles() {
     gentle.sessionDurationMin = 60;
     strcpy(gentle.patternType, "sequential");
     gentle.mirrorPattern = true;
-    gentle.numFingers = 4;
+    gentle.numFingers = MAX_ACTUATORS;
     gentle.isDefault = false;
     gentle.frequencyRandomization = false;
     gentle.frequencyMin = 210;
@@ -198,7 +198,7 @@ void ProfileManager::initBuiltInProfiles() {
     quick.sessionDurationMin = 5;
     strcpy(quick.patternType, "rndp");
     quick.mirrorPattern = true;
-    quick.numFingers = 4;
+    quick.numFingers = MAX_ACTUATORS;
     quick.isDefault = false;
     quick.frequencyRandomization = false;
     quick.frequencyMin = 210;
@@ -347,7 +347,7 @@ bool ProfileManager::setParameter(const char* paramName, const char* value) {
     }
     else if (strcmp(paramUpper, "FINGERS") == 0) {
         int fingers = atoi(value);
-        if (fingers < 1 || fingers > 4) return false;
+        if (fingers < 1 || fingers > MAX_ACTUATORS) return false;
         _currentProfile.numFingers = static_cast<uint8_t>(fingers);
     }
     else {

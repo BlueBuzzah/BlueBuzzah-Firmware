@@ -230,7 +230,7 @@ void test_getCurrentProfile_noisy_vcr_has_correct_defaults(void) {
     TEST_ASSERT_EQUAL_UINT8(100, p->amplitudeMax);
     TEST_ASSERT_EQUAL_UINT16(120, p->sessionDurationMin);
     TEST_ASSERT_TRUE(p->mirrorPattern);
-    TEST_ASSERT_EQUAL_UINT8(4, p->numFingers);
+    TEST_ASSERT_EQUAL_UINT8(MAX_ACTUATORS, p->numFingers);
 }
 
 void test_getCurrentProfile_gentle_has_correct_values(void) {
@@ -506,9 +506,11 @@ void test_setParameter_FINGERS_invalid_zero(void) {
     TEST_ASSERT_FALSE(profiles->setParameter("FINGERS", "0"));
 }
 
-void test_setParameter_FINGERS_invalid_above_4(void) {
+void test_setParameter_FINGERS_invalid_above_max(void) {
     profiles->loadProfile(1);
-    TEST_ASSERT_FALSE(profiles->setParameter("FINGERS", "5"));
+    char above[4];
+    snprintf(above, sizeof(above), "%d", MAX_ACTUATORS + 1);
+    TEST_ASSERT_FALSE(profiles->setParameter("FINGERS", above));
 }
 
 // =============================================================================
@@ -778,7 +780,7 @@ int main(int argc, char **argv) {
     RUN_TEST(test_setParameter_MIRROR_disable);
     RUN_TEST(test_setParameter_FINGERS_valid);
     RUN_TEST(test_setParameter_FINGERS_invalid_zero);
-    RUN_TEST(test_setParameter_FINGERS_invalid_above_4);
+    RUN_TEST(test_setParameter_FINGERS_invalid_above_max);
 
     // Set Parameter Tests - Error Cases
     RUN_TEST(test_setParameter_unknown_param_returns_false);
