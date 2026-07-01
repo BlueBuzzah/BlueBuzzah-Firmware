@@ -38,7 +38,7 @@ enum class MotorEventType : uint8_t {
  */
 struct MotorEvent {
     uint64_t timeUs;        // Event time (local clock, microseconds)
-    uint8_t  finger;        // Motor index (0-3)
+    uint8_t  finger;        // Motor index (0 to MAX_ACTUATORS-1)
     uint8_t  amplitude;     // Intensity (0-100), only used for ACTIVATE
     uint16_t frequencyHz;   // Motor frequency, only used for ACTIVATE
     MotorEventType type;    // ACTIVATE or DEACTIVATE
@@ -77,7 +77,7 @@ struct MotorEvent {
  */
 class ActivationQueue {
 public:
-    static constexpr uint8_t MAX_EVENTS = 32;  // 12 activations + 12 deactivations + margin
+    static constexpr uint8_t MAX_EVENTS = 64;  // MACROCYCLE_MAX_EVENTS activations + deactivations (30 at 5 motors) + margin
 
     ActivationQueue();
 
@@ -96,7 +96,7 @@ public:
     /**
      * @brief Add a motor activation (auto-enqueues corresponding deactivation)
      * @param activateTimeUs Absolute activation time (local clock, microseconds)
-     * @param finger Motor index (0-3)
+     * @param finger Motor index (0 to MAX_ACTUATORS-1)
      * @param amplitude Intensity (0-100)
      * @param durationMs ON duration in milliseconds
      * @param frequencyHz Motor frequency in Hz

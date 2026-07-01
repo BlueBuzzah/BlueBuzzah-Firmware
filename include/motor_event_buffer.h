@@ -33,7 +33,7 @@
  */
 struct StagedMotorEvent {
     uint64_t activateTimeUs;   // Absolute activation time (microseconds)
-    uint8_t finger;            // Finger index (0-3)
+    uint8_t finger;            // Finger index (0 to MAX_ACTUATORS-1)
     uint8_t amplitude;         // Amplitude percentage (0-100)
     uint16_t durationMs;       // Duration in milliseconds
     uint16_t frequencyHz;      // Frequency in Hz
@@ -89,7 +89,7 @@ struct StagedMotorEvent {
  */
 class MotorEventBuffer {
 public:
-    static constexpr uint8_t MAX_STAGED = 16;  // Power of 2 for efficient modulo
+    static constexpr uint8_t MAX_STAGED = 32;  // Power of 2 for efficient modulo; headroom for a full 5-motor macrocycle (15 events)
 
     MotorEventBuffer();
 
@@ -99,7 +99,7 @@ public:
      * ISR-safe: Uses no mutex, only memory barriers for ARM ordering.
      *
      * @param activateTimeUs Absolute activation time (microseconds)
-     * @param finger Finger index (0-3)
+     * @param finger Finger index (0 to MAX_ACTUATORS-1)
      * @param amplitude Amplitude percentage (0-100)
      * @param durationMs Duration in milliseconds
      * @param frequencyHz Frequency in Hz

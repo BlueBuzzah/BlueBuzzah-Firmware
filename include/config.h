@@ -174,11 +174,12 @@ constexpr uint32_t TEST_DURATION_SEC = 120;  // 2 minutes
 #define MAX_FREQUENCY_HZ 255            // Maximum LRA resonant frequency (v1 randrange excludes 260)
 #define DEFAULT_FREQUENCY_HZ 250        // Default/standard LRA frequency (v1 reference: 250Hz)
 
-// Finger indices (4 fingers per hand, matching v1 original - no thumb)
+// Finger indices (boards with MAX_ACTUATORS == 5 add the thumb on index 4)
 #define FINGER_INDEX 0
 #define FINGER_MIDDLE 1
 #define FINGER_RING 2
 #define FINGER_PINKY 3
+#define FINGER_THUMB 4
 
 // =============================================================================
 // LED COLORS (RGB values)
