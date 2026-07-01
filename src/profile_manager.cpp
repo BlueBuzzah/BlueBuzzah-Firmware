@@ -6,10 +6,7 @@
  */
 
 #include "profile_manager.h"
-#include <Adafruit_LittleFS.h>
-#include <InternalFileSystem.h>
-
-using namespace Adafruit_LittleFS_Namespace;
+#include "fs_backend.h"
 
 // =============================================================================
 // CONSTRUCTOR
@@ -36,10 +33,10 @@ bool ProfileManager::begin(bool loadFromStorage) {
     // Initialize built-in profiles
     initBuiltInProfiles();
 
-    // Try to initialize InternalFileSystem
-    if (InternalFS.begin()) {
+    // Try to mount the storage backend
+    if (fsb::begin()) {
         _storageAvailable = true;
-        Serial.println(F("[PROFILE] InternalFS mounted"));
+        Serial.println(F("[PROFILE] Storage mounted"));
 
         // Load settings if requested
         if (loadFromStorage) {
@@ -47,7 +44,7 @@ bool ProfileManager::begin(bool loadFromStorage) {
         }
     } else {
         _storageAvailable = false;
-        Serial.println(F("[PROFILE] InternalFS not available, using defaults"));
+        Serial.println(F("[PROFILE] Storage not available, using defaults"));
     }
 
     // Load default profile if none loaded
@@ -410,22 +407,8 @@ bool ProfileManager::saveSettings() {
     // Debug mode
     data.debugMode = _debugMode ? 1 : 0;
 
-    // Write binary data
-    // Note: FILE_O_WRITE seeks to end-of-file, so we must seek(0) to overwrite
-    File file(InternalFS);
-    if (!file.open(SETTINGS_FILE, FILE_O_WRITE)) {
-        Serial.println(F("[SETTINGS] Failed to open file for writing"));
-        return false;
-    }
-
-    // Seek to beginning to overwrite (FILE_O_WRITE positions at EOF)
-    file.seek(0);
-
-    size_t written = file.write((uint8_t*)&data, sizeof(data));
-    file.flush();  // Ensure data is written to flash before close
-    file.close();
-
-    if (written != sizeof(data)) {
+    // Write binary data (overwrites from the start of the file)
+    if (!fsb::writeFile(SETTINGS_FILE, (const uint8_t*)&data, sizeof(data))) {
         Serial.println(F("[SETTINGS] Write failed"));
         return false;
     }
@@ -439,20 +422,17 @@ bool ProfileManager::loadSettings() {
         return false;
     }
 
-    if (!InternalFS.exists(SETTINGS_FILE)) {
+    if (!fsb::exists(SETTINGS_FILE)) {
         Serial.println(F("[SETTINGS] No settings file found"));
         return false;
     }
 
-    File file(InternalFS);
-    if (!file.open(SETTINGS_FILE, FILE_O_READ)) {
+    SettingsData data;
+    size_t bytesRead = 0;
+    if (!fsb::readFile(SETTINGS_FILE, (uint8_t*)&data, sizeof(data), bytesRead)) {
         Serial.println(F("[SETTINGS] Failed to open file"));
         return false;
     }
-
-    SettingsData data;
-    size_t bytesRead = file.read((uint8_t*)&data, sizeof(data));
-    file.close();
 
     if (bytesRead != sizeof(data) || data.magic != SETTINGS_MAGIC) {
         Serial.println(F("[SETTINGS] Invalid file format"));

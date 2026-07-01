@@ -17,9 +17,8 @@
  */
 
 #include <Arduino.h>
-#include <Adafruit_LittleFS.h>
-#include <InternalFileSystem.h>
 #include "platform.h"  // Platform primitives + FreeRTOS for motor task
+#include "fs_backend.h"
 #include "config.h"
 #include "types.h"
 #include "hardware.h"
@@ -2924,7 +2923,7 @@ void handleSerialCommand(const char *command)
     if (strcmp(command, "FACTORY_RESET") == 0)
     {
         Serial.println(F("[CONFIG] Factory reset - deleting settings..."));
-        if (InternalFS.remove(SETTINGS_FILE))
+        if (fsb::removeFile(SETTINGS_FILE))
         {
             Serial.println(F("[CONFIG] Settings deleted successfully"));
         }

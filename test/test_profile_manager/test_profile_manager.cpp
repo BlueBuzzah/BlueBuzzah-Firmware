@@ -13,55 +13,9 @@
 #include <Arduino.h>
 #include <cstring>
 
-// =============================================================================
-// MOCK DEFINITIONS FOR LITTLEFS
-// =============================================================================
-
-// File open modes (from Adafruit_LittleFS)
-#ifndef FILE_O_READ
-#define FILE_O_READ  0x01
-#define FILE_O_WRITE 0x02
-#endif
-
-// Mock InternalFS before including profile_manager
-namespace Adafruit_LittleFS_Namespace {
-
-class File {
-public:
-    File() : _isOpen(false) {}
-    File(class MockInternalFS&) : _isOpen(false) {}  // Match actual usage
-
-    bool open(const char*, uint8_t) { return false; }
-    void close() { _isOpen = false; }
-    size_t read(uint8_t*, size_t) { return 0; }
-    size_t write(const uint8_t*, size_t) { return 0; }
-    bool seek(uint32_t) { return false; }
-    void flush() {}
-    operator bool() const { return _isOpen; }
-
-private:
-    bool _isOpen;
-};
-
-class MockInternalFS {
-public:
-    bool begin() { return false; }  // Return false to skip storage
-    bool exists(const char*) { return false; }
-};
-
-}  // namespace Adafruit_LittleFS_Namespace
-
-// Define global InternalFS before including source
-Adafruit_LittleFS_Namespace::MockInternalFS InternalFS;
-
-// Prevent including real LittleFS headers
-#define _ADAFRUIT_LITTLEFS_H_
-#define _INTERNAL_FILESYSTEM_H_
-
-// Use the namespace for File class
-using Adafruit_LittleFS_Namespace::File;
-
-// Now include headers
+// Storage goes through the fs_backend abstraction; native builds link the
+// in-memory fs_backend_mock.cpp (controlled via fsb::mock::*).
+#include "fs_backend.h"
 #include "profile_manager.h"
 
 // Include source file directly for native testing
@@ -74,6 +28,7 @@ using Adafruit_LittleFS_Namespace::File;
 static ProfileManager* profiles = nullptr;
 
 void setUp(void) {
+    fsb::mock::reset();
     profiles = new ProfileManager();
     profiles->begin(false);  // Don't load from storage
 }
@@ -682,17 +637,35 @@ void test_hasStoredRole_false_initially(void) {
 // STORAGE TESTS
 // =============================================================================
 
-void test_isStorageAvailable_false_with_mock(void) {
-    // Our mock InternalFS.begin() returns false
-    TEST_ASSERT_FALSE(profiles->isStorageAvailable());
+void test_isStorageAvailable_false_when_mount_fails(void) {
+    fsb::mock::setBeginResult(false);
+    ProfileManager pm;
+    pm.begin(false);
+    TEST_ASSERT_FALSE(pm.isStorageAvailable());
 }
 
 void test_saveSettings_returns_false_without_storage(void) {
-    TEST_ASSERT_FALSE(profiles->saveSettings());
+    fsb::mock::setBeginResult(false);
+    ProfileManager pm;
+    pm.begin(false);
+    TEST_ASSERT_FALSE(pm.saveSettings());
 }
 
 void test_loadSettings_returns_false_without_storage(void) {
-    TEST_ASSERT_FALSE(profiles->loadSettings());
+    fsb::mock::setBeginResult(false);
+    ProfileManager pm;
+    pm.begin(false);
+    TEST_ASSERT_FALSE(pm.loadSettings());
+}
+
+void test_settings_roundtrip_with_storage(void) {
+    profiles->setDeviceRole(DeviceRole::SECONDARY);
+    TEST_ASSERT_TRUE(profiles->saveSettings());
+
+    ProfileManager pm2;
+    pm2.begin(true);  // Load from (mock) storage
+    TEST_ASSERT_TRUE(pm2.hasStoredRole());
+    TEST_ASSERT_EQUAL(DeviceRole::SECONDARY, pm2.getDeviceRole());
 }
 
 // =============================================================================
@@ -812,7 +785,8 @@ int main(int argc, char **argv) {
     RUN_TEST(test_hasStoredRole_false_initially);
 
     // Storage Tests
-    RUN_TEST(test_isStorageAvailable_false_with_mock);
+    RUN_TEST(test_isStorageAvailable_false_when_mount_fails);
+    RUN_TEST(test_settings_roundtrip_with_storage);
     RUN_TEST(test_saveSettings_returns_false_without_storage);
     RUN_TEST(test_loadSettings_returns_false_without_storage);
 
