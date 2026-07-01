@@ -46,8 +46,50 @@ BLEManager* g_bleManager = nullptr;
 
 static NimBLEServer*         s_server = nullptr;
 static NimBLECharacteristic* s_txChar = nullptr;   // NOTIFY to phone/SECONDARY
+static NimBLECharacteristic* s_rxChar = nullptr;   // WRITE from phone/SECONDARY
 static NimBLEClient*         s_client = nullptr;   // SECONDARY -> PRIMARY link
 static NimBLERemoteCharacteristic* s_remoteRx = nullptr;  // PRIMARY's RX char (we write)
+
+// Per-connection TX-notification subscription state (CCCD). NimBLE's notify()
+// transmits even when the peer never subscribed, unlike Bluefruit's write()
+// which returns 0 - so we gate sends ourselves to get the same retry-until-
+// subscribed semantics. Written from the host task, read from the loop task.
+static uint16_t s_subscribedConns[MAX_CONNECTIONS] = {CONN_HANDLE_INVALID, CONN_HANDLE_INVALID};
+
+static void setTxSubscribed(uint16_t connHandle, bool subscribed) {
+    PLATFORM_CRITICAL_ENTER();
+    if (subscribed) {
+        int freeSlot = -1;
+        bool present = false;
+        for (int i = 0; i < MAX_CONNECTIONS; i++) {
+            if (s_subscribedConns[i] == connHandle) { present = true; break; }
+            if (freeSlot < 0 && s_subscribedConns[i] == CONN_HANDLE_INVALID) freeSlot = i;
+        }
+        if (!present && freeSlot >= 0) {
+            s_subscribedConns[freeSlot] = connHandle;
+        }
+    } else {
+        for (int i = 0; i < MAX_CONNECTIONS; i++) {
+            if (s_subscribedConns[i] == connHandle) {
+                s_subscribedConns[i] = CONN_HANDLE_INVALID;
+            }
+        }
+    }
+    PLATFORM_CRITICAL_EXIT();
+}
+
+static bool isTxSubscribed(uint16_t connHandle) {
+    bool found = false;
+    PLATFORM_CRITICAL_ENTER();
+    for (int i = 0; i < MAX_CONNECTIONS; i++) {
+        if (s_subscribedConns[i] == connHandle) {
+            found = true;
+            break;
+        }
+    }
+    PLATFORM_CRITICAL_EXIT();
+    return found;
+}
 
 // Scan -> update() handoff (NimBLEClient::connect blocks; never call it from
 // the host-task scan callback)
@@ -86,6 +128,15 @@ class BBRxCharCallbacks : public NimBLECharacteristicCallbacks {
     }
 };
 
+class BBTxCharCallbacks : public NimBLECharacteristicCallbacks {
+    void onSubscribe(NimBLECharacteristic*, NimBLEConnInfo& connInfo, uint16_t subValue) override {
+        bool notifyEnabled = (subValue & 0x0001) != 0;
+        setTxSubscribed(connInfo.getConnHandle(), notifyEnabled);
+        Serial.printf("[BLE] TX notifications %s (handle=%d)\n",
+                      notifyEnabled ? "enabled" : "disabled", connInfo.getConnHandle());
+    }
+};
+
 // Central (SECONDARY) callbacks
 class BBClientCallbacks : public NimBLEClientCallbacks {
     void onConnect(NimBLEClient* client) override {
@@ -102,6 +153,7 @@ class BBScanCallbacks : public NimBLEScanCallbacks {
 
 static BBServerCallbacks s_serverCallbacks;
 static BBRxCharCallbacks s_rxCharCallbacks;
+static BBTxCharCallbacks s_txCharCallbacks;
 static BBClientCallbacks s_clientCallbacks;
 static BBScanCallbacks   s_scanCallbacks;
 
@@ -186,14 +238,15 @@ void BLEManager::setupPrimaryMode() {
 
     NimBLEService* service = s_server->createService(NUS_SERVICE_UUID);
 
-    NimBLECharacteristic* rxChar = service->createCharacteristic(
+    s_rxChar = service->createCharacteristic(
         NUS_RX_CHAR_UUID,
         NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR);
-    rxChar->setCallbacks(&s_rxCharCallbacks);
+    s_rxChar->setCallbacks(&s_rxCharCallbacks);
 
     s_txChar = service->createCharacteristic(
         NUS_TX_CHAR_UUID,
         NIMBLE_PROPERTY::NOTIFY);
+    s_txChar->setCallbacks(&s_txCharCallbacks);  // tracks CCCD subscription per connection
 
     // (NimBLE 2.x starts services with the server; no explicit start needed)
     setupAdvertising();
@@ -239,10 +292,13 @@ void BLEManager::update() {
 
     // Deferred central connect (scan callback must not block the host task)
     if (s_pendingConnect) {
+        PLATFORM_CRITICAL_ENTER();
         s_pendingConnect = false;
+        NimBLEAddress pendingAddress = s_pendingAddress;
+        PLATFORM_CRITICAL_EXIT();
         Serial.println(F("[BLE] Connecting to PRIMARY..."));
         stopScanning();
-        if (!s_client->connect(s_pendingAddress)) {
+        if (!s_client->connect(pendingAddress)) {
             Serial.println(F("[BLE] ERROR: Connect to PRIMARY failed"));
             if (_scannerAutoRestartEnabled) {
                 startScanning(_targetName);
@@ -335,8 +391,12 @@ void BBScanCallbacks::onResult(const NimBLEAdvertisedDevice* device) {
     if (name.empty() || strcmp(name.c_str(), BLE_NAME) != 0) return;
 
     Serial.printf("[SCAN] Found '%s' RSSI:%d, connecting...\n", name.c_str(), device->getRSSI());
+    // Publish address + flag as one unit: reader (update(), loop task) may run
+    // on the other core, so the address store must be visible before the flag.
+    PLATFORM_CRITICAL_ENTER();
     s_pendingAddress = device->getAddress();
     s_pendingConnect = true;
+    PLATFORM_CRITICAL_EXIT();
     NimBLEDevice::getScan()->stop();
 }
 
@@ -598,8 +658,11 @@ size_t BLEManager::tryWriteImmediate(uint16_t connHandle, const uint8_t* data, s
     size_t chunk = len < BLE_CHUNK_SIZE ? len : BLE_CHUNK_SIZE;
 
     if (_role == DeviceRole::PRIMARY) {
-        // Peripheral -> phone/SECONDARY via notification on the TX characteristic
-        if (!s_txChar) return 0;
+        // Peripheral -> phone/SECONDARY via notification on the TX characteristic.
+        // NimBLE's notify() transmits even without a CCCD subscription (unlike
+        // Bluefruit's write(), which returns 0) - gate it so messages queued
+        // before the peer finishes GATT discovery are retried, not dropped.
+        if (!s_txChar || !isTxSubscribed(connHandle)) return 0;
         return s_txChar->notify(data, chunk, connHandle) ? chunk : 0;
     } else {
         // Central -> PRIMARY via write-without-response to its RX characteristic
@@ -976,6 +1039,8 @@ void BLEManager::_onPeriphDisconnect(uint16_t connHandle, uint8_t reason) {
 
     Serial.printf("[BLE] Peripheral disconnected: handle=%d, reason=0x%02X\n", connHandle, reason);
 
+    setTxSubscribed(connHandle, false);  // handle may be reused by the next connection
+
     BBConnection* conn = g_bleManager->findConnection(connHandle);
     if (conn) {
         ConnectionType type = conn->type;
@@ -1069,17 +1134,14 @@ void BLEManager::_onCentralDisconnect(uint16_t connHandle, uint8_t reason) {
 }
 
 void BLEManager::_onUartRx(uint16_t connHandle) {
-    if (!g_bleManager || !s_server) return;
+    if (!g_bleManager || !s_rxChar) return;
 
     // Capture timestamp IMMEDIATELY when data arrives (sync accuracy)
     uint64_t rxTimestamp = getMicros();
 
-    // Fetch the just-written value from the RX characteristic
-    NimBLEService* svc = s_server->getServiceByUUID(NUS_SERVICE_UUID);
-    NimBLECharacteristic* rxChar = svc ? svc->getCharacteristic(NUS_RX_CHAR_UUID) : nullptr;
-    if (!rxChar) return;
-
-    NimBLEAttValue value = rxChar->getValue();
+    // Fetch the just-written value from the (cached) RX characteristic. The
+    // host task serializes writes, so this is the value for exactly this write.
+    NimBLEAttValue value = s_rxChar->getValue();
     if (value.size() > 0) {
         g_bleManager->processIncomingData(connHandle, value.data(),
                                           static_cast<uint16_t>(value.size()), rxTimestamp);
