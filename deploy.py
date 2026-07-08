@@ -183,9 +183,15 @@ def list_devices():
 # Serial Communication
 # =============================================================================
 
-def configure_role(port, role, retries=5):
-    """Send role configuration command to device via serial with retry logic"""
+def configure_role(port, role, retries=5, avoid_port=None):
+    """Send role configuration command to device via serial with retry logic.
+
+    avoid_port: the OTHER glove's port in a 2-device deployment. Retries
+    must never fall back to it - sending SET_ROLE to the wrong device would
+    silently reconfigure the peer (e.g. two SECONDARYs, no PRIMARY).
+    """
     print(f"{C.YELLOW}Configuring role as {role}...{C.NC}")
+    original_port = port
     for attempt in range(retries):
         try:
             # Re-detect port on retry (device may have reconnected on different port)
@@ -193,8 +199,12 @@ def configure_role(port, role, retries=5):
                 print(f"  {C.YELLOW}Retry {attempt + 1}/{retries} - re-detecting device...{C.NC}")
                 time.sleep(2)
                 devices = find_devices()
-                if devices:
-                    port = devices[0]
+                # Prefer the port we started with; never pick the peer's port
+                candidates = [d for d in devices if d != avoid_port]
+                if original_port in candidates:
+                    port = original_port
+                elif candidates:
+                    port = candidates[0]
                 else:
                     print(f"  {C.RED}Device not found{C.NC}")
                     continue
@@ -262,8 +272,19 @@ def configure_role(port, role, retries=5):
                 else:
                     print(f"  {C.YELLOW}No response from device{C.NC}")
                 if attempt < retries - 1:
+                    # The command may actually have SUCCEEDED with the
+                    # confirmation lost to the reboot race - the device
+                    # restarts itself after SET_ROLE and takes ~12s to come
+                    # back. Wait that out, then verify before re-sending.
+                    print(f"  {C.YELLOW}No confirmation - waiting 12s for possible reboot, then verifying...{C.NC}")
+                    time.sleep(12)
+                    devices = find_devices()
+                    candidates = [d for d in devices if d != avoid_port]
+                    check_port = original_port if original_port in candidates else (candidates[0] if candidates else None)
+                    if check_port and verify_role(check_port, role):
+                        print(f"  {C.GREEN}Role verified as {role} after reboot!{C.NC}")
+                        return True
                     print(f"  {C.YELLOW}Retry {attempt + 1}/{retries}...{C.NC}")
-                    time.sleep(2)
                     continue
                 return False
 
@@ -503,14 +524,14 @@ def deploy_two_devices(devices):
         secondary_dev = new_devices[1]
 
     print(f"\n{C.YELLOW}[4/6] Configuring PRIMARY role...{C.NC}")
-    if not configure_role(primary_dev, "PRIMARY"):
+    if not configure_role(primary_dev, "PRIMARY", avoid_port=secondary_dev):
         print(f"{C.RED}Failed to configure PRIMARY!{C.NC}")
         return False
 
     time.sleep(2)
 
     print(f"\n{C.YELLOW}[5/6] Configuring SECONDARY role...{C.NC}")
-    if not configure_role(secondary_dev, "SECONDARY"):
+    if not configure_role(secondary_dev, "SECONDARY", avoid_port=primary_dev):
         print(f"{C.RED}Failed to configure SECONDARY!{C.NC}")
         return False
 
@@ -615,14 +636,14 @@ def deploy_multiple_devices(devices):
         secondary_dev = new_devices[1]
 
     print(f"\n{C.YELLOW}[4/6] Configuring PRIMARY role...{C.NC}")
-    if not configure_role(primary_dev, "PRIMARY"):
+    if not configure_role(primary_dev, "PRIMARY", avoid_port=secondary_dev):
         print(f"{C.RED}Failed to configure PRIMARY!{C.NC}")
         return False
 
     time.sleep(2)
 
     print(f"\n{C.YELLOW}[5/6] Configuring SECONDARY role...{C.NC}")
-    if not configure_role(secondary_dev, "SECONDARY"):
+    if not configure_role(secondary_dev, "SECONDARY", avoid_port=primary_dev):
         print(f"{C.RED}Failed to configure SECONDARY!{C.NC}")
         return False
 
