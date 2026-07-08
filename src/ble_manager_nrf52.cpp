@@ -320,7 +320,10 @@ bool BLEManager::startScanning(const char* targetName) {
     // - UUID may be in scan response, which filters don't check
     // Solution: Use RSSI filter + name matching in callback
     Bluefruit.Scanner.clearFilters();
-    Bluefruit.Scanner.filterRssi(-80);  // Only nearby devices
+    // -90, not -80: glove-to-glove RSSI swings 10-20dB with hand/body position;
+    // at -80 the peer can silently vanish from scans ("never connects").
+    // Keep a floor only as callback-flood protection.
+    Bluefruit.Scanner.filterRssi(-90);
 
     // Use longer interval with shorter window to reduce CPU load
     Bluefruit.Scanner.setInterval(320, 60);  // 200ms interval, 37.5ms window (19% duty)

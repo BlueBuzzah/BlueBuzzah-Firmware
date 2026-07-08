@@ -140,7 +140,9 @@ class BBTxCharCallbacks : public NimBLECharacteristicCallbacks {
 // Central (SECONDARY) callbacks
 class BBClientCallbacks : public NimBLEClientCallbacks {
     void onConnect(NimBLEClient* client) override {
-        BLEManager::_onCentralConnect(client->getConnHandle());
+        // Runs in the NimBLE host task - must not block. Service discovery
+        // happens in update() (loop task) after connect() returns.
+        (void)client;
     }
     void onDisconnect(NimBLEClient* client, int reason) override {
         BLEManager::_onCentralDisconnect(client->getConnHandle(), static_cast<uint8_t>(reason));
@@ -265,8 +267,15 @@ void BLEManager::setupSecondaryMode() {
 void BLEManager::setupAdvertising() {
     NimBLEAdvertising* adv = NimBLEDevice::getAdvertising();
     adv->addServiceUUID(NUS_SERVICE_UUID);
-    adv->setName(_deviceName);
+    // Scan response must be enabled BEFORE setName(): NimBLE routes the name
+    // into the scan response only if m_scanResp is already true. Otherwise the
+    // name lands in the main advert, where flags + 128-bit NUS UUID + name
+    // exceed 31 bytes and the name is silently dropped (SECONDARY filters by
+    // name and would never find us).
     adv->enableScanResponse(true);
+    if (!adv->setName(_deviceName)) {
+        Serial.println(F("[BLE] ERROR: Failed to set advertised name"));
+    }
     adv->setMinInterval(32);   // 20ms (0.625ms units - parity with Bluefruit)
     adv->setMaxInterval(244);  // 152.5ms
 
@@ -303,6 +312,13 @@ void BLEManager::update() {
             if (_scannerAutoRestartEnabled) {
                 startScanning(_targetName);
             }
+        } else {
+            // Service discovery must run here (loop task), NOT in the client
+            // onConnect callback: that callback runs in the NimBLE host task,
+            // and getService()/subscribe() block waiting for GATT responses
+            // only the host task can process - a self-deadlock that freezes
+            // BLE and (via the ble_hs lock in update()) the whole main loop.
+            _onCentralConnect(s_client->getConnHandle());
         }
     }
 
@@ -384,9 +400,9 @@ bool BLEManager::isAdvertising() const {
 void BBScanCallbacks::onResult(const NimBLEAdvertisedDevice* device) {
     if (!g_bleManager) return;
 
-    // RSSI filter (parity with Bluefruit filterRssi(-80)) + name match
-    if (device->getRSSI() < -80) return;
-
+    // No RSSI gate: glove-to-glove signal swings 10-20dB with hand/body
+    // position, and a silent drop below a threshold looks like "never
+    // connects". The name match below is the only filter we need.
     std::string name = device->getName();
     if (name.empty() || strcmp(name.c_str(), BLE_NAME) != 0) return;
 
