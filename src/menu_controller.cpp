@@ -876,9 +876,13 @@ void MenuController::handleCalibrateBuzz(const char params[][PARAM_BUFFER_SIZE],
     int intensity = atoi(params[1]);
     int duration = atoi(params[2]);
 
-    // Validate ranges
-    if (finger < 0 || finger > 7) {
-        sendError("Invalid finger index (0-7)");
+    // Validate ranges. Indices 0..MAX_ACTUATORS-1 are local; the rest map to
+    // the SECONDARY glove (4-finger boards: 0-7, 5-finger boards: 0-9).
+    constexpr int maxFingerIndex = 2 * MAX_ACTUATORS - 1;
+    if (finger < 0 || finger > maxFingerIndex) {
+        char msg[40];
+        snprintf(msg, sizeof(msg), "Invalid finger index (0-%d)", maxFingerIndex);
+        sendError(msg);
         return;
     }
     if (intensity < 0 || intensity > 100) {

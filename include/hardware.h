@@ -99,7 +99,8 @@ public:
      * @brief Assembly-QA sweep (serial MOTOR_DIAG): buzz each channel alone
      * at full amplitude and report per-chip reset canaries (a chip reverting
      * to POR defaults means the supply dipped, e.g. bad/missing battery).
-     * Blocking (~6s); stop therapy before calling.
+     * Blocking (~4.5s, under the 6s glove keepalive timeout); stop therapy
+     * before calling.
      */
     void diagSweep();
 

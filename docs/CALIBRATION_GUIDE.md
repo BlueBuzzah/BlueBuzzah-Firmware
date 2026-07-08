@@ -28,6 +28,13 @@ This document uses the following device role terminology:
 
 Both devices run identical firmware and advertise as "BlueBuzzah". Role is determined by `settings.json` configuration.
 
+> **Motor counts:** the examples in this guide use the 4-finger BlueBuzzah
+> (8 motors per pair, finger indices 0–7). The 5-finger PentaBuzzer adds a
+> thumb: 10 motors per pair, local indices 0–4 and remote 5–9. Firmware
+> validation derives from `MAX_ACTUATORS` (`0..2*MAX_ACTUATORS-1`), so adjust
+> the index ranges and totals below accordingly. The phone app must use the
+> matching index scheme for the connected board.
+
 ---
 
 ## Overview

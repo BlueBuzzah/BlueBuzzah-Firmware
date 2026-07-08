@@ -200,27 +200,38 @@ void HapticController::configureDRV2605(Adafruit_DRV2605& drv) {
     drv.setRealtimeValue(0);
 }
 
+// DRV2605 FEEDBACK register and its N_ERM_LRA bit: set by configureDRV2605
+// (LRA mode) and cleared by a chip reset, so it doubles as a reset canary.
+constexpr uint8_t DRV_REG_FEEDBACK = 0x1A;
+constexpr uint8_t DRV_FB_N_ERM_LRA = 0x80;
+
 uint8_t HapticController::verifyAndHeal() {
     // A DRV2605 that lost VDD (VBat brownout: sagging/absent/miswired
     // battery) comes back at POR defaults - standby, ERM mode - and then
-    // silently ignores RTP drive. FEEDBACK bit7 (N_ERM_LRA) is set by our
-    // config and cleared by a reset, so it doubles as a reset detector.
+    // silently ignores RTP drive.
     //
     // Latency budget: probes ONE finger per call (round-robin, ~200us with
     // the I2C mutex held) so the periodic cost never approaches the sync
     // protocol's microsecond regime. Full coverage every MAX_ACTUATORS
-    // calls. Only on a detected reset - motors are dead at that point
-    // anyway - does it spend ~1ms reconfiguring every chip (a brownout
-    // usually takes several down together).
+    // calls. Only on a detected reset does the (~1ms worst-case) all-chip
+    // reconfigure run - the motors are dead at that point, so its mutex
+    // hold cannot disturb any activation that would have produced motion.
+    //
+    // NOTE: the round-robin static assumes single-task use. Both callers
+    // (macrocycle-start callback, deferred-queue executor) run in the main
+    // loop task; keep it that way.
     static uint8_t nextFinger = 0;
     uint8_t healed = 0;
 
     I2CMutexLock lock(_i2cMutex);
+    if (!lock.acquired()) {
+        return 0;  // Bus busy (motor task mid-activation) - probe next cycle
+    }
 
     uint8_t probe = nextFinger;
-    nextFinger = (nextFinger + 1) % MAX_ACTUATORS;
+    nextFinger = static_cast<uint8_t>((nextFinger + 1) % MAX_ACTUATORS);
     if (!_fingerEnabled[probe] || !selectChannel(probe)) return 0;
-    bool wasReset = (_drv[probe].readRegister8(0x1A) & 0x80) == 0;
+    bool wasReset = (_drv[probe].readRegister8(DRV_REG_FEEDBACK) & DRV_FB_N_ERM_LRA) == 0;
     closeChannels();
     if (!wasReset) return 0;
 
@@ -228,7 +239,7 @@ uint8_t HapticController::verifyAndHeal() {
     for (uint8_t f = 0; f < MAX_ACTUATORS; f++) {
         if (!_fingerEnabled[f]) continue;
         if (!selectChannel(f)) continue;
-        if ((_drv[f].readRegister8(0x1A) & 0x80) == 0) {
+        if ((_drv[f].readRegister8(DRV_REG_FEEDBACK) & DRV_FB_N_ERM_LRA) == 0) {
             configureDRV2605(_drv[f]);
             _drv[f].setRealtimeValue(0);
             healed++;
@@ -240,11 +251,16 @@ uint8_t HapticController::verifyAndHeal() {
 
 void HapticController::diagRegs(const char* tag) {
     if (!_fingerEnabled[0]) return;
+    I2CMutexLock lock(_i2cMutex);
+    if (!lock.acquired()) {
+        Serial.printf("[DIAG:%s] bus busy, register dump skipped\n", tag);
+        return;
+    }
     selectChannel(0);
     Serial.printf("[DIAG:%s] F0 regs: STATUS=0x%02X MODE=0x%02X RTP=0x%02X FB=0x%02X "
                   "CTRL3=0x%02X ODC=0x%02X OLP=0x%02X\n", tag,
                   _drv[0].readRegister8(0x00), _drv[0].readRegister8(0x01),
-                  _drv[0].readRegister8(0x02), _drv[0].readRegister8(0x1A),
+                  _drv[0].readRegister8(0x02), _drv[0].readRegister8(DRV_REG_FEEDBACK),
                   _drv[0].readRegister8(0x1D), _drv[0].readRegister8(0x17),
                   _drv[0].readRegister8(0x20));
     closeChannels();
@@ -255,17 +271,36 @@ void HapticController::diagDriveOne(uint8_t finger) {
         Serial.printf("[DIAG] F%u invalid or not enabled\n", finger);
         return;
     }
-    selectChannel(finger);
-    configureDRV2605(_drv[finger]);
+    {
+        I2CMutexLock lock(_i2cMutex);
+        if (!lock.acquired()) {
+            Serial.println(F("[DIAG] bus busy, test aborted"));
+            return;
+        }
+        selectChannel(finger);
+        configureDRV2605(_drv[finger]);
+        _drv[finger].setRealtimeValue(127);
+        closeChannels();  // RTP keeps driving; the mux only routes I2C
+    }
+#if defined(BOARD_PENTABUZZER_ESP32S3)
     Serial.printf("[DIAG] >>> DRIVING F%u (silk port %u) at full amplitude for 2s <<<\n",
                   finger, MOTOR_SILK_PORT(finger));
-    _drv[finger].setRealtimeValue(127);
+#else
+    Serial.printf("[DIAG] >>> DRIVING F%u at full amplitude for 2s <<<\n", finger);
+#endif
     delay(2000);
-    _drv[finger].setRealtimeValue(0);
-    uint8_t fb = _drv[finger].readRegister8(0x1A);
-    closeChannels();
+    uint8_t fb = 0;
+    {
+        // SAFETY: stop the motor even if the mutex is contended - same
+        // proceed-anyway policy as emergencyStop()
+        I2CMutexLock lock(_i2cMutex);
+        selectChannel(finger);
+        _drv[finger].setRealtimeValue(0);
+        fb = _drv[finger].readRegister8(DRV_REG_FEEDBACK);
+        closeChannels();
+    }
     Serial.printf("[DIAG] F%u done (FB=0x%02X%s)\n", finger, fb,
-                  (fb & 0x80) ? "" : "  *** CHIP RESET - supply dipped");
+                  (fb & DRV_FB_N_ERM_LRA) ? "" : "  *** CHIP RESET - supply dipped");
 }
 
 void HapticController::diagSweep() {
@@ -280,34 +315,81 @@ void HapticController::diagSweep() {
     // each buzz is the actuator test; the register canary is the supply test.
     diagRegs("pre");
 
+    // Canary = first enabled finger: reading a disabled/absent chip would
+    // false-positive as "reset" on every line
+    int8_t canary = -1;
     for (uint8_t f = 0; f < MAX_ACTUATORS; f++) {
-        if (!_fingerEnabled[f]) continue;
-        selectChannel(f);
-        configureDRV2605(_drv[f]);
-        _drv[f].setRealtimeValue(0);
-        closeChannels();
+        if (_fingerEnabled[f]) { canary = static_cast<int8_t>(f); break; }
+    }
+    if (canary < 0) {
+        Serial.println(F("[DIAG] no enabled fingers - nothing to test"));
+        return;
+    }
+
+    {
+        I2CMutexLock lock(_i2cMutex);
+        if (!lock.acquired()) {
+            Serial.println(F("[DIAG] bus busy, sweep aborted"));
+            return;
+        }
+        for (uint8_t f = 0; f < MAX_ACTUATORS; f++) {
+            if (!_fingerEnabled[f]) continue;
+            selectChannel(f);
+            configureDRV2605(_drv[f]);
+            _drv[f].setRealtimeValue(0);
+            closeChannels();
+        }
     }
     diagRegs("reconfig");
 
+    // 600ms buzz + 250ms gap = ~4.3s for 5 channels: stays under the 6s
+    // glove keepalive timeout so a mid-session sweep can't drop the link.
+    // The I2C mutex is held only around the transactions, never across the
+    // delays, so a concurrent activation is delayed by microseconds at most.
     for (uint8_t f = 0; f < MAX_ACTUATORS; f++) {
         if (!_fingerEnabled[f]) continue;
-        Serial.printf("[DIAG] buzzing F%u (silk port %u), RTP=127, 800ms...\n",
+#if defined(BOARD_PENTABUZZER_ESP32S3)
+        Serial.printf("[DIAG] buzzing F%u (silk port %u), RTP=127, 600ms...\n",
                       f, MOTOR_SILK_PORT(f));
-        selectChannel(f);
-        _drv[f].setRealtimeValue(127);
-        delay(800);
-        _drv[f].setRealtimeValue(0);
-        uint8_t fbSelf = _drv[f].readRegister8(0x1A);
-        closeChannels();
-        selectChannel(0);
-        uint8_t fbCanary = _drv[0].readRegister8(0x1A);
-        closeChannels();
-        bool reset = ((fbSelf & 0x80) == 0) || ((fbCanary & 0x80) == 0);
+#else
+        Serial.printf("[DIAG] buzzing F%u, RTP=127, 600ms...\n", f);
+#endif
+        {
+            I2CMutexLock lock(_i2cMutex);
+            if (!lock.acquired()) {
+                Serial.println(F("[DIAG] bus busy, sweep aborted"));
+                return;
+            }
+            selectChannel(f);
+            _drv[f].setRealtimeValue(127);
+            closeChannels();  // RTP keeps driving; the mux only routes I2C
+        }
+        delay(600);
+        uint8_t fbSelf = 0;
+        uint8_t fbCanary = 0;
+        {
+            // SAFETY: stop the motor even if the mutex is contended - same
+            // proceed-anyway policy as emergencyStop()
+            I2CMutexLock lock(_i2cMutex);
+            selectChannel(f);
+            _drv[f].setRealtimeValue(0);
+            fbSelf = _drv[f].readRegister8(DRV_REG_FEEDBACK);
+            closeChannels();
+            if (static_cast<uint8_t>(canary) != f) {
+                selectChannel(static_cast<uint8_t>(canary));
+                fbCanary = _drv[canary].readRegister8(DRV_REG_FEEDBACK);
+                closeChannels();
+            } else {
+                fbCanary = fbSelf;
+            }
+        }
+        bool reset = ((fbSelf & DRV_FB_N_ERM_LRA) == 0) || ((fbCanary & DRV_FB_N_ERM_LRA) == 0);
         Serial.printf("[DIAG]   F%u: self FB=0x%02X | canary FB=0x%02X%s\n",
                       f, fbSelf, fbCanary,
                       reset ? "  *** CHIP RESET - supply dipped (check battery)" : "");
         if (reset) {
             // Re-heal so the remaining channels still get a valid test
+            I2CMutexLock lock(_i2cMutex);
             for (uint8_t h = 0; h < MAX_ACTUATORS; h++) {
                 if (!_fingerEnabled[h]) continue;
                 selectChannel(h);
@@ -316,7 +398,7 @@ void HapticController::diagSweep() {
                 closeChannels();
             }
         }
-        delay(400);
+        delay(250);
     }
     Serial.println(F("[DIAG] sweep done"));
 }

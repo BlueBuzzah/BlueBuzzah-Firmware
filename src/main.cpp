@@ -813,9 +813,23 @@ void loop()
     {
         static char serialBuf[96];
         static uint8_t serialLen = 0;
+        static uint32_t serialLastRxMs = 0;
+
+        // Discard stale partial input: a line whose terminator never arrived
+        // (wrong terminal line-ending setting, dropped byte) would otherwise
+        // sit in the buffer forever and concatenate with the next command
+        if (serialLen > 0 && millis() - serialLastRxMs > 2000)
+        {
+            serialBuf[serialLen] = '\0';
+            Serial.printf("[SERIAL] Discarding stale partial input: '%s' (no line ending received)\n",
+                          serialBuf);
+            serialLen = 0;
+        }
+
         while (Serial.available())
         {
             char c = static_cast<char>(Serial.read());
+            serialLastRxMs = millis();
             if (c == '\n' || c == '\r')
             {
                 if (serialLen > 0)
@@ -1441,6 +1455,8 @@ void executeDeferredWork(DeferredWorkType type, uint8_t p1, uint8_t p2, uint32_t
     // SAFETY: Skip haptic operations in critical error states
     // Note: CONNECTION_LOST is intentionally NOT blocked - disconnect feedback pulses
     // (queued AFTER safety shutdown semaphore is signaled) should still execute for user feedback
+    // Note: HAPTIC_HEAL is intentionally exempt - it never drives amplitude
+    // (reconfigure + RTP=0 only) and healing is wanted even in fault states
     if (type == DeferredWorkType::HAPTIC_PULSE ||
         type == DeferredWorkType::HAPTIC_DOUBLE_PULSE)
     {
@@ -1657,7 +1673,11 @@ void onBLEMessage(uint16_t connHandle, const char *message, uint64_t rxTimestamp
                                   (long)(timeUntilExec / 1000));
                 }
                 int64_t timeDiff = static_cast<int64_t>(localBaseTime) - static_cast<int64_t>(nowUs);
-                constexpr int64_t MAX_TIME_DIFF = 30000000LL;  // 30 seconds
+                // Corruption guard: legitimate values are now + lead time
+                // (35-50ms) plus BLE delivery jitter. 5s is ~100x that
+                // margin while still rejecting a corrupt offset/baseTime
+                // that would otherwise schedule far-off activations.
+                constexpr int64_t MAX_TIME_DIFF = 5000000LL;  // 5 seconds
                 if (timeDiff > MAX_TIME_DIFF || timeDiff < -MAX_TIME_DIFF)
                 {
                     // SP-C3 fix: Use split print for 64-bit value (ARM long is 32-bit)
@@ -2283,8 +2303,13 @@ void startTherapyTest()
                   profile->mirrorPattern ? "ON" : "OFF");
     Serial.println(F("+============================================================+\n"));
 
-    // Update state machine
-    stateMachine.transition(StateTrigger::START_SESSION);
+    // Update state machine - abort if the transition is invalid so therapy
+    // can never run with the FSM (and LED) disagreeing about the state
+    if (!stateMachine.transition(StateTrigger::START_SESSION))
+    {
+        Serial.println(F("[TEST] Start aborted - state machine rejected START_SESSION"));
+        return;
+    }
 
     // Notify SECONDARY of session start (enables pulsing LED on SECONDARY)
     if (deviceRole == DeviceRole::PRIMARY && ble.isSecondaryConnected())
@@ -2427,8 +2452,13 @@ void autoStartTherapy()
                   profile->sessionDurationMin, profile->patternType, profile->jitterPercent);
     Serial.println(F("+============================================================+\n"));
 
-    // Update state machine
-    stateMachine.transition(StateTrigger::START_SESSION);
+    // Update state machine - abort if the transition is invalid so therapy
+    // can never run with the FSM (and LED) disagreeing about the state
+    if (!stateMachine.transition(StateTrigger::START_SESSION))
+    {
+        Serial.println(F("[AUTO] Auto-start aborted - state machine rejected START_SESSION"));
+        return;
+    }
 
     // Notify SECONDARY of session start (enables pulsing LED on SECONDARY)
     if (ble.isSecondaryConnected())
@@ -2762,7 +2792,14 @@ void handleSerialCommand(const char *command)
     // MOTOR_DIAG - assembly QA: buzz every channel + supply reset canary
     if (strcmp(command, "MOTOR_DIAG") == 0)
     {
-        therapy.stop();
+        // Stop through the state machine (not just therapy.stop()) so the
+        // FSM and LED reflect reality and auto-start can't fire mid-diag
+        if (therapy.isRunning())
+        {
+            therapy.stop();
+            stateMachine.transition(StateTrigger::STOP_SESSION);
+            stateMachine.transition(StateTrigger::STOPPED);
+        }
         safeMotorShutdown();
         haptic.diagSweep();
         return;
@@ -2771,8 +2808,19 @@ void handleSerialCommand(const char *command)
     // MOTOR_TEST:<n> - assembly QA: drive one channel for 2s at full amplitude
     if (strncmp(command, "MOTOR_TEST:", 11) == 0)
     {
-        int n = atoi(command + 11);
-        therapy.stop();
+        const char *arg = command + 11;
+        if (*arg < '0' || *arg > '9')
+        {
+            Serial.println(F("[DIAG] Usage: MOTOR_TEST:<n> where n is a channel number"));
+            return;
+        }
+        int n = atoi(arg);
+        if (therapy.isRunning())
+        {
+            therapy.stop();
+            stateMachine.transition(StateTrigger::STOP_SESSION);
+            stateMachine.transition(StateTrigger::STOPPED);
+        }
         safeMotorShutdown();
         haptic.diagDriveOne((uint8_t)n);
         return;
