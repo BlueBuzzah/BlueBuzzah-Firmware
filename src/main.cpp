@@ -2720,6 +2720,25 @@ void handleSerialCommand(const char *command)
         return;
     }
 
+    // MOTOR_DIAG - assembly QA: buzz every channel + supply reset canary
+    if (strcmp(command, "MOTOR_DIAG") == 0)
+    {
+        therapy.stop();
+        safeMotorShutdown();
+        haptic.diagSweep();
+        return;
+    }
+
+    // MOTOR_TEST:<n> - assembly QA: drive one channel for 2s at full amplitude
+    if (strncmp(command, "MOTOR_TEST:", 11) == 0)
+    {
+        int n = atoi(command + 11);
+        therapy.stop();
+        safeMotorShutdown();
+        haptic.diagDriveOne((uint8_t)n);
+        return;
+    }
+
     // GET_VER - query firmware version
     if (strcmp(command, "GET_VER") == 0)
     {

@@ -200,6 +200,89 @@ void HapticController::configureDRV2605(Adafruit_DRV2605& drv) {
     drv.setRealtimeValue(0);
 }
 
+void HapticController::diagRegs(const char* tag) {
+    if (!_fingerEnabled[0]) return;
+    selectChannel(0);
+    Serial.printf("[DIAG:%s] F0 regs: STATUS=0x%02X MODE=0x%02X RTP=0x%02X FB=0x%02X "
+                  "CTRL3=0x%02X ODC=0x%02X OLP=0x%02X\n", tag,
+                  _drv[0].readRegister8(0x00), _drv[0].readRegister8(0x01),
+                  _drv[0].readRegister8(0x02), _drv[0].readRegister8(0x1A),
+                  _drv[0].readRegister8(0x1D), _drv[0].readRegister8(0x17),
+                  _drv[0].readRegister8(0x20));
+    closeChannels();
+}
+
+void HapticController::diagDriveOne(uint8_t finger) {
+    if (finger >= MAX_ACTUATORS || !_fingerEnabled[finger]) {
+        Serial.printf("[DIAG] F%u invalid or not enabled\n", finger);
+        return;
+    }
+    selectChannel(finger);
+    configureDRV2605(_drv[finger]);
+    Serial.printf("[DIAG] >>> DRIVING F%u (silk port %u) at full amplitude for 2s <<<\n",
+                  finger, MOTOR_SILK_PORT(finger));
+    _drv[finger].setRealtimeValue(127);
+    delay(2000);
+    _drv[finger].setRealtimeValue(0);
+    uint8_t fb = _drv[finger].readRegister8(0x1A);
+    closeChannels();
+    Serial.printf("[DIAG] F%u done (FB=0x%02X%s)\n", finger, fb,
+                  (fb & 0x80) ? "" : "  *** CHIP RESET - supply dipped");
+}
+
+void HapticController::diagSweep() {
+    // Assembly-QA sweep: buzz each channel alone at full amplitude, and
+    // check afterward whether any DRV2605 reverted to POR defaults
+    // (FEEDBACK bit7 lost => chip power-cycled => VBat sagged below UVLO,
+    // e.g. missing/discharged/miswired battery).
+    //
+    // NOTE: the DRV2605's built-in load diagnostics (MODE=0x07) are NOT used
+    // here - their pass/fail verdict assumes closed-loop operation and is
+    // meaningless with our open-loop LRA configuration. The operator feeling
+    // each buzz is the actuator test; the register canary is the supply test.
+    diagRegs("pre");
+
+    for (uint8_t f = 0; f < MAX_ACTUATORS; f++) {
+        if (!_fingerEnabled[f]) continue;
+        selectChannel(f);
+        configureDRV2605(_drv[f]);
+        _drv[f].setRealtimeValue(0);
+        closeChannels();
+    }
+    diagRegs("reconfig");
+
+    for (uint8_t f = 0; f < MAX_ACTUATORS; f++) {
+        if (!_fingerEnabled[f]) continue;
+        Serial.printf("[DIAG] buzzing F%u (silk port %u), RTP=127, 800ms...\n",
+                      f, MOTOR_SILK_PORT(f));
+        selectChannel(f);
+        _drv[f].setRealtimeValue(127);
+        delay(800);
+        _drv[f].setRealtimeValue(0);
+        uint8_t fbSelf = _drv[f].readRegister8(0x1A);
+        closeChannels();
+        selectChannel(0);
+        uint8_t fbCanary = _drv[0].readRegister8(0x1A);
+        closeChannels();
+        bool reset = ((fbSelf & 0x80) == 0) || ((fbCanary & 0x80) == 0);
+        Serial.printf("[DIAG]   F%u: self FB=0x%02X | canary FB=0x%02X%s\n",
+                      f, fbSelf, fbCanary,
+                      reset ? "  *** CHIP RESET - supply dipped (check battery)" : "");
+        if (reset) {
+            // Re-heal so the remaining channels still get a valid test
+            for (uint8_t h = 0; h < MAX_ACTUATORS; h++) {
+                if (!_fingerEnabled[h]) continue;
+                selectChannel(h);
+                configureDRV2605(_drv[h]);
+                _drv[h].setRealtimeValue(0);
+                closeChannels();
+            }
+        }
+        delay(400);
+    }
+    Serial.println(F("[DIAG] sweep done"));
+}
+
 bool HapticController::selectChannel(uint8_t finger) {
     if (finger >= MAX_ACTUATORS) {
         return false;

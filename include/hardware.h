@@ -86,6 +86,25 @@ public:
     void emergencyStop();
 
     /**
+     * @brief Assembly-QA sweep (serial MOTOR_DIAG): buzz each channel alone
+     * at full amplitude and report per-chip reset canaries (a chip reverting
+     * to POR defaults means the supply dipped, e.g. bad/missing battery).
+     * Blocking (~6s); stop therapy before calling.
+     */
+    void diagSweep();
+
+    /**
+     * @brief Print finger 0's key DRV2605 registers with a tag (QA helper)
+     */
+    void diagRegs(const char* tag);
+
+    /**
+     * @brief Drive a single channel at full amplitude for 2s (serial
+     * MOTOR_TEST:<n>). Blocking; stop therapy before calling.
+     */
+    void diagDriveOne(uint8_t finger);
+
+    /**
      * @brief Check if a finger's motor is currently active
      * @param finger Finger index (0 to MAX_ACTUATORS-1)
      * @return true if motor is active

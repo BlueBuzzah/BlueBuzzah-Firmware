@@ -21,16 +21,24 @@
   #define ADC_MAX_VALUE            16383
   #define ADC_REFERENCE_VOLTAGE    3.6f
   #define BATTERY_VOLTAGE_DIVIDER  2.0f
+  #define MOTOR_SILK_PORT(finger)  (finger)       // no labeled motor ports on this board
 #elif defined(BOARD_PENTABUZZER_ESP32S3)
   #define MAX_ACTUATORS            5
   #define NEOPIXEL_PIN_OVERRIDE    4              // RGB LED data (GPIO4)
   #define SDA_PIN_OVERRIDE         5
   #define SCL_PIN_OVERRIDE         6
-  #define ENABLE_PIN_OVERRIDE      1              // 3V3 peripheral rail enable
+  // Shared EN of all 5 DRV2605s + TCA9548A reset (NOT a power rail - the
+  // DRV2605s and LED run directly from VBat). A LOW->HIGH toggle resets every
+  // DRV2605 register to POR defaults; re-run haptic config after any toggle.
+  #define ENABLE_PIN_OVERRIDE      1
   #define POWER_SWITCH_PIN_OVERRIDE 3             // strapping pin; sampled after boot only
   #define USB_POW_DETECT_PIN_OVERRIDE 2
   #define USER_BUTTON_ENABLED      0              // no user button on this board
   #define BATTERY_SENSE_ENABLED    0              // no VBAT divider / fuel gauge on this board
+  // Motor JST ports are silk-labeled 1-5 in REVERSE of firmware channels:
+  // firmware finger N drives the port labeled (5 - N). Wire the glove
+  // harness accordingly - therapy patterns are per-finger.
+  #define MOTOR_SILK_PORT(finger)  (5 - (finger))
 #else
   #error "No board macro defined (BOARD_BLUEBUZZAH_NRF52 or BOARD_PENTABUZZER_ESP32S3)"
 #endif
