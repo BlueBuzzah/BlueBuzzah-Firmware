@@ -86,6 +86,14 @@ public:
     void emergencyStop();
 
     /**
+     * @brief Detect and recover DRV2605s that reset since configuration
+     * (VBat brownout leaves them in standby, silently ignoring RTP drive).
+     * Cheap (~1ms for 5 chips); call at macrocycle boundaries.
+     * @return number of chips that had reset and were reconfigured
+     */
+    uint8_t verifyAndHeal();
+
+    /**
      * @brief Assembly-QA sweep (serial MOTOR_DIAG): buzz each channel alone
      * at full amplitude and report per-chip reset canaries (a chip reverting
      * to POR defaults means the supply dipped, e.g. bad/missing battery).

@@ -408,7 +408,7 @@ def deploy_single_device(device):
     choice = input().strip().upper()
     if choice == "P":
         print(f"\n{C.YELLOW}Waiting for device to restart (12s for full boot)...{C.NC}")
-        time.sleep(12)  # nRF52840 with BLE stack needs ~10-12s to fully boot
+        time.sleep(12)  # Both boards (nRF52840, ESP32-S3) need ~10-12s to fully boot BLE
         # Re-detect device after reboot (port may have changed)
         new_devices = find_devices()
         if not new_devices:
@@ -436,7 +436,7 @@ def deploy_single_device(device):
             return False
     elif choice == "S":
         print(f"\n{C.YELLOW}Waiting for device to restart (12s for full boot)...{C.NC}")
-        time.sleep(12)  # nRF52840 with BLE stack needs ~10-12s to fully boot
+        time.sleep(12)  # Both boards (nRF52840, ESP32-S3) need ~10-12s to fully boot BLE
         # Re-detect device after reboot (port may have changed)
         new_devices = find_devices()
         if not new_devices:
@@ -494,7 +494,7 @@ def deploy_two_devices(devices):
         return False
 
     print(f"\n{C.YELLOW}[3/6] Waiting for devices to restart (12s for full boot)...{C.NC}")
-    time.sleep(12)  # nRF52840 with BLE stack needs ~10-12s to fully boot
+    time.sleep(12)  # Both boards (nRF52840, ESP32-S3) need ~10-12s to fully boot BLE
 
     # Re-detect devices after reboot (ports may have changed)
     new_devices = find_devices()
@@ -605,7 +605,7 @@ def deploy_multiple_devices(devices):
         return False
 
     print(f"\n{C.YELLOW}[3/6] Waiting for devices to restart (12s for full boot)...{C.NC}")
-    time.sleep(12)  # nRF52840 with BLE stack needs ~10-12s to fully boot
+    time.sleep(12)  # Both boards (nRF52840, ESP32-S3) need ~10-12s to fully boot BLE
 
     # Re-detect devices after reboot (ports may have changed)
     # Note: For 3+ devices, we can't reliably map old to new ports, so we just use first two

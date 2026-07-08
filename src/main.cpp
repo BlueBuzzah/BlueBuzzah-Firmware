@@ -654,6 +654,12 @@ void setup()
     // No VBat sense hardware on this board - never print made-up numbers
     // (a fake "4.20V | 100%" masked a miswired battery during bring-up)
     Serial.println(F("[BATTERY] No battery sense on this board"));
+    if (power.usbPowerPresent())
+    {
+        // Motors run from VBat, not USB: without a charged battery any LRA
+        // drive browns the DRV2605s out and therapy is silent
+        Serial.println(F("[POWER] USB power detected - motors still require a charged battery"));
+    }
 #endif
 
     // Instructions
@@ -1609,6 +1615,11 @@ void onBLEMessage(uint16_t connHandle, const char *message, uint64_t rxTimestamp
                 // PRIMARY calculated this offset and sent it in the message
                 // CRITICAL: Cast baseTime to signed before adding signed offset,
                 // otherwise negative offset becomes large positive when implicitly converted
+                // Recover any DRV2605 that reset since configuration (VBat
+                // brownout leaves it in standby, silently ignoring this
+                // macrocycle's activations)
+                haptic.verifyAndHeal();
+
                 // NOTE: No absolute bound on the offset itself - it is the
                 // boot-time difference between the two devices, which is
                 // arbitrarily large on reconnect (e.g. one glove rebooted).
@@ -2132,6 +2143,10 @@ void onCycleComplete(uint32_t cycleCount)
 
 void onMacrocycleStart(uint32_t macrocycleCount)
 {
+    // Recover any DRV2605 that reset since configuration (VBat brownout
+    // leaves it in standby, silently ignoring the coming activations)
+    haptic.verifyAndHeal();
+
     // Clock sync handled by main loop 1-second PING interval
     // No additional PING needed at macrocycle boundary
 

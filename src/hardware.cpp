@@ -200,6 +200,28 @@ void HapticController::configureDRV2605(Adafruit_DRV2605& drv) {
     drv.setRealtimeValue(0);
 }
 
+uint8_t HapticController::verifyAndHeal() {
+    // A DRV2605 that lost VDD (VBat brownout: sagging/absent/miswired
+    // battery) comes back at POR defaults - standby, ERM mode - and then
+    // silently ignores RTP drive. FEEDBACK bit7 (N_ERM_LRA) is set by our
+    // config and cleared by a reset, so it doubles as a reset detector.
+    I2CMutexLock lock(_i2cMutex);
+    uint8_t healed = 0;
+    for (uint8_t f = 0; f < MAX_ACTUATORS; f++) {
+        if (!_fingerEnabled[f]) continue;
+        if (!selectChannel(f)) continue;
+        uint8_t fb = _drv[f].readRegister8(0x1A);
+        if ((fb & 0x80) == 0) {
+            Serial.printf("[FAULT] DRV2605 F%u reset detected (VBat brownout?) - reconfiguring\n", f);
+            configureDRV2605(_drv[f]);
+            _drv[f].setRealtimeValue(0);
+            healed++;
+        }
+        closeChannels();
+    }
+    return healed;
+}
+
 void HapticController::diagRegs(const char* tag) {
     if (!_fingerEnabled[0]) return;
     selectChannel(0);

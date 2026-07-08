@@ -16,6 +16,7 @@
 6. [Intensity Mapping](#intensity-mapping)
 7. [Clinical Tuning Guidelines](#clinical-tuning-guidelines)
 8. [Troubleshooting](#troubleshooting)
+9. [Assembly QA (PentaBuzzer)](#assembly-qa-pentabuzzer)
 
 ---
 
@@ -944,3 +945,25 @@ Update this document when:
 **Last Updated:** 2025-01-23
 **Clinical Protocol Version:** 1.0
 **Reviewed By:** Clinical Engineering Team
+
+## Assembly QA (PentaBuzzer)
+
+Serial commands (115200 baud) for validating motor wiring on a freshly
+assembled glove. Stop any running session first (they do it automatically).
+
+| Command | Effect |
+| --- | --- |
+| `MOTOR_DIAG` | Buzzes every channel alone (800 ms, full amplitude) and checks a per-chip reset canary afterward. `*** CHIP RESET` means the supply dipped mid-drive — check the battery (missing, discharged, or miswired). |
+| `MOTOR_TEST:<n>` | Drives one channel (`0`–`4`) for 2 s. Use to map a specific connector. |
+
+Wiring facts:
+
+- Motor JST ports are silk-labeled **1–5 in reverse** of firmware channels:
+  firmware finger N ↔ silk port `5−N` (`MOTOR_SILK_PORT()` in `board_config.h`).
+  Schematic designators: J2=MOT_0 … J6=MOT_4; J1 is the battery.
+- Motors run from **VBat**. A glove on USB without a charged battery cannot
+  drive any motor — expect `CHIP RESET` canaries on every populated channel.
+- The DRV2605's built-in load diagnostics report false failures with this
+  firmware's open-loop LRA configuration; the operator feeling each buzz is
+  the actuator test. A channel that never buzzes with a good battery is an
+  open circuit (unplugged JST or broken LRA lead).
