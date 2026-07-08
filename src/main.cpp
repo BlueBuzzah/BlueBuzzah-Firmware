@@ -1601,29 +1601,11 @@ void onBLEMessage(uint16_t connHandle, const char *message, uint64_t rxTimestamp
                 // PRIMARY calculated this offset and sent it in the message
                 // CRITICAL: Cast baseTime to signed before adding signed offset,
                 // otherwise negative offset becomes large positive when implicitly converted
+                // NOTE: No absolute bound on the offset itself - it is the
+                // boot-time difference between the two devices, which is
+                // arbitrarily large on reconnect (e.g. one glove rebooted).
+                // Validity is checked below via localBaseTime instead.
                 int64_t offset = mc.clockOffset;
-
-                // SAFETY: Reject obviously invalid offsets
-                // Valid offset should be within ±35 seconds (35,000,000 µs)
-                // SECONDARY can connect up to 30s after PRIMARY boot, plus 5s margin
-                constexpr int64_t MAX_VALID_OFFSET = 35000000LL;  // 35 seconds in microseconds
-                if (offset > MAX_VALID_OFFSET || offset < -MAX_VALID_OFFSET)
-                {
-                    // SP-C3 fix: Use split print for 64-bit value (ARM long is 32-bit)
-                    int64_t offsetSec = offset / 1000000;
-                    int64_t offsetUs = offset % 1000000;
-                    if (offset < 0 && offsetUs != 0) offsetUs = -offsetUs;  // Handle negative correctly
-                    Serial.printf("[ERROR] MACROCYCLE rejected: invalid offset %ld.%06ldus (exceeds ±35s)\n",
-                                  (long)offsetSec, (long)offsetUs);
-                    // Still send ACK to avoid retry storms, but don't execute
-                    SyncCommand ackCmd = SyncCommand::createMacrocycleAck(mc.sequenceId);
-                    char ackBuffer[32];
-                    if (ackCmd.serialize(ackBuffer, sizeof(ackBuffer)))
-                    {
-                        ble.sendToPrimary(ackBuffer);
-                    }
-                    return;
-                }
 
                 uint64_t localBaseTime = static_cast<uint64_t>(static_cast<int64_t>(mc.baseTime) + offset);
 
@@ -2684,27 +2666,13 @@ void handleKeepaliveTimeout()
     // 2. Update state machine (LED handled by onStateChange callback)
     stateMachine.transition(StateTrigger::DISCONNECTED);
 
-    // 3. Attempt reconnection (3 attempts, 2s apart)
-    for (uint8_t attempt = 1; attempt <= 3; attempt++)
-    {
-        Serial.printf("[RECOVERY] Attempt %d/3...\n", attempt);
-        delay(2000);
-
-        if (ble.isPrimaryConnected())
-        {
-            Serial.println(F("[RECOVERY] PRIMARY reconnected"));
-            stateMachine.transition(StateTrigger::RECONNECTED);
-            lastKeepaliveReceived = millis(); // Reset timeout
-            return;
-        }
-    }
-
-    // 4. Recovery failed - return to IDLE
-    Serial.println(F("[RECOVERY] Failed - returning to IDLE"));
+    // 3. Restart scanning immediately. No blocking retry wait here: scanning
+    // is off at this point so nothing could reconnect during it, and delay()
+    // in loop() context starves serial commands, BLE housekeeping, and
+    // deferred work for 6s (broke deploy.py role configuration).
+    Serial.println(F("[RECOVERY] Connection lost - resuming scan for PRIMARY"));
     stateMachine.transition(StateTrigger::RECONNECT_FAILED);
     lastKeepaliveReceived = 0; // Reset for next session
-
-    // 5. Restart scanning for PRIMARY
     ble.startScanning(BLE_NAME);
 }
 
