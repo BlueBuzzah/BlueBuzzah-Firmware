@@ -88,7 +88,9 @@ public:
     /**
      * @brief Detect and recover DRV2605s that reset since configuration
      * (VBat brownout leaves them in standby, silently ignoring RTP drive).
-     * Cheap (~1ms for 5 chips); call at macrocycle boundaries.
+     * Probes ONE finger per call, round-robin (~200us); reconfigures all
+     * chips only when a reset is detected. Call from the main loop at
+     * macrocycle boundaries - never from the BLE host task.
      * @return number of chips that had reset and were reconfigured
      */
     uint8_t verifyAndHeal();

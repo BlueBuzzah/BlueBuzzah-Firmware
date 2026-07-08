@@ -205,14 +205,30 @@ uint8_t HapticController::verifyAndHeal() {
     // battery) comes back at POR defaults - standby, ERM mode - and then
     // silently ignores RTP drive. FEEDBACK bit7 (N_ERM_LRA) is set by our
     // config and cleared by a reset, so it doubles as a reset detector.
-    I2CMutexLock lock(_i2cMutex);
+    //
+    // Latency budget: probes ONE finger per call (round-robin, ~200us with
+    // the I2C mutex held) so the periodic cost never approaches the sync
+    // protocol's microsecond regime. Full coverage every MAX_ACTUATORS
+    // calls. Only on a detected reset - motors are dead at that point
+    // anyway - does it spend ~1ms reconfiguring every chip (a brownout
+    // usually takes several down together).
+    static uint8_t nextFinger = 0;
     uint8_t healed = 0;
+
+    I2CMutexLock lock(_i2cMutex);
+
+    uint8_t probe = nextFinger;
+    nextFinger = (nextFinger + 1) % MAX_ACTUATORS;
+    if (!_fingerEnabled[probe] || !selectChannel(probe)) return 0;
+    bool wasReset = (_drv[probe].readRegister8(0x1A) & 0x80) == 0;
+    closeChannels();
+    if (!wasReset) return 0;
+
+    Serial.printf("[FAULT] DRV2605 F%u reset detected (VBat brownout?) - reconfiguring all\n", probe);
     for (uint8_t f = 0; f < MAX_ACTUATORS; f++) {
         if (!_fingerEnabled[f]) continue;
         if (!selectChannel(f)) continue;
-        uint8_t fb = _drv[f].readRegister8(0x1A);
-        if ((fb & 0x80) == 0) {
-            Serial.printf("[FAULT] DRV2605 F%u reset detected (VBat brownout?) - reconfiguring\n", f);
+        if ((_drv[f].readRegister8(0x1A) & 0x80) == 0) {
             configureDRV2605(_drv[f]);
             _drv[f].setRealtimeValue(0);
             healed++;

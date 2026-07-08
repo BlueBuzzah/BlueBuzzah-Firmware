@@ -21,6 +21,7 @@ enum class DeferredWorkType : uint8_t {
     HAPTIC_PULSE,        // finger, amplitude, duration_ms (single pulse)
     HAPTIC_DOUBLE_PULSE, // finger, amplitude, duration_ms (double pulse with 100ms gap)
     HAPTIC_DEACTIVATE,   // finger, 0, 0
+    HAPTIC_HEAL,         // no params - round-robin DRV2605 reset check/heal
     SCANNER_RESTART,     // 0, 0, delay_ms
     LED_FLASH            // r, g, b (packed in param1/2/3)
 };

@@ -1491,6 +1491,15 @@ void executeDeferredWork(DeferredWorkType type, uint8_t p1, uint8_t p2, uint32_t
         break;
     }
 
+    case DeferredWorkType::HAPTIC_HEAL:
+    {
+        // Round-robin DRV2605 reset check (~200us); full reconfigure only
+        // when a brownout is actually detected. Runs here (loop task) so
+        // the BLE host task never blocks on I2C.
+        haptic.verifyAndHeal();
+        break;
+    }
+
     case DeferredWorkType::HAPTIC_DEACTIVATE:
     {
         uint8_t finger = p1;
@@ -1617,8 +1626,12 @@ void onBLEMessage(uint16_t connHandle, const char *message, uint64_t rxTimestamp
                 // otherwise negative offset becomes large positive when implicitly converted
                 // Recover any DRV2605 that reset since configuration (VBat
                 // brownout leaves it in standby, silently ignoring this
-                // macrocycle's activations)
-                haptic.verifyAndHeal();
+                // macrocycle's activations). Deferred to the main loop: this
+                // handler runs in the BLE host task, which must never block
+                // on I2C - a delayed PING/PONG here would inflate an RTT
+                // sample. The loop picks it up within a few ms, still well
+                // inside the >=35ms scheduling lead window.
+                deferredQueue.enqueue(DeferredWorkType::HAPTIC_HEAL);
 
                 // NOTE: No absolute bound on the offset itself - it is the
                 // boot-time difference between the two devices, which is
@@ -2144,7 +2157,10 @@ void onCycleComplete(uint32_t cycleCount)
 void onMacrocycleStart(uint32_t macrocycleCount)
 {
     // Recover any DRV2605 that reset since configuration (VBat brownout
-    // leaves it in standby, silently ignoring the coming activations)
+    // leaves it in standby, silently ignoring the coming activations).
+    // Round-robin single-chip probe (~200us); runs here in the loop task
+    // during the relax gap, BEFORE the macrocycle base timestamp is
+    // captured, so scheduled event timing is unaffected.
     haptic.verifyAndHeal();
 
     // Clock sync handled by main loop 1-second PING interval
