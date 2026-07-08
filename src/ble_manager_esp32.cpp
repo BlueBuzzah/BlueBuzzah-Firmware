@@ -318,7 +318,19 @@ void BLEManager::update() {
             // and getService()/subscribe() block waiting for GATT responses
             // only the host task can process - a self-deadlock that freezes
             // BLE and (via the ble_hs lock in update()) the whole main loop.
-            _onCentralConnect(s_client->getConnHandle());
+            uint16_t handle = s_client->getConnHandle();
+            if (handle == CONN_HANDLE_INVALID || !s_client->isConnected()) {
+                // Link dropped between connect() returning and now: the
+                // handle is already invalid, so no disconnect event will
+                // ever arrive for it - recover by rescanning instead of
+                // allocating a ghost connection slot
+                Serial.println(F("[BLE] ERROR: Connection lost before discovery"));
+                if (_scannerAutoRestartEnabled) {
+                    startScanning(_targetName);
+                }
+            } else {
+                _onCentralConnect(handle);
+            }
         }
     }
 
@@ -400,9 +412,13 @@ bool BLEManager::isAdvertising() const {
 void BBScanCallbacks::onResult(const NimBLEAdvertisedDevice* device) {
     if (!g_bleManager) return;
 
-    // No RSSI gate: glove-to-glove signal swings 10-20dB with hand/body
-    // position, and a silent drop below a threshold looks like "never
-    // connects". The name match below is the only filter we need.
+    // -90 floor is host-task CPU flood protection only (std::string + strcmp
+    // per advertisement in dense RF), NOT peer selection: glove-to-glove
+    // signal swings 10-20dB with hand/body position, and the old -80 gate
+    // silently hid the peer ("never connects"). Real glove links sit well
+    // above -90; the name match below is the actual filter.
+    if (device->getRSSI() < -90) return;
+
     std::string name = device->getName();
     if (name.empty() || strcmp(name.c_str(), BLE_NAME) != 0) return;
 
@@ -1097,7 +1113,14 @@ void BLEManager::_onCentralConnect(uint16_t connHandle) {
 
     if (!svc || !remoteTx || !s_remoteRx) {
         Serial.println(F("[BLE] ERROR: UART service not found on PRIMARY"));
+        // Release the slot here: if the link already died, disconnect() is a
+        // no-op and no disconnect event will ever arrive to clean it up -
+        // a leaked isConnected slot would block scanning forever
+        conn->reset();
         if (s_client) s_client->disconnect();
+        if (g_bleManager->_scannerAutoRestartEnabled) {
+            g_bleManager->startScanning(g_bleManager->_targetName);
+        }
         return;
     }
 
@@ -1110,7 +1133,13 @@ void BLEManager::_onCentralConnect(uint16_t connHandle) {
 
     if (!subscribed) {
         Serial.println(F("[BLE] ERROR: Failed to subscribe to PRIMARY notifications"));
+        // Same slot-release rationale as the discovery failure path above
+        conn->reset();
+        s_remoteRx = nullptr;
         if (s_client) s_client->disconnect();
+        if (g_bleManager->_scannerAutoRestartEnabled) {
+            g_bleManager->startScanning(g_bleManager->_targetName);
+        }
         return;
     }
     Serial.println(F("[BLE] UART service discovered, notifications enabled"));
