@@ -249,7 +249,9 @@ def configure_role(port, role, retries=5):
                     time.sleep(2)
                     return True
 
-                # No confirmation found - do NOT assume success
+                # No confirmation found - do NOT assume success.
+                # Retry: the device may have been busy (e.g. BLE reconnect
+                # right after its peer rebooted from its own role config).
                 if response:
                     # Show last part of response for debugging
                     print(f"  {C.YELLOW}No confirmation received. Response:{C.NC}")
@@ -259,6 +261,10 @@ def configure_role(port, role, retries=5):
                             print(f"    {line.strip()}")
                 else:
                     print(f"  {C.YELLOW}No response from device{C.NC}")
+                if attempt < retries - 1:
+                    print(f"  {C.YELLOW}Retry {attempt + 1}/{retries}...{C.NC}")
+                    time.sleep(2)
+                    continue
                 return False
 
         except serial.SerialException as e:
