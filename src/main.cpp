@@ -646,9 +646,15 @@ void setup()
 
     // Initial battery reading
     Serial.println(F("\n--- Battery Status ---"));
+#if BATTERY_SENSE_ENABLED
     BatteryStatus battStatus = battery.getStatus();
     Serial.printf("[BATTERY] %.2fV | %d%% | Status: %s\n",
                   battStatus.voltage, battStatus.percentage, battStatus.statusString());
+#else
+    // No VBat sense hardware on this board - never print made-up numbers
+    // (a fake "4.20V | 100%" masked a miswired battery during bring-up)
+    Serial.println(F("[BATTERY] No battery sense on this board"));
+#endif
 
     // Instructions
     Serial.println(F("\n+============================================================+"));
@@ -985,6 +991,7 @@ void loop()
         printStatus();
     }
 
+#if BATTERY_SENSE_ENABLED
     // Check battery every 60 seconds
     if (now - lastBatteryCheck >= BATTERY_CHECK_INTERVAL_MS)
     {
@@ -993,6 +1000,7 @@ void loop()
         Serial.printf("[BATTERY] %.2fV | %d%% | Status: %s\n",
                       status.voltage, status.percentage, status.statusString());
     }
+#endif
 
     // Yield to BLE stack (non-blocking - allows SoftDevice processing)
     yield();

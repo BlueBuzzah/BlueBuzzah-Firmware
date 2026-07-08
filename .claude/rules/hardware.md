@@ -38,6 +38,19 @@ Different I2C paths need different settling times:
 - Standard channels: 5ms initialization delay
 - Channel 4 (longer PCB trace): 10ms initialization delay
 
+## PentaBuzzer Power / Assembly Facts
+
+- DRV2605s + WS2812 LED are powered **directly from VBat** (no switched rail).
+  Motors need a battery: on USB alone, any LRA drive browns the drivers out
+  to POR defaults (standby, silent) while I2C keeps working.
+- GPIO1 = shared DRV2605 EN + TCA9548A reset. LOW→HIGH **wipes all DRV2605
+  registers** — re-run haptic configuration after any toggle.
+- Motor JST silk labels 1–5 are **reversed** vs firmware channels:
+  finger N ↔ port `5−N` (`MOTOR_SILK_PORT()` in `board_config.h`).
+- QA over serial: `MOTOR_DIAG` (buzz all channels + brownout canary),
+  `MOTOR_TEST:<n>` (one channel, 2 s). DRV2605 built-in load diagnostics are
+  NOT valid with our open-loop LRA config — don't use DIAG_RESULT.
+
 ## Retry Logic
 
 I2C operations can fail transiently. Use retry with backoff:
