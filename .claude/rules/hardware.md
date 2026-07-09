@@ -49,10 +49,11 @@ Different I2C paths need different settling times:
   finger N ↔ port `5−N` (`MOTOR_SILK_PORT()` in `board_config.h`).
 - QA over serial: `MOTOR_DIAG` (buzz all channels + brownout canary),
   `MOTOR_TEST:<n>` (one channel, 2 s), `MOTOR_PRESENT` (per-port open-load
-  probe). DRV2605 built-in load diagnostics are NOT valid with our open-loop
-  LRA config — the sole exception is `MOTOR_PRESENT`, which flips each chip
-  to ERM mode just for the probe (where open-load detect IS specified) and
-  restores LRA config after.
+  probe). DRV2605 built-in diagnostics (MODE=6) are NOT valid for our LRAs —
+  verified: attached LRAs fail identically to open ports. `MOTOR_PRESENT`
+  instead runs LRA auto-calibration (MODE=7) per channel, which can only
+  converge with a motor attached, then restores the open-loop run config.
+  Needs battery power; populated motors buzz ~0.5s each.
 
 ## Retry Logic
 

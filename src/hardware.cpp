@@ -404,13 +404,23 @@ void HapticController::diagSweep() {
 }
 
 void HapticController::diagMotorPresent() {
-    // Open-load detection: the DRV2605's diagnostics routine (MODE=0x06) is
-    // only specified for ERM actuators, so each chip is flipped to ERM just
-    // for the probe - an LRA coil (~10-25 ohm) reads as a normal ERM load,
-    // an empty JST reads as open (DIAG_RESULT set). Full LRA open-loop
-    // config is restored afterward. Populated motors may click briefly.
-    constexpr uint8_t DRV_STATUS_DIAG_RESULT = 0x08;  // STATUS bit3: 1 = open/short
-    constexpr uint32_t DIAG_GO_TIMEOUT_MS = 600;
+    // Presence detection via LRA auto-calibration (MODE=0x07): calibration
+    // locks onto the LRA's resonance using measured back-EMF, which requires
+    // a physically attached motor - an empty JST cannot converge and fails
+    // (DIAG_RESULT set). The ERM diagnostics route (MODE=0x06) was tried
+    // first and rejected: its back-EMF stage expects a DC motor, so attached
+    // LRAs failed identically to open ports (STATUS=0xEC on everything).
+    // Full LRA open-loop config is restored afterward; the cal coefficients
+    // it writes are ignored in open-loop mode. Populated motors buzz
+    // noticeably (~0.5s each) during the probe.
+    constexpr uint8_t DRV_STATUS_DIAG_RESULT = 0x08;  // STATUS bit3: 1 = cal failed
+    constexpr uint32_t DIAG_GO_TIMEOUT_MS = 2000;     // auto-cal can run ~1.2s
+    constexpr uint8_t DRV_FB_LRA_DEFAULTS = 0xB6;     // LRA + stock brake/loop/BEMF gains
+    constexpr uint8_t DRV_RATEDV_2V0_250HZ = 0x50;    // ~2.0Vrms rated at 250Hz LRA
+    constexpr uint8_t DRV_ODCLAMP_2V5 = 118;          // 2.5V clamp (matches run config)
+    constexpr uint8_t DRV_CTRL1_DRIVETIME_250HZ = 0x8F;  // DRIVE_TIME=15 = half-period of 250Hz
+    constexpr uint8_t DRV_REG_CONTROL3 = 0x1D;
+    constexpr uint8_t DRV_CTRL3_POR = 0xA0;           // closed-loop for calibration
 
     Serial.println(F("[DIAG] Motor presence probe (all ports)"));
     for (uint8_t f = 0; f < MAX_ACTUATORS; f++) {
@@ -435,10 +445,13 @@ void HapticController::diagMotorPresent() {
                 Serial.println(F("MUX SELECT FAILED"));
                 continue;
             }
-            uint8_t fb = _drv[f].readRegister8(DRV_REG_FEEDBACK);
-            _drv[f].writeRegister8(DRV_REG_FEEDBACK,
-                                   fb & static_cast<uint8_t>(~DRV_FB_N_ERM_LRA));
-            _drv[f].writeRegister8(DRV2605_REG_MODE, DRV2605_MODE_DIAGNOS);
+            // Configure for closed-loop LRA auto-calibration
+            _drv[f].writeRegister8(DRV_REG_FEEDBACK, DRV_FB_LRA_DEFAULTS);
+            _drv[f].writeRegister8(DRV2605_REG_RATEDV, DRV_RATEDV_2V0_250HZ);
+            _drv[f].writeRegister8(DRV2605_REG_CLAMPV, DRV_ODCLAMP_2V5);
+            _drv[f].writeRegister8(DRV2605_REG_CONTROL1, DRV_CTRL1_DRIVETIME_250HZ);
+            _drv[f].writeRegister8(DRV_REG_CONTROL3, DRV_CTRL3_POR);
+            _drv[f].writeRegister8(DRV2605_REG_MODE, DRV2605_MODE_AUTOCAL);
             _drv[f].writeRegister8(DRV2605_REG_GO, 1);
             closeChannels();
         }
@@ -471,7 +484,20 @@ void HapticController::diagMotorPresent() {
         }
 
         if (!done) {
-            Serial.println(F("PROBE TIMEOUT (chip unresponsive?)"));
+            // Discriminate "diag never finished" (GO=0x01, STATUS has valid
+            // device ID 0xE0 in bits 7:5) from "I2C reads failing" (0xFF/0x00)
+            uint8_t rawGo = 0xAA, rawStatus = 0xAA, rawFb = 0xAA;
+            {
+                I2CMutexLock lock(_i2cMutex);
+                if (lock.acquired() && selectChannel(f)) {
+                    rawGo = _drv[f].readRegister8(DRV2605_REG_GO);
+                    rawStatus = _drv[f].readRegister8(DRV2605_REG_STATUS);
+                    rawFb = _drv[f].readRegister8(DRV_REG_FEEDBACK);
+                    closeChannels();
+                }
+            }
+            Serial.printf("PROBE TIMEOUT (raw GO=0x%02X STATUS=0x%02X FB=0x%02X)\n",
+                          rawGo, rawStatus, rawFb);
         } else if (status & DRV_STATUS_DIAG_RESULT) {
             Serial.printf("NO MOTOR (open load, STATUS=0x%02X)\n", status);
         } else {

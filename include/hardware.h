@@ -106,10 +106,12 @@ public:
 
     /**
      * @brief Probe every port for a connected motor (serial MOTOR_PRESENT).
-     * Runs the DRV2605 diagnostics routine in temporary ERM mode per channel
-     * (open-load detect; LRA-mode DIAG_RESULT is meaningless) and prints
-     * PRESENT / NO MOTOR per port. Restores LRA open-loop config. Blocking
-     * (up to ~3s); stop therapy before calling. Populated motors may click.
+     * Runs LRA auto-calibration (MODE=7) per channel: cal must measure the
+     * motor's resonant back-EMF to converge, so an empty JST fails
+     * (DIAG_RESULT set). Prints PRESENT / NO MOTOR per port and restores the
+     * LRA open-loop run config. Blocking (up to ~2s per channel); stop
+     * therapy before calling. Populated motors buzz ~0.5s each; needs
+     * battery power.
      */
     void diagMotorPresent();
 
