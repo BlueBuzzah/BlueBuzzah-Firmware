@@ -131,6 +131,13 @@ public:
     }
 
     /**
+     * @brief Whether the last probeMotorPresence() saw a chip reset mid-cal
+     * (supply dip, e.g. USB-only power). When true the probe result was
+     * discarded as unreliable and no motor-fault conclusion should be drawn.
+     */
+    bool lastProbeSupplyDipped() const { return _lastProbeDipped; }
+
+    /**
      * @brief Print finger 0's key DRV2605 registers with a tag (QA helper)
      */
     void diagRegs(const char* tag);
@@ -224,6 +231,7 @@ private:
     bool _fingerActive[MAX_ACTUATORS];
     bool _fingerEnabled[MAX_ACTUATORS];
     uint8_t _motorPresentMask = 0;  // bit f set = probeMotorPresence found a motor
+    bool _lastProbeDipped = false;  // last probe saw a mid-cal chip reset (supply dip)
     bool _initialized;
     int8_t _preSelectedFinger;  // Tracks which finger has mux channel pre-selected (-1 = none)
     uint16_t _lastFrequency[MAX_ACTUATORS] = {0};  // Cached frequency per finger (skip I2C if unchanged)

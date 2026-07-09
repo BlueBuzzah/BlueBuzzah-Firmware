@@ -242,8 +242,13 @@ TherapyEngine::TherapyEngine() :
 void TherapyEngine::setActiveFingers(const uint8_t* fingers, uint8_t count) {
     bool valid = (fingers != nullptr) && (count >= 1) && (count <= MAX_ACTUATORS);
     if (valid) {
+        uint8_t seen = 0;
         for (uint8_t i = 0; i < count; i++) {
-            if (fingers[i] >= MAX_ACTUATORS) { valid = false; break; }
+            if (fingers[i] >= MAX_ACTUATORS || (seen & (1u << fingers[i]))) {
+                valid = false;  // out of range or duplicate
+                break;
+            }
+            seen |= static_cast<uint8_t>(1u << fingers[i]);
         }
     }
     if (!valid) {

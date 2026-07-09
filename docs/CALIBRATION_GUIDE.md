@@ -962,6 +962,7 @@ assembled glove. Stop any running session first (they do it automatically).
 | --- | --- |
 | `MOTOR_DIAG` | Buzzes every channel alone (800 ms, full amplitude) and checks a per-chip reset canary afterward. `*** CHIP RESET` means the supply dipped mid-drive — check the battery (missing, discharged, or miswired). |
 | `MOTOR_TEST:<n>` | Drives one channel (`0`–`4`) for 2 s. Use to map a specific connector. |
+| `MOTOR_PRESENT` | Open-load probe: runs LRA auto-calibration per channel (each present motor buzzes ~0.5 s) and prints `MOTOR PRESENT` / `NO MOTOR` per port. Also refreshes the therapy engine's active-finger map. Runs automatically at every boot; needs battery power (`SUPPLY DIP` output means the results were discarded). |
 
 Wiring facts:
 
@@ -970,7 +971,12 @@ Wiring facts:
   Schematic designators: J2=MOT_0 … J6=MOT_4; J1 is the battery.
 - Motors run from **VBat**. A glove on USB without a charged battery cannot
   drive any motor — expect `CHIP RESET` canaries on every populated channel.
-- The DRV2605's built-in load diagnostics report false failures with this
-  firmware's open-loop LRA configuration; the operator feeling each buzz is
-  the actuator test. A channel that never buzzes with a good battery is an
-  open circuit (unplugged JST or broken LRA lead).
+- The DRV2605's built-in load diagnostics (MODE=6) report false failures with
+  this firmware's open-loop LRA configuration; the operator feeling each buzz
+  is the actuator test. A channel that never buzzes with a good battery is an
+  open circuit (unplugged JST or broken LRA lead). `MOTOR_PRESENT` detects
+  the same condition electrically via LRA auto-calibration (MODE=7), which
+  cannot converge on an open port.
+- At boot, the presence probe feeds pattern generation: with 4 of 5 motors
+  attached, both gloves run 4-buzz macrocycles that skip the empty port.
+  Fewer than 4 motors = red double-blink LED for 5 s at boot.

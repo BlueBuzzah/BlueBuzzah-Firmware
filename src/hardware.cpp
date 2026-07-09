@@ -423,6 +423,7 @@ uint8_t HapticController::probeMotorPresence() {
     constexpr uint8_t DRV_CTRL3_POR = 0xA0;           // closed-loop for calibration
 
     uint8_t mask = 0;
+    _lastProbeDipped = false;
     Serial.println(F("[DIAG] Motor presence probe (all ports)"));
     for (uint8_t f = 0; f < MAX_ACTUATORS; f++) {
 #if defined(BOARD_PENTABUZZER_ESP32S3)
@@ -459,6 +460,7 @@ uint8_t HapticController::probeMotorPresence() {
 
         // Poll until GO self-clears (mutex per transaction, never across delays)
         bool done = false;
+        bool dipped = false;
         uint8_t status = 0;
         uint32_t start = millis();
         while (millis() - start < DIAG_GO_TIMEOUT_MS) {
@@ -468,6 +470,12 @@ uint8_t HapticController::probeMotorPresence() {
             selectChannel(f);
             if ((_drv[f].readRegister8(DRV2605_REG_GO) & 0x01) == 0) {
                 status = _drv[f].readRegister8(DRV2605_REG_STATUS);
+                // Brownout canary: we wrote FEEDBACK with N_ERM_LRA (bit7)
+                // set before GO; if it reads back clear the chip hit POR
+                // mid-cal (supply dip, e.g. USB-only power) and STATUS is
+                // POR garbage that would fake a PRESENT verdict
+                uint8_t fb = _drv[f].readRegister8(DRV_REG_FEEDBACK);
+                dipped = (fb & DRV_FB_N_ERM_LRA) == 0;
                 done = true;
             }
             closeChannels();
@@ -499,12 +507,25 @@ uint8_t HapticController::probeMotorPresence() {
             }
             Serial.printf("PROBE TIMEOUT (raw GO=0x%02X STATUS=0x%02X FB=0x%02X)\n",
                           rawGo, rawStatus, rawFb);
+            if (rawFb != 0xAA && (rawFb & DRV_FB_N_ERM_LRA) == 0) {
+                _lastProbeDipped = true;
+            }
+        } else if (dipped) {
+            Serial.printf("SUPPLY DIP (chip reset mid-probe, STATUS=0x%02X) - check battery\n",
+                          status);
+            _lastProbeDipped = true;
         } else if (status & DRV_STATUS_DIAG_RESULT) {
             Serial.printf("NO MOTOR (open load, STATUS=0x%02X)\n", status);
         } else {
             Serial.printf("MOTOR PRESENT (STATUS=0x%02X)\n", status);
             mask |= static_cast<uint8_t>(1u << f);
         }
+    }
+    if (_lastProbeDipped) {
+        // Supply sagged under cal drive: every verdict this pass is suspect.
+        // Keep the previous mask instead of committing garbage.
+        Serial.println(F("[DIAG] presence probe UNRELIABLE (supply dip) - results discarded"));
+        return getMotorPresentCount();
     }
     _motorPresentMask = mask;
     uint8_t count = getMotorPresentCount();

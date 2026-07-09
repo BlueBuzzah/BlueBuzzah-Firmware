@@ -73,6 +73,26 @@ The BlueBuzzah boot sequence establishes the necessary BLE connections between P
 
 ---
 
+## Hardware Initialization Phase (Both Roles, Before BLE)
+
+Before either role's BLE sequence begins, `initializeHardware()` runs a
+**motor presence probe**: each DRV2605 channel performs LRA auto-calibration,
+which can only converge with a motor physically attached. Expect each
+populated motor to buzz ~0.5s at every boot (~2-5s total) — this doubles as a
+power-on self-test.
+
+- Detected motors feed the therapy engine's active-finger map: patterns are
+  generated over present fingers only, and those indices reach SECONDARY
+  inside macrocycle events, so both gloves skip a motor missing on PRIMARY.
+- **Fewer than 4 motors detected** = assembly fault: logged over serial and
+  indicated by a red double-blink LED for 5 seconds before boot continues.
+- If the supply dips during the probe (USB-only power, no battery), the
+  results are discarded as unreliable, a warning is logged, and no fault is
+  indicated.
+- The probe can be re-run at any time with the `MOTOR_PRESENT` serial command.
+
+---
+
 ## PRIMARY Device Boot Sequence
 
 The PRIMARY device acts as the central coordinator, advertising its presence and waiting for connections from both SECONDARY and phone.
@@ -461,6 +481,7 @@ Time  | State                | LED                    | Status
 | **Waiting for Phone** | Blue | Slow Flash | 1 Hz | SECONDARY connected, waiting for phone |
 | **Ready** | Green | Solid | - | Boot complete, ready for therapy |
 | **Connection Failed** | Red | Slow Flash | 1 Hz | Boot failed, restart required |
+| **Missing/Failed Motor(s)** | Red | Double Blink | 2 blinks per 1.25s | Boot probe found fewer than 4 motors (shown 5s at boot) |
 
 ### LED Pattern Details
 

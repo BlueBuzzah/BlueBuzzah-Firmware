@@ -1130,7 +1130,13 @@ bool initializeHardware()
         // a USB-only boot can misreport, but motors can't run then anyway.
         constexpr uint8_t MIN_REQUIRED_MOTORS = 4;
         uint8_t motorsPresent = haptic.probeMotorPresence();
-        if (motorsPresent < MIN_REQUIRED_MOTORS)
+        if (haptic.lastProbeSupplyDipped())
+        {
+            // USB-only bench boot: cal drive browned the chips out, so the
+            // verdicts are garbage. Don't alarm on healthy hardware.
+            Serial.println(F("[WARN] Motor check skipped: supply dipped during probe (USB-only power?)"));
+        }
+        else if (motorsPresent < MIN_REQUIRED_MOTORS)
         {
             Serial.printf("[ERROR] Missing/failed motor(s): %u/%u detected (minimum %u) - check JST connections\n",
                           motorsPresent, MAX_ACTUATORS, MIN_REQUIRED_MOTORS);
