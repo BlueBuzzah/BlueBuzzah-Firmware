@@ -105,6 +105,15 @@ public:
     void diagSweep();
 
     /**
+     * @brief Probe every port for a connected motor (serial MOTOR_PRESENT).
+     * Runs the DRV2605 diagnostics routine in temporary ERM mode per channel
+     * (open-load detect; LRA-mode DIAG_RESULT is meaningless) and prints
+     * PRESENT / NO MOTOR per port. Restores LRA open-loop config. Blocking
+     * (up to ~3s); stop therapy before calling. Populated motors may click.
+     */
+    void diagMotorPresent();
+
+    /**
      * @brief Print finger 0's key DRV2605 registers with a tag (QA helper)
      */
     void diagRegs(const char* tag);

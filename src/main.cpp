@@ -2805,6 +2805,20 @@ void handleSerialCommand(const char *command)
         return;
     }
 
+    // MOTOR_PRESENT - assembly QA: open-load probe of every motor port
+    if (strcmp(command, "MOTOR_PRESENT") == 0)
+    {
+        if (therapy.isRunning())
+        {
+            therapy.stop();
+            stateMachine.transition(StateTrigger::STOP_SESSION);
+            stateMachine.transition(StateTrigger::STOPPED);
+        }
+        safeMotorShutdown();
+        haptic.diagMotorPresent();
+        return;
+    }
+
     // MOTOR_TEST:<n> - assembly QA: drive one channel for 2s at full amplitude
     if (strncmp(command, "MOTOR_TEST:", 11) == 0)
     {

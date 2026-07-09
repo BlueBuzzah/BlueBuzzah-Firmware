@@ -403,6 +403,84 @@ void HapticController::diagSweep() {
     Serial.println(F("[DIAG] sweep done"));
 }
 
+void HapticController::diagMotorPresent() {
+    // Open-load detection: the DRV2605's diagnostics routine (MODE=0x06) is
+    // only specified for ERM actuators, so each chip is flipped to ERM just
+    // for the probe - an LRA coil (~10-25 ohm) reads as a normal ERM load,
+    // an empty JST reads as open (DIAG_RESULT set). Full LRA open-loop
+    // config is restored afterward. Populated motors may click briefly.
+    constexpr uint8_t DRV_STATUS_DIAG_RESULT = 0x08;  // STATUS bit3: 1 = open/short
+    constexpr uint32_t DIAG_GO_TIMEOUT_MS = 600;
+
+    Serial.println(F("[DIAG] Motor presence probe (all ports)"));
+    for (uint8_t f = 0; f < MAX_ACTUATORS; f++) {
+#if defined(BOARD_PENTABUZZER_ESP32S3)
+        Serial.printf("[DIAG]   silk port %u (F%u): ", MOTOR_SILK_PORT(f), f);
+#else
+        Serial.printf("[DIAG]   F%u: ", f);
+#endif
+        if (!_fingerEnabled[f]) {
+            Serial.println(F("NO DRIVER (init failed - check battery power)"));
+            continue;
+        }
+
+        // Kick off diagnostics in ERM mode
+        {
+            I2CMutexLock lock(_i2cMutex);
+            if (!lock.acquired()) {
+                Serial.println(F("bus busy, probe aborted"));
+                return;
+            }
+            if (!selectChannel(f)) {
+                Serial.println(F("MUX SELECT FAILED"));
+                continue;
+            }
+            uint8_t fb = _drv[f].readRegister8(DRV_REG_FEEDBACK);
+            _drv[f].writeRegister8(DRV_REG_FEEDBACK,
+                                   fb & static_cast<uint8_t>(~DRV_FB_N_ERM_LRA));
+            _drv[f].writeRegister8(DRV2605_REG_MODE, DRV2605_MODE_DIAGNOS);
+            _drv[f].writeRegister8(DRV2605_REG_GO, 1);
+            closeChannels();
+        }
+
+        // Poll until GO self-clears (mutex per transaction, never across delays)
+        bool done = false;
+        uint8_t status = 0;
+        uint32_t start = millis();
+        while (millis() - start < DIAG_GO_TIMEOUT_MS) {
+            delay(10);
+            I2CMutexLock lock(_i2cMutex);
+            if (!lock.acquired()) continue;
+            selectChannel(f);
+            if ((_drv[f].readRegister8(DRV2605_REG_GO) & 0x01) == 0) {
+                status = _drv[f].readRegister8(DRV2605_REG_STATUS);
+                done = true;
+            }
+            closeChannels();
+            if (done) break;
+        }
+
+        // Restore LRA open-loop config regardless of outcome (proceed-anyway
+        // on mutex timeout - same policy as emergencyStop)
+        {
+            I2CMutexLock lock(_i2cMutex);
+            selectChannel(f);
+            configureDRV2605(_drv[f]);
+            _drv[f].setRealtimeValue(0);
+            closeChannels();
+        }
+
+        if (!done) {
+            Serial.println(F("PROBE TIMEOUT (chip unresponsive?)"));
+        } else if (status & DRV_STATUS_DIAG_RESULT) {
+            Serial.printf("NO MOTOR (open load, STATUS=0x%02X)\n", status);
+        } else {
+            Serial.printf("MOTOR PRESENT (STATUS=0x%02X)\n", status);
+        }
+    }
+    Serial.println(F("[DIAG] presence probe done"));
+}
+
 bool HapticController::selectChannel(uint8_t finger) {
     if (finger >= MAX_ACTUATORS) {
         return false;

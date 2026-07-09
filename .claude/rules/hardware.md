@@ -48,8 +48,11 @@ Different I2C paths need different settling times:
 - Motor JST silk labels 1–5 are **reversed** vs firmware channels:
   finger N ↔ port `5−N` (`MOTOR_SILK_PORT()` in `board_config.h`).
 - QA over serial: `MOTOR_DIAG` (buzz all channels + brownout canary),
-  `MOTOR_TEST:<n>` (one channel, 2 s). DRV2605 built-in load diagnostics are
-  NOT valid with our open-loop LRA config — don't use DIAG_RESULT.
+  `MOTOR_TEST:<n>` (one channel, 2 s), `MOTOR_PRESENT` (per-port open-load
+  probe). DRV2605 built-in load diagnostics are NOT valid with our open-loop
+  LRA config — the sole exception is `MOTOR_PRESENT`, which flips each chip
+  to ERM mode just for the probe (where open-load detect IS specified) and
+  restores LRA config after.
 
 ## Retry Logic
 
