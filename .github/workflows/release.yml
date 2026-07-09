@@ -24,7 +24,7 @@ jobs:
           path: |
             ~/.cache/pip
             ~/.platformio/.cache
-          key: ${{ runner.os }}-pio
+          key: ${{ runner.os }}-pio-release-${{ hashFiles('platformio.ini') }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -43,36 +43,50 @@ jobs:
           echo "PlatformIO: $(pio --version)"
           echo ""
 
-      - name: Build firmware
+      - name: Build firmware (BlueBuzzah nRF52840)
         run: pio run -e adafruit_feather_nrf52840
 
-      - name: Rename firmware archive
+      - name: Build firmware (PentaBuzzer ESP32-S3 / v3)
+        env:
+          BLUEBUZZAH_VERSION: ${{ github.event.release.tag_name }}
+        run: pio run -e pentabuzzer_esp32s3
+
+      - name: Rename firmware archives
         run: |
           # Sanitize version (replace whitespace with underscores)
           VERSION="${{ github.event.release.tag_name }}"
           VERSION_SAFE=$(echo "$VERSION" | xargs | tr ' ' '_')
           SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
           ARCHIVE_NAME="BlueBuzzah-Firmware-${VERSION_SAFE}-${SHORT_SHA}"
+          ARCHIVE_NAME_V3="BlueBuzzah-Firmware-v3-${VERSION_SAFE}-${SHORT_SHA}"
 
-          # Rename the firmware.zip from build output
+          # nRF52840: Nordic DFU package produced by the platform build
           mv .pio/build/adafruit_feather_nrf52840/firmware.zip "${ARCHIVE_NAME}.zip"
 
-          echo "Release archive: ${ARCHIVE_NAME}.zip"
-          ls -lh "${ARCHIVE_NAME}.zip"
+          # ESP32-S3 (v3 hardware): archive produced by scripts/package_penta.py
+          mv .pio/build/pentabuzzer_esp32s3/firmware-v3.zip "${ARCHIVE_NAME_V3}.zip"
 
-          # Save archive name for upload step
+          echo "Release archives:"
+          ls -lh "${ARCHIVE_NAME}.zip" "${ARCHIVE_NAME_V3}.zip"
+
+          # Save archive names for later steps
           echo "ARCHIVE_NAME=${ARCHIVE_NAME}" >> $GITHUB_ENV
+          echo "ARCHIVE_NAME_V3=${ARCHIVE_NAME_V3}" >> $GITHUB_ENV
 
       - name: Attest build provenance
         id: attest
         uses: actions/attest-build-provenance@v2
         with:
-          subject-path: ${{ env.ARCHIVE_NAME }}.zip
+          subject-path: |
+            ${{ env.ARCHIVE_NAME }}.zip
+            ${{ env.ARCHIVE_NAME_V3 }}.zip
 
-      - name: Upload release asset
+      - name: Upload release assets
         uses: softprops/action-gh-release@v2
         with:
-          files: ${{ env.ARCHIVE_NAME }}.zip
+          files: |
+            ${{ env.ARCHIVE_NAME }}.zip
+            ${{ env.ARCHIVE_NAME_V3 }}.zip
 
       - name: Build summary
         run: |
@@ -80,9 +94,10 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "**Version:** ${{ github.event.release.tag_name }}" >> $GITHUB_STEP_SUMMARY
           echo "**Commit:** ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
-          echo "**Archive:** ${{ env.ARCHIVE_NAME }}.zip" >> $GITHUB_STEP_SUMMARY
+          echo "**Archive (BlueBuzzah nRF52840):** ${{ env.ARCHIVE_NAME }}.zip" >> $GITHUB_STEP_SUMMARY
+          echo "**Archive (BlueBuzzah v3 ESP32-S3):** ${{ env.ARCHIVE_NAME_V3 }}.zip" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Build Provenance" >> $GITHUB_STEP_SUMMARY
           echo "Attestation ID: \`${{ steps.attest.outputs.attestation-id }}\`" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Verify with: \`gh attestation verify ${ARCHIVE_NAME}.zip -o ${{ github.repository_owner }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "Verify with: \`gh attestation verify <archive>.zip -o ${{ github.repository_owner }}\`" >> $GITHUB_STEP_SUMMARY
