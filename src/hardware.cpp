@@ -403,7 +403,7 @@ void HapticController::diagSweep() {
     Serial.println(F("[DIAG] sweep done"));
 }
 
-void HapticController::diagMotorPresent() {
+uint8_t HapticController::probeMotorPresence() {
     // Presence detection via LRA auto-calibration (MODE=0x07): calibration
     // locks onto the LRA's resonance using measured back-EMF, which requires
     // a physically attached motor - an empty JST cannot converge and fails
@@ -422,6 +422,7 @@ void HapticController::diagMotorPresent() {
     constexpr uint8_t DRV_REG_CONTROL3 = 0x1D;
     constexpr uint8_t DRV_CTRL3_POR = 0xA0;           // closed-loop for calibration
 
+    uint8_t mask = 0;
     Serial.println(F("[DIAG] Motor presence probe (all ports)"));
     for (uint8_t f = 0; f < MAX_ACTUATORS; f++) {
 #if defined(BOARD_PENTABUZZER_ESP32S3)
@@ -439,7 +440,7 @@ void HapticController::diagMotorPresent() {
             I2CMutexLock lock(_i2cMutex);
             if (!lock.acquired()) {
                 Serial.println(F("bus busy, probe aborted"));
-                return;
+                return getMotorPresentCount();  // keep previous result
             }
             if (!selectChannel(f)) {
                 Serial.println(F("MUX SELECT FAILED"));
@@ -502,9 +503,14 @@ void HapticController::diagMotorPresent() {
             Serial.printf("NO MOTOR (open load, STATUS=0x%02X)\n", status);
         } else {
             Serial.printf("MOTOR PRESENT (STATUS=0x%02X)\n", status);
+            mask |= static_cast<uint8_t>(1u << f);
         }
     }
-    Serial.println(F("[DIAG] presence probe done"));
+    _motorPresentMask = mask;
+    uint8_t count = getMotorPresentCount();
+    Serial.printf("[DIAG] presence probe done: %u/%u motors detected\n",
+                  count, MAX_ACTUATORS);
+    return count;
 }
 
 bool HapticController::selectChannel(uint8_t finger) {
@@ -1035,6 +1041,17 @@ void LEDController::update() {
             break;
         }
 
+        case LEDPattern::DOUBLE_BLINK: {
+            // Two 150ms blinks, then a 650ms pause (1250ms cycle)
+            uint32_t t = (now - _patternStartTime) % 1250;
+            bool on = (t < 150) || (t >= 300 && t < 450);
+            if (on != _blinkState) {
+                _blinkState = on;
+                applyColor(on ? _baseColor : Colors::OFF);
+            }
+            break;
+        }
+
         case LEDPattern::OFF:
             // LED is off, nothing to update
             break;
@@ -1068,6 +1085,7 @@ void LEDController::setPattern(const RGBColor& color, LEDPattern pattern) {
         case LEDPattern::BLINK_SLOW:
         case LEDPattern::BLINK_URGENT:
         case LEDPattern::BLINK_CONNECT:
+        case LEDPattern::DOUBLE_BLINK:
             // Start in ON state
             applyColor(color);
             break;

@@ -310,6 +310,26 @@ public:
     void setGetLeadTimeCallback(GetLeadTimeCallback callback);
 
     /**
+     * @brief Restrict pattern generation to a set of physical fingers
+     *
+     * Pattern permutation slots are mapped onto these finger indices, so a
+     * missing motor (e.g. unpopulated thumb port) is skipped entirely rather
+     * than getting a silent slot. Set on PRIMARY from the boot motor-presence
+     * probe; the mapped indices flow to SECONDARY inside macrocycle events,
+     * so both gloves skip the same finger. Defaults to all MAX_ACTUATORS.
+     *
+     * @param fingers Physical finger indices to use (each < MAX_ACTUATORS)
+     * @param count Number of entries (1 to MAX_ACTUATORS); invalid input
+     *              resets to the identity map
+     */
+    void setActiveFingers(const uint8_t* fingers, uint8_t count);
+
+    /**
+     * @brief Number of fingers patterns are currently generated over
+     */
+    uint8_t getActiveFingerCount() const { return _fingerMapCount; }
+
+    /**
      * @brief Enable/disable frequency randomization (Custom vCR feature)
      * @param enabled Enable frequency randomization
      * @param minHz Minimum frequency (default 210 Hz, v1 ACTUATOR_FREQL)
@@ -436,6 +456,11 @@ private:
     float _jitterPercent;
     uint8_t _numFingers;
     bool _mirrorPattern;
+
+    // Physical fingers patterns are generated over (identity by default;
+    // shrunk when the boot probe finds unpopulated motor ports)
+    uint8_t _fingerMap[PATTERN_MAX_FINGERS];
+    uint8_t _fingerMapCount;
     uint8_t _amplitudeMin;
     uint8_t _amplitudeMax;
 
@@ -485,6 +510,7 @@ private:
     uint64_t _macrocycleBaseTime;        // Base activation time for current macrocycle
 
     // Internal methods
+    void remapPatternFingers(Pattern& pattern);  // Map slot indices -> physical fingers
     void generateNextPattern();
     void applyFrequencyRandomization();  // Called at start of each pattern cycle
     Macrocycle generateMacrocycle();     // Generate 3*numFingers events for a macrocycle

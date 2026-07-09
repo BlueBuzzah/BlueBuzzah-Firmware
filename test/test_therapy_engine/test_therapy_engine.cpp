@@ -737,8 +737,10 @@ void test_TherapyEngine_setSetFrequencyCallback(void) {
 
     engine.startSession(100, PatternType::RNDP, 100.0f, 67.0f, 0.0f, 4, true);
 
-    // Should have set frequency for 4 fingers
-    TEST_ASSERT_EQUAL_INT(4, g_setFrequencyCallCount);
+    // Randomization covers every physical actuator (not just session
+    // fingers): events look frequency up by physical finger index, which
+    // can exceed numFingers when the active-finger map skips a missing motor
+    TEST_ASSERT_EQUAL_INT(MAX_ACTUATORS, g_setFrequencyCallCount);
 }
 
 // =============================================================================
@@ -766,6 +768,42 @@ void test_macrocycle_creates_12_events(void) {
     TEST_ASSERT_TRUE(g_macrocycleReceived);
     // 3 patterns * 4 fingers = 12 events
     TEST_ASSERT_EQUAL_UINT8(12, g_lastSentMacrocycle.eventCount);
+}
+
+void test_macrocycle_skips_inactive_finger(void) {
+    TherapyEngine engine;
+    engine.setSendMacrocycleCallback(mockCaptureMacrocycleCallback);
+
+    // Simulate boot probe finding finger 2's motor missing
+    uint8_t present[MAX_ACTUATORS];
+    uint8_t n = 0;
+    for (uint8_t f = 0; f < MAX_ACTUATORS; f++) {
+        if (f != 2) present[n++] = f;
+    }
+    engine.setActiveFingers(present, n);
+
+    g_macrocycleReceived = false;
+    mockSetMillis(1000);
+
+    engine.startSession(100, PatternType::RNDP, 100.0f, 67.0f, 0.0f, MAX_ACTUATORS, true);
+    engine.update();
+
+    TEST_ASSERT_TRUE(g_macrocycleReceived);
+    // numFingers clamps to the active set: 3 patterns * (MAX_ACTUATORS - 1)
+    TEST_ASSERT_EQUAL_UINT8(3 * (MAX_ACTUATORS - 1), g_lastSentMacrocycle.eventCount);
+
+    uint8_t counts[MAX_ACTUATORS] = {0};
+    for (uint8_t i = 0; i < g_lastSentMacrocycle.eventCount; i++) {
+        const MacrocycleEvent& evt = g_lastSentMacrocycle.events[i];
+        TEST_ASSERT_NOT_EQUAL(2, evt.primaryFinger);
+        TEST_ASSERT_NOT_EQUAL(2, evt.finger);
+        TEST_ASSERT_LESS_THAN_UINT8(MAX_ACTUATORS, evt.primaryFinger);
+        counts[evt.primaryFinger]++;
+    }
+    // Still a permutation per pattern: each present finger exactly 3 times
+    for (uint8_t f = 0; f < MAX_ACTUATORS; f++) {
+        TEST_ASSERT_EQUAL_UINT8(f == 2 ? 0 : 3, counts[f]);
+    }
 }
 
 void test_macrocycle_sequential_pattern(void) {
@@ -1202,6 +1240,7 @@ int main(int argc, char **argv) {
 
     // Macrocycle Generation Tests (via callbacks)
     RUN_TEST(test_macrocycle_creates_12_events);
+    RUN_TEST(test_macrocycle_skips_inactive_finger);
     RUN_TEST(test_macrocycle_sequential_pattern);
     RUN_TEST(test_macrocycle_mirrored_pattern);
     RUN_TEST(test_macrocycle_with_frequency_randomization);

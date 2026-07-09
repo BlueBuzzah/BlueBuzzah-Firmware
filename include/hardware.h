@@ -105,15 +105,30 @@ public:
     void diagSweep();
 
     /**
-     * @brief Probe every port for a connected motor (serial MOTOR_PRESENT).
+     * @brief Probe every port for a connected motor (boot + serial MOTOR_PRESENT).
      * Runs LRA auto-calibration (MODE=7) per channel: cal must measure the
      * motor's resonant back-EMF to converge, so an empty JST fails
-     * (DIAG_RESULT set). Prints PRESENT / NO MOTOR per port and restores the
-     * LRA open-loop run config. Blocking (up to ~2s per channel); stop
-     * therapy before calling. Populated motors buzz ~0.5s each; needs
-     * battery power.
+     * (DIAG_RESULT set). Prints PRESENT / NO MOTOR per port, restores the
+     * LRA open-loop run config, and stores the result (see isMotorPresent()).
+     * Blocking (up to ~2s per channel); stop therapy before calling.
+     * Populated motors buzz ~0.5s each; needs battery power.
+     * @return Number of motors detected
      */
-    void diagMotorPresent();
+    uint8_t probeMotorPresence();
+
+    /**
+     * @brief Whether the last probeMotorPresence() found a motor on this port
+     */
+    bool isMotorPresent(uint8_t finger) const {
+        return finger < MAX_ACTUATORS && (_motorPresentMask & (1u << finger));
+    }
+
+    /**
+     * @brief Motor count from the last probeMotorPresence()
+     */
+    uint8_t getMotorPresentCount() const {
+        return static_cast<uint8_t>(__builtin_popcount(_motorPresentMask));
+    }
 
     /**
      * @brief Print finger 0's key DRV2605 registers with a tag (QA helper)
@@ -208,6 +223,7 @@ private:
     Adafruit_DRV2605 _drv[MAX_ACTUATORS];
     bool _fingerActive[MAX_ACTUATORS];
     bool _fingerEnabled[MAX_ACTUATORS];
+    uint8_t _motorPresentMask = 0;  // bit f set = probeMotorPresence found a motor
     bool _initialized;
     int8_t _preSelectedFinger;  // Tracks which finger has mux channel pre-selected (-1 = none)
     uint16_t _lastFrequency[MAX_ACTUATORS] = {0};  // Cached frequency per finger (skip I2C if unchanged)
@@ -331,6 +347,7 @@ enum class LEDPattern : uint8_t {
     BLINK_SLOW,         // Slow blink (1s on/off) - ERROR, LOW_BATTERY
     BLINK_URGENT,       // Urgent blink (150ms on/off) - CRITICAL_BATTERY
     BLINK_CONNECT,      // Connection blink (250ms on/off) - CONNECTING, CONNECTION_LOST
+    DOUBLE_BLINK,       // Two quick blinks then pause - missing/failed motor(s)
     OFF                 // LED off
 };
 

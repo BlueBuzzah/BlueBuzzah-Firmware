@@ -1070,6 +1070,37 @@ DeviceRole determineRole()
     return DeviceRole::PRIMARY;
 }
 
+/**
+ * @brief Feed the last motor-presence probe result into pattern generation
+ *
+ * PRIMARY is the source of truth: patterns are generated over present
+ * fingers only, and those physical indices reach SECONDARY inside
+ * macrocycle events, so both gloves skip the same missing motor.
+ * A probe that found nothing (e.g. USB-only bench boot) leaves the map
+ * untouched rather than disabling therapy outright.
+ */
+static void applyMotorPresenceToTherapy()
+{
+    uint8_t presentFingers[MAX_ACTUATORS];
+    uint8_t n = 0;
+    for (uint8_t f = 0; f < MAX_ACTUATORS; f++)
+    {
+        if (haptic.isMotorPresent(f))
+        {
+            presentFingers[n++] = f;
+        }
+    }
+    if (n == 0)
+    {
+        return;
+    }
+    therapy.setActiveFingers(presentFingers, n);
+    if (n < MAX_ACTUATORS)
+    {
+        Serial.printf("[THERAPY] Patterns restricted to %u present motor(s)\n", n);
+    }
+}
+
 bool initializeHardware()
 {
     bool success = true;
@@ -1093,6 +1124,27 @@ bool initializeHardware()
 
         Serial.printf("Haptic Controller: %d/%d fingers enabled\n",
                       haptic.getEnabledCount(), MAX_ACTUATORS);
+
+        // Boot QA: detect unpopulated/broken motor ports (each present motor
+        // buzzes ~0.5s during the auto-cal probe). NOTE: needs battery power;
+        // a USB-only boot can misreport, but motors can't run then anyway.
+        constexpr uint8_t MIN_REQUIRED_MOTORS = 4;
+        uint8_t motorsPresent = haptic.probeMotorPresence();
+        if (motorsPresent < MIN_REQUIRED_MOTORS)
+        {
+            Serial.printf("[ERROR] Missing/failed motor(s): %u/%u detected (minimum %u) - check JST connections\n",
+                          motorsPresent, MAX_ACTUATORS, MIN_REQUIRED_MOTORS);
+            // Double-blink red long enough to be seen before connection
+            // status colors take over the LED
+            led.setPattern(Colors::RED, LEDPattern::DOUBLE_BLINK);
+            uint32_t errorUntil = millis() + 5000;
+            while (millis() < errorUntil)
+            {
+                led.update();
+                delay(10);
+            }
+        }
+        applyMotorPresenceToTherapy();
 
         // Create high-priority motor task for preemptive activations
         // Priority 4 (HIGHEST) ensures motor timing isn't blocked by Serial/BLE
@@ -2815,7 +2867,8 @@ void handleSerialCommand(const char *command)
             stateMachine.transition(StateTrigger::STOPPED);
         }
         safeMotorShutdown();
-        haptic.diagMotorPresent();
+        haptic.probeMotorPresence();
+        applyMotorPresenceToTherapy();
         return;
     }
 
