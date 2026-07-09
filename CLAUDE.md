@@ -19,6 +19,7 @@ The board is selected by a build macro (`BOARD_BLUEBUZZAH_NRF52` / `BOARD_PENTAB
 | **Build (Penta)**| `pio run -e pentabuzzer_esp32s3` |
 | **Flash**      | `pio run -e <env> -t upload` |
 | **Test**       | `pio test -e native` (4-actuator) / `pio test -e native_penta` (5-actuator) |
+| **Test (one suite)** | `pio test -e native -f test_sync_protocol` |
 | **Coverage**   | `pio test -e native_coverage` (macOS) / `native_coverage_gcc` (Linux) |
 | **Monitor**    | `pio device monitor` (115200)|
 | **Deploy**     | `python deploy.py` (interactive dual-glove deployment, auto-detects board) |
@@ -39,6 +40,8 @@ The board is selected by a build macro (`BOARD_BLUEBUZZAH_NRF52` / `BOARD_PENTAB
 | `fs_backend_*.cpp`   | Filesystem shim: InternalFS (nRF) / LittleFS (ESP32) / in-memory mock (native) |
 | `power_controller_*.cpp` | PentaBuzzer power switch + deep sleep; no-op on nRF |
 | `latency_metrics.cpp`| Runtime latency measurement, RTT tracking, sync quality reporting |
+| `hires_clock.cpp`    | 1MHz hardware timebase (NRF_TIMER4 + HFXO) for sync timestamps; start after SoftDevice enable |
+| `radio_anchor.cpp`   | Hardware timestamps of BLE radio events via SoftDevice radio notifications (sync anchoring); inert stubs on native |
 | `activation_queue.cpp`| FreeRTOS motor event scheduling with paired activate/deactivate |
 | `deferred_queue.cpp` | ISR-safe work queue for blocking operations |
 | `motor_event_buffer.cpp`| Lock-free staging buffer (BLE callbacks → main loop) |
@@ -77,6 +80,7 @@ Activated automatically for `.cpp`/`.h` files or when discussing BLE, timing, or
 | `docs/API_REFERENCE.md`            | Module API documentation       |
 | `docs/BLE_PROTOCOL.md`             | Mobile app command protocol    |
 | `docs/SYNCHRONIZATION_PROTOCOL.md` | PRIMARY↔SECONDARY protocol     |
+| `docs/SYNC_VALIDATION.md`          | GPIO-based bilateral sync validation (`SYNC_DEBUG_GPIO_ENABLED`) |
 | `docs/BOOT_SEQUENCE.md`            | Startup initialization flow    |
 | `docs/CALIBRATION_GUIDE.md`        | Motor/sensor calibration procedures |
 | `docs/LATENCY_METRICS.md`          | Performance measurement guide  |

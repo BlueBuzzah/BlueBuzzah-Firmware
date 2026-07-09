@@ -67,7 +67,6 @@ pio test -e native_coverage            # Tests with coverage
 ## Documentation
 
 Key docs in `docs/`:
-- `ARDUINO_FIRMWARE_ARCHITECTURE.md` - Architecture source of truth
-- `BLE_PROTOCOL.md` - Mobile app command protocol
-- `COMMAND_REFERENCE.md` - All 18 BLE commands
+- `ARCHITECTURE.md` - Architecture source of truth
+- `BLE_PROTOCOL.md` - Mobile app command protocol (all BLE commands)
 - `SYNCHRONIZATION_PROTOCOL.md` - PRIMARY<->SECONDARY coordination

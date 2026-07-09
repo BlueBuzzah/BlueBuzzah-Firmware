@@ -80,7 +80,7 @@ struct [[nodiscard]] Pattern {
         burstDurationMs(100.0f),
         interBurstIntervalMs(668.0f)
     {
-        assert(primarySequence.size() == primarySequence.size() && primarySequence.size() == timeOffMs.size());
+        assert(primarySequence.size() == secondarySequence.size() && primarySequence.size() == timeOffMs.size());
         for (uint8_t i = 0; i < primarySequence.size(); i++) {
             primarySequence[i] = i;
             secondarySequence[i] = i;

@@ -224,7 +224,6 @@ constexpr uint32_t TEST_DURATION_SEC = 120;  // 2 minutes
 #define BLE_CHUNK_SIZE 100              // Max bytes per BLE packet
 #define BLE_MAX_MESSAGE_SIZE 512        // Max total message size
 #define BLE_NAME "BlueBuzzah"           // Default BLE device name
-#define BLE_AUTH_TOKEN "bluebuzzah-secure-v1"
 
 // =============================================================================
 // DEVELOPMENT/DEBUG FLAGS
