@@ -23,6 +23,7 @@
 #include "platform.h"  // Platform primitives + FreeRTOS for I2C mutex
 #include "config.h"
 #include "types.h"
+#include "vbat_estimator.h"
 
 // =============================================================================
 // HAPTIC CONTROLLER
@@ -290,8 +291,12 @@ private:
 /**
  * @brief Monitors battery voltage and calculates charge percentage
  *
- * Uses the nRF52840's ADC to read battery voltage through a voltage divider.
- * Provides accurate percentage estimation using a LiPo discharge curve.
+ * Two backends selected by BATTERY_SENSE_ADC:
+ * - ADC (nRF52840): VBAT divider sampled via analogRead
+ * - DRV2605 VBAT register (PentaBuzzer): the haptic drivers run directly
+ *   from VBat, so their supply monitor doubles as the battery voltmeter
+ *   (attachHaptic() must be called before begin())
+ * Both feed the same LiPo discharge curve for percentage estimation.
  *
  * Usage:
  *   BatteryMonitor battery;
@@ -342,8 +347,19 @@ public:
      */
     bool isCritical(float voltage = -1.0f);
 
+    /**
+     * @brief Attach the haptic controller used as the VBAT source
+     *
+     * Required before begin() on boards without a battery ADC
+     * (BATTERY_SENSE_ADC == 0). No-op on boards with a battery ADC.
+     * @param haptic Pointer to the initialized HapticController
+     */
+    void attachHaptic(HapticController* haptic) { _haptic = haptic; }
+
 private:
     bool _initialized;
+    HapticController* _haptic = nullptr;
+    VbatEstimator _estimator;
 
     /**
      * @brief LiPo discharge curve for accurate percentage calculation

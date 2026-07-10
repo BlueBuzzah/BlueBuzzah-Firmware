@@ -28,8 +28,8 @@
 #define NEOPIXEL_PIN NEOPIXEL_PIN_OVERRIDE
 #define NEOPIXEL_COUNT 1
 
-// Battery voltage monitor (only on boards with battery sense hardware)
-#if BATTERY_SENSE_ENABLED
+// Battery voltage monitor (only on boards with a battery ADC)
+#if BATTERY_SENSE_ADC
 #define BATTERY_PIN BATTERY_PIN_OVERRIDE
 #endif
 
@@ -165,6 +165,9 @@ constexpr uint32_t TEST_DURATION_SEC = 120;  // 2 minutes
 // ADC configuration comes from board_config.h (ADC_RESOLUTION_BITS,
 // ADC_MAX_VALUE, ADC_REFERENCE_VOLTAGE, BATTERY_VOLTAGE_DIVIDER).
 #define BATTERY_SAMPLE_COUNT 10         // Number of samples to average
+
+// DRV2605 VBAT backend (PentaBuzzer): number of readings taken per burst
+#define VBAT_BURST_SAMPLES 9
 
 // =============================================================================
 // HAPTIC CONFIGURATION

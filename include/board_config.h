@@ -16,6 +16,7 @@
   #define USER_BUTTON_ENABLED      1
   #define USER_BUTTON_PIN_OVERRIDE 7              // Feather USER switch (force-SECONDARY at boot)
   #define BATTERY_SENSE_ENABLED    1
+  #define BATTERY_SENSE_ADC        1
   #define BATTERY_PIN_OVERRIDE     PIN_VBAT
   #define ADC_RESOLUTION_BITS      14
   #define ADC_MAX_VALUE            16383
@@ -34,7 +35,8 @@
   #define POWER_SWITCH_PIN_OVERRIDE 3             // strapping pin; sampled after boot only
   #define USB_POW_DETECT_PIN_OVERRIDE 2
   #define USER_BUTTON_ENABLED      0              // no user button on this board
-  #define BATTERY_SENSE_ENABLED    0              // no VBAT divider / fuel gauge on this board
+  #define BATTERY_SENSE_ENABLED    1              // no VBAT divider, but DRV2605 VBAT register doubles as a voltmeter
+  #define BATTERY_SENSE_ADC        0              // no VBAT divider / fuel gauge ADC on this board
   // Motor JST ports are silk-labeled 1-5 in REVERSE of firmware channels:
   // firmware finger N drives the port labeled (5 - N). Wire the glove
   // harness accordingly - therapy patterns are per-finger.
