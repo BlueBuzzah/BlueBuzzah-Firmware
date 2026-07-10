@@ -21,6 +21,7 @@ enum class DeferredWorkType : uint8_t {
     HAPTIC_PULSE,        // finger, amplitude, duration_ms (single pulse)
     HAPTIC_DOUBLE_PULSE, // finger, amplitude, duration_ms (double pulse with 100ms gap)
     HAPTIC_DEACTIVATE,   // finger, 0, 0
+    HAPTIC_HEAL,         // no params - round-robin DRV2605 reset check/heal
     SCANNER_RESTART,     // 0, 0, delay_ms
     LED_FLASH            // r, g, b (packed in param1/2/3)
 };
@@ -38,6 +39,10 @@ enum class DeferredWorkType : uint8_t {
  *
  *   // In main loop:
  *   deferredQueue.processOne();  // Executes one item per loop iteration
+ *
+ * CONSTRAINT: single-producer / single-consumer. The lock-free ring buffer
+ * is only safe with ONE producing context (the BLE callback task) and ONE
+ * consuming context (the main loop). Do not enqueue from any other task.
  */
 class DeferredQueue {
 public:

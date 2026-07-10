@@ -297,15 +297,17 @@ public:
     // =========================================================================
 
     /**
-     * @brief Serialize a macrocycle to buffer with hybrid format
+     * @brief Serialize a macrocycle to an all-text message
      *
-     * Format: MC:seq|baseTime|count|<binary_payload>
-     * Binary payload is MacrocycleEvent array (6 bytes per event).
+     * Format: MC:seq|baseHigh|baseLow|offHigh|offLow|dur|count|d,f,a[,fo]|...
+     * Worst case ~65-byte header + 16 bytes per event; MESSAGE_BUFFER_SIZE is
+     * sized for MACROCYCLE_MAX_EVENTS events.
      *
-     * @param buffer Output buffer (must be at least 120 bytes for 12 events)
+     * @param buffer Output buffer (use MESSAGE_BUFFER_SIZE)
      * @param bufferSize Size of output buffer
      * @param macrocycle Macrocycle to serialize
-     * @return true if serialization successful
+     * @return true if serialization successful; false if any event would be
+     *         truncated (a partial macrocycle is never produced)
      */
     static bool serializeMacrocycle(char* buffer, size_t bufferSize, const Macrocycle& macrocycle);
 

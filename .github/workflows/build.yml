@@ -12,8 +12,13 @@ permissions:
 
 jobs:
   build:
-    name: Build Firmware
+    name: Build Firmware (${{ matrix.env }})
     runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        env: [adafruit_feather_nrf52840, pentabuzzer_esp32s3]
 
     steps:
       - name: Checkout repository
@@ -25,7 +30,7 @@ jobs:
           path: |
             ~/.cache/pip
             ~/.platformio/.cache
-          key: ${{ runner.os }}-pio
+          key: ${{ runner.os }}-pio-${{ matrix.env }}-${{ hashFiles('platformio.ini') }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -39,10 +44,11 @@ jobs:
         run: |
           echo "Building BlueBuzzah Firmware"
           echo "============================"
+          echo "Environment: ${{ matrix.env }}"
           echo "Branch: ${{ github.ref_name }}"
           echo "Commit: ${{ github.sha }}"
           echo "PlatformIO: $(pio --version)"
           echo ""
 
       - name: Build firmware
-        run: pio run -e adafruit_feather_nrf52840
+        run: pio run -e ${{ matrix.env }}

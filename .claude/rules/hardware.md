@@ -1,19 +1,20 @@
 ---
 paths: "src/hardware.{cpp,h}"
-description: Hardware abstraction patterns for nRF52840
+description: Hardware abstraction patterns (nRF52840 + ESP32-S3)
 ---
 # Hardware Module Guidelines
 
 ## I2C Architecture
 
 ```
-nRF52840 MCU
+MCU (nRF52840 default pins / ESP32-S3 SDA=GPIO5, SCL=GPIO6)
 └── I2C Bus @ 400kHz
     └── TCA9548A Multiplexer (0x70)
         ├── Ch0: DRV2605 - Index finger
         ├── Ch1: DRV2605 - Middle finger
         ├── Ch2: DRV2605 - Ring finger
-        └── Ch3: DRV2605 - Pinky finger
+        ├── Ch3: DRV2605 - Pinky finger
+        └── Ch4: DRV2605 - Thumb (PentaBuzzer only, MAX_ACTUATORS == 5)
 ```
 
 ## I2C Multiplexer Rules
@@ -36,6 +37,23 @@ Result activate(uint8_t finger, uint8_t amplitude) {
 Different I2C paths need different settling times:
 - Standard channels: 5ms initialization delay
 - Channel 4 (longer PCB trace): 10ms initialization delay
+
+## PentaBuzzer Power / Assembly Facts
+
+- DRV2605s + WS2812 LED are powered **directly from VBat** (no switched rail).
+  Motors need a battery: on USB alone, any LRA drive browns the drivers out
+  to POR defaults (standby, silent) while I2C keeps working.
+- GPIO1 = shared DRV2605 EN + TCA9548A reset. LOW→HIGH **wipes all DRV2605
+  registers** — re-run haptic configuration after any toggle.
+- Motor JST silk labels 1–5 are **reversed** vs firmware channels:
+  finger N ↔ port `5−N` (`MOTOR_SILK_PORT()` in `board_config.h`).
+- QA over serial: `MOTOR_DIAG` (buzz all channels + brownout canary),
+  `MOTOR_TEST:<n>` (one channel, 2 s), `MOTOR_PRESENT` (per-port open-load
+  probe). DRV2605 built-in diagnostics (MODE=6) are NOT valid for our LRAs —
+  verified: attached LRAs fail identically to open ports. `MOTOR_PRESENT`
+  instead runs LRA auto-calibration (MODE=7) per channel, which can only
+  converge with a motor attached, then restores the open-loop run config.
+  Needs battery power; populated motors buzz ~0.5s each.
 
 ## Retry Logic
 

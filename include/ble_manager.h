@@ -2,9 +2,12 @@
  * @file ble_manager.h
  * @brief BlueBuzzah BLE communication manager - Class declarations
  * @version 2.0.0
- * @platform Adafruit Feather nRF52840 Express
  *
- * Implements BLE communication using the Bluefruit library with:
+ * Platform-neutral BLE manager API. The backend is selected at build time:
+ * - ble_manager_nrf52.cpp: Bluefruit/SoftDevice (Adafruit Feather nRF52840)
+ * - ble_manager_esp32.cpp: NimBLE (PentaBuzzer XIAO ESP32-S3)
+ *
+ * Both backends implement:
  * - Nordic UART Service for data transfer
  * - Multi-connection support (PRIMARY: phone + SECONDARY)
  * - EOT-framed message protocol
@@ -15,7 +18,9 @@
 #define BLE_MANAGER_H
 
 #include <Arduino.h>
+#if defined(BOARD_BLUEBUZZAH_NRF52)
 #include <bluefruit.h>
+#endif
 
 #include "config.h"
 #include "types.h"
@@ -220,12 +225,14 @@ public:
      */
     bool isScanning() const;
 
+#if defined(BOARD_BLUEBUZZAH_NRF52)
     /**
      * @brief Connect to discovered PRIMARY device (SECONDARY mode)
      * @param report Scan report from discovery
      * @return true if connection initiated
      */
     bool connectToPrimary(ble_gap_evt_adv_report_t* report);
+#endif
 
     // =========================================================================
     // CONNECTION MANAGEMENT
@@ -378,17 +385,19 @@ public:
     float getSecondaryConnectionIntervalMs() const;
 
     // =========================================================================
-    // STATIC CALLBACKS (for Bluefruit library)
+    // STATIC CALLBACKS (for the BLE stack)
     // =========================================================================
 
-    // These are called by the Bluefruit library and dispatch to instance methods
+    // These are called by the BLE stack and dispatch to instance methods
     static void _onPeriphConnect(uint16_t connHandle);
     static void _onPeriphDisconnect(uint16_t connHandle, uint8_t reason);
     static void _onCentralConnect(uint16_t connHandle);
     static void _onCentralDisconnect(uint16_t connHandle, uint8_t reason);
-    static void _onScanCallback(ble_gap_evt_adv_report_t* report);
     static void _onUartRx(uint16_t connHandle);
+#if defined(BOARD_BLUEBUZZAH_NRF52)
+    static void _onScanCallback(ble_gap_evt_adv_report_t* report);
     static void _onClientUartRx(BLEClientUart& clientUart);
+#endif
 
 private:
     DeviceRole _role;
@@ -400,9 +409,12 @@ private:
     // Connections
     BBConnection _connections[MAX_CONNECTIONS];
 
-    // BLE services
+    // BLE services (Bluefruit backend only; the NimBLE backend keeps its
+    // stack objects at file scope in ble_manager_esp32.cpp)
+#if defined(BOARD_BLUEBUZZAH_NRF52)
     BLEUart _uartService;           // Peripheral UART (for incoming connections)
     BLEClientUart _clientUart;      // Central UART (for outgoing connections)
+#endif
 
     // Callbacks
     BLEConnectCallback _connectCallback;
@@ -420,15 +432,17 @@ private:
         uint16_t length;
         uint16_t bytesSent;
         uint16_t connHandle;
-        bool pending;
+        volatile bool pending;   // publish flag: set last (after fields + barrier)
         TxStampKind stampKind;   // NONE for normal messages
         uint32_t stampSeqId;     // sequence id for deferred serialization
         uint64_t stampT2;        // PONG only: T2 echoed back
         uint64_t stampAnchor;    // PONG only: rx anchor timestamp (0 = absent)
     };
 
-    // Accessed from BLE task (enqueue via rx callbacks) and main loop (enqueue + processTxQueue);
-    // all head/tail/count mutations PRIMASK-guarded.
+    // Accessed from BLE task (enqueue via rx callbacks) and main loop (enqueue +
+    // processTxQueue) - concurrently across cores on ESP32-S3. Head/tail/count
+    // mutations are critical-section-guarded; entries use reserve-fill-publish
+    // (pending set last, behind a memory barrier).
     TxEntry _txQueue[TX_QUEUE_SIZE];
     uint8_t _txHead;
     uint8_t _txTail;

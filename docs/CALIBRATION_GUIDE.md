@@ -16,6 +16,7 @@
 6. [Intensity Mapping](#intensity-mapping)
 7. [Clinical Tuning Guidelines](#clinical-tuning-guidelines)
 8. [Troubleshooting](#troubleshooting)
+9. [Assembly QA (BlueBuzzah v3)](#assembly-qa-bluebuzzah-v3)
 
 ---
 
@@ -26,6 +27,13 @@ This document uses the following device role terminology:
 - **SECONDARY**: Receives relayed commands via PRIMARY
 
 Both devices run identical firmware and advertise as "BlueBuzzah". Role is determined by `settings.json` configuration.
+
+> **Motor counts:** the examples in this guide use the 4-finger BlueBuzzah
+> (8 motors per pair, finger indices 0–7). The 5-finger BlueBuzzah v3 adds a
+> thumb: 10 motors per pair, local indices 0–4 and remote 5–9. Firmware
+> validation derives from `MAX_ACTUATORS` (`0..2*MAX_ACTUATORS-1`), so adjust
+> the index ranges and totals below accordingly. The phone app must use the
+> matching index scheme for the connected board.
 
 ---
 
@@ -944,3 +952,31 @@ Update this document when:
 **Last Updated:** 2025-01-23
 **Clinical Protocol Version:** 1.0
 **Reviewed By:** Clinical Engineering Team
+
+## Assembly QA (BlueBuzzah v3)
+
+Serial commands (115200 baud) for validating motor wiring on a freshly
+assembled glove. Stop any running session first (they do it automatically).
+
+| Command | Effect |
+| --- | --- |
+| `MOTOR_DIAG` | Buzzes every channel alone (800 ms, full amplitude) and checks a per-chip reset canary afterward. `*** CHIP RESET` means the supply dipped mid-drive — check the battery (missing, discharged, or miswired). |
+| `MOTOR_TEST:<n>` | Drives one channel (`0`–`4`) for 2 s. Use to map a specific connector. |
+| `MOTOR_PRESENT` | Open-load probe: runs LRA auto-calibration per channel (each present motor buzzes ~0.5 s) and prints `MOTOR PRESENT` / `NO MOTOR` per port. Also refreshes the therapy engine's active-finger map. Runs automatically at every boot; needs battery power (`SUPPLY DIP` output means the results were discarded). |
+
+Wiring facts:
+
+- Motor JST ports are silk-labeled **1–5 in reverse** of firmware channels:
+  firmware finger N ↔ silk port `5−N` (`MOTOR_SILK_PORT()` in `board_config.h`).
+  Schematic designators: J2=MOT_0 … J6=MOT_4; J1 is the battery.
+- Motors run from **VBat**. A glove on USB without a charged battery cannot
+  drive any motor — expect `CHIP RESET` canaries on every populated channel.
+- The DRV2605's built-in load diagnostics (MODE=6) report false failures with
+  this firmware's open-loop LRA configuration; the operator feeling each buzz
+  is the actuator test. A channel that never buzzes with a good battery is an
+  open circuit (unplugged JST or broken LRA lead). `MOTOR_PRESENT` detects
+  the same condition electrically via LRA auto-calibration (MODE=7), which
+  cannot converge on an open port.
+- At boot, the presence probe feeds pattern generation: with 4 of 5 motors
+  attached, both gloves run 4-buzz macrocycles that skip the empty port.
+  Fewer than 4 motors = red double-blink LED for 5 s at boot.

@@ -17,9 +17,9 @@
  */
 
 #include <Arduino.h>
-#include <Adafruit_LittleFS.h>
-#include <InternalFileSystem.h>
-#include "rtos.h"  // FreeRTOS for motor task
+#include "platform.h"  // Platform primitives + FreeRTOS for motor task
+#include "fs_backend.h"
+#include "power_controller.h"
 #include "config.h"
 #include "types.h"
 #include "hardware.h"
@@ -40,8 +40,10 @@
 // CONFIGURATION
 // =============================================================================
 
-// USER button pin (active LOW on Feather nRF52840)
-#define USER_BUTTON_PIN 7
+// USER button (active LOW; only present on boards with USER_BUTTON_ENABLED)
+#if USER_BUTTON_ENABLED
+#define USER_BUTTON_PIN USER_BUTTON_PIN_OVERRIDE
+#endif
 
 // =============================================================================
 // GLOBAL INSTANCES
@@ -50,6 +52,7 @@
 HapticController haptic;
 BatteryMonitor battery;
 LEDController led;
+PowerController power;
 BLEManager ble;
 TherapyEngine therapy;
 TherapyStateMachine stateMachine;
@@ -125,8 +128,12 @@ static volatile uint64_t g_pendingFlashTime = 0;
 static volatile bool g_phyChangeDetected = false;
 static volatile uint8_t g_newPhy = 0;  // 1=1M, 2=2M, 4=Coded
 
-// Finger names for display (4 fingers per hand - index through pinky, no thumb per v1)
-const char *FINGER_NAMES[] = {"Index", "Middle", "Ring", "Pinky"};
+// When CONNECTION_LOST was entered (set in onStateChange, which can run in
+// BLE-callback context; consumed by loop() to demote to IDLE after timeout)
+static volatile uint32_t g_connectionLostAt = 0;
+
+// Finger names for display, indexed by finger id (thumb only used at 5 actuators)
+const char *FINGER_NAMES[] = {"Index", "Middle", "Ring", "Pinky", "Thumb"};
 
 // =============================================================================
 // ATOMIC 64-BIT ACCESS HELPERS
@@ -136,18 +143,16 @@ const char *FINGER_NAMES[] = {"Index", "Middle", "Ring", "Pinky"};
 // These helpers disable interrupts to ensure atomic access.
 
 static inline uint64_t atomicRead64(volatile uint64_t* ptr) {
-    uint32_t primask = __get_PRIMASK();
-    __disable_irq();
+    PLATFORM_CRITICAL_ENTER();
     uint64_t val = *ptr;
-    __set_PRIMASK(primask);
+    PLATFORM_CRITICAL_EXIT();
     return val;
 }
 
 static inline void atomicWrite64(volatile uint64_t* ptr, uint64_t val) {
-    uint32_t primask = __get_PRIMASK();
-    __disable_irq();
+    PLATFORM_CRITICAL_ENTER();
     *ptr = val;
-    __set_PRIMASK(primask);
+    PLATFORM_CRITICAL_EXIT();
 }
 
 // =============================================================================
@@ -417,8 +422,10 @@ void executeDeferredWork(DeferredWorkType type, uint8_t p1, uint8_t p2, uint32_t
 // Serial-Only Commands (not available via BLE)
 void handleSerialCommand(const char *command);
 
-// BLE Event Callback (PHY change detection)
+#if defined(BOARD_BLUEBUZZAH_NRF52)
+// BLE Event Callback (PHY change detection; SoftDevice-specific)
 void onBLEEvent(ble_evt_t* evt);
+#endif
 
 // Role Configuration Wait (blocks until role is set)
 void waitForRoleConfiguration();
@@ -514,15 +521,20 @@ void safeMotorShutdown()
 
 void setup()
 {
-    // Configure USB device descriptors (must be before Serial.begin)
+#if defined(BOARD_BLUEBUZZAH_NRF52)
+    // Configure USB device descriptors (must be before Serial.begin).
+    // The ESP32-S3 hardware USB-CDC has fixed descriptors, so this is nRF-only.
     TinyUSBDevice.setManufacturerDescriptor("BlueBuzzah Partners");
     TinyUSBDevice.setProductDescriptor("BlueBuzzah");
+#endif
 
     // Initialize serial
     Serial.begin(115200);
 
+#if USER_BUTTON_ENABLED
     // Configure USER button
     pinMode(USER_BUTTON_PIN, INPUT_PULLUP);
+#endif
 
     // Wait for serial with timeout
     uint32_t serialWaitStart = millis();
@@ -543,6 +555,10 @@ void setup()
     }
 
     printBanner();
+
+    // Enable the board power path FIRST (Penta: peripheral 3V3 rail feeds the
+    // LED, mux, and motor drivers; no-op on nRF)
+    power.begin();
 
     // Initialize LED FIRST (needed for configuration feedback)
     Serial.println(F("\n--- LED Initialization ---"));
@@ -634,9 +650,21 @@ void setup()
 
     // Initial battery reading
     Serial.println(F("\n--- Battery Status ---"));
+#if BATTERY_SENSE_ENABLED
     BatteryStatus battStatus = battery.getStatus();
     Serial.printf("[BATTERY] %.2fV | %d%% | Status: %s\n",
                   battStatus.voltage, battStatus.percentage, battStatus.statusString());
+#else
+    // No VBat sense hardware on this board - never print made-up numbers
+    // (a fake "4.20V | 100%" masked a miswired battery during bring-up)
+    Serial.println(F("[BATTERY] No battery sense on this board"));
+    if (power.usbPowerPresent())
+    {
+        // Motors run from VBat, not USB: without a charged battery any LRA
+        // drive browns the DRV2605s out and therapy is silent
+        Serial.println(F("[POWER] USB power detected - motors still require a charged battery"));
+    }
+#endif
 
     // Instructions
     Serial.println(F("\n+============================================================+"));
@@ -748,6 +776,13 @@ void loop()
     // Update LED pattern animation
     led.update();
 
+    // Power-switch shutdown request (PentaBuzzer only; no-op on nRF)
+    if (power.powerOffRequested())
+    {
+        safeMotorShutdown();
+        power.enterDeepSleep(led);
+    }
+
     // Process BLE events (includes non-blocking TX queue)
     ble.update();
 
@@ -782,9 +817,23 @@ void loop()
     {
         static char serialBuf[96];
         static uint8_t serialLen = 0;
+        static uint32_t serialLastRxMs = 0;
+
+        // Discard stale partial input: a line whose terminator never arrived
+        // (wrong terminal line-ending setting, dropped byte) would otherwise
+        // sit in the buffer forever and concatenate with the next command
+        if (serialLen > 0 && millis() - serialLastRxMs > 2000)
+        {
+            serialBuf[serialLen] = '\0';
+            Serial.printf("[SERIAL] Discarding stale partial input: '%s' (no line ending received)\n",
+                          serialBuf);
+            serialLen = 0;
+        }
+
         while (Serial.available())
         {
             char c = static_cast<char>(Serial.read());
+            serialLastRxMs = millis();
             if (c == '\n' || c == '\r')
             {
                 if (serialLen > 0)
@@ -839,6 +888,17 @@ void loop()
         }
     }
     wasTherapyRunning = isTherapyRunning;
+
+    // Demote CONNECTION_LOST (purple blink) to IDLE (blue breathe) once the
+    // peer has been gone for CONNECTION_LOST_TIMEOUT_MS. Non-blocking
+    // replacement for the old 3x2s delay() retry loop; scanning/advertising
+    // keeps running and a reconnect from IDLE still lands in READY.
+    if (stateMachine.getCurrentState() == TherapyState::CONNECTION_LOST &&
+        millis() - g_connectionLostAt >= CONNECTION_LOST_TIMEOUT_MS)
+    {
+        Serial.println(F("[RECOVERY] No reconnect within timeout - returning to IDLE"));
+        stateMachine.transition(StateTrigger::RECONNECT_FAILED);
+    }
 
     // SECONDARY: Check for keepalive timeout during active connection
     if (deviceRole == DeviceRole::SECONDARY && ble.isPrimaryConnected())
@@ -966,6 +1026,7 @@ void loop()
         printStatus();
     }
 
+#if BATTERY_SENSE_ENABLED
     // Check battery every 60 seconds
     if (now - lastBatteryCheck >= BATTERY_CHECK_INTERVAL_MS)
     {
@@ -974,6 +1035,7 @@ void loop()
         Serial.printf("[BATTERY] %.2fV | %d%% | Status: %s\n",
                       status.voltage, status.percentage, status.statusString());
     }
+#endif
 
     // Yield to BLE stack (non-blocking - allows SoftDevice processing)
     yield();
@@ -990,12 +1052,17 @@ void printBanner()
     Serial.println(F("|                  BlueBuzzah Firmware                       |"));
     Serial.println(F("+============================================================+"));
     Serial.printf("|  Firmware: %-47s |\n", FIRMWARE_VERSION);
+#if defined(BOARD_BLUEBUZZAH_NRF52)
     Serial.println(F("|  Platform: Adafruit Feather nRF52840 Express              |"));
+#else
+    Serial.println(F("|  Platform: PentaBuzzer XIAO ESP32-S3                       |"));
+#endif
     Serial.println(F("+============================================================+"));
 }
 
 DeviceRole determineRole()
 {
+#if USER_BUTTON_ENABLED
     // Check if USER button is held (active LOW)
     // Button held = SECONDARY mode (emergency override)
     if (digitalRead(USER_BUTTON_PIN) == LOW)
@@ -1004,6 +1071,7 @@ DeviceRole determineRole()
         delay(500); // Debounce
         return DeviceRole::SECONDARY;
     }
+#endif
 
     // Check if role was loaded from settings.json
     if (profiles.hasStoredRole())
@@ -1015,6 +1083,37 @@ DeviceRole determineRole()
     // Default to PRIMARY if no settings found
     Serial.println(F("[INFO] No role in settings - defaulting to PRIMARY"));
     return DeviceRole::PRIMARY;
+}
+
+/**
+ * @brief Feed the last motor-presence probe result into pattern generation
+ *
+ * PRIMARY is the source of truth: patterns are generated over present
+ * fingers only, and those physical indices reach SECONDARY inside
+ * macrocycle events, so both gloves skip the same missing motor.
+ * A probe that found nothing (e.g. USB-only bench boot) leaves the map
+ * untouched rather than disabling therapy outright.
+ */
+static void applyMotorPresenceToTherapy()
+{
+    uint8_t presentFingers[MAX_ACTUATORS];
+    uint8_t n = 0;
+    for (uint8_t f = 0; f < MAX_ACTUATORS; f++)
+    {
+        if (haptic.isMotorPresent(f))
+        {
+            presentFingers[n++] = f;
+        }
+    }
+    if (n == 0)
+    {
+        return;
+    }
+    therapy.setActiveFingers(presentFingers, n);
+    if (n < MAX_ACTUATORS)
+    {
+        Serial.printf("[THERAPY] Patterns restricted to %u present motor(s)\n", n);
+    }
 }
 
 bool initializeHardware()
@@ -1041,14 +1140,53 @@ bool initializeHardware()
         Serial.printf("Haptic Controller: %d/%d fingers enabled\n",
                       haptic.getEnabledCount(), MAX_ACTUATORS);
 
+#if defined(BOARD_PENTABUZZER_ESP32S3)
+        // Boot QA: detect unpopulated/broken motor ports (each present motor
+        // buzzes ~0.5s during the auto-cal probe). NOTE: needs battery power;
+        // a USB-only boot can misreport, but motors can't run then anyway.
+        // PentaBuzzer only: the auto-cal presence method is validated on this
+        // board's LRAs. On nRF v2 gloves the probe stays available via the
+        // MOTOR_PRESENT serial command but never runs (or restricts therapy
+        // patterns) automatically at boot.
+        constexpr uint8_t MIN_REQUIRED_MOTORS = 4;
+        uint8_t motorsPresent = haptic.probeMotorPresence();
+        if (haptic.lastProbeSupplyDipped())
+        {
+            // USB-only bench boot: cal drive browned the chips out, so the
+            // verdicts are garbage. Don't alarm on healthy hardware.
+            Serial.println(F("[WARN] Motor check skipped: supply dipped during probe (USB-only power?)"));
+        }
+        else if (motorsPresent < MIN_REQUIRED_MOTORS)
+        {
+            Serial.printf("[ERROR] Missing/failed motor(s): %u/%u detected (minimum %u) - check JST connections\n",
+                          motorsPresent, MAX_ACTUATORS, MIN_REQUIRED_MOTORS);
+            // Double-blink red long enough to be seen before connection
+            // status colors take over the LED
+            led.setPattern(Colors::RED, LEDPattern::DOUBLE_BLINK);
+            uint32_t errorUntil = millis() + 5000;
+            while (millis() < errorUntil)
+            {
+                led.update();
+                delay(10);
+            }
+        }
+        applyMotorPresenceToTherapy();
+#endif // BOARD_PENTABUZZER_ESP32S3
+
         // Create high-priority motor task for preemptive activations
         // Priority 4 (HIGHEST) ensures motor timing isn't blocked by Serial/BLE
-        // Stack size: 512 words (2KB) - increased from 256 to prevent stack overflow
-        // that was causing crashes during BLE initialization
+        // Stack depth units differ per FreeRTOS port: WORDS on the nRF52 core
+        // (512 words = 2KB, increased from 256 to prevent stack overflow during
+        // BLE initialization), BYTES on ESP-IDF (4KB for headroom).
+#if defined(BOARD_PENTABUZZER_ESP32S3)
+        constexpr uint32_t MOTOR_TASK_STACK = 4096;  // bytes (ESP-IDF units)
+#else
+        constexpr uint32_t MOTOR_TASK_STACK = 512;   // words = 2KB (nRF52 core units)
+#endif
         BaseType_t taskCreated = xTaskCreate(
             motorTask,           // Task function
             "Motor",             // Name (for debugging)
-            512,                 // Stack size (words = 2KB) - increased for safety
+            MOTOR_TASK_STACK,    // Stack size (per-port units, see above)
             nullptr,             // Parameters
             TASK_PRIO_HIGHEST,   // Priority 4 - preempts main loop
             &motorTaskHandle     // Handle
@@ -1118,11 +1256,13 @@ bool initializeBLE()
     }
 #endif
 
+#if defined(BOARD_BLUEBUZZAH_NRF52)
     // Register PHY change callback (both roles)
     // Detects 1M -> 2M PHY upgrades so we can reset RTT statistics
     // PRIMARY also uses RTT for adaptive lead time calculation
     Bluefruit.setEventCallback(onBLEEvent);
     Serial.println(F("[BLE] PHY change event callback registered"));
+#endif
 
     // Start scanning for SECONDARY role
     // Note: PRIMARY advertising is started in setupAdvertising() during ble.begin()
@@ -1394,6 +1534,8 @@ void executeDeferredWork(DeferredWorkType type, uint8_t p1, uint8_t p2, uint32_t
     // SAFETY: Skip haptic operations in critical error states
     // Note: CONNECTION_LOST is intentionally NOT blocked - disconnect feedback pulses
     // (queued AFTER safety shutdown semaphore is signaled) should still execute for user feedback
+    // Note: HAPTIC_HEAL is intentionally exempt - it never drives amplitude
+    // (reconfigure + RTP=0 only) and healing is wanted even in fault states
     if (type == DeferredWorkType::HAPTIC_PULSE ||
         type == DeferredWorkType::HAPTIC_DOUBLE_PULSE)
     {
@@ -1441,6 +1583,15 @@ void executeDeferredWork(DeferredWorkType type, uint8_t p1, uint8_t p2, uint32_t
             uint64_t secondPulseTime = now + ((uint64_t)(duration + 100) * 1000ULL);
             activationQueue.enqueue(secondPulseTime, finger, amplitude, duration, 250);
         }
+        break;
+    }
+
+    case DeferredWorkType::HAPTIC_HEAL:
+    {
+        // Round-robin DRV2605 reset check (~200us); full reconfigure only
+        // when a brownout is actually detected. Runs here (loop task) so
+        // the BLE host task never blocks on I2C.
+        haptic.verifyAndHeal();
         break;
     }
 
@@ -1568,29 +1719,20 @@ void onBLEMessage(uint16_t connHandle, const char *message, uint64_t rxTimestamp
                 // PRIMARY calculated this offset and sent it in the message
                 // CRITICAL: Cast baseTime to signed before adding signed offset,
                 // otherwise negative offset becomes large positive when implicitly converted
-                int64_t offset = mc.clockOffset;
+                // Recover any DRV2605 that reset since configuration (VBat
+                // brownout leaves it in standby, silently ignoring this
+                // macrocycle's activations). Deferred to the main loop: this
+                // handler runs in the BLE host task, which must never block
+                // on I2C - a delayed PING/PONG here would inflate an RTT
+                // sample. The loop picks it up within a few ms, still well
+                // inside the >=35ms scheduling lead window.
+                deferredQueue.enqueue(DeferredWorkType::HAPTIC_HEAL);
 
-                // SAFETY: Reject obviously invalid offsets
-                // Valid offset should be within ±35 seconds (35,000,000 µs)
-                // SECONDARY can connect up to 30s after PRIMARY boot, plus 5s margin
-                constexpr int64_t MAX_VALID_OFFSET = 35000000LL;  // 35 seconds in microseconds
-                if (offset > MAX_VALID_OFFSET || offset < -MAX_VALID_OFFSET)
-                {
-                    // SP-C3 fix: Use split print for 64-bit value (ARM long is 32-bit)
-                    int64_t offsetSec = offset / 1000000;
-                    int64_t offsetUs = offset % 1000000;
-                    if (offset < 0 && offsetUs != 0) offsetUs = -offsetUs;  // Handle negative correctly
-                    Serial.printf("[ERROR] MACROCYCLE rejected: invalid offset %ld.%06ldus (exceeds ±35s)\n",
-                                  (long)offsetSec, (long)offsetUs);
-                    // Still send ACK to avoid retry storms, but don't execute
-                    SyncCommand ackCmd = SyncCommand::createMacrocycleAck(mc.sequenceId);
-                    char ackBuffer[32];
-                    if (ackCmd.serialize(ackBuffer, sizeof(ackBuffer)))
-                    {
-                        ble.sendToPrimary(ackBuffer);
-                    }
-                    return;
-                }
+                // NOTE: No absolute bound on the offset itself - it is the
+                // boot-time difference between the two devices, which is
+                // arbitrarily large on reconnect (e.g. one glove rebooted).
+                // Validity is checked below via localBaseTime instead.
+                int64_t offset = mc.clockOffset;
 
                 uint64_t localBaseTime = static_cast<uint64_t>(static_cast<int64_t>(mc.baseTime) + offset);
 
@@ -1610,7 +1752,11 @@ void onBLEMessage(uint16_t connHandle, const char *message, uint64_t rxTimestamp
                                   (long)(timeUntilExec / 1000));
                 }
                 int64_t timeDiff = static_cast<int64_t>(localBaseTime) - static_cast<int64_t>(nowUs);
-                constexpr int64_t MAX_TIME_DIFF = 30000000LL;  // 30 seconds
+                // Corruption guard: legitimate values are now + lead time
+                // (35-50ms) plus BLE delivery jitter. 5s is ~100x that
+                // margin while still rejecting a corrupt offset/baseTime
+                // that would otherwise schedule far-off activations.
+                constexpr int64_t MAX_TIME_DIFF = 5000000LL;  // 5 seconds
                 if (timeDiff > MAX_TIME_DIFF || timeDiff < -MAX_TIME_DIFF)
                 {
                     // SP-C3 fix: Use split print for 64-bit value (ARM long is 32-bit)
@@ -1996,7 +2142,8 @@ void onBLEMessage(uint16_t connHandle, const char *message, uint64_t rxTimestamp
 
 void onSendMacrocycle(const Macrocycle& macrocycle)
 {
-    // PRIMARY: Send entire macrocycle (12 events) to SECONDARY in a single message
+    // PRIMARY: Send entire macrocycle (up to MACROCYCLE_MAX_EVENTS events) to
+    // SECONDARY in a single message
     // SECONDARY will apply clock offset once and schedule all activations
 
     if (deviceRole != DeviceRole::PRIMARY || !ble.isSecondaryConnected())
@@ -2108,6 +2255,13 @@ void onCycleComplete(uint32_t cycleCount)
 
 void onMacrocycleStart(uint32_t macrocycleCount)
 {
+    // Recover any DRV2605 that reset since configuration (VBat brownout
+    // leaves it in standby, silently ignoring the coming activations).
+    // Round-robin single-chip probe (~200us); runs here in the loop task
+    // during the relax gap, BEFORE the macrocycle base timestamp is
+    // captured, so scheduled event timing is unaffected.
+    haptic.verifyAndHeal();
+
     // Clock sync handled by main loop 1-second PING interval
     // No additional PING needed at macrocycle boundary
 
@@ -2228,8 +2382,13 @@ void startTherapyTest()
                   profile->mirrorPattern ? "ON" : "OFF");
     Serial.println(F("+============================================================+\n"));
 
-    // Update state machine
-    stateMachine.transition(StateTrigger::START_SESSION);
+    // Update state machine - abort if the transition is invalid so therapy
+    // can never run with the FSM (and LED) disagreeing about the state
+    if (!stateMachine.transition(StateTrigger::START_SESSION))
+    {
+        Serial.println(F("[TEST] Start aborted - state machine rejected START_SESSION"));
+        return;
+    }
 
     // Notify SECONDARY of session start (enables pulsing LED on SECONDARY)
     if (deviceRole == DeviceRole::PRIMARY && ble.isSecondaryConnected())
@@ -2372,8 +2531,13 @@ void autoStartTherapy()
                   profile->sessionDurationMin, profile->patternType, profile->jitterPercent);
     Serial.println(F("+============================================================+\n"));
 
-    // Update state machine
-    stateMachine.transition(StateTrigger::START_SESSION);
+    // Update state machine - abort if the transition is invalid so therapy
+    // can never run with the FSM (and LED) disagreeing about the state
+    if (!stateMachine.transition(StateTrigger::START_SESSION))
+    {
+        Serial.println(F("[AUTO] Auto-start aborted - state machine rejected START_SESSION"));
+        return;
+    }
 
     // Notify SECONDARY of session start (enables pulsing LED on SECONDARY)
     if (ble.isSecondaryConnected())
@@ -2478,12 +2642,11 @@ void onTxStamped(TxStampKind kind, uint32_t seqId, uint64_t txTimeUs)
     // (atomicWrite64) is insufficient here — the invariant spans variables.
     if (kind == TxStampKind::PING_T1)
     {
-        uint32_t primask = __get_PRIMASK();
-        __disable_irq();
+        PLATFORM_CRITICAL_ENTER();
         pingT1 = txTimeUs;
         pingStartTime = txTimeUs;
         pingSeq = seqId;
-        __set_PRIMASK(primask);
+        PLATFORM_CRITICAL_EXIT();
     }
     // TxStampKind::PONG_T3 is intentionally ignored here: it only fires on
     // SECONDARY, where no T1 pairing state exists.
@@ -2567,6 +2730,9 @@ void onStateChange(const StateTransition &transition)
         break;
 
     case TherapyState::CONNECTION_LOST:
+        // Start the purple-indication window; loop() demotes to IDLE after
+        // CONNECTION_LOST_TIMEOUT_MS if the peer hasn't reconnected
+        g_connectionLostAt = millis();
         led.setPattern(Colors::PURPLE, LEDPattern::BLINK_CONNECT);
         // Stop therapy on connection loss
         if (therapy.isRunning())
@@ -2614,12 +2780,15 @@ void onMenuSendToSecondary(const char *message)
 // BLE EVENT CALLBACK (PHY Change Detection)
 // =============================================================================
 
+#if defined(BOARD_BLUEBUZZAH_NRF52)
 /**
  * @brief BLE event callback for PHY change detection
  *
  * Runs in SoftDevice context - only sets flags, no I2C/Serial.
  * When PHY upgrades from 1M to 2M, RTT changes significantly (~20ms to ~10-15ms).
  * This callback detects the transition so main loop can reset RTT statistics.
+ * (NimBLE requests 2M at connect time before sync traffic starts, so the
+ * RTT-reset hook is not needed on the ESP32 backend.)
  */
 void onBLEEvent(ble_evt_t* evt)
 {
@@ -2631,6 +2800,7 @@ void onBLEEvent(ble_evt_t* evt)
     g_newPhy = phy->tx_phy;
     g_phyChangeDetected = true;
 }
+#endif
 
 // =============================================================================
 // SECONDARY KEEPALIVE TIMEOUT HANDLER
@@ -2647,27 +2817,15 @@ void handleKeepaliveTimeout()
     // 2. Update state machine (LED handled by onStateChange callback)
     stateMachine.transition(StateTrigger::DISCONNECTED);
 
-    // 3. Attempt reconnection (3 attempts, 2s apart)
-    for (uint8_t attempt = 1; attempt <= 3; attempt++)
-    {
-        Serial.printf("[RECOVERY] Attempt %d/3...\n", attempt);
-        delay(2000);
-
-        if (ble.isPrimaryConnected())
-        {
-            Serial.println(F("[RECOVERY] PRIMARY reconnected"));
-            stateMachine.transition(StateTrigger::RECONNECTED);
-            lastKeepaliveReceived = millis(); // Reset timeout
-            return;
-        }
-    }
-
-    // 4. Recovery failed - return to IDLE
-    Serial.println(F("[RECOVERY] Failed - returning to IDLE"));
-    stateMachine.transition(StateTrigger::RECONNECT_FAILED);
+    // 3. Restart scanning immediately. No blocking retry wait here: scanning
+    // is off at this point so nothing could reconnect during it, and delay()
+    // in loop() context starves serial commands, BLE housekeeping, and
+    // deferred work for 6s (broke deploy.py role configuration).
+    // The FSM stays in CONNECTION_LOST (purple blink) - the same end state as
+    // the BLE-level disconnect path - until loop() demotes it to IDLE after
+    // CONNECTION_LOST_TIMEOUT_MS without a reconnect.
+    Serial.println(F("[RECOVERY] Connection lost - resuming scan for PRIMARY"));
     lastKeepaliveReceived = 0; // Reset for next session
-
-    // 5. Restart scanning for PRIMARY
     ble.startScanning(BLE_NAME);
 }
 
@@ -2689,7 +2847,7 @@ void handleSerialCommand(const char *command)
             Serial.println(F("[CONFIG] Role set to PRIMARY - restarting..."));
             Serial.flush();
             delay(100);
-            NVIC_SystemReset();
+            platformSystemReset();
         }
         else if (strcasecmp(roleStr, "SECONDARY") == 0)
         {
@@ -2699,7 +2857,7 @@ void handleSerialCommand(const char *command)
             Serial.println(F("[CONFIG] Role set to SECONDARY - restarting..."));
             Serial.flush();
             delay(100);
-            NVIC_SystemReset();
+            platformSystemReset();
         }
         else
         {
@@ -2712,6 +2870,58 @@ void handleSerialCommand(const char *command)
     if (strcmp(command, "GET_ROLE") == 0)
     {
         Serial.printf("[CONFIG] Current role: %s\n", deviceRoleToString(deviceRole));
+        return;
+    }
+
+    // MOTOR_DIAG - assembly QA: buzz every channel + supply reset canary
+    if (strcmp(command, "MOTOR_DIAG") == 0)
+    {
+        // Stop through the state machine (not just therapy.stop()) so the
+        // FSM and LED reflect reality and auto-start can't fire mid-diag
+        if (therapy.isRunning())
+        {
+            therapy.stop();
+            stateMachine.transition(StateTrigger::STOP_SESSION);
+            stateMachine.transition(StateTrigger::STOPPED);
+        }
+        safeMotorShutdown();
+        haptic.diagSweep();
+        return;
+    }
+
+    // MOTOR_PRESENT - assembly QA: open-load probe of every motor port
+    if (strcmp(command, "MOTOR_PRESENT") == 0)
+    {
+        if (therapy.isRunning())
+        {
+            therapy.stop();
+            stateMachine.transition(StateTrigger::STOP_SESSION);
+            stateMachine.transition(StateTrigger::STOPPED);
+        }
+        safeMotorShutdown();
+        haptic.probeMotorPresence();
+        applyMotorPresenceToTherapy();
+        return;
+    }
+
+    // MOTOR_TEST:<n> - assembly QA: drive one channel for 2s at full amplitude
+    if (strncmp(command, "MOTOR_TEST:", 11) == 0)
+    {
+        const char *arg = command + 11;
+        if (*arg < '0' || *arg > '9')
+        {
+            Serial.println(F("[DIAG] Usage: MOTOR_TEST:<n> where n is a channel number"));
+            return;
+        }
+        int n = atoi(arg);
+        if (therapy.isRunning())
+        {
+            therapy.stop();
+            stateMachine.transition(StateTrigger::STOP_SESSION);
+            stateMachine.transition(StateTrigger::STOPPED);
+        }
+        safeMotorShutdown();
+        haptic.diagDriveOne((uint8_t)n);
         return;
     }
 
@@ -2758,7 +2968,7 @@ void handleSerialCommand(const char *command)
             Serial.printf("[CONFIG] Profile set to %s - restarting...\n", profileStr);
             Serial.flush();
             delay(100);
-            NVIC_SystemReset();
+            platformSystemReset();
         }
         else
         {
@@ -2911,7 +3121,7 @@ void handleSerialCommand(const char *command)
     if (strcmp(command, "FACTORY_RESET") == 0)
     {
         Serial.println(F("[CONFIG] Factory reset - deleting settings..."));
-        if (InternalFS.remove(SETTINGS_FILE))
+        if (fsb::removeFile(SETTINGS_FILE))
         {
             Serial.println(F("[CONFIG] Settings deleted successfully"));
         }
@@ -2923,7 +3133,7 @@ void handleSerialCommand(const char *command)
         Serial.println(F("[CONFIG] Rebooting..."));
         Serial.flush();
         delay(100);
-        NVIC_SystemReset();
+        platformSystemReset();
         return;
     }
 
@@ -2934,7 +3144,7 @@ void handleSerialCommand(const char *command)
         Serial.println(F("[CONFIG] Rebooting..."));
         Serial.flush();
         delay(100);
-        NVIC_SystemReset();
+        platformSystemReset();
         return;
     }
 

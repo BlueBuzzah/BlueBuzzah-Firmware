@@ -1,14 +1,17 @@
 /**
  * @file config.h
- * @brief BlueBuzzah firmware configuration - Pin definitions, constants, and parameters
+ * @brief BlueBuzzah firmware configuration - Constants and parameters
  * @version 2.0.0
- * @platform Adafruit Feather nRF52840 Express
+ *
+ * Board-specific values (pins, actuator count, ADC/battery hardware) live in
+ * board_config.h and are selected by the build environment's board macro.
  */
 
 #ifndef CONFIG_H
 #define CONFIG_H
 
 #include <Arduino.h>
+#include "board_config.h"
 
 // =============================================================================
 // FIRMWARE VERSION
@@ -18,31 +21,25 @@
 #define FIRMWARE_NAME "BlueBuzzah"
 
 // =============================================================================
-// PIN DEFINITIONS (nRF52840 Feather)
+// PIN DEFINITIONS (per-board values from board_config.h)
 // =============================================================================
 
-// NeoPixel LED - Uses built-in PIN_NEOPIXEL on Feather nRF52840
-#define NEOPIXEL_PIN PIN_NEOPIXEL
+// NeoPixel status LED
+#define NEOPIXEL_PIN NEOPIXEL_PIN_OVERRIDE
 #define NEOPIXEL_COUNT 1
 
-// Battery voltage monitor - Uses built-in voltage divider on A6/VBAT
-#define BATTERY_PIN PIN_VBAT
-
-// I2C pins - Uses default Wire (SDA/SCL)
-// SDA = PIN_WIRE_SDA
-// SCL = PIN_WIRE_SCL
+// Battery voltage monitor (only on boards with battery sense hardware)
+#if BATTERY_SENSE_ENABLED
+#define BATTERY_PIN BATTERY_PIN_OVERRIDE
+#endif
 
 // =============================================================================
 // I2C CONFIGURATION
 // =============================================================================
+// TCA9548A_ADDRESS / DRV2605_ADDRESS come from board_config.h (identical on
+// both boards).
 
 #define I2C_FREQUENCY 400000  // 400kHz Fast Mode
-
-// TCA9548A I2C Multiplexer
-#define TCA9548A_ADDRESS 0x70
-
-// DRV2605 Haptic Driver (same address on all channels)
-#define DRV2605_ADDRESS 0x5A
 
 // I2C timing
 #define I2C_INIT_DELAY_MS 5      // Delay after channel select (fingers 0-3)
@@ -140,6 +137,11 @@
 #define KEEPALIVE_INTERVAL_MS 1000   // 1 second between PING messages (unified keepalive + clock sync)
 #define KEEPALIVE_TIMEOUT_MS 6000    // 6 seconds = 6 missed keepalives
 
+// How long the CONNECTION_LOST state (purple blink) is shown after losing the
+// peer before demoting to IDLE (blue breathe). Scanning/advertising for the
+// peer continues either way; this only affects the LED indication.
+#define CONNECTION_LOST_TIMEOUT_MS 30000
+
 // Battery monitoring
 #define BATTERY_CHECK_INTERVAL_MS 60000  // 60 seconds between checks
 
@@ -160,18 +162,15 @@ constexpr uint32_t TEST_DURATION_SEC = 120;  // 2 minutes
 #define BATTERY_FULL_VOLTAGE 4.2f       // Fully charged voltage (V)
 #define BATTERY_EMPTY_VOLTAGE 3.27f     // Empty battery voltage (V)
 
-// ADC configuration for nRF52840
-#define ADC_RESOLUTION_BITS 14          // nRF52840 has 14-bit ADC
-#define ADC_MAX_VALUE 16383             // 2^14 - 1
-#define ADC_REFERENCE_VOLTAGE 3.6f      // nRF52840 reference voltage
-#define BATTERY_VOLTAGE_DIVIDER 2.0f    // Voltage divider ratio (4.2V -> 2.1V)
+// ADC configuration comes from board_config.h (ADC_RESOLUTION_BITS,
+// ADC_MAX_VALUE, ADC_REFERENCE_VOLTAGE, BATTERY_VOLTAGE_DIVIDER).
 #define BATTERY_SAMPLE_COUNT 10         // Number of samples to average
 
 // =============================================================================
 // HAPTIC CONFIGURATION
 // =============================================================================
 
-#define MAX_ACTUATORS 4                 // Number of fingers (index through pinky, no thumb per v1)
+// MAX_ACTUATORS comes from board_config.h (4 on BlueBuzzah, 5 on PentaBuzzer)
 #define MAX_AMPLITUDE 100               // Maximum amplitude percentage (0-100)
 #define DRV2605_MAX_RTP 127             // DRV2605 RTP register max value
 
@@ -180,11 +179,12 @@ constexpr uint32_t TEST_DURATION_SEC = 120;  // 2 minutes
 #define MAX_FREQUENCY_HZ 255            // Maximum LRA resonant frequency (v1 randrange excludes 260)
 #define DEFAULT_FREQUENCY_HZ 250        // Default/standard LRA frequency (v1 reference: 250Hz)
 
-// Finger indices (4 fingers per hand, matching v1 original - no thumb)
+// Finger indices (boards with MAX_ACTUATORS == 5 add the thumb on index 4)
 #define FINGER_INDEX 0
 #define FINGER_MIDDLE 1
 #define FINGER_RING 2
 #define FINGER_PINKY 3
+#define FINGER_THUMB 4
 
 // =============================================================================
 // LED COLORS (RGB values)
@@ -229,7 +229,6 @@ constexpr uint32_t TEST_DURATION_SEC = 120;  // 2 minutes
 #define BLE_CHUNK_SIZE 100              // Max bytes per BLE packet
 #define BLE_MAX_MESSAGE_SIZE 512        // Max total message size
 #define BLE_NAME "BlueBuzzah"           // Default BLE device name
-#define BLE_AUTH_TOKEN "bluebuzzah-secure-v1"
 
 // =============================================================================
 // DEVELOPMENT/DEBUG FLAGS
@@ -274,9 +273,12 @@ constexpr uint32_t TEST_DURATION_SEC = 120;  // 2 minutes
 // MEMORY MANAGEMENT
 // =============================================================================
 
-// Buffer sizes for static allocation
-#define RX_BUFFER_SIZE 256              // BLE receive buffer
-#define TX_BUFFER_SIZE 256              // BLE transmit buffer
-#define MESSAGE_BUFFER_SIZE 256         // General message buffer (increased for MACROCYCLE batching)
+// Buffer sizes for static allocation.
+// The largest message is a serialized macrocycle: ~65-byte worst-case header
+// plus up to 16 bytes per event, 3 events per actuator (12 events -> 272,
+// 15 events -> 320). RX must hold the same message on the receiving glove.
+#define MESSAGE_BUFFER_SIZE (80 + (48 * MAX_ACTUATORS))
+#define RX_BUFFER_SIZE MESSAGE_BUFFER_SIZE  // BLE receive buffer
+#define TX_BUFFER_SIZE MESSAGE_BUFFER_SIZE  // BLE transmit buffer
 
 #endif // CONFIG_H

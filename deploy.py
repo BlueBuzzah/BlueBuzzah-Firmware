@@ -121,6 +121,9 @@ C = Colors()
 # Adafruit Vendor ID
 ADAFRUIT_VID = 0x239A
 
+# Espressif Vendor ID (XIAO ESP32-S3 hardware USB-CDC/JTAG = PentaBuzzer)
+ESPRESSIF_VID = 0x303A
+
 # Known Feather nRF52840 Product IDs
 FEATHER_PIDS = [
     0x8029,  # Feather nRF52840 Express
@@ -129,18 +132,37 @@ FEATHER_PIDS = [
     0x002A,  # Feather nRF52840 Sense (bootloader)
 ]
 
+# PlatformIO environments per board
+ENV_NRF52 = "adafruit_feather_nrf52840"
+ENV_PENTA = "pentabuzzer_esp32s3"
+
+# port -> env mapping populated by find_devices()
+_port_envs = {}
+
 
 def find_devices():
-    """Find connected Feather nRF52840 devices (cross-platform)"""
+    """Find connected BlueBuzzah/PentaBuzzah devices (cross-platform)"""
     devices = []
+    _port_envs.clear()
     for port in serial.tools.list_ports.comports():
-        # Match by Adafruit VID and known PIDs
+        # Match by Adafruit VID and known PIDs (BlueBuzzah nRF52840)
         if port.vid == ADAFRUIT_VID and port.pid in FEATHER_PIDS:
             devices.append(port.device)
+            _port_envs[port.device] = ENV_NRF52
+        # Espressif USB-CDC (PentaBuzzer XIAO ESP32-S3)
+        elif port.vid == ESPRESSIF_VID:
+            devices.append(port.device)
+            _port_envs[port.device] = ENV_PENTA
         # Fallback: match by description
         elif port.description and "nRF52" in port.description:
             devices.append(port.device)
+            _port_envs[port.device] = ENV_NRF52
     return sorted(devices)
+
+
+def env_for_port(port):
+    """PlatformIO environment for a detected port (defaults to nRF52)"""
+    return _port_envs.get(port, ENV_NRF52)
 
 
 def list_devices():
@@ -161,9 +183,15 @@ def list_devices():
 # Serial Communication
 # =============================================================================
 
-def configure_role(port, role, retries=5):
-    """Send role configuration command to device via serial with retry logic"""
+def configure_role(port, role, retries=5, avoid_port=None):
+    """Send role configuration command to device via serial with retry logic.
+
+    avoid_port: the OTHER glove's port in a 2-device deployment. Retries
+    must never fall back to it - sending SET_ROLE to the wrong device would
+    silently reconfigure the peer (e.g. two SECONDARYs, no PRIMARY).
+    """
     print(f"{C.YELLOW}Configuring role as {role}...{C.NC}")
+    original_port = port
     for attempt in range(retries):
         try:
             # Re-detect port on retry (device may have reconnected on different port)
@@ -171,8 +199,12 @@ def configure_role(port, role, retries=5):
                 print(f"  {C.YELLOW}Retry {attempt + 1}/{retries} - re-detecting device...{C.NC}")
                 time.sleep(2)
                 devices = find_devices()
-                if devices:
-                    port = devices[0]
+                # Prefer the port we started with; never pick the peer's port
+                candidates = [d for d in devices if d != avoid_port]
+                if original_port in candidates:
+                    port = original_port
+                elif candidates:
+                    port = candidates[0]
                 else:
                     print(f"  {C.RED}Device not found{C.NC}")
                     continue
@@ -227,7 +259,9 @@ def configure_role(port, role, retries=5):
                     time.sleep(2)
                     return True
 
-                # No confirmation found - do NOT assume success
+                # No confirmation found - do NOT assume success.
+                # Retry: the device may have been busy (e.g. BLE reconnect
+                # right after its peer rebooted from its own role config).
                 if response:
                     # Show last part of response for debugging
                     print(f"  {C.YELLOW}No confirmation received. Response:{C.NC}")
@@ -237,6 +271,21 @@ def configure_role(port, role, retries=5):
                             print(f"    {line.strip()}")
                 else:
                     print(f"  {C.YELLOW}No response from device{C.NC}")
+                if attempt < retries - 1:
+                    # The command may actually have SUCCEEDED with the
+                    # confirmation lost to the reboot race - the device
+                    # restarts itself after SET_ROLE and takes ~12s to come
+                    # back. Wait that out, then verify before re-sending.
+                    print(f"  {C.YELLOW}No confirmation - waiting 12s for possible reboot, then verifying...{C.NC}")
+                    time.sleep(12)
+                    devices = find_devices()
+                    candidates = [d for d in devices if d != avoid_port]
+                    check_port = original_port if original_port in candidates else (candidates[0] if candidates else None)
+                    if check_port and verify_role(check_port, role):
+                        print(f"  {C.GREEN}Role verified as {role} after reboot!{C.NC}")
+                        return True
+                    print(f"  {C.YELLOW}Retry {attempt + 1}/{retries}...{C.NC}")
+                    continue
                 return False
 
         except serial.SerialException as e:
@@ -338,20 +387,23 @@ def run_pio_command(args):
 
 
 def build_firmware():
-    """Build the firmware"""
-    print(f"\n{C.CYAN}Building firmware...{C.NC}\n")
-    if run_pio_command(["run", "-e", "adafruit_feather_nrf52840"]):
-        print(f"\n{C.GREEN}Build complete!{C.NC}")
-        return True
-    else:
-        print(f"\n{C.RED}Build failed!{C.NC}")
-        return False
+    """Build firmware for every detected board type (defaults to nRF52)"""
+    find_devices()
+    envs = sorted(set(_port_envs.values())) or [ENV_NRF52]
+    for env_name in envs:
+        print(f"\n{C.CYAN}Building firmware ({env_name})...{C.NC}\n")
+        if not run_pio_command(["run", "-e", env_name]):
+            print(f"\n{C.RED}Build failed!{C.NC}")
+            return False
+    print(f"\n{C.GREEN}Build complete!{C.NC}")
+    return True
 
 
 def upload_firmware(port):
-    """Upload firmware to specified port"""
-    print(f"\n{C.YELLOW}Uploading firmware to {port}...{C.NC}\n")
-    if run_pio_command(["run", "-e", "adafruit_feather_nrf52840", "-t", "upload", "--upload-port", port]):
+    """Upload firmware to specified port using the board's environment"""
+    env_name = env_for_port(port)
+    print(f"\n{C.YELLOW}Uploading firmware to {port} ({env_name})...{C.NC}\n")
+    if run_pio_command(["run", "-e", env_name, "-t", "upload", "--upload-port", port]):
         print(f"\n{C.GREEN}Upload complete!{C.NC}")
         return True
     else:
@@ -377,7 +429,7 @@ def deploy_single_device(device):
     choice = input().strip().upper()
     if choice == "P":
         print(f"\n{C.YELLOW}Waiting for device to restart (12s for full boot)...{C.NC}")
-        time.sleep(12)  # nRF52840 with BLE stack needs ~10-12s to fully boot
+        time.sleep(12)  # Both boards (nRF52840, ESP32-S3) need ~10-12s to fully boot BLE
         # Re-detect device after reboot (port may have changed)
         new_devices = find_devices()
         if not new_devices:
@@ -405,7 +457,7 @@ def deploy_single_device(device):
             return False
     elif choice == "S":
         print(f"\n{C.YELLOW}Waiting for device to restart (12s for full boot)...{C.NC}")
-        time.sleep(12)  # nRF52840 with BLE stack needs ~10-12s to fully boot
+        time.sleep(12)  # Both boards (nRF52840, ESP32-S3) need ~10-12s to fully boot BLE
         # Re-detect device after reboot (port may have changed)
         new_devices = find_devices()
         if not new_devices:
@@ -463,7 +515,7 @@ def deploy_two_devices(devices):
         return False
 
     print(f"\n{C.YELLOW}[3/6] Waiting for devices to restart (12s for full boot)...{C.NC}")
-    time.sleep(12)  # nRF52840 with BLE stack needs ~10-12s to fully boot
+    time.sleep(12)  # Both boards (nRF52840, ESP32-S3) need ~10-12s to fully boot BLE
 
     # Re-detect devices after reboot (ports may have changed)
     new_devices = find_devices()
@@ -472,14 +524,14 @@ def deploy_two_devices(devices):
         secondary_dev = new_devices[1]
 
     print(f"\n{C.YELLOW}[4/6] Configuring PRIMARY role...{C.NC}")
-    if not configure_role(primary_dev, "PRIMARY"):
+    if not configure_role(primary_dev, "PRIMARY", avoid_port=secondary_dev):
         print(f"{C.RED}Failed to configure PRIMARY!{C.NC}")
         return False
 
     time.sleep(2)
 
     print(f"\n{C.YELLOW}[5/6] Configuring SECONDARY role...{C.NC}")
-    if not configure_role(secondary_dev, "SECONDARY"):
+    if not configure_role(secondary_dev, "SECONDARY", avoid_port=primary_dev):
         print(f"{C.RED}Failed to configure SECONDARY!{C.NC}")
         return False
 
@@ -574,7 +626,7 @@ def deploy_multiple_devices(devices):
         return False
 
     print(f"\n{C.YELLOW}[3/6] Waiting for devices to restart (12s for full boot)...{C.NC}")
-    time.sleep(12)  # nRF52840 with BLE stack needs ~10-12s to fully boot
+    time.sleep(12)  # Both boards (nRF52840, ESP32-S3) need ~10-12s to fully boot BLE
 
     # Re-detect devices after reboot (ports may have changed)
     # Note: For 3+ devices, we can't reliably map old to new ports, so we just use first two
@@ -584,14 +636,14 @@ def deploy_multiple_devices(devices):
         secondary_dev = new_devices[1]
 
     print(f"\n{C.YELLOW}[4/6] Configuring PRIMARY role...{C.NC}")
-    if not configure_role(primary_dev, "PRIMARY"):
+    if not configure_role(primary_dev, "PRIMARY", avoid_port=secondary_dev):
         print(f"{C.RED}Failed to configure PRIMARY!{C.NC}")
         return False
 
     time.sleep(2)
 
     print(f"\n{C.YELLOW}[5/6] Configuring SECONDARY role...{C.NC}")
-    if not configure_role(secondary_dev, "SECONDARY"):
+    if not configure_role(secondary_dev, "SECONDARY", avoid_port=primary_dev):
         print(f"{C.RED}Failed to configure SECONDARY!{C.NC}")
         return False
 

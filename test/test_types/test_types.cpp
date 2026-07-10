@@ -563,6 +563,19 @@ void test_ConnectionState_clearAll(void) {
 }
 
 // =============================================================================
+// BOARD ACTUATOR PARAMETERIZATION TESTS
+// =============================================================================
+
+void test_macrocycle_capacity_matches_actuators(void) {
+    TEST_ASSERT_EQUAL_UINT(3 * MAX_ACTUATORS, MACROCYCLE_MAX_EVENTS);
+}
+
+void test_default_numfingers_matches_board(void) {
+    TherapyConfig cfg;
+    TEST_ASSERT_EQUAL_UINT(MAX_ACTUATORS, cfg.numFingers);
+}
+
+// =============================================================================
 // TEST RUNNER
 // =============================================================================
 
@@ -689,6 +702,10 @@ int main(int argc, char **argv) {
     RUN_TEST(test_ConnectionState_clearSecondary);
     RUN_TEST(test_ConnectionState_clearPrimary);
     RUN_TEST(test_ConnectionState_clearAll);
+
+    // Board Actuator Parameterization Tests
+    RUN_TEST(test_macrocycle_capacity_matches_actuators);
+    RUN_TEST(test_default_numfingers_matches_board);
 
     return UNITY_END();
 }

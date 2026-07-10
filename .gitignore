@@ -26,3 +26,7 @@ coverage.*
 # Claude Code
 .claude/settings.local.json
 .worktrees/
+
+# Python bytecode
+__pycache__/
+*.pyc

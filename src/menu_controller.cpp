@@ -12,6 +12,7 @@
 #include "profile_manager.h"
 #include "ble_manager.h"
 #include "sync_protocol.h"
+#include "platform.h"
 
 // =============================================================================
 // INTERNAL MESSAGE PREFIXES
@@ -557,7 +558,7 @@ void MenuController::handleProfileLoad(const char params[][PARAM_BUFFER_SIZE], u
     if (_restartCallback) {
         _restartCallback();
     } else {
-        NVIC_SystemReset();
+        platformSystemReset();
     }
 }
 
@@ -649,7 +650,7 @@ void MenuController::handleSessionStart() {
     float timeOnMs = 100.0f;
     float timeOffMs = 67.0f;
     float jitterPercent = 23.5f;
-    uint8_t numFingers = 4;  // 4 fingers per hand (index, middle, ring, pinky)
+    uint8_t numFingers = MAX_ACTUATORS;  // Fallback when no profile is active
     bool mirror = true;
 
     if (_profiles) {
@@ -659,6 +660,7 @@ void MenuController::handleSessionStart() {
             timeOnMs = profile->timeOnMs;
             timeOffMs = profile->timeOffMs;
             jitterPercent = profile->jitterPercent;
+            numFingers = profile->numFingers;
             mirror = profile->mirrorPattern;
 
             if (strcmp(profile->patternType, "rndp") == 0) {
@@ -874,9 +876,13 @@ void MenuController::handleCalibrateBuzz(const char params[][PARAM_BUFFER_SIZE],
     int intensity = atoi(params[1]);
     int duration = atoi(params[2]);
 
-    // Validate ranges
-    if (finger < 0 || finger > 7) {
-        sendError("Invalid finger index (0-7)");
+    // Validate ranges. Indices 0..MAX_ACTUATORS-1 are local; the rest map to
+    // the SECONDARY glove (4-finger boards: 0-7, 5-finger boards: 0-9).
+    constexpr int maxFingerIndex = 2 * MAX_ACTUATORS - 1;
+    if (finger < 0 || finger > maxFingerIndex) {
+        char msg[40];
+        snprintf(msg, sizeof(msg), "Invalid finger index (0-%d)", maxFingerIndex);
+        sendError(msg);
         return;
     }
     if (intensity < 0 || intensity > 100) {
@@ -972,7 +978,7 @@ void MenuController::handleRestart() {
         _restartCallback();
     } else {
         // Use NVIC system reset
-        NVIC_SystemReset();
+        platformSystemReset();
     }
 }
 

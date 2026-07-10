@@ -82,6 +82,19 @@ uint32_t hiresClockRead32() {
     return NRF_TIMER4->CC[5];
 }
 
+#elif defined(BOARD_PENTABUZZER_ESP32S3) && !defined(NATIVE_TEST_BUILD)
+
+// esp_timer is a free-running 64-bit 1MHz counter, always available - no
+// crystal request or watchdog needed. The low 32 bits wrap every ~71.6 min;
+// getMicros()'s overflow tracking handles the wrap.
+
+#include "esp_timer.h"
+
+bool hiresClockBegin() { return true; }
+bool hiresClockIsRunning() { return true; }
+void hiresClockEnsureHfclk() {}  // nRF-only HFXO watchdog; nothing to re-assert
+uint32_t hiresClockRead32() { return (uint32_t)esp_timer_get_time(); }
+
 #else  // Native test build: inert stubs; getMicros() keeps using mocked micros()
 
 bool hiresClockBegin() { return false; }

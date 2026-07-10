@@ -197,7 +197,7 @@ TherapyEngine::TherapyEngine() :
     _timeOnMs(100.0f),
     _timeOffMs(67.0f),
     _jitterPercent(0.0f),
-    _numFingers(4),
+    _numFingers(MAX_ACTUATORS),
     _mirrorPattern(false),
     _amplitudeMin(100),
     _amplitudeMax(100),
@@ -231,6 +231,50 @@ TherapyEngine::TherapyEngine() :
     // Initialize frequencies to default (250 Hz per v1 ACTUATOR_FREQUENCY)
     for (uint8_t i = 0; i < MAX_ACTUATORS; i++) {
         _currentFrequency[i] = 250;
+    }
+    // Identity finger map: patterns use all fingers until told otherwise
+    _fingerMapCount = MAX_ACTUATORS;
+    for (uint8_t i = 0; i < MAX_ACTUATORS; i++) {
+        _fingerMap[i] = i;
+    }
+}
+
+void TherapyEngine::setActiveFingers(const uint8_t* fingers, uint8_t count) {
+    bool valid = (fingers != nullptr) && (count >= 1) && (count <= MAX_ACTUATORS);
+    if (valid) {
+        uint8_t seen = 0;
+        for (uint8_t i = 0; i < count; i++) {
+            if (fingers[i] >= MAX_ACTUATORS || (seen & (1u << fingers[i]))) {
+                valid = false;  // out of range or duplicate
+                break;
+            }
+            seen |= static_cast<uint8_t>(1u << fingers[i]);
+        }
+    }
+    if (!valid) {
+        _fingerMapCount = MAX_ACTUATORS;
+        for (uint8_t i = 0; i < MAX_ACTUATORS; i++) {
+            _fingerMap[i] = i;
+        }
+        return;
+    }
+    _fingerMapCount = count;
+    for (uint8_t i = 0; i < count; i++) {
+        _fingerMap[i] = fingers[i];
+    }
+}
+
+void TherapyEngine::remapPatternFingers(Pattern& pattern) {
+    // Pattern sequences are permutations of 0.._numFingers-1 (slot indices);
+    // map them onto physical fingers so a missing motor is skipped entirely.
+    // _numFingers <= _fingerMapCount is enforced by startSession.
+    for (uint8_t i = 0; i < pattern.numFingers; i++) {
+        if (pattern.primarySequence[i] < _fingerMapCount) {
+            pattern.primarySequence[i] = _fingerMap[pattern.primarySequence[i]];
+        }
+        if (pattern.secondarySequence[i] < _fingerMapCount) {
+            pattern.secondarySequence[i] = _fingerMap[pattern.secondarySequence[i]];
+        }
     }
 }
 
@@ -312,7 +356,8 @@ void TherapyEngine::startSession(
     _timeOnMs = timeOnMs;
     _timeOffMs = timeOffMs;
     _jitterPercent = jitterPercent;
-    _numFingers = numFingers;
+    // Never more fingers than the active (physically present) set
+    _numFingers = (numFingers < _fingerMapCount) ? numFingers : _fingerMapCount;
     _mirrorPattern = mirrorPattern;
     _amplitudeMin = amplitudeMin;
     _amplitudeMax = amplitudeMax;
@@ -481,6 +526,8 @@ void TherapyEngine::generateNextPattern() {
             break;
     }
 
+    remapPatternFingers(_currentPattern);
+
     // Reset pattern execution state
     _patternIndex = 0;
     _activationStartTime = 0;
@@ -513,8 +560,10 @@ void TherapyEngine::applyFrequencyRandomization() {
     uint16_t range = _frequencyMax - _frequencyMin;
     uint16_t steps = range / 5;
 
-    // Apply randomized frequency to each finger's motor
-    for (uint8_t finger = 0; finger < _numFingers; finger++) {
+    // Apply randomized frequency to each finger's motor (all MAX_ACTUATORS:
+    // physical finger indices can exceed _numFingers when the finger map
+    // skips a missing motor)
+    for (uint8_t finger = 0; finger < MAX_ACTUATORS; finger++) {
         // Generate random frequency in 5 Hz steps (matching v1 behavior)
         uint16_t freq = _frequencyMin + static_cast<uint16_t>(random(0, steps + 1) * 5);
         _currentFrequency[finger] = freq;
@@ -531,7 +580,7 @@ void TherapyEngine::applyFrequencyRandomization() {
 // =============================================================================
 
 Macrocycle TherapyEngine::generateMacrocycle() {
-    // Generate 3 patterns × 4 fingers = 12 events
+    // Generate 3 patterns × numFingers events (12 at 4 fingers, 15 at 5)
     // Each event has a delta time relative to baseTime
 
     Macrocycle mc;
@@ -561,11 +610,16 @@ Macrocycle TherapyEngine::generateMacrocycle() {
                 break;
         }
 
-        // Apply frequency randomization if enabled
+        remapPatternFingers(pattern);
+
+        // Apply frequency randomization if enabled. Covers all MAX_ACTUATORS
+        // slots (not just _numFingers): events look frequency up by PHYSICAL
+        // finger, which can exceed _numFingers when the finger map skips a
+        // missing motor.
         if (_frequencyRandomization) {
             uint16_t range = _frequencyMax - _frequencyMin;
             uint16_t steps = range / 5;
-            for (uint8_t finger = 0; finger < _numFingers; finger++) {
+            for (uint8_t finger = 0; finger < MAX_ACTUATORS; finger++) {
                 _currentFrequency[finger] = _frequencyMin + static_cast<uint16_t>(random(0, steps + 1) * 5);
             }
         }

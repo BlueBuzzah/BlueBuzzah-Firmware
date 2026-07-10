@@ -86,7 +86,11 @@ bool HapticController::begin() {
     }
 
     // Initialize I2C at 400kHz
+#if defined(BOARD_PENTABUZZER_ESP32S3)
+    Wire.begin(SDA_PIN_OVERRIDE, SCL_PIN_OVERRIDE);
+#else
     Wire.begin();
+#endif
     Wire.setClock(I2C_FREQUENCY);
 
     // Initialize TCA9548A multiplexer
@@ -142,8 +146,9 @@ bool HapticController::initializeFinger(uint8_t finger) {
             continue;
         }
 
-        // Apply initialization delay for I2C stabilization
-        delay(I2C_INIT_DELAY_MS);
+        // Apply initialization delay for I2C stabilization (channel 4 has the
+        // longest PCB trace and needs extra settling time)
+        delay(finger == 4 ? I2C_INIT_DELAY_CH4_MS : I2C_INIT_DELAY_MS);
 
         // Configure for LRA + RTP mode
         configureDRV2605(_drv[finger]);
@@ -193,6 +198,340 @@ void HapticController::configureDRV2605(Adafruit_DRV2605& drv) {
 
     // 6. Initialize RTP value to 0 (motor off)
     drv.setRealtimeValue(0);
+}
+
+// DRV2605 FEEDBACK register and its N_ERM_LRA bit: set by configureDRV2605
+// (LRA mode) and cleared by a chip reset, so it doubles as a reset canary.
+constexpr uint8_t DRV_REG_FEEDBACK = 0x1A;
+constexpr uint8_t DRV_FB_N_ERM_LRA = 0x80;
+
+uint8_t HapticController::verifyAndHeal() {
+    // A DRV2605 that lost VDD (VBat brownout: sagging/absent/miswired
+    // battery) comes back at POR defaults - standby, ERM mode - and then
+    // silently ignores RTP drive.
+    //
+    // Latency budget: probes ONE finger per call (round-robin, ~200us with
+    // the I2C mutex held) so the periodic cost never approaches the sync
+    // protocol's microsecond regime. Full coverage every MAX_ACTUATORS
+    // calls. Only on a detected reset does the (~1ms worst-case) all-chip
+    // reconfigure run - the motors are dead at that point, so its mutex
+    // hold cannot disturb any activation that would have produced motion.
+    //
+    // NOTE: the round-robin static assumes single-task use. Both callers
+    // (macrocycle-start callback, deferred-queue executor) run in the main
+    // loop task; keep it that way.
+    static uint8_t nextFinger = 0;
+    uint8_t healed = 0;
+
+    I2CMutexLock lock(_i2cMutex);
+    if (!lock.acquired()) {
+        return 0;  // Bus busy (motor task mid-activation) - probe next cycle
+    }
+
+    uint8_t probe = nextFinger;
+    nextFinger = static_cast<uint8_t>((nextFinger + 1) % MAX_ACTUATORS);
+    if (!_fingerEnabled[probe] || !selectChannel(probe)) return 0;
+    bool wasReset = (_drv[probe].readRegister8(DRV_REG_FEEDBACK) & DRV_FB_N_ERM_LRA) == 0;
+    closeChannels();
+    if (!wasReset) return 0;
+
+    Serial.printf("[FAULT] DRV2605 F%u reset detected (VBat brownout?) - reconfiguring all\n", probe);
+    for (uint8_t f = 0; f < MAX_ACTUATORS; f++) {
+        if (!_fingerEnabled[f]) continue;
+        if (!selectChannel(f)) continue;
+        if ((_drv[f].readRegister8(DRV_REG_FEEDBACK) & DRV_FB_N_ERM_LRA) == 0) {
+            configureDRV2605(_drv[f]);
+            _drv[f].setRealtimeValue(0);
+            healed++;
+        }
+        closeChannels();
+    }
+    return healed;
+}
+
+void HapticController::diagRegs(const char* tag) {
+    if (!_fingerEnabled[0]) return;
+    I2CMutexLock lock(_i2cMutex);
+    if (!lock.acquired()) {
+        Serial.printf("[DIAG:%s] bus busy, register dump skipped\n", tag);
+        return;
+    }
+    selectChannel(0);
+    Serial.printf("[DIAG:%s] F0 regs: STATUS=0x%02X MODE=0x%02X RTP=0x%02X FB=0x%02X "
+                  "CTRL3=0x%02X ODC=0x%02X OLP=0x%02X\n", tag,
+                  _drv[0].readRegister8(0x00), _drv[0].readRegister8(0x01),
+                  _drv[0].readRegister8(0x02), _drv[0].readRegister8(DRV_REG_FEEDBACK),
+                  _drv[0].readRegister8(0x1D), _drv[0].readRegister8(0x17),
+                  _drv[0].readRegister8(0x20));
+    closeChannels();
+}
+
+void HapticController::diagDriveOne(uint8_t finger) {
+    if (finger >= MAX_ACTUATORS || !_fingerEnabled[finger]) {
+        Serial.printf("[DIAG] F%u invalid or not enabled\n", finger);
+        return;
+    }
+    {
+        I2CMutexLock lock(_i2cMutex);
+        if (!lock.acquired()) {
+            Serial.println(F("[DIAG] bus busy, test aborted"));
+            return;
+        }
+        selectChannel(finger);
+        configureDRV2605(_drv[finger]);
+        _drv[finger].setRealtimeValue(127);
+        closeChannels();  // RTP keeps driving; the mux only routes I2C
+    }
+#if defined(BOARD_PENTABUZZER_ESP32S3)
+    Serial.printf("[DIAG] >>> DRIVING F%u (silk port %u) at full amplitude for 2s <<<\n",
+                  finger, MOTOR_SILK_PORT(finger));
+#else
+    Serial.printf("[DIAG] >>> DRIVING F%u at full amplitude for 2s <<<\n", finger);
+#endif
+    delay(2000);
+    uint8_t fb = 0;
+    {
+        // SAFETY: stop the motor even if the mutex is contended - same
+        // proceed-anyway policy as emergencyStop()
+        I2CMutexLock lock(_i2cMutex);
+        selectChannel(finger);
+        _drv[finger].setRealtimeValue(0);
+        fb = _drv[finger].readRegister8(DRV_REG_FEEDBACK);
+        closeChannels();
+    }
+    Serial.printf("[DIAG] F%u done (FB=0x%02X%s)\n", finger, fb,
+                  (fb & DRV_FB_N_ERM_LRA) ? "" : "  *** CHIP RESET - supply dipped");
+}
+
+void HapticController::diagSweep() {
+    // Assembly-QA sweep: buzz each channel alone at full amplitude, and
+    // check afterward whether any DRV2605 reverted to POR defaults
+    // (FEEDBACK bit7 lost => chip power-cycled => VBat sagged below UVLO,
+    // e.g. missing/discharged/miswired battery).
+    //
+    // NOTE: the DRV2605's built-in load diagnostics (MODE=0x07) are NOT used
+    // here - their pass/fail verdict assumes closed-loop operation and is
+    // meaningless with our open-loop LRA configuration. The operator feeling
+    // each buzz is the actuator test; the register canary is the supply test.
+    diagRegs("pre");
+
+    // Canary = first enabled finger: reading a disabled/absent chip would
+    // false-positive as "reset" on every line
+    int8_t canary = -1;
+    for (uint8_t f = 0; f < MAX_ACTUATORS; f++) {
+        if (_fingerEnabled[f]) { canary = static_cast<int8_t>(f); break; }
+    }
+    if (canary < 0) {
+        Serial.println(F("[DIAG] no enabled fingers - nothing to test"));
+        return;
+    }
+
+    {
+        I2CMutexLock lock(_i2cMutex);
+        if (!lock.acquired()) {
+            Serial.println(F("[DIAG] bus busy, sweep aborted"));
+            return;
+        }
+        for (uint8_t f = 0; f < MAX_ACTUATORS; f++) {
+            if (!_fingerEnabled[f]) continue;
+            selectChannel(f);
+            configureDRV2605(_drv[f]);
+            _drv[f].setRealtimeValue(0);
+            closeChannels();
+        }
+    }
+    diagRegs("reconfig");
+
+    // 600ms buzz + 250ms gap = ~4.3s for 5 channels: stays under the 6s
+    // glove keepalive timeout so a mid-session sweep can't drop the link.
+    // The I2C mutex is held only around the transactions, never across the
+    // delays, so a concurrent activation is delayed by microseconds at most.
+    for (uint8_t f = 0; f < MAX_ACTUATORS; f++) {
+        if (!_fingerEnabled[f]) continue;
+#if defined(BOARD_PENTABUZZER_ESP32S3)
+        Serial.printf("[DIAG] buzzing F%u (silk port %u), RTP=127, 600ms...\n",
+                      f, MOTOR_SILK_PORT(f));
+#else
+        Serial.printf("[DIAG] buzzing F%u, RTP=127, 600ms...\n", f);
+#endif
+        {
+            I2CMutexLock lock(_i2cMutex);
+            if (!lock.acquired()) {
+                Serial.println(F("[DIAG] bus busy, sweep aborted"));
+                return;
+            }
+            selectChannel(f);
+            _drv[f].setRealtimeValue(127);
+            closeChannels();  // RTP keeps driving; the mux only routes I2C
+        }
+        delay(600);
+        uint8_t fbSelf = 0;
+        uint8_t fbCanary = 0;
+        {
+            // SAFETY: stop the motor even if the mutex is contended - same
+            // proceed-anyway policy as emergencyStop()
+            I2CMutexLock lock(_i2cMutex);
+            selectChannel(f);
+            _drv[f].setRealtimeValue(0);
+            fbSelf = _drv[f].readRegister8(DRV_REG_FEEDBACK);
+            closeChannels();
+            if (static_cast<uint8_t>(canary) != f) {
+                selectChannel(static_cast<uint8_t>(canary));
+                fbCanary = _drv[canary].readRegister8(DRV_REG_FEEDBACK);
+                closeChannels();
+            } else {
+                fbCanary = fbSelf;
+            }
+        }
+        bool reset = ((fbSelf & DRV_FB_N_ERM_LRA) == 0) || ((fbCanary & DRV_FB_N_ERM_LRA) == 0);
+        Serial.printf("[DIAG]   F%u: self FB=0x%02X | canary FB=0x%02X%s\n",
+                      f, fbSelf, fbCanary,
+                      reset ? "  *** CHIP RESET - supply dipped (check battery)" : "");
+        if (reset) {
+            // Re-heal so the remaining channels still get a valid test
+            I2CMutexLock lock(_i2cMutex);
+            for (uint8_t h = 0; h < MAX_ACTUATORS; h++) {
+                if (!_fingerEnabled[h]) continue;
+                selectChannel(h);
+                configureDRV2605(_drv[h]);
+                _drv[h].setRealtimeValue(0);
+                closeChannels();
+            }
+        }
+        delay(250);
+    }
+    Serial.println(F("[DIAG] sweep done"));
+}
+
+uint8_t HapticController::probeMotorPresence() {
+    // Presence detection via LRA auto-calibration (MODE=0x07): calibration
+    // locks onto the LRA's resonance using measured back-EMF, which requires
+    // a physically attached motor - an empty JST cannot converge and fails
+    // (DIAG_RESULT set). The ERM diagnostics route (MODE=0x06) was tried
+    // first and rejected: its back-EMF stage expects a DC motor, so attached
+    // LRAs failed identically to open ports (STATUS=0xEC on everything).
+    // Full LRA open-loop config is restored afterward; the cal coefficients
+    // it writes are ignored in open-loop mode. Populated motors buzz
+    // noticeably (~0.5s each) during the probe.
+    constexpr uint8_t DRV_STATUS_DIAG_RESULT = 0x08;  // STATUS bit3: 1 = cal failed
+    constexpr uint32_t DIAG_GO_TIMEOUT_MS = 2000;     // auto-cal can run ~1.2s
+    constexpr uint8_t DRV_FB_LRA_DEFAULTS = 0xB6;     // LRA + stock brake/loop/BEMF gains
+    constexpr uint8_t DRV_RATEDV_2V0_250HZ = 0x50;    // ~2.0Vrms rated at 250Hz LRA
+    constexpr uint8_t DRV_ODCLAMP_2V5 = 118;          // 2.5V clamp (matches run config)
+    constexpr uint8_t DRV_CTRL1_DRIVETIME_250HZ = 0x8F;  // DRIVE_TIME=15 = half-period of 250Hz
+    constexpr uint8_t DRV_REG_CONTROL3 = 0x1D;
+    constexpr uint8_t DRV_CTRL3_POR = 0xA0;           // closed-loop for calibration
+
+    uint8_t mask = 0;
+    _lastProbeDipped = false;
+    Serial.println(F("[DIAG] Motor presence probe (all ports)"));
+    for (uint8_t f = 0; f < MAX_ACTUATORS; f++) {
+#if defined(BOARD_PENTABUZZER_ESP32S3)
+        Serial.printf("[DIAG]   silk port %u (F%u): ", MOTOR_SILK_PORT(f), f);
+#else
+        Serial.printf("[DIAG]   F%u: ", f);
+#endif
+        if (!_fingerEnabled[f]) {
+            Serial.println(F("NO DRIVER (init failed - check battery power)"));
+            continue;
+        }
+
+        // Kick off diagnostics in ERM mode
+        {
+            I2CMutexLock lock(_i2cMutex);
+            if (!lock.acquired()) {
+                Serial.println(F("bus busy, probe aborted"));
+                return getMotorPresentCount();  // keep previous result
+            }
+            if (!selectChannel(f)) {
+                Serial.println(F("MUX SELECT FAILED"));
+                continue;
+            }
+            // Configure for closed-loop LRA auto-calibration
+            _drv[f].writeRegister8(DRV_REG_FEEDBACK, DRV_FB_LRA_DEFAULTS);
+            _drv[f].writeRegister8(DRV2605_REG_RATEDV, DRV_RATEDV_2V0_250HZ);
+            _drv[f].writeRegister8(DRV2605_REG_CLAMPV, DRV_ODCLAMP_2V5);
+            _drv[f].writeRegister8(DRV2605_REG_CONTROL1, DRV_CTRL1_DRIVETIME_250HZ);
+            _drv[f].writeRegister8(DRV_REG_CONTROL3, DRV_CTRL3_POR);
+            _drv[f].writeRegister8(DRV2605_REG_MODE, DRV2605_MODE_AUTOCAL);
+            _drv[f].writeRegister8(DRV2605_REG_GO, 1);
+            closeChannels();
+        }
+
+        // Poll until GO self-clears (mutex per transaction, never across delays)
+        bool done = false;
+        bool dipped = false;
+        uint8_t status = 0;
+        uint32_t start = millis();
+        while (millis() - start < DIAG_GO_TIMEOUT_MS) {
+            delay(10);
+            I2CMutexLock lock(_i2cMutex);
+            if (!lock.acquired()) continue;
+            selectChannel(f);
+            if ((_drv[f].readRegister8(DRV2605_REG_GO) & 0x01) == 0) {
+                status = _drv[f].readRegister8(DRV2605_REG_STATUS);
+                // Brownout canary: we wrote FEEDBACK with N_ERM_LRA (bit7)
+                // set before GO; if it reads back clear the chip hit POR
+                // mid-cal (supply dip, e.g. USB-only power) and STATUS is
+                // POR garbage that would fake a PRESENT verdict
+                uint8_t fb = _drv[f].readRegister8(DRV_REG_FEEDBACK);
+                dipped = (fb & DRV_FB_N_ERM_LRA) == 0;
+                done = true;
+            }
+            closeChannels();
+            if (done) break;
+        }
+
+        // Restore LRA open-loop config regardless of outcome (proceed-anyway
+        // on mutex timeout - same policy as emergencyStop)
+        {
+            I2CMutexLock lock(_i2cMutex);
+            selectChannel(f);
+            configureDRV2605(_drv[f]);
+            _drv[f].setRealtimeValue(0);
+            closeChannels();
+        }
+
+        if (!done) {
+            // Discriminate "diag never finished" (GO=0x01, STATUS has valid
+            // device ID 0xE0 in bits 7:5) from "I2C reads failing" (0xFF/0x00)
+            uint8_t rawGo = 0xAA, rawStatus = 0xAA, rawFb = 0xAA;
+            {
+                I2CMutexLock lock(_i2cMutex);
+                if (lock.acquired() && selectChannel(f)) {
+                    rawGo = _drv[f].readRegister8(DRV2605_REG_GO);
+                    rawStatus = _drv[f].readRegister8(DRV2605_REG_STATUS);
+                    rawFb = _drv[f].readRegister8(DRV_REG_FEEDBACK);
+                    closeChannels();
+                }
+            }
+            Serial.printf("PROBE TIMEOUT (raw GO=0x%02X STATUS=0x%02X FB=0x%02X)\n",
+                          rawGo, rawStatus, rawFb);
+            if (rawFb != 0xAA && (rawFb & DRV_FB_N_ERM_LRA) == 0) {
+                _lastProbeDipped = true;
+            }
+        } else if (dipped) {
+            Serial.printf("SUPPLY DIP (chip reset mid-probe, STATUS=0x%02X) - check battery\n",
+                          status);
+            _lastProbeDipped = true;
+        } else if (status & DRV_STATUS_DIAG_RESULT) {
+            Serial.printf("NO MOTOR (open load, STATUS=0x%02X)\n", status);
+        } else {
+            Serial.printf("MOTOR PRESENT (STATUS=0x%02X)\n", status);
+            mask |= static_cast<uint8_t>(1u << f);
+        }
+    }
+    if (_lastProbeDipped) {
+        // Supply sagged under cal drive: every verdict this pass is suspect.
+        // Keep the previous mask instead of committing garbage.
+        Serial.println(F("[DIAG] presence probe UNRELIABLE (supply dip) - results discarded"));
+        return getMotorPresentCount();
+    }
+    _motorPresentMask = mask;
+    uint8_t count = getMotorPresentCount();
+    Serial.printf("[DIAG] presence probe done: %u/%u motors detected\n",
+                  count, MAX_ACTUATORS);
+    return count;
 }
 
 bool HapticController::selectChannel(uint8_t finger) {
@@ -506,6 +845,7 @@ BatteryMonitor::BatteryMonitor() : _initialized(false) {
 }
 
 bool BatteryMonitor::begin() {
+#if BATTERY_SENSE_ENABLED
     // Configure ADC resolution
     analogReadResolution(ADC_RESOLUTION_BITS);
 
@@ -518,6 +858,13 @@ bool BatteryMonitor::begin() {
     Serial.println(F("[INFO] Battery monitor initialized"));
 
     return _initialized;
+#else
+    // No battery-sense hardware on this board: report a permanently healthy
+    // pack so state/LED logic never triggers low/critical battery handling
+    _initialized = true;
+    Serial.println(F("[INFO] Battery monitoring not available on this board"));
+    return true;
+#endif
 }
 
 float BatteryMonitor::readVoltage() {
@@ -525,6 +872,7 @@ float BatteryMonitor::readVoltage() {
         return 0.0f;
     }
 
+#if BATTERY_SENSE_ENABLED
     // Take multiple samples and average for stability
     uint32_t total = 0;
     for (uint8_t i = 0; i < BATTERY_SAMPLE_COUNT; i++) {
@@ -539,6 +887,9 @@ float BatteryMonitor::readVoltage() {
     float voltage = (average / (float)ADC_MAX_VALUE) * ADC_REFERENCE_VOLTAGE * BATTERY_VOLTAGE_DIVIDER;
 
     return voltage;
+#else
+    return 4.2f;  // Healthy sentinel (100%); no hardware to read
+#endif
 }
 
 uint8_t BatteryMonitor::getPercentage(float voltage) {
@@ -711,6 +1062,17 @@ void LEDController::update() {
             break;
         }
 
+        case LEDPattern::DOUBLE_BLINK: {
+            // Two 150ms blinks, then a 650ms pause (1250ms cycle)
+            uint32_t t = (now - _patternStartTime) % 1250;
+            bool on = (t < 150) || (t >= 300 && t < 450);
+            if (on != _blinkState) {
+                _blinkState = on;
+                applyColor(on ? _baseColor : Colors::OFF);
+            }
+            break;
+        }
+
         case LEDPattern::OFF:
             // LED is off, nothing to update
             break;
@@ -744,6 +1106,7 @@ void LEDController::setPattern(const RGBColor& color, LEDPattern pattern) {
         case LEDPattern::BLINK_SLOW:
         case LEDPattern::BLINK_URGENT:
         case LEDPattern::BLINK_CONNECT:
+        case LEDPattern::DOUBLE_BLINK:
             // Start in ON state
             applyColor(color);
             break;

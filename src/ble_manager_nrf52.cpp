@@ -7,6 +7,7 @@
 
 #include "ble_manager.h"
 #include "sync_protocol.h"  // For getMicros() - overflow-safe 64-bit timestamp
+#include "platform.h"
 
 // =============================================================================
 // GLOBAL INSTANCE (needed for static callbacks)
@@ -133,6 +134,11 @@ bool BLEManager::begin(DeviceRole role, const char* deviceName) {
     if (role == DeviceRole::PRIMARY) {
         // PRIMARY is peripheral - phone/SECONDARY connect to us
         Bluefruit.Periph.setConnInterval(connIntervalMin, connIntervalMax);
+        // Without this, Bluefruit's PPCP keeps its 2s default supervision
+        // timeout - BLE_TIMEOUT_MS never took effect on this backend (the
+        // NimBLE backend passes it explicitly), so the two boards detected
+        // link loss on different clocks
+        Bluefruit.Periph.setConnSupervisionTimeoutMS(BLE_TIMEOUT_MS);
     } else {
         // SECONDARY is central - we connect to PRIMARY
         // Without this, SoftDevice uses default ~30-50ms interval,
@@ -319,7 +325,10 @@ bool BLEManager::startScanning(const char* targetName) {
     // - UUID may be in scan response, which filters don't check
     // Solution: Use RSSI filter + name matching in callback
     Bluefruit.Scanner.clearFilters();
-    Bluefruit.Scanner.filterRssi(-80);  // Only nearby devices
+    // -90, not -80: glove-to-glove RSSI swings 10-20dB with hand/body position;
+    // at -80 the peer can silently vanish from scans ("never connects").
+    // Keep a floor only as callback-flood protection.
+    Bluefruit.Scanner.filterRssi(-90);
 
     // Use longer interval with shorter window to reduce CPU load
     Bluefruit.Scanner.setInterval(320, 60);  // 200ms interval, 37.5ms window (19% duty)
@@ -466,41 +475,43 @@ bool BLEManager::enqueueTx(uint16_t connHandle, const char* message) {
         return false;
     }
 
-    // Claim a slot atomically: capacity check, pending flag, tail advance and count
-    // increment must be one unit to prevent a BLE-task enqueue racing the main-loop
-    // enqueue or processTxQueue between the check and the claim.
-    uint32_t primask = __get_PRIMASK();
-    __disable_irq();
+    // Reserve a slot atomically: capacity check, tail advance and count
+    // increment must be one unit to prevent a BLE-task enqueue racing the
+    // main-loop enqueue or processTxQueue between the check and the claim.
+    // The slot is NOT published (pending=true) until its fields are filled -
+    // the same reserve-fill-publish protocol as the NimBLE backend, where the
+    // consumer runs on another core. Single-core here, but keeping the two
+    // queue implementations identical beats relying on a priority argument.
+    PLATFORM_CRITICAL_ENTER();
 
     if (_txCount >= TX_QUEUE_SIZE) {
-        __set_PRIMASK(primask);
+        PLATFORM_CRITICAL_EXIT();
         Serial.println(F("[BLE] TX queue full, dropping message"));
         return false;
     }
 
     TxEntry* entry = &_txQueue[_txTail];
     if (entry->pending) {
-        __set_PRIMASK(primask);
+        PLATFORM_CRITICAL_EXIT();
         Serial.println(F("[BLE] TX queue corruption detected"));
         return false;
     }
 
-    entry->pending = true;
     _txTail = static_cast<uint8_t>((_txTail + 1) % TX_QUEUE_SIZE);
     _txCount++;
 
-    __set_PRIMASK(primask);
+    PLATFORM_CRITICAL_EXIT();
 
-    // Fill entry fields after releasing the critical section — safe because
-    // processTxQueue only consumes from _txHead and cannot reach this slot
-    // until it advances past all earlier entries. length and bytesSent must
-    // be set before returning.
     memcpy(entry->data, message, msgLen);
     entry->data[msgLen] = EOT_CHAR;
     entry->length = static_cast<uint16_t>(msgLen + 1);
     entry->bytesSent = 0;
     entry->connHandle = connHandle;
     entry->stampKind = TxStampKind::NONE;
+
+    // Publish: all field stores must be visible before pending reads true
+    platformMemoryBarrier();
+    entry->pending = true;
 
     return true;
 }
@@ -510,15 +521,14 @@ void BLEManager::processTxQueue() {
     for (uint8_t i = 0; i < 4 && _txCount > 0; i++) {
         TxEntry* entry = &_txQueue[_txHead];
         if (!entry->pending) {
-            // Advance head if slot is empty (shouldn't happen). pending is
-            // already false here; only the head/count bookkeeping needs fixing.
-            uint32_t primask = __get_PRIMASK();
-            __disable_irq();
-            _txHead = static_cast<uint8_t>((_txHead + 1) % TX_QUEUE_SIZE);
-            _txCount--;
-            __set_PRIMASK(primask);
-            continue;
+            // Reserved but not yet published: the producer is still filling
+            // the entry. Retry next update() - advancing head here would
+            // free a slot mid-fill.
+            break;
         }
+        // Acquire: pending was observed true; ensure the field reads below
+        // see the producer's stores (pairs with the publish barrier)
+        platformMemoryBarrier();
 
         // Late timestamping: serialize sync messages at radio handoff so the
         // embedded T1/T3 reflects when bytes actually reach the SoftDevice.
@@ -542,12 +552,11 @@ void BLEManager::processTxQueue() {
             char msg[128];
             if (!cmd.serialize(msg, sizeof(msg))) {
                 uint32_t seqId = entry->stampSeqId;
-                uint32_t primask = __get_PRIMASK();
-                __disable_irq();
+                PLATFORM_CRITICAL_ENTER();
                 entry->pending = false;
                 _txHead = static_cast<uint8_t>((_txHead + 1) % TX_QUEUE_SIZE);
                 _txCount--;
-                __set_PRIMASK(primask);
+                PLATFORM_CRITICAL_EXIT();
                 Serial.printf("[BLE] ERROR: stamped sync serialize failed seq=%lu\n", (unsigned long)seqId);
                 continue;
             }
@@ -585,12 +594,11 @@ void BLEManager::processTxQueue() {
                 }
 
                 // Mark slot free and advance head
-                uint32_t primask = __get_PRIMASK();
-                __disable_irq();
+                PLATFORM_CRITICAL_ENTER();
                 entry->pending = false;
                 _txHead = static_cast<uint8_t>((_txHead + 1) % TX_QUEUE_SIZE);
                 _txCount--;
-                __set_PRIMASK(primask);
+                PLATFORM_CRITICAL_EXIT();
             }
         } else {
             // Buffer full - stop processing this iteration, will retry next update()
@@ -685,34 +693,27 @@ bool BLEManager::sendPongStamped(uint16_t connHandle, uint32_t seqId, uint64_t t
 
 bool BLEManager::enqueueStamped(uint16_t connHandle, TxStampKind kind, uint32_t seqId,
                                 uint64_t t2, uint64_t anchorUs) {
-    // Claim a slot atomically — same pattern as enqueueTx.
-    uint32_t primask = __get_PRIMASK();
-    __disable_irq();
+    // Reserve-fill-publish, same protocol as enqueueTx.
+    PLATFORM_CRITICAL_ENTER();
 
     if (_txCount >= TX_QUEUE_SIZE) {
-        __set_PRIMASK(primask);
+        PLATFORM_CRITICAL_EXIT();
         Serial.println(F("[BLE] TX queue full, dropping sync message"));
         return false;
     }
 
     TxEntry* entry = &_txQueue[_txTail];
     if (entry->pending) {
-        __set_PRIMASK(primask);
+        PLATFORM_CRITICAL_EXIT();
         Serial.println(F("[BLE] TX queue corruption detected"));
         return false;
     }
 
-    entry->pending = true;
     _txTail = static_cast<uint8_t>((_txTail + 1) % TX_QUEUE_SIZE);
     _txCount++;
 
-    __set_PRIMASK(primask);
+    PLATFORM_CRITICAL_EXIT();
 
-    // Fill stamp fields after releasing the critical section. Safe because:
-    // (a) the consumer (processTxQueue) runs in the loop task (prio 1) and can
-    //     never preempt the BLE task (prio 3), the only other caller of this path;
-    // (b) the fill is straight-line code with no blocking call, so it completes
-    //     before this task yields and the consumer can observe the claimed slot.
     entry->stampKind = kind;
     entry->stampSeqId = seqId;
     entry->stampT2 = t2;
@@ -720,6 +721,10 @@ bool BLEManager::enqueueStamped(uint16_t connHandle, TxStampKind kind, uint32_t 
     entry->length = 0;      // serialized at write time
     entry->bytesSent = 0;
     entry->connHandle = connHandle;
+
+    // Publish: all field stores must be visible before pending reads true
+    platformMemoryBarrier();
+    entry->pending = true;
 
     return true;
 }
@@ -1053,6 +1058,22 @@ void BLEManager::_onCentralConnect(uint16_t connHandle) {
         Serial.println(F("[BLE] ERROR: UART service not found on PRIMARY"));
         Bluefruit.disconnect(connHandle);
         return;
+    }
+
+    // Request BLE_TIMEOUT_MS supervision timeout: Bluefruit's central hardcodes
+    // its 2s default at connect time (no setter), and the central's parameters
+    // govern the link. Keep the negotiated 7.5-10ms interval range - the
+    // requestConnectionParameter() helper would force min == max.
+    {
+        ble_gap_conn_params_t connParams = {
+            .min_conn_interval = static_cast<uint16_t>((BLE_INTERVAL_MIN_MS * 1000) / 1250),
+            .max_conn_interval = (BLE_INTERVAL_MAX_MS * 1000) / 1250,
+            .slave_latency = 0,
+            .conn_sup_timeout = BLE_TIMEOUT_MS / 10,
+        };
+        if (sd_ble_gap_conn_param_update(connHandle, &connParams) != NRF_SUCCESS) {
+            Serial.println(F("[BLE] WARN: supervision timeout update request failed"));
+        }
     }
 
     // Query and log connection interval
