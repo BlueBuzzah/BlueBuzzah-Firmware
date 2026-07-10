@@ -15,7 +15,7 @@ Arduino C++ firmware for vibrotactile haptic feedback gloves with BLE connectivi
 | **Motors**       | 4 (index-pinky)                   | 5 (adds thumb on mux channel 4)    |
 | **BLE stack**    | Bluefruit / SoftDevice            | NimBLE-Arduino 2.x                 |
 | **Flash**        | 1 MB (~800KB for user code)       | 8 MB (dedicated LittleFS partition) |
-| **Battery sense**| VBAT divider on ADC               | none (`BATTERY_SENSE_ENABLED 0`, reports healthy) |
+| **Battery sense**| VBAT divider on ADC               | DRV2605 VBAT register (0x21) over I2C |
 | **Power switch** | none                              | slide switch + deep sleep          |
 | **Framework**    | Arduino via PlatformIO            | Arduino via PlatformIO (pioarduino, IDF 5) |
 | **C++ Standard** | C++20 (gnu++20)                   | C++20 (gnu++20)                    |
