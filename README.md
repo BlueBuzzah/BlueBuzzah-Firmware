@@ -13,7 +13,7 @@ BlueBuzzah is a medical device research platform implementing vibrotactile Coord
 
 One codebase builds for two hardware generations, selected by PlatformIO environment:
 
-| | BlueBuzzah (v2) | PentaBuzzer (v3) |
+| | BlueBuzzah v2 | BlueBuzzah v3 |
 | --- | --- | --- |
 | **Board** | Adafruit Feather nRF52840 Express | Seeed XIAO ESP32-S3 |
 | **Environment** | `adafruit_feather_nrf52840` | `pentabuzzer_esp32s3` |
@@ -37,7 +37,7 @@ One codebase builds for two hardware generations, selected by PlatformIO environ
 
 ### Prerequisites
 
-- BlueBuzzah or PentaBuzzer hardware ([hardware specs](https://github.com/BlueBuzzah/BlueBuzzah-Hardware))
+- BlueBuzzah hardware ([hardware specs](https://github.com/BlueBuzzah/BlueBuzzah-Hardware))
 - [VS Code](https://code.visualstudio.com/)
 - [PlatformIO IDE extension](https://marketplace.visualstudio.com/items?itemName=platformio.platformio-ide)
 
@@ -69,7 +69,7 @@ Role is persisted to flash and survives power cycles.
 ```bash
 python deploy.py --list                     # List connected devices
 pio run -e adafruit_feather_nrf52840        # Build (BlueBuzzah v2)
-pio run -e pentabuzzer_esp32s3              # Build (PentaBuzzer v3)
+pio run -e pentabuzzer_esp32s3              # Build (BlueBuzzah v3)
 pio run -e <env> -t upload                  # Flash firmware
 pio device monitor                          # Open serial monitor (115200 baud)
 # In monitor: GET_ROLE     # Query current role
@@ -155,7 +155,7 @@ Board-specific values (pins, actuator count, battery availability) live in `incl
 - **Orange LED**: Battery low (< 3.4V) - charge soon
 - **Rapid red flashing**: Battery critical (< 3.3V) - charge immediately
 
-### PentaBuzzer Power
+### BlueBuzzah v3 Power
 
 - Motors require a battery connected - they cannot run on USB power alone (DRV2605 drivers are powered from VBat)
 

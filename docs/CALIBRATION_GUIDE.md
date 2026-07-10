@@ -16,7 +16,7 @@
 6. [Intensity Mapping](#intensity-mapping)
 7. [Clinical Tuning Guidelines](#clinical-tuning-guidelines)
 8. [Troubleshooting](#troubleshooting)
-9. [Assembly QA (PentaBuzzer)](#assembly-qa-pentabuzzer)
+9. [Assembly QA (BlueBuzzah v3)](#assembly-qa-bluebuzzah-v3)
 
 ---
 
@@ -29,7 +29,7 @@ This document uses the following device role terminology:
 Both devices run identical firmware and advertise as "BlueBuzzah". Role is determined by `settings.json` configuration.
 
 > **Motor counts:** the examples in this guide use the 4-finger BlueBuzzah
-> (8 motors per pair, finger indices 0–7). The 5-finger PentaBuzzer adds a
+> (8 motors per pair, finger indices 0–7). The 5-finger BlueBuzzah v3 adds a
 > thumb: 10 motors per pair, local indices 0–4 and remote 5–9. Firmware
 > validation derives from `MAX_ACTUATORS` (`0..2*MAX_ACTUATORS-1`), so adjust
 > the index ranges and totals below accordingly. The phone app must use the
@@ -953,7 +953,7 @@ Update this document when:
 **Clinical Protocol Version:** 1.0
 **Reviewed By:** Clinical Engineering Team
 
-## Assembly QA (PentaBuzzer)
+## Assembly QA (BlueBuzzah v3)
 
 Serial commands (115200 baud) for validating motor wiring on a freshly
 assembled glove. Stop any running session first (they do it automatically).

@@ -73,9 +73,9 @@ The BlueBuzzah boot sequence establishes the necessary BLE connections between P
 
 ---
 
-## Hardware Initialization Phase (PentaBuzzer Only, Both Roles, Before BLE)
+## Hardware Initialization Phase (BlueBuzzah v3 Only, Both Roles, Before BLE)
 
-On PentaBuzzer boards, before either role's BLE sequence begins,
+On BlueBuzzah v3 boards, before either role's BLE sequence begins,
 `initializeHardware()` runs a **motor presence probe**: each DRV2605 channel
 performs LRA auto-calibration, which can only converge with a motor
 physically attached. Expect each populated motor to buzz ~0.5s at every boot
