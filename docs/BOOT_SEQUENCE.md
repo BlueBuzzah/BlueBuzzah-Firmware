@@ -73,13 +73,15 @@ The BlueBuzzah boot sequence establishes the necessary BLE connections between P
 
 ---
 
-## Hardware Initialization Phase (Both Roles, Before BLE)
+## Hardware Initialization Phase (PentaBuzzer Only, Both Roles, Before BLE)
 
-Before either role's BLE sequence begins, `initializeHardware()` runs a
-**motor presence probe**: each DRV2605 channel performs LRA auto-calibration,
-which can only converge with a motor physically attached. Expect each
-populated motor to buzz ~0.5s at every boot (~2-5s total) — this doubles as a
-power-on self-test.
+On PentaBuzzer boards, before either role's BLE sequence begins,
+`initializeHardware()` runs a **motor presence probe**: each DRV2605 channel
+performs LRA auto-calibration, which can only converge with a motor
+physically attached. Expect each populated motor to buzz ~0.5s at every boot
+(~2-5s total) — this doubles as a power-on self-test. On nRF52 (v2) gloves
+the probe never runs at boot; it is available on demand via the
+`MOTOR_PRESENT` serial command.
 
 - Detected motors feed the therapy engine's active-finger map: patterns are
   generated over present fingers only, and those indices reach SECONDARY

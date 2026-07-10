@@ -1125,9 +1125,14 @@ bool initializeHardware()
         Serial.printf("Haptic Controller: %d/%d fingers enabled\n",
                       haptic.getEnabledCount(), MAX_ACTUATORS);
 
+#if defined(BOARD_PENTABUZZER_ESP32S3)
         // Boot QA: detect unpopulated/broken motor ports (each present motor
         // buzzes ~0.5s during the auto-cal probe). NOTE: needs battery power;
         // a USB-only boot can misreport, but motors can't run then anyway.
+        // PentaBuzzer only: the auto-cal presence method is validated on this
+        // board's LRAs. On nRF v2 gloves the probe stays available via the
+        // MOTOR_PRESENT serial command but never runs (or restricts therapy
+        // patterns) automatically at boot.
         constexpr uint8_t MIN_REQUIRED_MOTORS = 4;
         uint8_t motorsPresent = haptic.probeMotorPresence();
         if (haptic.lastProbeSupplyDipped())
@@ -1151,6 +1156,7 @@ bool initializeHardware()
             }
         }
         applyMotorPresenceToTherapy();
+#endif // BOARD_PENTABUZZER_ESP32S3
 
         // Create high-priority motor task for preemptive activations
         // Priority 4 (HIGHEST) ensures motor timing isn't blocked by Serial/BLE
