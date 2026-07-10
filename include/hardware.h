@@ -96,6 +96,26 @@ public:
     uint8_t verifyAndHeal();
 
     /**
+     * @brief Read a burst of DRV2605 VBAT register (0x21) samples.
+     * The drivers run directly from VBat, so with the chip active (EN high,
+     * out of standby - true from init until deep sleep) the register is a
+     * battery voltmeter: VDD = raw * 5.6V / 255. Reads from the first
+     * enabled finger. Non-blocking: returns 0 samples if the I2C bus is
+     * busy (motor task mid-activation) or the chip's reset canary shows a
+     * POR (brownout -> standby -> register invalid; verifyAndHeal recovers).
+     * Callers should skip sampling while motors are active (load sag).
+     * @param out Buffer for raw samples
+     * @param maxSamples Buffer capacity
+     * @return Number of samples written (0 = no valid reading this call)
+     */
+    uint8_t readVBatBurst(uint8_t* out, uint8_t maxSamples);
+
+    /**
+     * @brief Whether any motor is currently being driven
+     */
+    bool anyMotorActive() const;
+
+    /**
      * @brief Assembly-QA sweep (serial MOTOR_DIAG): buzz each channel alone
      * at full amplitude and report per-chip reset canaries (a chip reverting
      * to POR defaults means the supply dipped, e.g. bad/missing battery).

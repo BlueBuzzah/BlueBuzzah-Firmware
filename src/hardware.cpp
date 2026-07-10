@@ -249,6 +249,51 @@ uint8_t HapticController::verifyAndHeal() {
     return healed;
 }
 
+uint8_t HapticController::readVBatBurst(uint8_t* out, uint8_t maxSamples) {
+    constexpr uint8_t DRV_REG_VBAT = 0x21;
+
+    if (out == nullptr || maxSamples == 0) {
+        return 0;
+    }
+
+    I2CMutexLock lock(_i2cMutex);
+    if (!lock.acquired()) {
+        return 0;  // Bus busy (motor task mid-activation) - caller keeps last estimate
+    }
+
+    // First enabled finger is the voltmeter; all chips share the VBat rail
+    uint8_t finger = MAX_ACTUATORS;
+    for (uint8_t f = 0; f < MAX_ACTUATORS; f++) {
+        if (_fingerEnabled[f]) { finger = f; break; }
+    }
+    if (finger == MAX_ACTUATORS || !selectChannel(finger)) {
+        return 0;
+    }
+
+    // POR canary: a brownout resets the chip into standby, where VBAT is
+    // invalid. Skip this burst; verifyAndHeal() reconfigures the chip.
+    if ((_drv[finger].readRegister8(DRV_REG_FEEDBACK) & DRV_FB_N_ERM_LRA) == 0) {
+        closeChannels();
+        return 0;
+    }
+
+    uint8_t count = 0;
+    for (uint8_t i = 0; i < maxSamples; i++) {
+        out[count++] = _drv[finger].readRegister8(DRV_REG_VBAT);
+    }
+    closeChannels();
+    return count;
+}
+
+bool HapticController::anyMotorActive() const {
+    for (uint8_t f = 0; f < MAX_ACTUATORS; f++) {
+        if (_fingerActive[f]) {
+            return true;
+        }
+    }
+    return false;
+}
+
 void HapticController::diagRegs(const char* tag) {
     if (!_fingerEnabled[0]) return;
     I2CMutexLock lock(_i2cMutex);
