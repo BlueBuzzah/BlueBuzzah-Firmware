@@ -432,15 +432,17 @@ private:
         uint16_t length;
         uint16_t bytesSent;
         uint16_t connHandle;
-        bool pending;
+        volatile bool pending;   // publish flag: set last (after fields + barrier)
         TxStampKind stampKind;   // NONE for normal messages
         uint32_t stampSeqId;     // sequence id for deferred serialization
         uint64_t stampT2;        // PONG only: T2 echoed back
         uint64_t stampAnchor;    // PONG only: rx anchor timestamp (0 = absent)
     };
 
-    // Accessed from BLE task (enqueue via rx callbacks) and main loop (enqueue + processTxQueue);
-    // all head/tail/count mutations PRIMASK-guarded.
+    // Accessed from BLE task (enqueue via rx callbacks) and main loop (enqueue +
+    // processTxQueue) - concurrently across cores on ESP32-S3. Head/tail/count
+    // mutations are critical-section-guarded; entries use reserve-fill-publish
+    // (pending set last, behind a memory barrier).
     TxEntry _txQueue[TX_QUEUE_SIZE];
     uint8_t _txHead;
     uint8_t _txTail;

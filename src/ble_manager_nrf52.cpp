@@ -470,9 +470,13 @@ bool BLEManager::enqueueTx(uint16_t connHandle, const char* message) {
         return false;
     }
 
-    // Claim a slot atomically: capacity check, pending flag, tail advance and count
-    // increment must be one unit to prevent a BLE-task enqueue racing the main-loop
-    // enqueue or processTxQueue between the check and the claim.
+    // Reserve a slot atomically: capacity check, tail advance and count
+    // increment must be one unit to prevent a BLE-task enqueue racing the
+    // main-loop enqueue or processTxQueue between the check and the claim.
+    // The slot is NOT published (pending=true) until its fields are filled -
+    // the same reserve-fill-publish protocol as the NimBLE backend, where the
+    // consumer runs on another core. Single-core here, but keeping the two
+    // queue implementations identical beats relying on a priority argument.
     PLATFORM_CRITICAL_ENTER();
 
     if (_txCount >= TX_QUEUE_SIZE) {
@@ -488,22 +492,21 @@ bool BLEManager::enqueueTx(uint16_t connHandle, const char* message) {
         return false;
     }
 
-    entry->pending = true;
     _txTail = static_cast<uint8_t>((_txTail + 1) % TX_QUEUE_SIZE);
     _txCount++;
 
     PLATFORM_CRITICAL_EXIT();
 
-    // Fill entry fields after releasing the critical section — safe because
-    // processTxQueue only consumes from _txHead and cannot reach this slot
-    // until it advances past all earlier entries. length and bytesSent must
-    // be set before returning.
     memcpy(entry->data, message, msgLen);
     entry->data[msgLen] = EOT_CHAR;
     entry->length = static_cast<uint16_t>(msgLen + 1);
     entry->bytesSent = 0;
     entry->connHandle = connHandle;
     entry->stampKind = TxStampKind::NONE;
+
+    // Publish: all field stores must be visible before pending reads true
+    platformMemoryBarrier();
+    entry->pending = true;
 
     return true;
 }
@@ -513,14 +516,14 @@ void BLEManager::processTxQueue() {
     for (uint8_t i = 0; i < 4 && _txCount > 0; i++) {
         TxEntry* entry = &_txQueue[_txHead];
         if (!entry->pending) {
-            // Advance head if slot is empty (shouldn't happen). pending is
-            // already false here; only the head/count bookkeeping needs fixing.
-            PLATFORM_CRITICAL_ENTER();
-            _txHead = static_cast<uint8_t>((_txHead + 1) % TX_QUEUE_SIZE);
-            _txCount--;
-            PLATFORM_CRITICAL_EXIT();
-            continue;
+            // Reserved but not yet published: the producer is still filling
+            // the entry. Retry next update() - advancing head here would
+            // free a slot mid-fill.
+            break;
         }
+        // Acquire: pending was observed true; ensure the field reads below
+        // see the producer's stores (pairs with the publish barrier)
+        platformMemoryBarrier();
 
         // Late timestamping: serialize sync messages at radio handoff so the
         // embedded T1/T3 reflects when bytes actually reach the SoftDevice.
@@ -685,7 +688,7 @@ bool BLEManager::sendPongStamped(uint16_t connHandle, uint32_t seqId, uint64_t t
 
 bool BLEManager::enqueueStamped(uint16_t connHandle, TxStampKind kind, uint32_t seqId,
                                 uint64_t t2, uint64_t anchorUs) {
-    // Claim a slot atomically — same pattern as enqueueTx.
+    // Reserve-fill-publish, same protocol as enqueueTx.
     PLATFORM_CRITICAL_ENTER();
 
     if (_txCount >= TX_QUEUE_SIZE) {
@@ -701,17 +704,11 @@ bool BLEManager::enqueueStamped(uint16_t connHandle, TxStampKind kind, uint32_t 
         return false;
     }
 
-    entry->pending = true;
     _txTail = static_cast<uint8_t>((_txTail + 1) % TX_QUEUE_SIZE);
     _txCount++;
 
     PLATFORM_CRITICAL_EXIT();
 
-    // Fill stamp fields after releasing the critical section. Safe because:
-    // (a) the consumer (processTxQueue) runs in the loop task (prio 1) and can
-    //     never preempt the BLE task (prio 3), the only other caller of this path;
-    // (b) the fill is straight-line code with no blocking call, so it completes
-    //     before this task yields and the consumer can observe the claimed slot.
     entry->stampKind = kind;
     entry->stampSeqId = seqId;
     entry->stampT2 = t2;
@@ -719,6 +716,10 @@ bool BLEManager::enqueueStamped(uint16_t connHandle, TxStampKind kind, uint32_t 
     entry->length = 0;      // serialized at write time
     entry->bytesSent = 0;
     entry->connHandle = connHandle;
+
+    // Publish: all field stores must be visible before pending reads true
+    platformMemoryBarrier();
+    entry->pending = true;
 
     return true;
 }

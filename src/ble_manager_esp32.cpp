@@ -579,7 +579,11 @@ bool BLEManager::enqueueTx(uint16_t connHandle, const char* message) {
         return false;
     }
 
-    // Claim a slot atomically - same protocol as the Bluefruit backend
+    // Reserve a slot atomically (tail/count advance), but do NOT publish it
+    // yet: the NimBLE host task (core 0) and the loop-task consumer (core 1)
+    // run truly concurrently, so the fields must be fully written before
+    // pending flips true - publish-before-fill would let processTxQueue read
+    // a half-filled entry.
     PLATFORM_CRITICAL_ENTER();
 
     if (_txCount >= TX_QUEUE_SIZE) {
@@ -595,7 +599,6 @@ bool BLEManager::enqueueTx(uint16_t connHandle, const char* message) {
         return false;
     }
 
-    entry->pending = true;
     _txTail = static_cast<uint8_t>((_txTail + 1) % TX_QUEUE_SIZE);
     _txCount++;
 
@@ -608,6 +611,10 @@ bool BLEManager::enqueueTx(uint16_t connHandle, const char* message) {
     entry->connHandle = connHandle;
     entry->stampKind = TxStampKind::NONE;
 
+    // Publish: all field stores must be visible before pending reads true
+    platformMemoryBarrier();
+    entry->pending = true;
+
     return true;
 }
 
@@ -616,12 +623,14 @@ void BLEManager::processTxQueue() {
     for (uint8_t i = 0; i < 4 && _txCount > 0; i++) {
         TxEntry* entry = &_txQueue[_txHead];
         if (!entry->pending) {
-            PLATFORM_CRITICAL_ENTER();
-            _txHead = static_cast<uint8_t>((_txHead + 1) % TX_QUEUE_SIZE);
-            _txCount--;
-            PLATFORM_CRITICAL_EXIT();
-            continue;
+            // Reserved but not yet published: the producer (possibly on the
+            // other core) is still filling the entry. Retry next update() -
+            // advancing head here would free a slot mid-fill.
+            break;
         }
+        // Acquire: pending was observed true; ensure the field reads below
+        // see the producer's stores (pairs with the publish barrier)
+        platformMemoryBarrier();
 
         // Late timestamping: serialize sync messages at radio handoff so the
         // embedded T1/T3 reflects when bytes are handed to the stack.
@@ -779,7 +788,8 @@ bool BLEManager::sendPongStamped(uint16_t connHandle, uint32_t seqId, uint64_t t
 
 bool BLEManager::enqueueStamped(uint16_t connHandle, TxStampKind kind, uint32_t seqId,
                                 uint64_t t2, uint64_t anchorUs) {
-    // Claim a slot atomically - same pattern as enqueueTx.
+    // Reserve-fill-publish, same protocol as enqueueTx (see the cross-core
+    // rationale there).
     PLATFORM_CRITICAL_ENTER();
 
     if (_txCount >= TX_QUEUE_SIZE) {
@@ -795,7 +805,6 @@ bool BLEManager::enqueueStamped(uint16_t connHandle, TxStampKind kind, uint32_t 
         return false;
     }
 
-    entry->pending = true;
     _txTail = static_cast<uint8_t>((_txTail + 1) % TX_QUEUE_SIZE);
     _txCount++;
 
@@ -808,6 +817,10 @@ bool BLEManager::enqueueStamped(uint16_t connHandle, TxStampKind kind, uint32_t 
     entry->length = 0;      // serialized at write time
     entry->bytesSent = 0;
     entry->connHandle = connHandle;
+
+    // Publish: all field stores must be visible before pending reads true
+    platformMemoryBarrier();
+    entry->pending = true;
 
     return true;
 }
