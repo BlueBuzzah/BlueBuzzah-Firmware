@@ -128,6 +128,10 @@ static volatile uint64_t g_pendingFlashTime = 0;
 static volatile bool g_phyChangeDetected = false;
 static volatile uint8_t g_newPhy = 0;  // 1=1M, 2=2M, 4=Coded
 
+// When CONNECTION_LOST was entered (set in onStateChange, which can run in
+// BLE-callback context; consumed by loop() to demote to IDLE after timeout)
+static volatile uint32_t g_connectionLostAt = 0;
+
 // Finger names for display, indexed by finger id (thumb only used at 5 actuators)
 const char *FINGER_NAMES[] = {"Index", "Middle", "Ring", "Pinky", "Thumb"};
 
@@ -884,6 +888,17 @@ void loop()
         }
     }
     wasTherapyRunning = isTherapyRunning;
+
+    // Demote CONNECTION_LOST (purple blink) to IDLE (blue breathe) once the
+    // peer has been gone for CONNECTION_LOST_TIMEOUT_MS. Non-blocking
+    // replacement for the old 3x2s delay() retry loop; scanning/advertising
+    // keeps running and a reconnect from IDLE still lands in READY.
+    if (stateMachine.getCurrentState() == TherapyState::CONNECTION_LOST &&
+        millis() - g_connectionLostAt >= CONNECTION_LOST_TIMEOUT_MS)
+    {
+        Serial.println(F("[RECOVERY] No reconnect within timeout - returning to IDLE"));
+        stateMachine.transition(StateTrigger::RECONNECT_FAILED);
+    }
 
     // SECONDARY: Check for keepalive timeout during active connection
     if (deviceRole == DeviceRole::SECONDARY && ble.isPrimaryConnected())
@@ -2715,6 +2730,9 @@ void onStateChange(const StateTransition &transition)
         break;
 
     case TherapyState::CONNECTION_LOST:
+        // Start the purple-indication window; loop() demotes to IDLE after
+        // CONNECTION_LOST_TIMEOUT_MS if the peer hasn't reconnected
+        g_connectionLostAt = millis();
         led.setPattern(Colors::PURPLE, LEDPattern::BLINK_CONNECT);
         // Stop therapy on connection loss
         if (therapy.isRunning())
@@ -2803,8 +2821,10 @@ void handleKeepaliveTimeout()
     // is off at this point so nothing could reconnect during it, and delay()
     // in loop() context starves serial commands, BLE housekeeping, and
     // deferred work for 6s (broke deploy.py role configuration).
+    // The FSM stays in CONNECTION_LOST (purple blink) - the same end state as
+    // the BLE-level disconnect path - until loop() demotes it to IDLE after
+    // CONNECTION_LOST_TIMEOUT_MS without a reconnect.
     Serial.println(F("[RECOVERY] Connection lost - resuming scan for PRIMARY"));
-    stateMachine.transition(StateTrigger::RECONNECT_FAILED);
     lastKeepaliveReceived = 0; // Reset for next session
     ble.startScanning(BLE_NAME);
 }

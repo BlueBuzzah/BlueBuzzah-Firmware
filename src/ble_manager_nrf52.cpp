@@ -134,6 +134,11 @@ bool BLEManager::begin(DeviceRole role, const char* deviceName) {
     if (role == DeviceRole::PRIMARY) {
         // PRIMARY is peripheral - phone/SECONDARY connect to us
         Bluefruit.Periph.setConnInterval(connIntervalMin, connIntervalMax);
+        // Without this, Bluefruit's PPCP keeps its 2s default supervision
+        // timeout - BLE_TIMEOUT_MS never took effect on this backend (the
+        // NimBLE backend passes it explicitly), so the two boards detected
+        // link loss on different clocks
+        Bluefruit.Periph.setConnSupervisionTimeoutMS(BLE_TIMEOUT_MS);
     } else {
         // SECONDARY is central - we connect to PRIMARY
         // Without this, SoftDevice uses default ~30-50ms interval,
@@ -1053,6 +1058,22 @@ void BLEManager::_onCentralConnect(uint16_t connHandle) {
         Serial.println(F("[BLE] ERROR: UART service not found on PRIMARY"));
         Bluefruit.disconnect(connHandle);
         return;
+    }
+
+    // Request BLE_TIMEOUT_MS supervision timeout: Bluefruit's central hardcodes
+    // its 2s default at connect time (no setter), and the central's parameters
+    // govern the link. Keep the negotiated 7.5-10ms interval range - the
+    // requestConnectionParameter() helper would force min == max.
+    {
+        ble_gap_conn_params_t connParams = {
+            .min_conn_interval = static_cast<uint16_t>((BLE_INTERVAL_MIN_MS * 1000) / 1250),
+            .max_conn_interval = (BLE_INTERVAL_MAX_MS * 1000) / 1250,
+            .slave_latency = 0,
+            .conn_sup_timeout = BLE_TIMEOUT_MS / 10,
+        };
+        if (sd_ble_gap_conn_param_update(connHandle, &connParams) != NRF_SUCCESS) {
+            Serial.println(F("[BLE] WARN: supervision timeout update request failed"));
+        }
     }
 
     // Query and log connection interval

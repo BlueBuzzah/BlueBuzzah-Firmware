@@ -137,6 +137,11 @@
 #define KEEPALIVE_INTERVAL_MS 1000   // 1 second between PING messages (unified keepalive + clock sync)
 #define KEEPALIVE_TIMEOUT_MS 6000    // 6 seconds = 6 missed keepalives
 
+// How long the CONNECTION_LOST state (purple blink) is shown after losing the
+// peer before demoting to IDLE (blue breathe). Scanning/advertising for the
+// peer continues either way; this only affects the LED indication.
+#define CONNECTION_LOST_TIMEOUT_MS 30000
+
 // Battery monitoring
 #define BATTERY_CHECK_INTERVAL_MS 60000  // 60 seconds between checks
 
