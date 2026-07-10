@@ -1245,6 +1245,12 @@ void HapticController::configureDRV2605(Adafruit_DRV2605& driver) {
 
 ### Battery Monitor
 
+Battery sensing has two backends selected by the `BATTERY_SENSE_ADC` build flag, one per board. Both feed the same LiPo discharge curve, the same thresholds (3.4V low / 3.3V critical), and the same reporting paths (serial log, BLE `BATP`/`BATS`, state machine).
+
+#### ADC (BlueBuzzah, nRF52840)
+
+The VBAT divider is sampled directly via `analogRead`:
+
 ```cpp
 class BatteryMonitor {
 public:
@@ -1264,6 +1270,15 @@ public:
     }
 };
 ```
+
+#### DRV2605 VBAT Register (PentaBuzzer, ESP32-S3)
+
+PentaBuzzer has no battery ADC. All five DRV2605 drivers run directly off the VBat rail, so each chip's VBAT monitor register (`0x21`, `VDD = raw * 5.6V / 255`, ~22 mV resolution) doubles as the battery voltmeter — no extra hardware required.
+
+- **Sampled only while idle.** An LRA pulse sags VBat by hundreds of millivolts, so the register is only read when `anyMotorActive()` is false; the last idle estimate is held during therapy.
+- **Burst + median + EMA.** Each read is a 9-sample burst (`VBAT_BURST_SAMPLES`) reduced by median to reject sag/noise outliers, then folded into an EMA across bursts for a stable running estimate.
+- **Brownout handling.** A chip that browned out reverts to standby, where the VBAT register is invalid. The FEEDBACK-register (`0x1A`) POR canary bit detects this and skips the burst until `verifyAndHeal()` reconfigures the chip.
+- **USB-charging artifact.** While USB-charging, the reading is elevated (~4.2V) — the same artifact the v2 ADC divider exhibits, preserved deliberately for parity between backends.
 
 ## Design Patterns
 
