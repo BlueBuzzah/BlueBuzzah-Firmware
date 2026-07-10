@@ -35,10 +35,12 @@ jobs:
         run: pip install --upgrade platformio
 
       - name: Display build info
+        env:
+          VERSION: ${{ github.event.release.tag_name }}
         run: |
           echo "Building BlueBuzzah Release"
           echo "==========================="
-          echo "Release: ${{ github.event.release.tag_name }}"
+          echo "Release: $VERSION"
           echo "Commit: ${{ github.sha }}"
           echo "PlatformIO: $(pio --version)"
           echo ""
@@ -52,10 +54,11 @@ jobs:
         run: pio run -e pentabuzzer_esp32s3
 
       - name: Rename firmware archives
+        env:
+          VERSION: ${{ github.event.release.tag_name }}
         run: |
-          # Sanitize version (replace whitespace with underscores)
-          VERSION="${{ github.event.release.tag_name }}"
-          VERSION_SAFE=$(echo "$VERSION" | xargs | tr ' ' '_')
+          # Sanitize version: keep a filename/glob-safe charset only
+          VERSION_SAFE=$(echo "$VERSION" | tr ' ' '_' | tr -cd 'A-Za-z0-9._-')
           SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
           ARCHIVE_NAME="BlueBuzzah-Firmware-${VERSION_SAFE}-${SHORT_SHA}"
           ARCHIVE_NAME_V3="BlueBuzzah-Firmware-v3-${VERSION_SAFE}-${SHORT_SHA}"
@@ -89,10 +92,12 @@ jobs:
             ${{ env.ARCHIVE_NAME_V3 }}.zip
 
       - name: Build summary
+        env:
+          VERSION: ${{ github.event.release.tag_name }}
         run: |
           echo "## Release Build Complete" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Version:** ${{ github.event.release.tag_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Version:** $VERSION" >> $GITHUB_STEP_SUMMARY
           echo "**Commit:** ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
           echo "**Archive (BlueBuzzah nRF52840):** ${{ env.ARCHIVE_NAME }}.zip" >> $GITHUB_STEP_SUMMARY
           echo "**Archive (BlueBuzzah v3 ESP32-S3):** ${{ env.ARCHIVE_NAME_V3 }}.zip" >> $GITHUB_STEP_SUMMARY
@@ -100,4 +105,6 @@ jobs:
           echo "### Build Provenance" >> $GITHUB_STEP_SUMMARY
           echo "Attestation ID: \`${{ steps.attest.outputs.attestation-id }}\`" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Verify with: \`gh attestation verify <archive>.zip -o ${{ github.repository_owner }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "Verify with:" >> $GITHUB_STEP_SUMMARY
+          echo "\`gh attestation verify ${{ env.ARCHIVE_NAME }}.zip -o ${{ github.repository_owner }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "\`gh attestation verify ${{ env.ARCHIVE_NAME_V3 }}.zip -o ${{ github.repository_owner }}\`" >> $GITHUB_STEP_SUMMARY

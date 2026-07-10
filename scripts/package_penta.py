@@ -11,6 +11,11 @@ not drift from what PlatformIO actually flashes.
 
 Version stamped into the manifest comes from $BLUEBUZZAH_VERSION (set by CI
 from the release tag), defaulting to "0.0.0-dev" for local builds.
+
+Note: as an AddPostAction on the .bin target, this only reruns when the
+application image is rebuilt. An up-to-date incremental build leaves a stale
+firmware-v3.zip in place — harmless locally, but CI must never restore
+.pio/build/ from cache (it doesn't; only ~/.platformio/.cache is cached).
 """
 
 import hashlib
@@ -38,6 +43,16 @@ def _flash_freq(board):
     return "%dm" % (int(raw) // 1_000_000)
 
 
+def _flash_mode(board):
+    # Mirror the platform builder's _get_board_flash_mode: esptool is invoked
+    # with "dio" for qio/qout boards ("dout" for OPI memory) even though the
+    # board config says otherwise. Record what esptool must be given.
+    if board.get("build.arduino.memory_type", "") in ("opi_opi", "opi_qspi"):
+        return "dout"
+    mode = board.get("build.flash_mode", "dio")
+    return "dio" if mode in ("qio", "qout") else mode
+
+
 def package(source, target, env):
     build_dir = env.subst("$BUILD_DIR")
     board = env.BoardConfig()
@@ -50,16 +65,23 @@ def package(source, target, env):
     parts.append((app_offset, os.path.join(build_dir, env.subst("${PROGNAME}") + ".bin")))
     parts.sort(key=lambda p: int(p[0], 0))
 
+    # A short or ambiguous archive would brick-risk the updater's flash pass.
+    names = [os.path.basename(image) for _, image in parts]
+    if len(parts) < 4 or len(set(names)) != len(names):
+        raise SystemExit("package_penta: unexpected flash image set: %s" % names)
+
+    version = "_".join(os.environ.get("BLUEBUZZAH_VERSION", "0.0.0-dev").split())
+
     manifest = {
         "manifest_version": MANIFEST_VERSION,
         "board": env.subst("$PIOENV"),
         "chip": board.get("build.mcu", "esp32s3"),
         "flash": {
-            "mode": board.get("build.flash_mode", "dio"),
+            "mode": _flash_mode(board),
             "freq": _flash_freq(board),
             "size": board.get("upload.flash_size", "8MB"),
         },
-        "application_version": os.environ.get("BLUEBUZZAH_VERSION", "0.0.0-dev"),
+        "application_version": version,
         "parts": [
             {"path": os.path.basename(image), "offset": offset, "sha256": _sha256(image)}
             for offset, image in parts
