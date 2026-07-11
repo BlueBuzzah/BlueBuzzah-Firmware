@@ -101,10 +101,14 @@ public:
      * The drivers run directly from VBat, so with the chip active (EN high,
      * out of standby - true from init until deep sleep) the register is a
      * battery voltmeter: VDD = raw * 5.6V / 255. Reads from the first
-     * enabled finger. Non-blocking: returns 0 samples if the I2C bus is
-     * busy (motor task mid-activation) or the chip's reset canary shows a
-     * POR (brownout -> standby -> register invalid; verifyAndHeal recovers).
-     * Callers should skip sampling while motors are active (load sag).
+     * enabled finger. Each sample takes its own short-lived I2C mutex (a few
+     * ms timeout) and is preceded by an anyMotorActive() check, so the burst
+     * is abandoned (returns 0) if a motor activates mid-burst (driven LRA
+     * sags VBat and would defeat the median), if the bus stays busy, or if
+     * the chip's reset canary shows a POR (brownout -> standby -> register
+     * invalid; verifyAndHeal recovers). Bounded short waits only - never a
+     * long block. Returns either 0 or exactly maxSamples, never a partial
+     * count.
      * @param out Buffer for raw samples
      * @param maxSamples Buffer capacity
      * @return Number of samples written (0 = no valid reading this call)

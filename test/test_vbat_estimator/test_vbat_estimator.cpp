@@ -63,6 +63,24 @@ void test_ema_smooths_subsequent_bursts() {
     TEST_ASSERT_FLOAT_WITHIN(0.005f, 3.426f, v);
 }
 
+void test_even_count_median_uses_upper_middle() {
+    VbatEstimator e;
+    // sorted {100,100,200,200}; sorted[4/2] = sorted[2] = 200
+    uint8_t burst[] = {100, 200, 200, 100};
+    float v = e.addBurst(burst, 4);
+    TEST_ASSERT_FLOAT_WITHIN(0.005f, 4.392f, v);
+}
+
+void test_truncates_past_max_burst() {
+    VbatEstimator e;
+    // First 16 samples are 100, last 4 (indices 16-19) are 255 and must be ignored
+    uint8_t burst[20] = {100, 100, 100, 100, 100, 100, 100, 100,
+                          100, 100, 100, 100, 100, 100, 100, 100,
+                          255, 255, 255, 255};
+    float v = e.addBurst(burst, 20);
+    TEST_ASSERT_FLOAT_WITHIN(0.005f, 2.196f, v);
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_raw_to_volts_zero);
@@ -73,5 +91,7 @@ int main(int, char**) {
     RUN_TEST(test_empty_burst_keeps_previous_estimate);
     RUN_TEST(test_empty_burst_on_fresh_estimator_reports_no_reading);
     RUN_TEST(test_ema_smooths_subsequent_bursts);
+    RUN_TEST(test_even_count_median_uses_upper_middle);
+    RUN_TEST(test_truncates_past_max_burst);
     return UNITY_END();
 }

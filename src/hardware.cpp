@@ -256,33 +256,49 @@ uint8_t HapticController::readVBatBurst(uint8_t* out, uint8_t maxSamples) {
         return 0;
     }
 
-    I2CMutexLock lock(_i2cMutex);
-    if (!lock.acquired()) {
-        return 0;  // Bus busy (motor task mid-activation) - caller keeps last estimate
-    }
-
-    // First enabled finger is the voltmeter; all chips share the VBat rail
+    // First enabled finger is the voltmeter; all chips share the VBat rail.
+    // _fingerEnabled is set at init, so this scan needs no lock.
     uint8_t finger = MAX_ACTUATORS;
     for (uint8_t f = 0; f < MAX_ACTUATORS; f++) {
         if (_fingerEnabled[f]) { finger = f; break; }
     }
-    if (finger == MAX_ACTUATORS || !selectChannel(finger)) {
+    if (finger == MAX_ACTUATORS) {
         return 0;
     }
 
-    // POR canary: a brownout resets the chip into standby, where VBAT is
-    // invalid. Skip this burst; verifyAndHeal() reconfigures the chip.
-    if ((_drv[finger].readRegister8(DRV_REG_FEEDBACK) & DRV_FB_N_ERM_LRA) == 0) {
-        closeChannels();
-        return 0;
-    }
-
-    uint8_t count = 0;
+    // Each sample takes its own short-lived lock so a pending motor
+    // activation is delayed at most one mux-select-read-close, not the
+    // whole burst. anyMotorActive() is rechecked every iteration because a
+    // motor can start mid-burst (driven LRA sags VBat).
     for (uint8_t i = 0; i < maxSamples; i++) {
-        out[count++] = _drv[finger].readRegister8(DRV_REG_VBAT);
+        if (anyMotorActive()) {
+            return 0;  // Motor became active mid-burst - discard the partial burst
+        }
+
+        I2CMutexLock lock(_i2cMutex, pdMS_TO_TICKS(5));
+        if (!lock.acquired()) {
+            return 0;  // Bus busy - discard the partial burst
+        }
+
+        if (!selectChannel(finger)) {
+            return 0;
+        }
+
+        if (i == 0) {
+            // POR canary: a brownout resets the chip into standby, where VBAT
+            // is invalid. Abort the burst; verifyAndHeal() reconfigures the
+            // chip. Only checked on the first sample's transaction.
+            if ((_drv[finger].readRegister8(DRV_REG_FEEDBACK) & DRV_FB_N_ERM_LRA) == 0) {
+                closeChannels();
+                return 0;
+            }
+        }
+
+        out[i] = _drv[finger].readRegister8(DRV_REG_VBAT);
+        closeChannels();
     }
-    closeChannels();
-    return count;
+
+    return maxSamples;
 }
 
 bool HapticController::anyMotorActive() const {
