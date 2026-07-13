@@ -65,7 +65,8 @@ enum class TherapyState {
     ERROR_RECOVERABLE,
     ERROR_FATAL,
     SECONDARY_CONNECTING,
-    SECONDARY_CONNECTED
+    SECONDARY_CONNECTED,
+    LOW_BATTERY
 };
 
 // Mock StateTrigger enum
@@ -168,9 +169,10 @@ public:
     bool setParameter(const char*, const char*) { return true; }
 };
 
-// Mock isActiveState (mirrors include/types.h; mock enum has no LOW_BATTERY)
+// Mock isActiveState (mirrors include/types.h)
 bool isActiveState(TherapyState state) {
-    return state == TherapyState::RUNNING || state == TherapyState::PAUSED;
+    return state == TherapyState::RUNNING || state == TherapyState::PAUSED ||
+           state == TherapyState::LOW_BATTERY;
 }
 
 // Mock helper function
@@ -1392,6 +1394,26 @@ void test_calibrateBuzz_secondary_finger_relayed(void) {
     g_menu->handleCommand("CALIBRATE_STOP");
 }
 
+void test_calibrateBuzz_secondary_finger_rejected_when_disconnected(void) {
+    // Negative relay path: SECONDARY glove not connected must reject the
+    // relay and must NOT forward CALIB_BUZZ to it.
+    g_menu->handleCommand("CALIBRATE_START");
+    resetSecondaryCapture();
+    resetCapturedResponse();
+    g_menu->setSendToSecondaryCallback(testSendToSecondaryCallback);
+    g_ble->_secondaryConnected = false;
+
+    char cmd[32];
+    snprintf(cmd, sizeof(cmd), "CALIBRATE_BUZZ:%d:80:500", MAX_ACTUATORS);
+    g_menu->handleCommand(cmd);
+
+    TEST_ASSERT_NOT_NULL(strstr(g_lastResponse, "ERROR:Secondary glove not connected"));
+    TEST_ASSERT_EQUAL_INT(0, g_secondaryMessageCount);
+    g_menu->handleCommand("CALIBRATE_STOP");
+
+    g_ble->_secondaryConnected = true;
+}
+
 void test_updateCalibrationBuzz_activates_pending_request_from_loop(void) {
     // calibrationBuzz() (BLE-callback context) must NOT touch the haptic
     // hardware directly; activation only happens once updateCalibrationBuzz()
@@ -1672,6 +1694,17 @@ void test_profileLoad_rejected_while_paused(void) {
     g_stateMachine->_state = TherapyState::IDLE;
 }
 
+void test_profileLoad_rejected_while_low_battery(void) {
+    g_stateMachine->_state = TherapyState::LOW_BATTERY;
+
+    g_menu->handleCommand("PROFILE_LOAD:2");
+
+    TEST_ASSERT_TRUE(strstr(g_lastResponse, "ERROR:Session must be stopped") != nullptr);
+    TEST_ASSERT_EQUAL_INT(0, g_restartCount);
+
+    g_stateMachine->_state = TherapyState::IDLE;
+}
+
 void test_profileLoad_allowed_while_idle(void) {
     g_stateMachine->_state = TherapyState::IDLE;
 
@@ -1757,6 +1790,7 @@ int main(int argc, char **argv) {
     RUN_TEST(test_stopCalibration_sets_calibrating_false);
     RUN_TEST(test_calibrateBuzz_does_not_block);
     RUN_TEST(test_calibrateBuzz_secondary_finger_relayed);
+    RUN_TEST(test_calibrateBuzz_secondary_finger_rejected_when_disconnected);
     RUN_TEST(test_updateCalibrationBuzz_activates_pending_request_from_loop);
     RUN_TEST(test_handleCalibrateStop_cancels_pending_request_before_activation);
 
@@ -1781,6 +1815,7 @@ int main(int argc, char **argv) {
     RUN_TEST(test_handleCommand_cancels_stale_deferred_INFO_on_new_command);
     RUN_TEST(test_profileLoad_rejected_while_running);
     RUN_TEST(test_profileLoad_rejected_while_paused);
+    RUN_TEST(test_profileLoad_rejected_while_low_battery);
     RUN_TEST(test_profileLoad_allowed_while_idle);
 
     return UNITY_END();
