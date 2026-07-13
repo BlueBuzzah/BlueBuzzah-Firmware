@@ -12,6 +12,7 @@
 #include <unity.h>
 #include <Arduino.h>
 #include <cstring>
+#include <cstdlib>
 
 // =============================================================================
 // MOCK DEFINITIONS FOR DEPENDENCIES
@@ -166,6 +167,11 @@ public:
     const TherapyProfile* getCurrentProfile() const { return &_profile; }
     bool setParameter(const char*, const char*) { return true; }
 };
+
+// Mock isActiveState (mirrors include/types.h; mock enum has no LOW_BATTERY)
+bool isActiveState(TherapyState state) {
+    return state == TherapyState::RUNNING || state == TherapyState::PAUSED;
+}
 
 // Mock helper function
 const char* therapyStateToString(TherapyState state) {
@@ -602,6 +608,42 @@ public:
         sendResponse();
     }
 
+    void handleProfileLoad(int profileId) {
+        if (!_profiles) {
+            sendError("Profile manager not available");
+            return;
+        }
+
+        if (_stateMachine && isActiveState(_stateMachine->getCurrentState())) {
+            sendError("Session must be stopped before loading a profile");
+            return;
+        }
+
+        if (!_profiles->loadProfile(profileId)) {
+            sendError("Invalid profile ID");
+            return;
+        }
+
+        if (_therapy) {
+            _therapy->stop();
+        }
+        if (_haptic) {
+            _haptic->emergencyStop();
+        }
+        if (_stateMachine) {
+            _stateMachine->transition(StateTrigger::STOP_SESSION);
+        }
+
+        beginResponse();
+        addResponseLine("STATUS", "REBOOTING");
+        addResponseLine("PROFILE", _profiles->getCurrentProfileName());
+        sendResponse();
+
+        if (_restartCallback) {
+            _restartCallback();
+        }
+    }
+
     /**
      * @brief Handle incoming command and send response via callback
      * @param message Raw command message
@@ -630,6 +672,15 @@ public:
 
         if (strcmp(command, "PING") == 0) {
             handlePing();
+            return true;
+        }
+
+        if (strcmp(command, "PROFILE_LOAD") == 0) {
+            if (paramCount < 1) {
+                sendError("Profile ID required");
+                return false;
+            }
+            handleProfileLoad(atoi(params[0]));
             return true;
         }
 
@@ -1309,6 +1360,37 @@ void test_handleInfo_timeout_returns_zero_with_status() {
     TEST_ASSERT_TRUE(strstr(g_lastResponse, "STATUS:IDLE") != nullptr);
 }
 
+void test_profileLoad_rejected_while_running(void) {
+    g_stateMachine->_state = TherapyState::RUNNING;
+
+    g_menu->handleCommand("PROFILE_LOAD:2");
+
+    TEST_ASSERT_TRUE(strstr(g_lastResponse, "ERROR:Session must be stopped") != nullptr);
+    TEST_ASSERT_EQUAL_INT(0, g_restartCount);
+
+    g_stateMachine->_state = TherapyState::IDLE;
+}
+
+void test_profileLoad_rejected_while_paused(void) {
+    g_stateMachine->_state = TherapyState::PAUSED;
+
+    g_menu->handleCommand("PROFILE_LOAD:2");
+
+    TEST_ASSERT_TRUE(strstr(g_lastResponse, "ERROR:Session must be stopped") != nullptr);
+    TEST_ASSERT_EQUAL_INT(0, g_restartCount);
+
+    g_stateMachine->_state = TherapyState::IDLE;
+}
+
+void test_profileLoad_allowed_while_idle(void) {
+    g_stateMachine->_state = TherapyState::IDLE;
+
+    g_menu->handleCommand("PROFILE_LOAD:1");
+
+    TEST_ASSERT_TRUE(strstr(g_lastResponse, "STATUS:REBOOTING") != nullptr);
+    TEST_ASSERT_EQUAL_INT(1, g_restartCount);
+}
+
 // =============================================================================
 // MAIN
 // =============================================================================
@@ -1401,6 +1483,9 @@ int main(int argc, char **argv) {
     RUN_TEST(test_handleInfo_includes_motors_and_profile);
     RUN_TEST(test_handleBattery_timeout_returns_zero);
     RUN_TEST(test_handleInfo_timeout_returns_zero_with_status);
+    RUN_TEST(test_profileLoad_rejected_while_running);
+    RUN_TEST(test_profileLoad_rejected_while_paused);
+    RUN_TEST(test_profileLoad_allowed_while_idle);
 
     return UNITY_END();
 }

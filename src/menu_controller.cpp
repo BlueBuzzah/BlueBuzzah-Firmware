@@ -533,6 +533,11 @@ void MenuController::handleProfileLoad(const char params[][PARAM_BUFFER_SIZE], u
         return;
     }
 
+    if (_stateMachine && isActiveState(_stateMachine->getCurrentState())) {
+        sendError("Session must be stopped before loading a profile");
+        return;
+    }
+
     int profileId = atoi(params[0]);
     if (!_profiles->loadProfile(static_cast<uint8_t>(profileId))) {
         sendError("Invalid profile ID");
