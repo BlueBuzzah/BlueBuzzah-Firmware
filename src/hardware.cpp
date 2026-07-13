@@ -249,6 +249,10 @@ uint8_t HapticController::verifyAndHeal() {
     return healed;
 }
 
+// A burst larger than the estimator's window would be silently truncated
+static_assert(VBAT_BURST_SAMPLES <= VBAT_MAX_BURST,
+              "VBAT_BURST_SAMPLES exceeds VbatEstimator's burst window");
+
 uint8_t HapticController::readVBatBurst(uint8_t* out, uint8_t maxSamples) {
     constexpr uint8_t DRV_REG_VBAT = 0x21;
 
@@ -302,6 +306,9 @@ uint8_t HapticController::readVBatBurst(uint8_t* out, uint8_t maxSamples) {
 }
 
 bool HapticController::anyMotorActive() const {
+    // Read cross-task without the mutex: plain bool loads are atomic on
+    // Xtensa/Cortex-M, and a stale value only costs one discarded or late
+    // VBAT burst - never a corrupt reading.
     for (uint8_t f = 0; f < MAX_ACTUATORS; f++) {
         if (_fingerActive[f]) {
             return true;

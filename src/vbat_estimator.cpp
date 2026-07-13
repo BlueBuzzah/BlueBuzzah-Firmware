@@ -3,7 +3,6 @@
 // Battery voltage moves over minutes; heavy smoothing costs nothing and
 // tames the register's sample-to-sample noise.
 static constexpr float VBAT_EMA_ALPHA = 0.3f;
-static constexpr size_t VBAT_MAX_BURST = 16;
 
 float vbatRawToVolts(uint8_t raw) {
     return static_cast<float>(raw) * 5.6f / 255.0f;

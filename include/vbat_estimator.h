@@ -17,6 +17,9 @@
 #include <stdint.h>
 #include <stddef.h>
 
+/** Largest burst addBurst() will use; extra samples are silently ignored. */
+constexpr size_t VBAT_MAX_BURST = 16;
+
 /** Convert a DRV2605 VBAT register value to volts (raw * 5.6 / 255). */
 float vbatRawToVolts(uint8_t raw);
 
