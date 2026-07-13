@@ -198,6 +198,16 @@ public:
      */
     bool isCalibrating() const { return _isCalibrating; }
 
+    /**
+     * @brief Start a non-blocking one-shot buzz on a local finger
+     */
+    void calibrationBuzz(uint8_t finger, uint8_t intensity, uint16_t durationMs);
+
+    /**
+     * @brief Deactivate an expired calibration buzz; call every loop iteration
+     */
+    void updateCalibrationBuzz();
+
 private:
     // Component references
     TherapyEngine* _therapy;
@@ -232,6 +242,8 @@ private:
     // State
     bool _isCalibrating;
     uint32_t _calibrationStartTime;
+    int8_t _calibBuzzFinger;      // Active one-shot calibration buzz, -1 = none
+    uint32_t _calibBuzzOffTime;   // millis() deadline to deactivate
 
     // Response buffer
     char _responseBuffer[RESPONSE_BUFFER_SIZE];

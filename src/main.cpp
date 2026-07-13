@@ -751,6 +751,9 @@ void loop()
     // Check for SECONDARY battery response timeout (non-blocking)
     menu.checkSecondaryBatteryTimeout();
 
+    // Deactivate an expired calibration buzz (non-blocking)
+    menu.updateCalibrationBuzz();
+
     uint32_t now = millis();
 
     // Check for pending PTP-scheduled flash (SECONDARY only)
@@ -1669,6 +1672,22 @@ void onBLEMessage(uint16_t connHandle, const char *message, uint64_t rxTimestamp
             {
                 led.setPattern(Colors::GREEN, LEDPattern::PULSE_SLOW);
             }
+        }
+        return;
+    }
+
+    // Handle CALIB_BUZZ from PRIMARY (SECONDARY only)
+    if (deviceRole == DeviceRole::SECONDARY && strncmp(message, "CALIB_BUZZ:", 11) == 0)
+    {
+        int finger, intensity, duration;
+        if (sscanf(message + 11, "%d:%d:%d", &finger, &intensity, &duration) == 3 &&
+            finger >= 0 && finger < MAX_ACTUATORS &&
+            intensity >= 0 && intensity <= 100 &&
+            duration >= 50 && duration <= 2000)
+        {
+            menu.calibrationBuzz(static_cast<uint8_t>(finger),
+                                 static_cast<uint8_t>(intensity),
+                                 static_cast<uint16_t>(duration));
         }
         return;
     }

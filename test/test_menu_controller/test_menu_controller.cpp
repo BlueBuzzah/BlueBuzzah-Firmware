@@ -187,6 +187,14 @@ const char* therapyStateToString(TherapyState state) {
 // Mock NVIC_SystemReset
 void NVIC_SystemReset() {}
 
+// Mock BLEManager
+class BLEManager {
+public:
+    bool _secondaryConnected = true;
+
+    bool isSecondaryConnected() const { return _secondaryConnected; }
+};
+
 // =============================================================================
 // INCLUDE MENU CONTROLLER (after mocks)
 // =============================================================================
@@ -259,6 +267,7 @@ public:
     HapticController* _haptic;
     TherapyStateMachine* _stateMachine;
     ProfileManager* _profiles;
+    BLEManager* _ble;
 
     DeviceRole _role;
     char _firmwareVersion[16];
@@ -269,6 +278,8 @@ public:
 
     bool _isCalibrating;
     uint32_t _calibrationStartTime;
+    int8_t _calibBuzzFinger;
+    uint32_t _calibBuzzOffTime;
     char _responseBuffer[RESPONSE_BUFFER_SIZE];
 
     // Deferred command tracking for SECONDARY battery query
@@ -295,6 +306,7 @@ public:
         _haptic(nullptr),
         _stateMachine(nullptr),
         _profiles(nullptr),
+        _ble(nullptr),
         _role(DeviceRole::PRIMARY),
         _sendCallback(nullptr),
         _restartCallback(nullptr),
@@ -305,6 +317,8 @@ public:
         _secondaryBatteryRequestTime(0),
         _isCalibrating(false),
         _calibrationStartTime(0),
+        _calibBuzzFinger(-1),
+        _calibBuzzOffTime(0),
         _lastParamCount(0)
     {
         strcpy(_firmwareVersion, FIRMWARE_VERSION);
@@ -488,6 +502,100 @@ public:
 
     void setSendToSecondaryCallback(SendToSecondaryCallback callback) {
         _sendToSecondaryCallback = callback;
+    }
+
+    void setBLE(BLEManager* ble) {
+        _ble = ble;
+    }
+
+    // Calibration buzz methods (mirror MenuController::calibrationBuzz /
+    // MenuController::updateCalibrationBuzz)
+    void calibrationBuzz(uint8_t finger, uint8_t intensity, uint16_t durationMs) {
+        if (!_haptic || finger >= MAX_ACTUATORS || !_haptic->isEnabled(finger)) {
+            return;
+        }
+        if (_calibBuzzFinger >= 0) {
+            _haptic->deactivate(static_cast<uint8_t>(_calibBuzzFinger));
+        }
+        _haptic->activate(finger, intensity);
+        _calibBuzzFinger = static_cast<int8_t>(finger);
+        _calibBuzzOffTime = millis() + durationMs;
+    }
+
+    void updateCalibrationBuzz() {
+        if (_calibBuzzFinger >= 0 &&
+            static_cast<int32_t>(millis() - _calibBuzzOffTime) >= 0) {
+            if (_haptic) {
+                _haptic->deactivate(static_cast<uint8_t>(_calibBuzzFinger));
+            }
+            _calibBuzzFinger = -1;
+        }
+    }
+
+    void handleCalibrateBuzz(const char params[][PARAM_BUFFER_SIZE], uint8_t paramCount) {
+        if (!_isCalibrating) {
+            sendError("Not in calibration mode");
+            return;
+        }
+
+        if (paramCount < 3) {
+            sendError("Finger, intensity, and duration required");
+            return;
+        }
+
+        int finger = atoi(params[0]);
+        int intensity = atoi(params[1]);
+        int duration = atoi(params[2]);
+
+        constexpr int maxFingerIndex = 2 * MAX_ACTUATORS - 1;
+        if (finger < 0 || finger > maxFingerIndex) {
+            char msg[40];
+            snprintf(msg, sizeof(msg), "Invalid finger index (0-%d)", maxFingerIndex);
+            sendError(msg);
+            return;
+        }
+        if (intensity < 0 || intensity > 100) {
+            sendError("Intensity out of range (0-100)");
+            return;
+        }
+        if (duration < 50 || duration > 2000) {
+            sendError("Duration out of range (50-2000ms)");
+            return;
+        }
+
+        if (finger < MAX_ACTUATORS) {
+            calibrationBuzz(static_cast<uint8_t>(finger),
+                            static_cast<uint8_t>(intensity),
+                            static_cast<uint16_t>(duration));
+        } else {
+            if (!_sendToSecondaryCallback || !_ble || !_ble->isSecondaryConnected()) {
+                sendError("Secondary glove not connected");
+                return;
+            }
+            char relay[48];
+            snprintf(relay, sizeof(relay), "CALIB_BUZZ:%d:%d:%d",
+                     finger - MAX_ACTUATORS, intensity, duration);
+            _sendToSecondaryCallback(relay);
+        }
+
+        beginResponse();
+        addResponseLine("FINGER", (int32_t)finger);
+        addResponseLine("INTENSITY", (int32_t)intensity);
+        addResponseLine("DURATION", (int32_t)duration);
+        sendResponse();
+    }
+
+    void handleCalibrateStop() {
+        _isCalibrating = false;
+        _calibBuzzFinger = -1;
+
+        if (_haptic) {
+            _haptic->emergencyStop();
+        }
+
+        beginResponse();
+        addResponseLine("MODE", "NORMAL");
+        sendResponse();
     }
 
     // Simulate handleBattery with deferred SECONDARY battery query
@@ -684,6 +792,24 @@ public:
             return true;
         }
 
+        if (strcmp(command, "CALIBRATE_START") == 0) {
+            startCalibration();
+            beginResponse();
+            addResponseLine("MODE", "CALIBRATION");
+            sendResponse();
+            return true;
+        }
+
+        if (strcmp(command, "CALIBRATE_BUZZ") == 0) {
+            handleCalibrateBuzz(params, paramCount);
+            return true;
+        }
+
+        if (strcmp(command, "CALIBRATE_STOP") == 0) {
+            handleCalibrateStop();
+            return true;
+        }
+
         return false;
     }
 };
@@ -698,6 +824,7 @@ static BatteryMonitor* g_battery = nullptr;
 static HapticController* g_haptic = nullptr;
 static TherapyStateMachine* g_stateMachine = nullptr;
 static ProfileManager* g_profiles = nullptr;
+static BLEManager* g_ble = nullptr;
 
 // Track callback invocations
 static char g_lastResponse[RESPONSE_BUFFER_SIZE];
@@ -705,6 +832,10 @@ static int g_responseCount = 0;
 static int g_restartCount = 0;
 static char g_lastSecondaryMessage[64];
 static int g_secondaryMessageCount = 0;
+
+// Aliases matching the brief's naming (same backing storage as above)
+#define capturedResponse g_lastResponse
+#define capturedSecondaryMessage g_lastSecondaryMessage
 
 void testSendCallback(const char* response) {
     strncpy(g_lastResponse, response, sizeof(g_lastResponse) - 1);
@@ -722,6 +853,16 @@ void testSendToSecondaryCallback(const char* message) {
     g_secondaryMessageCount++;
 }
 
+static void resetCapturedResponse(void) {
+    memset(g_lastResponse, 0, sizeof(g_lastResponse));
+    g_responseCount = 0;
+}
+
+static void resetSecondaryCapture(void) {
+    memset(g_lastSecondaryMessage, 0, sizeof(g_lastSecondaryMessage));
+    g_secondaryMessageCount = 0;
+}
+
 void setUp(void) {
     g_menu = new TestMenuController();
     g_therapy = new TherapyEngine();
@@ -729,10 +870,12 @@ void setUp(void) {
     g_haptic = new HapticController();
     g_stateMachine = new TherapyStateMachine();
     g_profiles = new ProfileManager();
+    g_ble = new BLEManager();
 
     g_menu->begin(g_therapy, g_battery, g_haptic, g_stateMachine, g_profiles);
     g_menu->setSendCallback(testSendCallback);
     g_menu->setRestartCallback(testRestartCallback);
+    g_menu->setBLE(g_ble);
 
     memset(g_lastResponse, 0, sizeof(g_lastResponse));
     g_responseCount = 0;
@@ -750,6 +893,7 @@ void tearDown(void) {
     delete g_haptic;
     delete g_stateMachine;
     delete g_profiles;
+    delete g_ble;
 
     g_menu = nullptr;
     g_therapy = nullptr;
@@ -1161,6 +1305,29 @@ void test_stopCalibration_sets_calibrating_false() {
     TEST_ASSERT_FALSE(g_menu->isCalibrating());
 }
 
+void test_calibrateBuzz_does_not_block(void) {
+    g_menu->handleCommand("CALIBRATE_START");
+    resetCapturedResponse();
+    uint32_t before = millis();
+    g_menu->handleCommand("CALIBRATE_BUZZ:1:80:2000");
+    uint32_t elapsed = millis() - before;
+    TEST_ASSERT_TRUE(elapsed < 100);   // must not delay(duration)
+    TEST_ASSERT_NOT_NULL(strstr(capturedResponse, "FINGER:1"));
+    g_menu->handleCommand("CALIBRATE_STOP");
+}
+
+void test_calibrateBuzz_secondary_finger_relayed(void) {
+    g_menu->handleCommand("CALIBRATE_START");
+    resetSecondaryCapture();
+    resetCapturedResponse();
+    g_menu->setSendToSecondaryCallback(testSendToSecondaryCallback);
+    char cmd[32];
+    snprintf(cmd, sizeof(cmd), "CALIBRATE_BUZZ:%d:80:500", MAX_ACTUATORS);  // first secondary finger
+    g_menu->handleCommand(cmd);
+    TEST_ASSERT_NOT_NULL(strstr(capturedSecondaryMessage, "CALIB_BUZZ:0:80:500"));
+    g_menu->handleCommand("CALIBRATE_STOP");
+}
+
 // =============================================================================
 // CALLBACK TESTS
 // =============================================================================
@@ -1464,6 +1631,8 @@ int main(int argc, char **argv) {
     RUN_TEST(test_startCalibration_sets_calibrating_true);
     RUN_TEST(test_startCalibration_records_start_time);
     RUN_TEST(test_stopCalibration_sets_calibrating_false);
+    RUN_TEST(test_calibrateBuzz_does_not_block);
+    RUN_TEST(test_calibrateBuzz_secondary_finger_relayed);
 
     // Callback tests
     RUN_TEST(test_sendCallback_not_invoked_when_null);

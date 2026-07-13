@@ -40,7 +40,8 @@ const char* INTERNAL_MESSAGES[] = {
     "DEBUG_FLASH",
     "DEBUG_SYNC",
     "MC:",             // Macrocycle batch message
-    "MC_ACK:"          // Macrocycle acknowledgment
+    "MC_ACK:",         // Macrocycle acknowledgment
+    "CALIB_BUZZ"
 };
 
 const uint8_t INTERNAL_MESSAGE_COUNT = sizeof(INTERNAL_MESSAGES) / sizeof(INTERNAL_MESSAGES[0]);
@@ -66,7 +67,9 @@ MenuController::MenuController() :
     _secondaryBatteryReceived(false),
     _secondaryBatteryRequestTime(0),
     _isCalibrating(false),
-    _calibrationStartTime(0)
+    _calibrationStartTime(0),
+    _calibBuzzFinger(-1),
+    _calibBuzzOffTime(0)
 {
     strcpy(_firmwareVersion, FIRMWARE_VERSION);
     strcpy(_deviceName, BLE_NAME);
@@ -907,17 +910,21 @@ void MenuController::handleCalibrateBuzz(const char params[][PARAM_BUFFER_SIZE],
         return;
     }
 
-    // Execute buzz on local fingers (0-4)
-    if (finger < MAX_ACTUATORS && _haptic) {
-        uint8_t fingerIdx = static_cast<uint8_t>(finger);
-        uint8_t intensityVal = static_cast<uint8_t>(intensity);
-        if (_haptic->isEnabled(fingerIdx)) {
-            _haptic->activate(fingerIdx, intensityVal);
-            delay(duration);
-            _haptic->deactivate(fingerIdx);
+    if (finger < MAX_ACTUATORS) {
+        calibrationBuzz(static_cast<uint8_t>(finger),
+                        static_cast<uint8_t>(intensity),
+                        static_cast<uint16_t>(duration));
+    } else {
+        // Relay to the SECONDARY glove (its local index = finger - MAX_ACTUATORS)
+        if (!_sendToSecondaryCallback || !_ble || !_ble->isSecondaryConnected()) {
+            sendError("Secondary glove not connected");
+            return;
         }
+        char relay[48];
+        snprintf(relay, sizeof(relay), "CALIB_BUZZ:%d:%d:%d",
+                 finger - MAX_ACTUATORS, intensity, duration);
+        _sendToSecondaryCallback(relay);
     }
-    // Fingers 5-7 would be sent to SECONDARY device
 
     beginResponse();
     addResponseLine("FINGER", (int32_t)finger);
@@ -928,6 +935,7 @@ void MenuController::handleCalibrateBuzz(const char params[][PARAM_BUFFER_SIZE],
 
 void MenuController::handleCalibrateStop() {
     _isCalibrating = false;
+    _calibBuzzFinger = -1;
 
     if (_haptic) {
         _haptic->emergencyStop();
@@ -936,6 +944,28 @@ void MenuController::handleCalibrateStop() {
     beginResponse();
     addResponseLine("MODE", "NORMAL");
     sendResponse();
+}
+
+void MenuController::calibrationBuzz(uint8_t finger, uint8_t intensity, uint16_t durationMs) {
+    if (!_haptic || finger >= MAX_ACTUATORS || !_haptic->isEnabled(finger)) {
+        return;
+    }
+    if (_calibBuzzFinger >= 0) {
+        _haptic->deactivate(static_cast<uint8_t>(_calibBuzzFinger));
+    }
+    _haptic->activate(finger, intensity);
+    _calibBuzzFinger = static_cast<int8_t>(finger);
+    _calibBuzzOffTime = millis() + durationMs;
+}
+
+void MenuController::updateCalibrationBuzz() {
+    if (_calibBuzzFinger >= 0 &&
+        static_cast<int32_t>(millis() - _calibBuzzOffTime) >= 0) {
+        if (_haptic) {
+            _haptic->deactivate(static_cast<uint8_t>(_calibBuzzFinger));
+        }
+        _calibBuzzFinger = -1;
+    }
 }
 
 // =============================================================================
