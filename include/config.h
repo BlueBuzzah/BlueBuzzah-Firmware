@@ -280,7 +280,7 @@ constexpr uint32_t TEST_DURATION_SEC = 120;  // 2 minutes
 // The largest message is a serialized macrocycle: ~65-byte worst-case header
 // plus up to 16 bytes per event, 3 events per actuator (12 events -> 272,
 // 15 events -> 320). RX must hold the same message on the receiving glove.
-#define MESSAGE_BUFFER_SIZE (80 + (48 * MAX_ACTUATORS))
+#define MESSAGE_BUFFER_SIZE 512 // TX queue entry / RX buffer size; matches RESPONSE_BUFFER_SIZE so HELP (~400 B) fits
 #define RX_BUFFER_SIZE MESSAGE_BUFFER_SIZE  // BLE receive buffer
 #define TX_BUFFER_SIZE MESSAGE_BUFFER_SIZE  // BLE transmit buffer
 
