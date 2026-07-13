@@ -811,6 +811,12 @@ public:
             return false;
         }
 
+        // Late IDENTIFY handshake (connection already classified) — consume
+        // silently, it is never a command and must not generate an error reply
+        if (strncmp(message, "IDENTIFY:", 9) == 0) {
+            return true;
+        }
+
         char command[32];
         char params[MAX_COMMAND_PARAMS][PARAM_BUFFER_SIZE];
         uint8_t paramCount = 0;
@@ -818,6 +824,14 @@ public:
         if (!parseCommand(message, command, params, paramCount)) {
             sendError("Invalid command format");
             return false;
+        }
+
+        // A new command is about to be dispatched: cancel any stale deferred
+        // INFO/BATTERY response still waiting on the SECONDARY glove's
+        // battery reply (mirrors MenuController::handleCommand).
+        if (_waitingForSecondaryBattery) {
+            _waitingForSecondaryBattery = false;
+            _deferredCommand = DeferredCommand::NONE;
         }
 
         if (strcmp(command, "PING") == 0) {
@@ -1289,6 +1303,14 @@ void test_handleCommand_allowInternal_defaults_to_false() {
     TEST_ASSERT_EQUAL_INT(0, g_responseCount);
 }
 
+void test_handleCommand_late_IDENTIFY_is_silently_consumed() {
+    // A late IDENTIFY:PHONE arriving after the connection is already
+    // classified must be swallowed, not answered with "Unknown command".
+    TEST_ASSERT_TRUE(g_menu->handleCommand("IDENTIFY:PHONE", true));
+    TEST_ASSERT_EQUAL_INT(0, g_responseCount);
+    TEST_ASSERT_EQUAL_STRING("", g_lastResponse);
+}
+
 // =============================================================================
 // DEVICE INFO TESTS
 // =============================================================================
@@ -1600,6 +1622,34 @@ void test_handleInfo_timeout_returns_zero_with_status() {
     TEST_ASSERT_TRUE(strstr(g_lastResponse, "STATUS:IDLE") != nullptr);
 }
 
+void test_handleCommand_cancels_stale_deferred_INFO_on_new_command() {
+    // If a new command is dispatched while an INFO response is still
+    // deferred (awaiting the SECONDARY battery reply), the stale deferral
+    // must be cancelled so a late reply can't complete against — or send —
+    // a response that belongs to the newer command.
+    g_menu->setSendToSecondaryCallback(testSendToSecondaryCallback);
+    g_battery->_status.voltage = 4.05f;
+
+    // INFO defers waiting on SECONDARY battery
+    g_menu->handleInfo();
+    TEST_ASSERT_EQUAL_INT(0, g_responseCount);
+    TEST_ASSERT_TRUE(g_menu->_waitingForSecondaryBattery);
+
+    // A new command arrives before the SECONDARY battery reply lands
+    resetCapturedResponse();
+    TEST_ASSERT_TRUE(g_menu->handleCommand("PING", true));
+
+    // PING's own response was sent, and the stale deferral was cancelled
+    TEST_ASSERT_EQUAL_INT(1, g_responseCount);
+    TEST_ASSERT_TRUE(strstr(g_lastResponse, "PONG:") != nullptr);
+    TEST_ASSERT_FALSE(g_menu->_waitingForSecondaryBattery);
+
+    // A late SECONDARY battery reply must not produce a second, foreign response
+    g_menu->handleSecondaryBatteryResponse(3.5f);
+    TEST_ASSERT_EQUAL_INT(1, g_responseCount);
+    TEST_ASSERT_TRUE(strstr(g_lastResponse, "PONG:") != nullptr);
+}
+
 void test_profileLoad_rejected_while_running(void) {
     g_stateMachine->_state = TherapyState::RUNNING;
 
@@ -1691,6 +1741,7 @@ int main(int argc, char **argv) {
     RUN_TEST(test_handleCommand_PING_without_allowInternal_is_swallowed);
     RUN_TEST(test_handleCommand_PING_with_allowInternal_dispatches_PONG);
     RUN_TEST(test_handleCommand_allowInternal_defaults_to_false);
+    RUN_TEST(test_handleCommand_late_IDENTIFY_is_silently_consumed);
 
     // Device info tests
     RUN_TEST(test_setDeviceInfo_updates_role);
@@ -1727,6 +1778,7 @@ int main(int argc, char **argv) {
     RUN_TEST(test_handleInfo_includes_motors_and_profile);
     RUN_TEST(test_handleBattery_timeout_returns_zero);
     RUN_TEST(test_handleInfo_timeout_returns_zero_with_status);
+    RUN_TEST(test_handleCommand_cancels_stale_deferred_INFO_on_new_command);
     RUN_TEST(test_profileLoad_rejected_while_running);
     RUN_TEST(test_profileLoad_rejected_while_paused);
     RUN_TEST(test_profileLoad_allowed_while_idle);

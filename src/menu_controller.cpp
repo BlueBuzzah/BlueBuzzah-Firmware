@@ -157,6 +157,12 @@ bool MenuController::handleCommand(const char* message, bool allowInternal) {
         return false;
     }
 
+    // Late IDENTIFY handshake (connection already classified) — consume
+    // silently, it is never a command and must not generate an error reply
+    if (strncmp(message, "IDENTIFY:", 9) == 0) {
+        return true;
+    }
+
     // Parse command
     char command[32];
     char params[MAX_COMMAND_PARAMS][PARAM_BUFFER_SIZE];
@@ -168,6 +174,16 @@ bool MenuController::handleCommand(const char* message, bool allowInternal) {
     }
 
     Serial.printf("[MENU] Command: %s, Params: %d\n", command, paramCount);
+
+    // A new command is about to be dispatched: cancel any stale deferred
+    // INFO/BATTERY response still waiting on the SECONDARY glove's battery
+    // reply. Without this, a late reply (or its timeout) would complete
+    // against a response buffer this command is about to overwrite, sending
+    // a corrupted or foreign response to the phone.
+    if (_waitingForSecondaryBattery) {
+        _waitingForSecondaryBattery = false;
+        _deferredCommand = DeferredCommand::NONE;
+    }
 
     // Dispatch to handler
     if (strcmp(command, "INFO") == 0) {
