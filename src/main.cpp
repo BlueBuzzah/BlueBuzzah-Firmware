@@ -1639,9 +1639,12 @@ void onBLEMessage(uint16_t connHandle, const char *message, uint64_t rxTimestamp
     }
 
     // Try menu controller first for phone/BLE commands (PRIMARY only)
-    if (deviceRole == DeviceRole::PRIMARY && !menu.isInternalMessage(message))
+    // Commands from an identified PHONE connection always dispatch, even if
+    // they happen to match an internal (PRIMARY<->SECONDARY sync) prefix.
+    bool fromPhone = ble.getConnectionType(connHandle) == ConnectionType::PHONE;
+    if (deviceRole == DeviceRole::PRIMARY && (fromPhone || !menu.isInternalMessage(message)))
     {
-        if (menu.handleCommand(message))
+        if (menu.handleCommand(message, fromPhone))
         {
             return; // Command handled by menu controller
         }

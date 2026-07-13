@@ -215,6 +215,7 @@ const char* deviceRoleToString(DeviceRole role) {
 
 const char* INTERNAL_MESSAGES[] = {
     "BUZZ",
+    "PING",
     "PARAM_UPDATE",
     "SEED",
     "SEED_ACK",
@@ -585,6 +586,46 @@ public:
             handleSecondaryBatteryResponse(0.0f);
         }
     }
+
+    void handlePing() {
+        beginResponse();
+        addResponseLine("PONG", "");
+        sendResponse();
+    }
+
+    /**
+     * @brief Handle incoming command and send response via callback
+     * @param message Raw command message
+     * @param allowInternal When true, bypass the internal-message prefix filter
+     *        (messages arriving on an identified PHONE connection are always commands)
+     * @return true if command was processed
+     */
+    bool handleCommand(const char* message, bool allowInternal = false) {
+        if (!message || strlen(message) == 0) {
+            return false;
+        }
+
+        // Skip internal messages unless caller vouches for the source
+        if (!allowInternal && isInternalMessage(message)) {
+            return false;
+        }
+
+        char command[32];
+        char params[MAX_COMMAND_PARAMS][PARAM_BUFFER_SIZE];
+        uint8_t paramCount = 0;
+
+        if (!parseCommand(message, command, params, paramCount)) {
+            sendError("Invalid command format");
+            return false;
+        }
+
+        if (strcmp(command, "PING") == 0) {
+            handlePing();
+            return true;
+        }
+
+        return false;
+    }
 };
 
 // =============================================================================
@@ -714,8 +755,8 @@ void test_isInternalMessage_user_command_SESSION_START_returns_false() {
     TEST_ASSERT_FALSE(g_menu->isInternalMessage("SESSION_START"));
 }
 
-void test_isInternalMessage_user_command_PING_returns_false() {
-    TEST_ASSERT_FALSE(g_menu->isInternalMessage("PING"));
+void test_isInternalMessage_PING_returns_true() {
+    TEST_ASSERT_TRUE(g_menu->isInternalMessage("PING"));
 }
 
 void test_isInternalMessage_partial_match_not_prefix_returns_false() {
@@ -966,6 +1007,40 @@ void test_sendError_formats_correctly() {
     // Should end with EOT
     size_t len = strlen(g_lastResponse);
     TEST_ASSERT_EQUAL_CHAR(EOT_CHAR, g_lastResponse[len - 1]);
+}
+
+// =============================================================================
+// COMMAND DISPATCH TESTS
+// =============================================================================
+
+void test_handleCommand_null_returns_false() {
+    TEST_ASSERT_FALSE(g_menu->handleCommand(nullptr));
+}
+
+void test_handleCommand_empty_returns_false() {
+    TEST_ASSERT_FALSE(g_menu->handleCommand(""));
+}
+
+void test_handleCommand_PING_without_allowInternal_is_swallowed() {
+    // PING matches the internal-message prefix filter, so a caller that
+    // doesn't vouch for the source (e.g. a SECONDARY glove connection)
+    // must not have it dispatched.
+    TEST_ASSERT_FALSE(g_menu->handleCommand("PING"));
+    TEST_ASSERT_EQUAL_INT(0, g_responseCount);
+}
+
+void test_handleCommand_PING_with_allowInternal_dispatches_PONG() {
+    // A command arriving on an identified PHONE connection bypasses the
+    // internal-message filter and is dispatched normally.
+    TEST_ASSERT_TRUE(g_menu->handleCommand("PING", true));
+    TEST_ASSERT_EQUAL_INT(1, g_responseCount);
+    TEST_ASSERT_TRUE(strstr(g_lastResponse, "PONG:") != nullptr);
+}
+
+void test_handleCommand_allowInternal_defaults_to_false() {
+    // Default-argument behavior must match explicit false.
+    TEST_ASSERT_FALSE(g_menu->handleCommand("PING"));
+    TEST_ASSERT_EQUAL_INT(0, g_responseCount);
 }
 
 // =============================================================================
@@ -1233,7 +1308,7 @@ int main(int argc, char **argv) {
     RUN_TEST(test_isInternalMessage_user_command_INFO_returns_false);
     RUN_TEST(test_isInternalMessage_user_command_BATTERY_returns_false);
     RUN_TEST(test_isInternalMessage_user_command_SESSION_START_returns_false);
-    RUN_TEST(test_isInternalMessage_user_command_PING_returns_false);
+    RUN_TEST(test_isInternalMessage_PING_returns_true);
     RUN_TEST(test_isInternalMessage_partial_match_not_prefix_returns_false);
     RUN_TEST(test_isInternalMessage_case_sensitive);
 
@@ -1266,6 +1341,12 @@ int main(int argc, char **argv) {
     RUN_TEST(test_sendResponse_adds_EOT);
     RUN_TEST(test_sendResponse_invokes_callback);
     RUN_TEST(test_sendError_formats_correctly);
+
+    RUN_TEST(test_handleCommand_null_returns_false);
+    RUN_TEST(test_handleCommand_empty_returns_false);
+    RUN_TEST(test_handleCommand_PING_without_allowInternal_is_swallowed);
+    RUN_TEST(test_handleCommand_PING_with_allowInternal_dispatches_PONG);
+    RUN_TEST(test_handleCommand_allowInternal_defaults_to_false);
 
     // Device info tests
     RUN_TEST(test_setDeviceInfo_updates_role);

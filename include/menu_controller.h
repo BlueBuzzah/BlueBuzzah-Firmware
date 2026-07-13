@@ -146,9 +146,11 @@ public:
     /**
      * @brief Handle incoming command and send response via callback
      * @param message Raw command message
+     * @param allowInternal When true, bypass the internal-message prefix filter
+     *        (messages arriving on an identified PHONE connection are always commands)
      * @return true if command was processed
      */
-    bool handleCommand(const char* message);
+    bool handleCommand(const char* message, bool allowInternal = false);
 
     /**
      * @brief Check if message is an internal sync message

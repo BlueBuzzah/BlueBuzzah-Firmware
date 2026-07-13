@@ -138,13 +138,14 @@ bool MenuController::isInternalMessage(const char* message) {
     return false;
 }
 
-bool MenuController::handleCommand(const char* message) {
+bool MenuController::handleCommand(const char* message, bool allowInternal) {
     if (!message || strlen(message) == 0) {
         return false;
     }
 
-    // Skip internal messages
-    if (isInternalMessage(message)) {
+    // Skip internal messages unless caller vouches for the source
+    // (messages from an identified PHONE connection are always commands)
+    if (!allowInternal && isInternalMessage(message)) {
         return false;
     }
 
