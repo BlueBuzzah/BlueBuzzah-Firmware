@@ -658,13 +658,13 @@ void setup()
     // No VBat sense hardware on this board - never print made-up numbers
     // (a fake "4.20V | 100%" masked a miswired battery during bring-up)
     Serial.println(F("[BATTERY] No battery sense on this board"));
+#endif
     if (power.usbPowerPresent())
     {
         // Motors run from VBat, not USB: without a charged battery any LRA
         // drive browns the DRV2605s out and therapy is silent
         Serial.println(F("[POWER] USB power detected - motors still require a charged battery"));
     }
-#endif
 
     // Instructions
     Serial.println(F("\n+============================================================+"));
@@ -1205,6 +1205,7 @@ bool initializeHardware()
 
     // Initialize battery monitor
     Serial.println(F("\nInitializing Battery Monitor..."));
+    battery.attachHaptic(&haptic);  // VBat voltmeter on boards without battery ADC
     if (!battery.begin())
     {
         Serial.println(F("[ERROR] Battery monitor initialization failed"));

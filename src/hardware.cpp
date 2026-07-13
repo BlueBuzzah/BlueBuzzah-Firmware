@@ -249,6 +249,74 @@ uint8_t HapticController::verifyAndHeal() {
     return healed;
 }
 
+// A burst larger than the estimator's window would be silently truncated
+static_assert(VBAT_BURST_SAMPLES <= VBAT_MAX_BURST,
+              "VBAT_BURST_SAMPLES exceeds VbatEstimator's burst window");
+
+uint8_t HapticController::readVBatBurst(uint8_t* out, uint8_t maxSamples) {
+    constexpr uint8_t DRV_REG_VBAT = 0x21;
+
+    if (out == nullptr || maxSamples == 0) {
+        return 0;
+    }
+
+    // First enabled finger is the voltmeter; all chips share the VBat rail.
+    // _fingerEnabled is set at init, so this scan needs no lock.
+    uint8_t finger = MAX_ACTUATORS;
+    for (uint8_t f = 0; f < MAX_ACTUATORS; f++) {
+        if (_fingerEnabled[f]) { finger = f; break; }
+    }
+    if (finger == MAX_ACTUATORS) {
+        return 0;
+    }
+
+    // Each sample takes its own short-lived lock so a pending motor
+    // activation is delayed at most one mux-select-read-close, not the
+    // whole burst. anyMotorActive() is rechecked every iteration because a
+    // motor can start mid-burst (driven LRA sags VBat).
+    for (uint8_t i = 0; i < maxSamples; i++) {
+        if (anyMotorActive()) {
+            return 0;  // Motor became active mid-burst - discard the partial burst
+        }
+
+        I2CMutexLock lock(_i2cMutex, pdMS_TO_TICKS(5));
+        if (!lock.acquired()) {
+            return 0;  // Bus busy - discard the partial burst
+        }
+
+        if (!selectChannel(finger)) {
+            return 0;
+        }
+
+        if (i == 0) {
+            // POR canary: a brownout resets the chip into standby, where VBAT
+            // is invalid. Abort the burst; verifyAndHeal() reconfigures the
+            // chip. Only checked on the first sample's transaction.
+            if ((_drv[finger].readRegister8(DRV_REG_FEEDBACK) & DRV_FB_N_ERM_LRA) == 0) {
+                closeChannels();
+                return 0;
+            }
+        }
+
+        out[i] = _drv[finger].readRegister8(DRV_REG_VBAT);
+        closeChannels();
+    }
+
+    return maxSamples;
+}
+
+bool HapticController::anyMotorActive() const {
+    // Read cross-task without the mutex: plain bool loads are atomic on
+    // Xtensa/Cortex-M, and a stale value only costs one discarded or late
+    // VBAT burst - never a corrupt reading.
+    for (uint8_t f = 0; f < MAX_ACTUATORS; f++) {
+        if (_fingerActive[f]) {
+            return true;
+        }
+    }
+    return false;
+}
+
 void HapticController::diagRegs(const char* tag) {
     if (!_fingerEnabled[0]) return;
     I2CMutexLock lock(_i2cMutex);
@@ -845,7 +913,7 @@ BatteryMonitor::BatteryMonitor() : _initialized(false) {
 }
 
 bool BatteryMonitor::begin() {
-#if BATTERY_SENSE_ENABLED
+#if BATTERY_SENSE_ADC
     // Configure ADC resolution
     analogReadResolution(ADC_RESOLUTION_BITS);
 
@@ -859,11 +927,28 @@ bool BatteryMonitor::begin() {
 
     return _initialized;
 #else
-    // No battery-sense hardware on this board: report a permanently healthy
-    // pack so state/LED logic never triggers low/critical battery handling
-    _initialized = true;
-    Serial.println(F("[INFO] Battery monitoring not available on this board"));
-    return true;
+    // No battery ADC: read the DRV2605s' VBAT register instead. The chips
+    // run directly from VBat, so their supply monitor doubles as a
+    // voltmeter once at least one is active (RTP mode, standby cleared)
+    // from haptic init. A failed read at boot means the bus is
+    // wedged or every chip browned out - report the failure rather than
+    // fake a healthy pack.
+    for (uint8_t attempt = 0; attempt < 3 && !_estimator.hasReading(); attempt++) {
+        uint8_t raw[VBAT_BURST_SAMPLES];
+        uint8_t n = _haptic ? _haptic->readVBatBurst(raw, VBAT_BURST_SAMPLES) : 0;
+        _estimator.addBurst(raw, n);
+        if (!_estimator.hasReading()) {
+            delay(10);
+        }
+    }
+
+    _initialized = _estimator.hasReading();
+    if (_initialized) {
+        Serial.println(F("[INFO] Battery monitor initialized (DRV2605 VBAT)"));
+    } else {
+        Serial.println(F("[ERROR] Battery monitor: no VBAT reading (chips reset? check battery)"));
+    }
+    return _initialized;
 #endif
 }
 
@@ -872,7 +957,7 @@ float BatteryMonitor::readVoltage() {
         return 0.0f;
     }
 
-#if BATTERY_SENSE_ENABLED
+#if BATTERY_SENSE_ADC
     // Take multiple samples and average for stability
     uint32_t total = 0;
     for (uint8_t i = 0; i < BATTERY_SAMPLE_COUNT; i++) {
@@ -888,7 +973,16 @@ float BatteryMonitor::readVoltage() {
 
     return voltage;
 #else
-    return 4.2f;  // Healthy sentinel (100%); no hardware to read
+    // Refresh from the DRV2605 VBAT register, but only while no motor is
+    // driven - an LRA pulse sags VBat by hundreds of mV and would read
+    // falsely low. During therapy (or if the bus is busy / a chip PORed)
+    // the last idle estimate is returned instead.
+    if (_haptic && !_haptic->anyMotorActive()) {
+        uint8_t raw[VBAT_BURST_SAMPLES];
+        uint8_t n = _haptic->readVBatBurst(raw, VBAT_BURST_SAMPLES);
+        _estimator.addBurst(raw, n);
+    }
+    return _estimator.voltage();
 #endif
 }
 

@@ -23,6 +23,7 @@
 #include "platform.h"  // Platform primitives + FreeRTOS for I2C mutex
 #include "config.h"
 #include "types.h"
+#include "vbat_estimator.h"
 
 // =============================================================================
 // HAPTIC CONTROLLER
@@ -94,6 +95,30 @@ public:
      * @return number of chips that had reset and were reconfigured
      */
     uint8_t verifyAndHeal();
+
+    /**
+     * @brief Read a burst of DRV2605 VBAT register (0x21) samples.
+     * The drivers run directly from VBat, so with the chip active (EN high,
+     * out of standby - true from init until deep sleep) the register is a
+     * battery voltmeter: VDD = raw * 5.6V / 255. Reads from the first
+     * enabled finger. Each sample takes its own short-lived I2C mutex (a few
+     * ms timeout) and is preceded by an anyMotorActive() check, so the burst
+     * is abandoned (returns 0) if a motor activates mid-burst (driven LRA
+     * sags VBat and would defeat the median), if the bus stays busy, or if
+     * the chip's reset canary shows a POR (brownout -> standby -> register
+     * invalid; verifyAndHeal recovers). Bounded short waits only - never a
+     * long block. Returns either 0 or exactly maxSamples, never a partial
+     * count.
+     * @param out Buffer for raw samples
+     * @param maxSamples Buffer capacity
+     * @return Number of samples written (0 = no valid reading this call)
+     */
+    uint8_t readVBatBurst(uint8_t* out, uint8_t maxSamples);
+
+    /**
+     * @brief Whether any motor is currently being driven
+     */
+    bool anyMotorActive() const;
 
     /**
      * @brief Assembly-QA sweep (serial MOTOR_DIAG): buzz each channel alone
@@ -270,8 +295,12 @@ private:
 /**
  * @brief Monitors battery voltage and calculates charge percentage
  *
- * Uses the nRF52840's ADC to read battery voltage through a voltage divider.
- * Provides accurate percentage estimation using a LiPo discharge curve.
+ * Two backends selected by BATTERY_SENSE_ADC:
+ * - ADC (nRF52840): VBAT divider sampled via analogRead
+ * - DRV2605 VBAT register (PentaBuzzer): the haptic drivers run directly
+ *   from VBat, so their supply monitor doubles as the battery voltmeter
+ *   (attachHaptic() must be called before begin())
+ * Both feed the same LiPo discharge curve for percentage estimation.
  *
  * Usage:
  *   BatteryMonitor battery;
@@ -322,8 +351,19 @@ public:
      */
     bool isCritical(float voltage = -1.0f);
 
+    /**
+     * @brief Attach the haptic controller used as the VBAT source
+     *
+     * Required before begin() on boards without a battery ADC
+     * (BATTERY_SENSE_ADC == 0). No-op on boards with a battery ADC.
+     * @param haptic Pointer to the initialized HapticController
+     */
+    void attachHaptic(HapticController* haptic) { _haptic = haptic; }
+
 private:
     bool _initialized;
+    HapticController* _haptic = nullptr;
+    VbatEstimator _estimator;
 
     /**
      * @brief LiPo discharge curve for accurate percentage calculation
