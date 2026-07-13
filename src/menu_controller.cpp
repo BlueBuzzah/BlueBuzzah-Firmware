@@ -69,7 +69,12 @@ MenuController::MenuController() :
     _isCalibrating(false),
     _calibrationStartTime(0),
     _calibBuzzFinger(-1),
-    _calibBuzzOffTime(0)
+    _calibBuzzOffTime(0),
+    _calibBuzzPendingFinger(-1),
+    _calibBuzzPendingIntensity(0),
+    _calibBuzzPendingDuration(0),
+    _calibBuzzCancelPending(false),
+    _calibBuzzRequestPending(false)
 {
     strcpy(_firmwareVersion, FIRMWARE_VERSION);
     strcpy(_deviceName, BLE_NAME);
@@ -935,7 +940,16 @@ void MenuController::handleCalibrateBuzz(const char params[][PARAM_BUFFER_SIZE],
 
 void MenuController::handleCalibrateStop() {
     _isCalibrating = false;
-    _calibBuzzFinger = -1;
+
+    // Cancel any pending/in-flight one-shot so it cannot reactivate a motor
+    // after emergencyStop() below. Actual hardware deactivation and clearing
+    // of _calibBuzzFinger happens in updateCalibrationBuzz() from loop().
+    {
+        PLATFORM_CRITICAL_ENTER();
+        _calibBuzzRequestPending = false;
+        _calibBuzzCancelPending = true;
+        PLATFORM_CRITICAL_EXIT();
+    }
 
     if (_haptic) {
         _haptic->emergencyStop();
@@ -950,15 +964,61 @@ void MenuController::calibrationBuzz(uint8_t finger, uint8_t intensity, uint16_t
     if (!_haptic || finger >= MAX_ACTUATORS || !_haptic->isEnabled(finger)) {
         return;
     }
-    if (_calibBuzzFinger >= 0) {
-        _haptic->deactivate(static_cast<uint8_t>(_calibBuzzFinger));
+
+    // Called from BLE-callback context: only record the pending request.
+    // The haptic hardware is driven exclusively from loop() via
+    // updateCalibrationBuzz(), which avoids interleaving I2C mux
+    // transactions from two contexts.
+    {
+        PLATFORM_CRITICAL_ENTER();
+        _calibBuzzPendingFinger = static_cast<int8_t>(finger);
+        _calibBuzzPendingIntensity = intensity;
+        _calibBuzzPendingDuration = durationMs;
+        _calibBuzzCancelPending = false;
+        _calibBuzzRequestPending = true;  // publish flag: set last
+        PLATFORM_CRITICAL_EXIT();
     }
-    _haptic->activate(finger, intensity);
-    _calibBuzzFinger = static_cast<int8_t>(finger);
-    _calibBuzzOffTime = millis() + durationMs;
 }
 
 void MenuController::updateCalibrationBuzz() {
+    bool requestPending;
+    bool cancelPending;
+    int8_t pendingFinger = -1;
+    uint8_t pendingIntensity = 0;
+    uint16_t pendingDuration = 0;
+
+    {
+        PLATFORM_CRITICAL_ENTER();
+        requestPending = _calibBuzzRequestPending;
+        cancelPending = _calibBuzzCancelPending;
+        if (requestPending) {
+            pendingFinger = _calibBuzzPendingFinger;
+            pendingIntensity = _calibBuzzPendingIntensity;
+            pendingDuration = _calibBuzzPendingDuration;
+        }
+        _calibBuzzRequestPending = false;
+        _calibBuzzCancelPending = false;
+        PLATFORM_CRITICAL_EXIT();
+    }
+
+    if (cancelPending && !requestPending && _calibBuzzFinger >= 0) {
+        if (_haptic) {
+            _haptic->deactivate(static_cast<uint8_t>(_calibBuzzFinger));
+        }
+        _calibBuzzFinger = -1;
+    }
+
+    if (requestPending) {
+        if (_calibBuzzFinger >= 0 && _haptic) {
+            _haptic->deactivate(static_cast<uint8_t>(_calibBuzzFinger));
+        }
+        if (_haptic) {
+            _haptic->activate(pendingFinger, pendingIntensity);
+        }
+        _calibBuzzFinger = pendingFinger;
+        _calibBuzzOffTime = millis() + pendingDuration;
+    }
+
     if (_calibBuzzFinger >= 0 &&
         static_cast<int32_t>(millis() - _calibBuzzOffTime) >= 0) {
         if (_haptic) {

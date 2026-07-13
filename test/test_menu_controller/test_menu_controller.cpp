@@ -278,8 +278,18 @@ public:
 
     bool _isCalibrating;
     uint32_t _calibrationStartTime;
+    // Active one-shot calibration buzz; touched only from updateCalibrationBuzz()
+    // (mirrors MenuController: loop-context-only fields).
     int8_t _calibBuzzFinger;
     uint32_t _calibBuzzOffTime;
+    // Pending calibration-buzz handoff (mirrors MenuController's BLE-callback
+    // -> loop() handoff; no critical sections needed here since the test
+    // harness is single-threaded).
+    int8_t _calibBuzzPendingFinger = -1;
+    uint8_t _calibBuzzPendingIntensity = 0;
+    uint16_t _calibBuzzPendingDuration = 0;
+    bool _calibBuzzCancelPending = false;
+    bool _calibBuzzRequestPending = false;
     char _responseBuffer[RESPONSE_BUFFER_SIZE];
 
     // Deferred command tracking for SECONDARY battery query
@@ -509,20 +519,48 @@ public:
     }
 
     // Calibration buzz methods (mirror MenuController::calibrationBuzz /
-    // MenuController::updateCalibrationBuzz)
+    // MenuController::updateCalibrationBuzz). Production only touches the
+    // haptic hardware from updateCalibrationBuzz() (loop context);
+    // calibrationBuzz()/handleCalibrateStop() (BLE-callback context) only
+    // record a pending request/cancellation.
     void calibrationBuzz(uint8_t finger, uint8_t intensity, uint16_t durationMs) {
         if (!_haptic || finger >= MAX_ACTUATORS || !_haptic->isEnabled(finger)) {
             return;
         }
-        if (_calibBuzzFinger >= 0) {
-            _haptic->deactivate(static_cast<uint8_t>(_calibBuzzFinger));
-        }
-        _haptic->activate(finger, intensity);
-        _calibBuzzFinger = static_cast<int8_t>(finger);
-        _calibBuzzOffTime = millis() + durationMs;
+        _calibBuzzPendingFinger = static_cast<int8_t>(finger);
+        _calibBuzzPendingIntensity = intensity;
+        _calibBuzzPendingDuration = durationMs;
+        _calibBuzzCancelPending = false;
+        _calibBuzzRequestPending = true;  // publish flag: set last
     }
 
     void updateCalibrationBuzz() {
+        bool requestPending = _calibBuzzRequestPending;
+        bool cancelPending = _calibBuzzCancelPending;
+        int8_t pendingFinger = requestPending ? _calibBuzzPendingFinger : int8_t(-1);
+        uint8_t pendingIntensity = requestPending ? _calibBuzzPendingIntensity : uint8_t(0);
+        uint16_t pendingDuration = requestPending ? _calibBuzzPendingDuration : uint16_t(0);
+        _calibBuzzRequestPending = false;
+        _calibBuzzCancelPending = false;
+
+        if (cancelPending && !requestPending && _calibBuzzFinger >= 0) {
+            if (_haptic) {
+                _haptic->deactivate(static_cast<uint8_t>(_calibBuzzFinger));
+            }
+            _calibBuzzFinger = -1;
+        }
+
+        if (requestPending) {
+            if (_calibBuzzFinger >= 0 && _haptic) {
+                _haptic->deactivate(static_cast<uint8_t>(_calibBuzzFinger));
+            }
+            if (_haptic) {
+                _haptic->activate(pendingFinger, pendingIntensity);
+            }
+            _calibBuzzFinger = pendingFinger;
+            _calibBuzzOffTime = millis() + pendingDuration;
+        }
+
         if (_calibBuzzFinger >= 0 &&
             static_cast<int32_t>(millis() - _calibBuzzOffTime) >= 0) {
             if (_haptic) {
@@ -587,7 +625,11 @@ public:
 
     void handleCalibrateStop() {
         _isCalibrating = false;
-        _calibBuzzFinger = -1;
+
+        // Cancel any pending/in-flight one-shot so it cannot reactivate a
+        // motor after emergencyStop() below; consumed by updateCalibrationBuzz().
+        _calibBuzzRequestPending = false;
+        _calibBuzzCancelPending = true;
 
         if (_haptic) {
             _haptic->emergencyStop();
@@ -1328,6 +1370,37 @@ void test_calibrateBuzz_secondary_finger_relayed(void) {
     g_menu->handleCommand("CALIBRATE_STOP");
 }
 
+void test_updateCalibrationBuzz_activates_pending_request_from_loop(void) {
+    // calibrationBuzz() (BLE-callback context) must NOT touch the haptic
+    // hardware directly; activation only happens once updateCalibrationBuzz()
+    // (loop context) consumes the pending request.
+    g_menu->handleCommand("CALIBRATE_START");
+    g_menu->handleCommand("CALIBRATE_BUZZ:1:80:2000");
+
+    TEST_ASSERT_EQUAL_INT(-1, g_haptic->_lastActivatedFinger);
+
+    g_menu->updateCalibrationBuzz();
+
+    TEST_ASSERT_EQUAL_INT(1, g_haptic->_lastActivatedFinger);
+    TEST_ASSERT_EQUAL_INT(80, g_haptic->_lastIntensity);
+    TEST_ASSERT_EQUAL_INT8(1, g_menu->_calibBuzzFinger);
+
+    g_menu->handleCommand("CALIBRATE_STOP");
+}
+
+void test_handleCalibrateStop_cancels_pending_request_before_activation(void) {
+    // A STOP that arrives before loop() ever processes the pending BUZZ
+    // request must prevent that motor from ever activating.
+    g_menu->handleCommand("CALIBRATE_START");
+    g_menu->handleCommand("CALIBRATE_BUZZ:2:80:2000");
+    g_menu->handleCommand("CALIBRATE_STOP");
+
+    g_menu->updateCalibrationBuzz();
+
+    TEST_ASSERT_EQUAL_INT(-1, g_haptic->_lastActivatedFinger);
+    TEST_ASSERT_EQUAL_INT8(-1, g_menu->_calibBuzzFinger);
+}
+
 // =============================================================================
 // CALLBACK TESTS
 // =============================================================================
@@ -1633,6 +1706,8 @@ int main(int argc, char **argv) {
     RUN_TEST(test_stopCalibration_sets_calibrating_false);
     RUN_TEST(test_calibrateBuzz_does_not_block);
     RUN_TEST(test_calibrateBuzz_secondary_finger_relayed);
+    RUN_TEST(test_updateCalibrationBuzz_activates_pending_request_from_loop);
+    RUN_TEST(test_handleCalibrateStop_cancels_pending_request_before_activation);
 
     // Callback tests
     RUN_TEST(test_sendCallback_not_invoked_when_null);

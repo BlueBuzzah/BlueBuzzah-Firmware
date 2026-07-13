@@ -199,12 +199,19 @@ public:
     bool isCalibrating() const { return _isCalibrating; }
 
     /**
-     * @brief Start a non-blocking one-shot buzz on a local finger
+     * @brief Request a non-blocking one-shot buzz on a local finger
+     *
+     * Callable from BLE-callback context: only records the pending request
+     * under a critical section. The haptic hardware is driven exclusively
+     * from loop() via updateCalibrationBuzz().
      */
     void calibrationBuzz(uint8_t finger, uint8_t intensity, uint16_t durationMs);
 
     /**
-     * @brief Deactivate an expired calibration buzz; call every loop iteration
+     * @brief Service pending calibration-buzz requests/cancellations and
+     *        deactivate an expired one-shot; call every loop iteration
+     *
+     * MUST only be called from main loop context (drives haptic hardware).
      */
     void updateCalibrationBuzz();
 
@@ -242,8 +249,22 @@ private:
     // State
     bool _isCalibrating;
     uint32_t _calibrationStartTime;
-    int8_t _calibBuzzFinger;      // Active one-shot calibration buzz, -1 = none
+
+    // Active one-shot calibration buzz. Touched ONLY from loop() context
+    // (via updateCalibrationBuzz()) so these stay plain fields.
+    int8_t _calibBuzzFinger;      // -1 = none
     uint32_t _calibBuzzOffTime;   // millis() deadline to deactivate
+
+    // Pending calibration-buzz handoff: written from BLE-callback context
+    // (calibrationBuzz()/handleCalibrateStop()), consumed from loop() context
+    // (updateCalibrationBuzz()). Only loop() drives the haptic hardware for
+    // calibration, so these fields plus PLATFORM_CRITICAL_ENTER/EXIT are the
+    // only cross-context surface.
+    volatile int8_t _calibBuzzPendingFinger;
+    volatile uint8_t _calibBuzzPendingIntensity;
+    volatile uint16_t _calibBuzzPendingDuration;
+    volatile bool _calibBuzzCancelPending;
+    volatile bool _calibBuzzRequestPending;  // publish flag: set last
 
     // Response buffer
     char _responseBuffer[RESPONSE_BUFFER_SIZE];
