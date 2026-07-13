@@ -143,6 +143,7 @@ public:
     TherapyProfile _profile;
     const char* _profileNames[3] = {"Default", "Gentle", "Intense"};
     uint8_t _profileCount = 3;
+    uint8_t _currentProfileId = 1;
 
     ProfileManager() {
         strcpy(_profile.name, "Default");
@@ -161,6 +162,7 @@ public:
     const char** getProfileNames(uint8_t* count) { *count = _profileCount; return _profileNames; }
     bool loadProfile(int) { return true; }
     const char* getCurrentProfileName() const { return _profile.name; }
+    uint8_t getCurrentProfileId() const { return _currentProfileId; }
     const TherapyProfile* getCurrentProfile() const { return &_profile; }
     bool setParameter(const char*, const char*) { return true; }
 };
@@ -514,6 +516,13 @@ public:
         addResponseLine("ROLE", deviceRoleToString(_role));
         addResponseLine("NAME", _deviceName);
         addResponseLine("FW", _firmwareVersion);
+        addResponseLine("MOTORS", static_cast<int32_t>(MAX_ACTUATORS));
+        if (_profiles) {
+            char profLine[48];
+            snprintf(profLine, sizeof(profLine), "%d:%s",
+                     _profiles->getCurrentProfileId(), _profiles->getCurrentProfileName());
+            addResponseLine("PROFILE", profLine);
+        }
 
         if (_battery) {
             BatteryStatus status = _battery->getStatus();
@@ -1262,6 +1271,19 @@ void test_handleBattery_timeout_returns_zero() {
     TEST_ASSERT_TRUE(strstr(g_lastResponse, "BATS:0.00") != nullptr);
 }
 
+void test_handleInfo_includes_motors_and_profile() {
+    // INFO response must expose motor count and the active profile so the
+    // app can detect board type and stay in sync with the current profile.
+    char expected[32];
+    snprintf(expected, sizeof(expected), "MOTORS:%d", MAX_ACTUATORS);
+
+    g_menu->handleInfo();
+
+    TEST_ASSERT_EQUAL_INT(1, g_responseCount);
+    TEST_ASSERT_TRUE(strstr(g_lastResponse, expected) != nullptr);
+    TEST_ASSERT_TRUE(strstr(g_lastResponse, "PROFILE:1:Default") != nullptr);
+}
+
 void test_handleInfo_timeout_returns_zero_with_status() {
     // When no BATRESPONSE arrives within 1000ms during INFO command,
     // checkSecondaryBatteryTimeout should complete with BATS:0.00 and include STATUS
@@ -1376,6 +1398,7 @@ int main(int argc, char **argv) {
     RUN_TEST(test_handleBattery_returns_secondary_voltage);
     RUN_TEST(test_handleBattery_returns_zero_when_secondary_unavailable);
     RUN_TEST(test_handleInfo_includes_secondary_voltage);
+    RUN_TEST(test_handleInfo_includes_motors_and_profile);
     RUN_TEST(test_handleBattery_timeout_returns_zero);
     RUN_TEST(test_handleInfo_timeout_returns_zero_with_status);
 

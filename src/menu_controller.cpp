@@ -397,6 +397,13 @@ void MenuController::handleInfo() {
     addResponseLine("ROLE", deviceRoleToString(_role));
     addResponseLine("NAME", _deviceName);
     addResponseLine("FW", _firmwareVersion);
+    addResponseLine("MOTORS", static_cast<int32_t>(MAX_ACTUATORS));
+    if (_profiles) {
+        char profLine[48];
+        snprintf(profLine, sizeof(profLine), "%d:%s",
+                 _profiles->getCurrentProfileId(), _profiles->getCurrentProfileName());
+        addResponseLine("PROFILE", profLine);
+    }
 
     // Get battery status
     if (_battery) {
