@@ -2118,6 +2118,9 @@ void onBLEMessage(uint16_t connHandle, const char *message, uint64_t rxTimestamp
             Serial.println(F("[SESSION] Stop requested"));
             haptic.emergencyStop();
             stateMachine.transition(StateTrigger::STOP_SESSION);
+            // Complete the stop like every other stop path — without STOPPED the
+            // SECONDARY sticks in STOPPING (yellow blink) after a phone-initiated stop.
+            stateMachine.transition(StateTrigger::STOPPED);
             break;
 
         case SyncCommandType::DEBUG_FLASH:
