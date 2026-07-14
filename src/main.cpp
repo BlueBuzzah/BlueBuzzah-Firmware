@@ -1428,6 +1428,15 @@ void onBLEConnect(uint16_t connHandle, ConnectionType type)
             bootWindowActive = false;
             Serial.println(F("[BOOT] Phone connected - boot window cancelled"));
         }
+
+        if (type == ConnectionType::PHONE)
+        {
+            // Leave PHONE_DISCONNECTED when the phone comes back. Without this
+            // the FSM entered PHONE_DISCONNECTED on PHONE_LOST but nothing ever
+            // fired PHONE_RECONNECTED, so the state stuck forever even with the
+            // phone connected. No-op in any other state.
+            stateMachine.transition(StateTrigger::PHONE_RECONNECTED);
+        }
     }
 
     // Quick haptic feedback on index finger (deferred - not safe in BLE callback)
