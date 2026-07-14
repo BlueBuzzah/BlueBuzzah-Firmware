@@ -525,15 +525,21 @@ public:
     // haptic hardware from updateCalibrationBuzz() (loop context);
     // calibrationBuzz()/handleCalibrateStop() (BLE-callback context) only
     // record a pending request/cancellation.
-    void calibrationBuzz(uint8_t finger, uint8_t intensity, uint16_t durationMs) {
+    bool calibrationBuzz(uint8_t finger, uint8_t intensity, uint16_t durationMs) {
         if (!_haptic || finger >= MAX_ACTUATORS || !_haptic->isEnabled(finger)) {
-            return;
+            return false;
         }
         _calibBuzzPendingFinger = static_cast<int8_t>(finger);
         _calibBuzzPendingIntensity = intensity;
         _calibBuzzPendingDuration = durationMs;
         _calibBuzzCancelPending = false;
         _calibBuzzRequestPending = true;  // publish flag: set last
+        return true;
+    }
+
+    void cancelCalibrationBuzz() {
+        _calibBuzzRequestPending = false;
+        _calibBuzzCancelPending = true;
     }
 
     void updateCalibrationBuzz() {
@@ -604,9 +610,12 @@ public:
         }
 
         if (finger < MAX_ACTUATORS) {
-            calibrationBuzz(static_cast<uint8_t>(finger),
-                            static_cast<uint8_t>(intensity),
-                            static_cast<uint16_t>(duration));
+            if (!calibrationBuzz(static_cast<uint8_t>(finger),
+                                 static_cast<uint8_t>(intensity),
+                                 static_cast<uint16_t>(duration))) {
+                sendError("Motor disabled");
+                return;
+            }
         } else {
             if (!_sendToSecondaryCallback || !_ble || !_ble->isSecondaryConnected()) {
                 sendError("Secondary glove not connected");
@@ -630,8 +639,12 @@ public:
 
         // Cancel any pending/in-flight one-shot so it cannot reactivate a
         // motor after emergencyStop() below; consumed by updateCalibrationBuzz().
-        _calibBuzzRequestPending = false;
-        _calibBuzzCancelPending = true;
+        cancelCalibrationBuzz();
+
+        // Stop any relayed buzz still running on the SECONDARY glove
+        if (_sendToSecondaryCallback && _ble && _ble->isSecondaryConnected()) {
+            _sendToSecondaryCallback("CALIB_STOP");
+        }
 
         if (_haptic) {
             _haptic->emergencyStop();
@@ -890,10 +903,6 @@ static int g_responseCount = 0;
 static int g_restartCount = 0;
 static char g_lastSecondaryMessage[64];
 static int g_secondaryMessageCount = 0;
-
-// Aliases matching the brief's naming (same backing storage as above)
-#define capturedResponse g_lastResponse
-#define capturedSecondaryMessage g_lastSecondaryMessage
 
 void testSendCallback(const char* response) {
     strncpy(g_lastResponse, response, sizeof(g_lastResponse) - 1);
@@ -1378,7 +1387,7 @@ void test_calibrateBuzz_does_not_block(void) {
     g_menu->handleCommand("CALIBRATE_BUZZ:1:80:2000");
     uint32_t elapsed = millis() - before;
     TEST_ASSERT_TRUE(elapsed < 100);   // must not delay(duration)
-    TEST_ASSERT_NOT_NULL(strstr(capturedResponse, "FINGER:1"));
+    TEST_ASSERT_NOT_NULL(strstr(g_lastResponse, "FINGER:1"));
     g_menu->handleCommand("CALIBRATE_STOP");
 }
 
@@ -1390,7 +1399,7 @@ void test_calibrateBuzz_secondary_finger_relayed(void) {
     char cmd[32];
     snprintf(cmd, sizeof(cmd), "CALIBRATE_BUZZ:%d:80:500", MAX_ACTUATORS);  // first secondary finger
     g_menu->handleCommand(cmd);
-    TEST_ASSERT_NOT_NULL(strstr(capturedSecondaryMessage, "CALIB_BUZZ:0:80:500"));
+    TEST_ASSERT_NOT_NULL(strstr(g_lastSecondaryMessage, "CALIB_BUZZ:0:80:500"));
     g_menu->handleCommand("CALIBRATE_STOP");
 }
 
@@ -1443,6 +1452,34 @@ void test_handleCalibrateStop_cancels_pending_request_before_activation(void) {
 
     TEST_ASSERT_EQUAL_INT(-1, g_haptic->_lastActivatedFinger);
     TEST_ASSERT_EQUAL_INT8(-1, g_menu->_calibBuzzFinger);
+}
+
+void test_handleCalibrateStop_relays_CALIB_STOP_to_secondary(void) {
+    // STOP must also cancel any relayed buzz still running on the SECONDARY.
+    g_menu->handleCommand("CALIBRATE_START");
+    g_menu->setSendToSecondaryCallback(testSendToSecondaryCallback);
+    resetSecondaryCapture();
+
+    g_menu->handleCommand("CALIBRATE_STOP");
+
+    TEST_ASSERT_EQUAL_INT(1, g_secondaryMessageCount);
+    TEST_ASSERT_EQUAL_STRING("CALIB_STOP", g_lastSecondaryMessage);
+}
+
+void test_calibrateBuzz_disabled_motor_returns_error(void) {
+    // A buzz on a disabled motor must report an error, not a success response.
+    g_menu->handleCommand("CALIBRATE_START");
+    resetCapturedResponse();
+    g_haptic->_enabled[1] = false;
+
+    g_menu->handleCommand("CALIBRATE_BUZZ:1:80:500");
+
+    TEST_ASSERT_NOT_NULL(strstr(g_lastResponse, "ERROR:Motor disabled"));
+    g_menu->updateCalibrationBuzz();
+    TEST_ASSERT_EQUAL_INT(-1, g_haptic->_lastActivatedFinger);
+
+    g_haptic->_enabled[1] = true;
+    g_menu->handleCommand("CALIBRATE_STOP");
 }
 
 // =============================================================================
@@ -1793,6 +1830,8 @@ int main(int argc, char **argv) {
     RUN_TEST(test_calibrateBuzz_secondary_finger_rejected_when_disconnected);
     RUN_TEST(test_updateCalibrationBuzz_activates_pending_request_from_loop);
     RUN_TEST(test_handleCalibrateStop_cancels_pending_request_before_activation);
+    RUN_TEST(test_handleCalibrateStop_relays_CALIB_STOP_to_secondary);
+    RUN_TEST(test_calibrateBuzz_disabled_motor_returns_error);
 
     // Callback tests
     RUN_TEST(test_sendCallback_not_invoked_when_null);

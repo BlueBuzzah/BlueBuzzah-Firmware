@@ -41,7 +41,8 @@ const char* INTERNAL_MESSAGES[] = {
     "DEBUG_SYNC",
     "MC:",             // Macrocycle batch message
     "MC_ACK:",         // Macrocycle acknowledgment
-    "CALIB_BUZZ"
+    "CALIB_BUZZ:",
+    "CALIB_STOP"
 };
 
 const uint8_t INTERNAL_MESSAGE_COUNT = sizeof(INTERNAL_MESSAGES) / sizeof(INTERNAL_MESSAGES[0]);
@@ -932,9 +933,12 @@ void MenuController::handleCalibrateBuzz(const char params[][PARAM_BUFFER_SIZE],
     }
 
     if (finger < MAX_ACTUATORS) {
-        calibrationBuzz(static_cast<uint8_t>(finger),
-                        static_cast<uint8_t>(intensity),
-                        static_cast<uint16_t>(duration));
+        if (!calibrationBuzz(static_cast<uint8_t>(finger),
+                             static_cast<uint8_t>(intensity),
+                             static_cast<uint16_t>(duration))) {
+            sendError("Motor disabled");
+            return;
+        }
     } else {
         // Relay to the SECONDARY glove (its local index = finger - MAX_ACTUATORS)
         if (!_sendToSecondaryCallback || !_ble || !_ble->isSecondaryConnected()) {
@@ -960,13 +964,15 @@ void MenuController::handleCalibrateStop() {
     // Cancel any pending/in-flight one-shot so it cannot reactivate a motor
     // after emergencyStop() below. Actual hardware deactivation and clearing
     // of _calibBuzzFinger happens in updateCalibrationBuzz() from loop().
-    {
-        PLATFORM_CRITICAL_ENTER();
-        _calibBuzzRequestPending = false;
-        _calibBuzzCancelPending = true;
-        PLATFORM_CRITICAL_EXIT();
+    cancelCalibrationBuzz();
+
+    // Stop any relayed buzz still running on the SECONDARY glove
+    if (_sendToSecondaryCallback && _ble && _ble->isSecondaryConnected()) {
+        _sendToSecondaryCallback("CALIB_STOP");
     }
 
+    // Deliberate exception to "only loop() drives the haptic hardware":
+    // a stop must take effect immediately, not one loop iteration later
     if (_haptic) {
         _haptic->emergencyStop();
     }
@@ -976,9 +982,9 @@ void MenuController::handleCalibrateStop() {
     sendResponse();
 }
 
-void MenuController::calibrationBuzz(uint8_t finger, uint8_t intensity, uint16_t durationMs) {
+bool MenuController::calibrationBuzz(uint8_t finger, uint8_t intensity, uint16_t durationMs) {
     if (!_haptic || finger >= MAX_ACTUATORS || !_haptic->isEnabled(finger)) {
-        return;
+        return false;
     }
 
     // Called from BLE-callback context: only record the pending request.
@@ -994,6 +1000,14 @@ void MenuController::calibrationBuzz(uint8_t finger, uint8_t intensity, uint16_t
         _calibBuzzRequestPending = true;  // publish flag: set last
         PLATFORM_CRITICAL_EXIT();
     }
+    return true;
+}
+
+void MenuController::cancelCalibrationBuzz() {
+    PLATFORM_CRITICAL_ENTER();
+    _calibBuzzRequestPending = false;
+    _calibBuzzCancelPending = true;
+    PLATFORM_CRITICAL_EXIT();
 }
 
 void MenuController::updateCalibrationBuzz() {

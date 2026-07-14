@@ -1692,6 +1692,14 @@ void onBLEMessage(uint16_t connHandle, const char *message, uint64_t rxTimestamp
         return;
     }
 
+    // Handle CALIB_STOP from PRIMARY (SECONDARY only): cancel any relayed
+    // one-shot buzz; hardware deactivation happens in loop()
+    if (deviceRole == DeviceRole::SECONDARY && strcmp(message, "CALIB_STOP") == 0)
+    {
+        menu.cancelCalibrationBuzz();
+        return;
+    }
+
     // Handle GET_BATTERY from PRIMARY (SECONDARY only)
     // SECONDARY reads its local battery and sends BATRESPONSE back
     if (strcmp(message, "GET_BATTERY") == 0)

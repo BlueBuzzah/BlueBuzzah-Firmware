@@ -38,6 +38,11 @@ class BLEManager;
 // Response buffer size
 #define RESPONSE_BUFFER_SIZE 512
 
+// Responses are queued into MESSAGE_BUFFER_SIZE-sized TX entries; a smaller
+// TX buffer would silently truncate large responses (e.g. HELP)
+static_assert(MESSAGE_BUFFER_SIZE >= RESPONSE_BUFFER_SIZE,
+              "MESSAGE_BUFFER_SIZE must hold a full response");
+
 // Timeout for SECONDARY battery response (milliseconds)
 static constexpr uint32_t SECONDARY_BATTERY_TIMEOUT_MS = 1000;
 
@@ -204,8 +209,18 @@ public:
      * Callable from BLE-callback context: only records the pending request
      * under a critical section. The haptic hardware is driven exclusively
      * from loop() via updateCalibrationBuzz().
+     *
+     * @return false if the request was dropped (invalid or disabled finger)
      */
-    void calibrationBuzz(uint8_t finger, uint8_t intensity, uint16_t durationMs);
+    bool calibrationBuzz(uint8_t finger, uint8_t intensity, uint16_t durationMs);
+
+    /**
+     * @brief Cancel any pending/in-flight one-shot calibration buzz
+     *
+     * Callable from BLE-callback context: only records the cancellation;
+     * hardware deactivation happens in updateCalibrationBuzz() from loop().
+     */
+    void cancelCalibrationBuzz();
 
     /**
      * @brief Service pending calibration-buzz requests/cancellations and
