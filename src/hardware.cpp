@@ -953,11 +953,11 @@ bool BatteryMonitor::begin() {
 }
 
 float BatteryMonitor::readVoltage() {
+#if BATTERY_SENSE_ADC
     if (!_initialized) {
         return 0.0f;
     }
 
-#if BATTERY_SENSE_ADC
     // Take multiple samples and average for stability
     uint32_t total = 0;
     for (uint8_t i = 0; i < BATTERY_SAMPLE_COUNT; i++) {
@@ -977,10 +977,17 @@ float BatteryMonitor::readVoltage() {
     // driven - an LRA pulse sags VBat by hundreds of mV and would read
     // falsely low. During therapy (or if the bus is busy / a chip PORed)
     // the last idle estimate is returned instead.
+    // A failed boot burst (chips in POR standby: USB-only brownout, EN
+    // toggle) must not latch the monitor dead - keep retrying here and
+    // recover on the first successful read.
     if (_haptic && !_haptic->anyMotorActive()) {
         uint8_t raw[VBAT_BURST_SAMPLES];
         uint8_t n = _haptic->readVBatBurst(raw, VBAT_BURST_SAMPLES);
         _estimator.addBurst(raw, n);
+        if (!_initialized && _estimator.hasReading()) {
+            _initialized = true;
+            Serial.println(F("[INFO] Battery monitor recovered (DRV2605 VBAT)"));
+        }
     }
     return _estimator.voltage();
 #endif
