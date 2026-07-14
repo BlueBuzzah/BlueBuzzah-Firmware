@@ -751,6 +751,9 @@ void loop()
     // Check for SECONDARY battery response timeout (non-blocking)
     menu.checkSecondaryBatteryTimeout();
 
+    // Deactivate an expired calibration buzz (non-blocking)
+    menu.updateCalibrationBuzz();
+
     uint32_t now = millis();
 
     // Check for pending PTP-scheduled flash (SECONDARY only)
@@ -1639,9 +1642,12 @@ void onBLEMessage(uint16_t connHandle, const char *message, uint64_t rxTimestamp
     }
 
     // Try menu controller first for phone/BLE commands (PRIMARY only)
-    if (deviceRole == DeviceRole::PRIMARY && !menu.isInternalMessage(message))
+    // Commands from an identified PHONE connection always dispatch, even if
+    // they happen to match an internal (PRIMARY<->SECONDARY sync) prefix.
+    bool fromPhone = ble.getConnectionType(connHandle) == ConnectionType::PHONE;
+    if (deviceRole == DeviceRole::PRIMARY && (fromPhone || !menu.isInternalMessage(message)))
     {
-        if (menu.handleCommand(message))
+        if (menu.handleCommand(message, fromPhone))
         {
             return; // Command handled by menu controller
         }
@@ -1667,6 +1673,30 @@ void onBLEMessage(uint16_t connHandle, const char *message, uint64_t rxTimestamp
                 led.setPattern(Colors::GREEN, LEDPattern::PULSE_SLOW);
             }
         }
+        return;
+    }
+
+    // Handle CALIB_BUZZ from PRIMARY (SECONDARY only)
+    if (deviceRole == DeviceRole::SECONDARY && strncmp(message, "CALIB_BUZZ:", 11) == 0)
+    {
+        int finger, intensity, duration;
+        if (sscanf(message + 11, "%d:%d:%d", &finger, &intensity, &duration) == 3 &&
+            finger >= 0 && finger < MAX_ACTUATORS &&
+            intensity >= 0 && intensity <= 100 &&
+            duration >= 50 && duration <= 2000)
+        {
+            menu.calibrationBuzz(static_cast<uint8_t>(finger),
+                                 static_cast<uint8_t>(intensity),
+                                 static_cast<uint16_t>(duration));
+        }
+        return;
+    }
+
+    // Handle CALIB_STOP from PRIMARY (SECONDARY only): cancel any relayed
+    // one-shot buzz; hardware deactivation happens in loop()
+    if (deviceRole == DeviceRole::SECONDARY && strcmp(message, "CALIB_STOP") == 0)
+    {
+        menu.cancelCalibrationBuzz();
         return;
     }
 

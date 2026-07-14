@@ -12,6 +12,7 @@
 #include <unity.h>
 #include <Arduino.h>
 #include <cstring>
+#include <cstdlib>
 
 // =============================================================================
 // MOCK DEFINITIONS FOR DEPENDENCIES
@@ -64,7 +65,8 @@ enum class TherapyState {
     ERROR_RECOVERABLE,
     ERROR_FATAL,
     SECONDARY_CONNECTING,
-    SECONDARY_CONNECTED
+    SECONDARY_CONNECTED,
+    LOW_BATTERY
 };
 
 // Mock StateTrigger enum
@@ -143,6 +145,7 @@ public:
     TherapyProfile _profile;
     const char* _profileNames[3] = {"Default", "Gentle", "Intense"};
     uint8_t _profileCount = 3;
+    uint8_t _currentProfileId = 1;
 
     ProfileManager() {
         strcpy(_profile.name, "Default");
@@ -161,9 +164,16 @@ public:
     const char** getProfileNames(uint8_t* count) { *count = _profileCount; return _profileNames; }
     bool loadProfile(int) { return true; }
     const char* getCurrentProfileName() const { return _profile.name; }
+    uint8_t getCurrentProfileId() const { return _currentProfileId; }
     const TherapyProfile* getCurrentProfile() const { return &_profile; }
     bool setParameter(const char*, const char*) { return true; }
 };
+
+// Mock isActiveState (mirrors include/types.h)
+bool isActiveState(TherapyState state) {
+    return state == TherapyState::RUNNING || state == TherapyState::PAUSED ||
+           state == TherapyState::LOW_BATTERY;
+}
 
 // Mock helper function
 const char* therapyStateToString(TherapyState state) {
@@ -178,6 +188,14 @@ const char* therapyStateToString(TherapyState state) {
 
 // Mock NVIC_SystemReset
 void NVIC_SystemReset() {}
+
+// Mock BLEManager
+class BLEManager {
+public:
+    bool _secondaryConnected = true;
+
+    bool isSecondaryConnected() const { return _secondaryConnected; }
+};
 
 // =============================================================================
 // INCLUDE MENU CONTROLLER (after mocks)
@@ -215,6 +233,7 @@ const char* deviceRoleToString(DeviceRole role) {
 
 const char* INTERNAL_MESSAGES[] = {
     "BUZZ",
+    "PING",
     "PARAM_UPDATE",
     "SEED",
     "SEED_ACK",
@@ -250,6 +269,7 @@ public:
     HapticController* _haptic;
     TherapyStateMachine* _stateMachine;
     ProfileManager* _profiles;
+    BLEManager* _ble;
 
     DeviceRole _role;
     char _firmwareVersion[16];
@@ -260,6 +280,18 @@ public:
 
     bool _isCalibrating;
     uint32_t _calibrationStartTime;
+    // Active one-shot calibration buzz; touched only from updateCalibrationBuzz()
+    // (mirrors MenuController: loop-context-only fields).
+    int8_t _calibBuzzFinger;
+    uint32_t _calibBuzzOffTime;
+    // Pending calibration-buzz handoff (mirrors MenuController's BLE-callback
+    // -> loop() handoff; no critical sections needed here since the test
+    // harness is single-threaded).
+    int8_t _calibBuzzPendingFinger = -1;
+    uint8_t _calibBuzzPendingIntensity = 0;
+    uint16_t _calibBuzzPendingDuration = 0;
+    bool _calibBuzzCancelPending = false;
+    bool _calibBuzzRequestPending = false;
     char _responseBuffer[RESPONSE_BUFFER_SIZE];
 
     // Deferred command tracking for SECONDARY battery query
@@ -286,6 +318,7 @@ public:
         _haptic(nullptr),
         _stateMachine(nullptr),
         _profiles(nullptr),
+        _ble(nullptr),
         _role(DeviceRole::PRIMARY),
         _sendCallback(nullptr),
         _restartCallback(nullptr),
@@ -296,6 +329,8 @@ public:
         _secondaryBatteryRequestTime(0),
         _isCalibrating(false),
         _calibrationStartTime(0),
+        _calibBuzzFinger(-1),
+        _calibBuzzOffTime(0),
         _lastParamCount(0)
     {
         strcpy(_firmwareVersion, FIRMWARE_VERSION);
@@ -481,6 +516,145 @@ public:
         _sendToSecondaryCallback = callback;
     }
 
+    void setBLE(BLEManager* ble) {
+        _ble = ble;
+    }
+
+    // Calibration buzz methods (mirror MenuController::calibrationBuzz /
+    // MenuController::updateCalibrationBuzz). Production only touches the
+    // haptic hardware from updateCalibrationBuzz() (loop context);
+    // calibrationBuzz()/handleCalibrateStop() (BLE-callback context) only
+    // record a pending request/cancellation.
+    bool calibrationBuzz(uint8_t finger, uint8_t intensity, uint16_t durationMs) {
+        if (!_haptic || finger >= MAX_ACTUATORS || !_haptic->isEnabled(finger)) {
+            return false;
+        }
+        _calibBuzzPendingFinger = static_cast<int8_t>(finger);
+        _calibBuzzPendingIntensity = intensity;
+        _calibBuzzPendingDuration = durationMs;
+        _calibBuzzCancelPending = false;
+        _calibBuzzRequestPending = true;  // publish flag: set last
+        return true;
+    }
+
+    void cancelCalibrationBuzz() {
+        _calibBuzzRequestPending = false;
+        _calibBuzzCancelPending = true;
+    }
+
+    void updateCalibrationBuzz() {
+        bool requestPending = _calibBuzzRequestPending;
+        bool cancelPending = _calibBuzzCancelPending;
+        int8_t pendingFinger = requestPending ? _calibBuzzPendingFinger : int8_t(-1);
+        uint8_t pendingIntensity = requestPending ? _calibBuzzPendingIntensity : uint8_t(0);
+        uint16_t pendingDuration = requestPending ? _calibBuzzPendingDuration : uint16_t(0);
+        _calibBuzzRequestPending = false;
+        _calibBuzzCancelPending = false;
+
+        if (cancelPending && !requestPending && _calibBuzzFinger >= 0) {
+            if (_haptic) {
+                _haptic->deactivate(static_cast<uint8_t>(_calibBuzzFinger));
+            }
+            _calibBuzzFinger = -1;
+        }
+
+        if (requestPending) {
+            if (_calibBuzzFinger >= 0 && _haptic) {
+                _haptic->deactivate(static_cast<uint8_t>(_calibBuzzFinger));
+            }
+            if (_haptic) {
+                _haptic->activate(pendingFinger, pendingIntensity);
+            }
+            _calibBuzzFinger = pendingFinger;
+            _calibBuzzOffTime = millis() + pendingDuration;
+        }
+
+        if (_calibBuzzFinger >= 0 &&
+            static_cast<int32_t>(millis() - _calibBuzzOffTime) >= 0) {
+            if (_haptic) {
+                _haptic->deactivate(static_cast<uint8_t>(_calibBuzzFinger));
+            }
+            _calibBuzzFinger = -1;
+        }
+    }
+
+    void handleCalibrateBuzz(const char params[][PARAM_BUFFER_SIZE], uint8_t paramCount) {
+        if (!_isCalibrating) {
+            sendError("Not in calibration mode");
+            return;
+        }
+
+        if (paramCount < 3) {
+            sendError("Finger, intensity, and duration required");
+            return;
+        }
+
+        int finger = atoi(params[0]);
+        int intensity = atoi(params[1]);
+        int duration = atoi(params[2]);
+
+        constexpr int maxFingerIndex = 2 * MAX_ACTUATORS - 1;
+        if (finger < 0 || finger > maxFingerIndex) {
+            char msg[40];
+            snprintf(msg, sizeof(msg), "Invalid finger index (0-%d)", maxFingerIndex);
+            sendError(msg);
+            return;
+        }
+        if (intensity < 0 || intensity > 100) {
+            sendError("Intensity out of range (0-100)");
+            return;
+        }
+        if (duration < 50 || duration > 2000) {
+            sendError("Duration out of range (50-2000ms)");
+            return;
+        }
+
+        if (finger < MAX_ACTUATORS) {
+            if (!calibrationBuzz(static_cast<uint8_t>(finger),
+                                 static_cast<uint8_t>(intensity),
+                                 static_cast<uint16_t>(duration))) {
+                sendError("Motor disabled");
+                return;
+            }
+        } else {
+            if (!_sendToSecondaryCallback || !_ble || !_ble->isSecondaryConnected()) {
+                sendError("Secondary glove not connected");
+                return;
+            }
+            char relay[48];
+            snprintf(relay, sizeof(relay), "CALIB_BUZZ:%d:%d:%d",
+                     finger - MAX_ACTUATORS, intensity, duration);
+            _sendToSecondaryCallback(relay);
+        }
+
+        beginResponse();
+        addResponseLine("FINGER", (int32_t)finger);
+        addResponseLine("INTENSITY", (int32_t)intensity);
+        addResponseLine("DURATION", (int32_t)duration);
+        sendResponse();
+    }
+
+    void handleCalibrateStop() {
+        _isCalibrating = false;
+
+        // Cancel any pending/in-flight one-shot so it cannot reactivate a
+        // motor after emergencyStop() below; consumed by updateCalibrationBuzz().
+        cancelCalibrationBuzz();
+
+        // Stop any relayed buzz still running on the SECONDARY glove
+        if (_sendToSecondaryCallback && _ble && _ble->isSecondaryConnected()) {
+            _sendToSecondaryCallback("CALIB_STOP");
+        }
+
+        if (_haptic) {
+            _haptic->emergencyStop();
+        }
+
+        beginResponse();
+        addResponseLine("MODE", "NORMAL");
+        sendResponse();
+    }
+
     // Simulate handleBattery with deferred SECONDARY battery query
     void handleBattery() {
         beginResponse();
@@ -513,6 +687,13 @@ public:
         addResponseLine("ROLE", deviceRoleToString(_role));
         addResponseLine("NAME", _deviceName);
         addResponseLine("FW", _firmwareVersion);
+        addResponseLine("MOTORS", static_cast<int32_t>(MAX_ACTUATORS));
+        if (_profiles) {
+            char profLine[48];
+            snprintf(profLine, sizeof(profLine), "%d:%s",
+                     _profiles->getCurrentProfileId(), _profiles->getCurrentProfileName());
+            addResponseLine("PROFILE", profLine);
+        }
 
         if (_battery) {
             BatteryStatus status = _battery->getStatus();
@@ -585,6 +766,123 @@ public:
             handleSecondaryBatteryResponse(0.0f);
         }
     }
+
+    void handlePing() {
+        beginResponse();
+        addResponseLine("PONG", "");
+        sendResponse();
+    }
+
+    void handleProfileLoad(int profileId) {
+        if (!_profiles) {
+            sendError("Profile manager not available");
+            return;
+        }
+
+        if (_stateMachine && isActiveState(_stateMachine->getCurrentState())) {
+            sendError("Session must be stopped before loading a profile");
+            return;
+        }
+
+        if (!_profiles->loadProfile(profileId)) {
+            sendError("Invalid profile ID");
+            return;
+        }
+
+        if (_therapy) {
+            _therapy->stop();
+        }
+        if (_haptic) {
+            _haptic->emergencyStop();
+        }
+        if (_stateMachine) {
+            _stateMachine->transition(StateTrigger::STOP_SESSION);
+        }
+
+        beginResponse();
+        addResponseLine("STATUS", "REBOOTING");
+        addResponseLine("PROFILE", _profiles->getCurrentProfileName());
+        sendResponse();
+
+        if (_restartCallback) {
+            _restartCallback();
+        }
+    }
+
+    /**
+     * @brief Handle incoming command and send response via callback
+     * @param message Raw command message
+     * @param allowInternal When true, bypass the internal-message prefix filter
+     *        (messages arriving on an identified PHONE connection are always commands)
+     * @return true if command was processed
+     */
+    bool handleCommand(const char* message, bool allowInternal = false) {
+        if (!message || strlen(message) == 0) {
+            return false;
+        }
+
+        // Skip internal messages unless caller vouches for the source
+        if (!allowInternal && isInternalMessage(message)) {
+            return false;
+        }
+
+        // Late IDENTIFY handshake (connection already classified) — consume
+        // silently, it is never a command and must not generate an error reply
+        if (strncmp(message, "IDENTIFY:", 9) == 0) {
+            return true;
+        }
+
+        char command[32];
+        char params[MAX_COMMAND_PARAMS][PARAM_BUFFER_SIZE];
+        uint8_t paramCount = 0;
+
+        if (!parseCommand(message, command, params, paramCount)) {
+            sendError("Invalid command format");
+            return false;
+        }
+
+        // A new command is about to be dispatched: cancel any stale deferred
+        // INFO/BATTERY response still waiting on the SECONDARY glove's
+        // battery reply (mirrors MenuController::handleCommand).
+        if (_waitingForSecondaryBattery) {
+            _waitingForSecondaryBattery = false;
+            _deferredCommand = DeferredCommand::NONE;
+        }
+
+        if (strcmp(command, "PING") == 0) {
+            handlePing();
+            return true;
+        }
+
+        if (strcmp(command, "PROFILE_LOAD") == 0) {
+            if (paramCount < 1) {
+                sendError("Profile ID required");
+                return false;
+            }
+            handleProfileLoad(atoi(params[0]));
+            return true;
+        }
+
+        if (strcmp(command, "CALIBRATE_START") == 0) {
+            startCalibration();
+            beginResponse();
+            addResponseLine("MODE", "CALIBRATION");
+            sendResponse();
+            return true;
+        }
+
+        if (strcmp(command, "CALIBRATE_BUZZ") == 0) {
+            handleCalibrateBuzz(params, paramCount);
+            return true;
+        }
+
+        if (strcmp(command, "CALIBRATE_STOP") == 0) {
+            handleCalibrateStop();
+            return true;
+        }
+
+        return false;
+    }
 };
 
 // =============================================================================
@@ -597,6 +895,7 @@ static BatteryMonitor* g_battery = nullptr;
 static HapticController* g_haptic = nullptr;
 static TherapyStateMachine* g_stateMachine = nullptr;
 static ProfileManager* g_profiles = nullptr;
+static BLEManager* g_ble = nullptr;
 
 // Track callback invocations
 static char g_lastResponse[RESPONSE_BUFFER_SIZE];
@@ -621,6 +920,16 @@ void testSendToSecondaryCallback(const char* message) {
     g_secondaryMessageCount++;
 }
 
+static void resetCapturedResponse(void) {
+    memset(g_lastResponse, 0, sizeof(g_lastResponse));
+    g_responseCount = 0;
+}
+
+static void resetSecondaryCapture(void) {
+    memset(g_lastSecondaryMessage, 0, sizeof(g_lastSecondaryMessage));
+    g_secondaryMessageCount = 0;
+}
+
 void setUp(void) {
     g_menu = new TestMenuController();
     g_therapy = new TherapyEngine();
@@ -628,10 +937,12 @@ void setUp(void) {
     g_haptic = new HapticController();
     g_stateMachine = new TherapyStateMachine();
     g_profiles = new ProfileManager();
+    g_ble = new BLEManager();
 
     g_menu->begin(g_therapy, g_battery, g_haptic, g_stateMachine, g_profiles);
     g_menu->setSendCallback(testSendCallback);
     g_menu->setRestartCallback(testRestartCallback);
+    g_menu->setBLE(g_ble);
 
     memset(g_lastResponse, 0, sizeof(g_lastResponse));
     g_responseCount = 0;
@@ -649,6 +960,7 @@ void tearDown(void) {
     delete g_haptic;
     delete g_stateMachine;
     delete g_profiles;
+    delete g_ble;
 
     g_menu = nullptr;
     g_therapy = nullptr;
@@ -714,8 +1026,8 @@ void test_isInternalMessage_user_command_SESSION_START_returns_false() {
     TEST_ASSERT_FALSE(g_menu->isInternalMessage("SESSION_START"));
 }
 
-void test_isInternalMessage_user_command_PING_returns_false() {
-    TEST_ASSERT_FALSE(g_menu->isInternalMessage("PING"));
+void test_isInternalMessage_PING_returns_true() {
+    TEST_ASSERT_TRUE(g_menu->isInternalMessage("PING"));
 }
 
 void test_isInternalMessage_partial_match_not_prefix_returns_false() {
@@ -969,6 +1281,48 @@ void test_sendError_formats_correctly() {
 }
 
 // =============================================================================
+// COMMAND DISPATCH TESTS
+// =============================================================================
+
+void test_handleCommand_null_returns_false() {
+    TEST_ASSERT_FALSE(g_menu->handleCommand(nullptr));
+}
+
+void test_handleCommand_empty_returns_false() {
+    TEST_ASSERT_FALSE(g_menu->handleCommand(""));
+}
+
+void test_handleCommand_PING_without_allowInternal_is_swallowed() {
+    // PING matches the internal-message prefix filter, so a caller that
+    // doesn't vouch for the source (e.g. a SECONDARY glove connection)
+    // must not have it dispatched.
+    TEST_ASSERT_FALSE(g_menu->handleCommand("PING"));
+    TEST_ASSERT_EQUAL_INT(0, g_responseCount);
+}
+
+void test_handleCommand_PING_with_allowInternal_dispatches_PONG() {
+    // A command arriving on an identified PHONE connection bypasses the
+    // internal-message filter and is dispatched normally.
+    TEST_ASSERT_TRUE(g_menu->handleCommand("PING", true));
+    TEST_ASSERT_EQUAL_INT(1, g_responseCount);
+    TEST_ASSERT_TRUE(strstr(g_lastResponse, "PONG:") != nullptr);
+}
+
+void test_handleCommand_allowInternal_defaults_to_false() {
+    // Default-argument behavior must match explicit false.
+    TEST_ASSERT_FALSE(g_menu->handleCommand("PING"));
+    TEST_ASSERT_EQUAL_INT(0, g_responseCount);
+}
+
+void test_handleCommand_late_IDENTIFY_is_silently_consumed() {
+    // A late IDENTIFY:PHONE arriving after the connection is already
+    // classified must be swallowed, not answered with "Unknown command".
+    TEST_ASSERT_TRUE(g_menu->handleCommand("IDENTIFY:PHONE", true));
+    TEST_ASSERT_EQUAL_INT(0, g_responseCount);
+    TEST_ASSERT_EQUAL_STRING("", g_lastResponse);
+}
+
+// =============================================================================
 // DEVICE INFO TESTS
 // =============================================================================
 
@@ -1024,6 +1378,108 @@ void test_stopCalibration_sets_calibrating_false() {
 
     g_menu->stopCalibration();
     TEST_ASSERT_FALSE(g_menu->isCalibrating());
+}
+
+void test_calibrateBuzz_does_not_block(void) {
+    g_menu->handleCommand("CALIBRATE_START");
+    resetCapturedResponse();
+    uint32_t before = millis();
+    g_menu->handleCommand("CALIBRATE_BUZZ:1:80:2000");
+    uint32_t elapsed = millis() - before;
+    TEST_ASSERT_TRUE(elapsed < 100);   // must not delay(duration)
+    TEST_ASSERT_NOT_NULL(strstr(g_lastResponse, "FINGER:1"));
+    g_menu->handleCommand("CALIBRATE_STOP");
+}
+
+void test_calibrateBuzz_secondary_finger_relayed(void) {
+    g_menu->handleCommand("CALIBRATE_START");
+    resetSecondaryCapture();
+    resetCapturedResponse();
+    g_menu->setSendToSecondaryCallback(testSendToSecondaryCallback);
+    char cmd[32];
+    snprintf(cmd, sizeof(cmd), "CALIBRATE_BUZZ:%d:80:500", MAX_ACTUATORS);  // first secondary finger
+    g_menu->handleCommand(cmd);
+    TEST_ASSERT_NOT_NULL(strstr(g_lastSecondaryMessage, "CALIB_BUZZ:0:80:500"));
+    g_menu->handleCommand("CALIBRATE_STOP");
+}
+
+void test_calibrateBuzz_secondary_finger_rejected_when_disconnected(void) {
+    // Negative relay path: SECONDARY glove not connected must reject the
+    // relay and must NOT forward CALIB_BUZZ to it.
+    g_menu->handleCommand("CALIBRATE_START");
+    resetSecondaryCapture();
+    resetCapturedResponse();
+    g_menu->setSendToSecondaryCallback(testSendToSecondaryCallback);
+    g_ble->_secondaryConnected = false;
+
+    char cmd[32];
+    snprintf(cmd, sizeof(cmd), "CALIBRATE_BUZZ:%d:80:500", MAX_ACTUATORS);
+    g_menu->handleCommand(cmd);
+
+    TEST_ASSERT_NOT_NULL(strstr(g_lastResponse, "ERROR:Secondary glove not connected"));
+    TEST_ASSERT_EQUAL_INT(0, g_secondaryMessageCount);
+    g_menu->handleCommand("CALIBRATE_STOP");
+
+    g_ble->_secondaryConnected = true;
+}
+
+void test_updateCalibrationBuzz_activates_pending_request_from_loop(void) {
+    // calibrationBuzz() (BLE-callback context) must NOT touch the haptic
+    // hardware directly; activation only happens once updateCalibrationBuzz()
+    // (loop context) consumes the pending request.
+    g_menu->handleCommand("CALIBRATE_START");
+    g_menu->handleCommand("CALIBRATE_BUZZ:1:80:2000");
+
+    TEST_ASSERT_EQUAL_INT(-1, g_haptic->_lastActivatedFinger);
+
+    g_menu->updateCalibrationBuzz();
+
+    TEST_ASSERT_EQUAL_INT(1, g_haptic->_lastActivatedFinger);
+    TEST_ASSERT_EQUAL_INT(80, g_haptic->_lastIntensity);
+    TEST_ASSERT_EQUAL_INT8(1, g_menu->_calibBuzzFinger);
+
+    g_menu->handleCommand("CALIBRATE_STOP");
+}
+
+void test_handleCalibrateStop_cancels_pending_request_before_activation(void) {
+    // A STOP that arrives before loop() ever processes the pending BUZZ
+    // request must prevent that motor from ever activating.
+    g_menu->handleCommand("CALIBRATE_START");
+    g_menu->handleCommand("CALIBRATE_BUZZ:2:80:2000");
+    g_menu->handleCommand("CALIBRATE_STOP");
+
+    g_menu->updateCalibrationBuzz();
+
+    TEST_ASSERT_EQUAL_INT(-1, g_haptic->_lastActivatedFinger);
+    TEST_ASSERT_EQUAL_INT8(-1, g_menu->_calibBuzzFinger);
+}
+
+void test_handleCalibrateStop_relays_CALIB_STOP_to_secondary(void) {
+    // STOP must also cancel any relayed buzz still running on the SECONDARY.
+    g_menu->handleCommand("CALIBRATE_START");
+    g_menu->setSendToSecondaryCallback(testSendToSecondaryCallback);
+    resetSecondaryCapture();
+
+    g_menu->handleCommand("CALIBRATE_STOP");
+
+    TEST_ASSERT_EQUAL_INT(1, g_secondaryMessageCount);
+    TEST_ASSERT_EQUAL_STRING("CALIB_STOP", g_lastSecondaryMessage);
+}
+
+void test_calibrateBuzz_disabled_motor_returns_error(void) {
+    // A buzz on a disabled motor must report an error, not a success response.
+    g_menu->handleCommand("CALIBRATE_START");
+    resetCapturedResponse();
+    g_haptic->_enabled[1] = false;
+
+    g_menu->handleCommand("CALIBRATE_BUZZ:1:80:500");
+
+    TEST_ASSERT_NOT_NULL(strstr(g_lastResponse, "ERROR:Motor disabled"));
+    g_menu->updateCalibrationBuzz();
+    TEST_ASSERT_EQUAL_INT(-1, g_haptic->_lastActivatedFinger);
+
+    g_haptic->_enabled[1] = true;
+    g_menu->handleCommand("CALIBRATE_STOP");
 }
 
 // =============================================================================
@@ -1187,6 +1643,19 @@ void test_handleBattery_timeout_returns_zero() {
     TEST_ASSERT_TRUE(strstr(g_lastResponse, "BATS:0.00") != nullptr);
 }
 
+void test_handleInfo_includes_motors_and_profile() {
+    // INFO response must expose motor count and the active profile so the
+    // app can detect board type and stay in sync with the current profile.
+    char expected[32];
+    snprintf(expected, sizeof(expected), "MOTORS:%d", MAX_ACTUATORS);
+
+    g_menu->handleInfo();
+
+    TEST_ASSERT_EQUAL_INT(1, g_responseCount);
+    TEST_ASSERT_TRUE(strstr(g_lastResponse, expected) != nullptr);
+    TEST_ASSERT_TRUE(strstr(g_lastResponse, "PROFILE:1:Default") != nullptr);
+}
+
 void test_handleInfo_timeout_returns_zero_with_status() {
     // When no BATRESPONSE arrives within 1000ms during INFO command,
     // checkSecondaryBatteryTimeout should complete with BATS:0.00 and include STATUS
@@ -1212,6 +1681,76 @@ void test_handleInfo_timeout_returns_zero_with_status() {
     TEST_ASSERT_TRUE(strstr(g_lastResponse, "STATUS:IDLE") != nullptr);
 }
 
+void test_handleCommand_cancels_stale_deferred_INFO_on_new_command() {
+    // If a new command is dispatched while an INFO response is still
+    // deferred (awaiting the SECONDARY battery reply), the stale deferral
+    // must be cancelled so a late reply can't complete against — or send —
+    // a response that belongs to the newer command.
+    g_menu->setSendToSecondaryCallback(testSendToSecondaryCallback);
+    g_battery->_status.voltage = 4.05f;
+
+    // INFO defers waiting on SECONDARY battery
+    g_menu->handleInfo();
+    TEST_ASSERT_EQUAL_INT(0, g_responseCount);
+    TEST_ASSERT_TRUE(g_menu->_waitingForSecondaryBattery);
+
+    // A new command arrives before the SECONDARY battery reply lands
+    resetCapturedResponse();
+    TEST_ASSERT_TRUE(g_menu->handleCommand("PING", true));
+
+    // PING's own response was sent, and the stale deferral was cancelled
+    TEST_ASSERT_EQUAL_INT(1, g_responseCount);
+    TEST_ASSERT_TRUE(strstr(g_lastResponse, "PONG:") != nullptr);
+    TEST_ASSERT_FALSE(g_menu->_waitingForSecondaryBattery);
+
+    // A late SECONDARY battery reply must not produce a second, foreign response
+    g_menu->handleSecondaryBatteryResponse(3.5f);
+    TEST_ASSERT_EQUAL_INT(1, g_responseCount);
+    TEST_ASSERT_TRUE(strstr(g_lastResponse, "PONG:") != nullptr);
+}
+
+void test_profileLoad_rejected_while_running(void) {
+    g_stateMachine->_state = TherapyState::RUNNING;
+
+    g_menu->handleCommand("PROFILE_LOAD:2");
+
+    TEST_ASSERT_TRUE(strstr(g_lastResponse, "ERROR:Session must be stopped") != nullptr);
+    TEST_ASSERT_EQUAL_INT(0, g_restartCount);
+
+    g_stateMachine->_state = TherapyState::IDLE;
+}
+
+void test_profileLoad_rejected_while_paused(void) {
+    g_stateMachine->_state = TherapyState::PAUSED;
+
+    g_menu->handleCommand("PROFILE_LOAD:2");
+
+    TEST_ASSERT_TRUE(strstr(g_lastResponse, "ERROR:Session must be stopped") != nullptr);
+    TEST_ASSERT_EQUAL_INT(0, g_restartCount);
+
+    g_stateMachine->_state = TherapyState::IDLE;
+}
+
+void test_profileLoad_rejected_while_low_battery(void) {
+    g_stateMachine->_state = TherapyState::LOW_BATTERY;
+
+    g_menu->handleCommand("PROFILE_LOAD:2");
+
+    TEST_ASSERT_TRUE(strstr(g_lastResponse, "ERROR:Session must be stopped") != nullptr);
+    TEST_ASSERT_EQUAL_INT(0, g_restartCount);
+
+    g_stateMachine->_state = TherapyState::IDLE;
+}
+
+void test_profileLoad_allowed_while_idle(void) {
+    g_stateMachine->_state = TherapyState::IDLE;
+
+    g_menu->handleCommand("PROFILE_LOAD:1");
+
+    TEST_ASSERT_TRUE(strstr(g_lastResponse, "STATUS:REBOOTING") != nullptr);
+    TEST_ASSERT_EQUAL_INT(1, g_restartCount);
+}
+
 // =============================================================================
 // MAIN
 // =============================================================================
@@ -1233,7 +1772,7 @@ int main(int argc, char **argv) {
     RUN_TEST(test_isInternalMessage_user_command_INFO_returns_false);
     RUN_TEST(test_isInternalMessage_user_command_BATTERY_returns_false);
     RUN_TEST(test_isInternalMessage_user_command_SESSION_START_returns_false);
-    RUN_TEST(test_isInternalMessage_user_command_PING_returns_false);
+    RUN_TEST(test_isInternalMessage_PING_returns_true);
     RUN_TEST(test_isInternalMessage_partial_match_not_prefix_returns_false);
     RUN_TEST(test_isInternalMessage_case_sensitive);
 
@@ -1267,6 +1806,13 @@ int main(int argc, char **argv) {
     RUN_TEST(test_sendResponse_invokes_callback);
     RUN_TEST(test_sendError_formats_correctly);
 
+    RUN_TEST(test_handleCommand_null_returns_false);
+    RUN_TEST(test_handleCommand_empty_returns_false);
+    RUN_TEST(test_handleCommand_PING_without_allowInternal_is_swallowed);
+    RUN_TEST(test_handleCommand_PING_with_allowInternal_dispatches_PONG);
+    RUN_TEST(test_handleCommand_allowInternal_defaults_to_false);
+    RUN_TEST(test_handleCommand_late_IDENTIFY_is_silently_consumed);
+
     // Device info tests
     RUN_TEST(test_setDeviceInfo_updates_role);
     RUN_TEST(test_setDeviceInfo_updates_firmware_version);
@@ -1279,6 +1825,13 @@ int main(int argc, char **argv) {
     RUN_TEST(test_startCalibration_sets_calibrating_true);
     RUN_TEST(test_startCalibration_records_start_time);
     RUN_TEST(test_stopCalibration_sets_calibrating_false);
+    RUN_TEST(test_calibrateBuzz_does_not_block);
+    RUN_TEST(test_calibrateBuzz_secondary_finger_relayed);
+    RUN_TEST(test_calibrateBuzz_secondary_finger_rejected_when_disconnected);
+    RUN_TEST(test_updateCalibrationBuzz_activates_pending_request_from_loop);
+    RUN_TEST(test_handleCalibrateStop_cancels_pending_request_before_activation);
+    RUN_TEST(test_handleCalibrateStop_relays_CALIB_STOP_to_secondary);
+    RUN_TEST(test_calibrateBuzz_disabled_motor_returns_error);
 
     // Callback tests
     RUN_TEST(test_sendCallback_not_invoked_when_null);
@@ -1295,8 +1848,14 @@ int main(int argc, char **argv) {
     RUN_TEST(test_handleBattery_returns_secondary_voltage);
     RUN_TEST(test_handleBattery_returns_zero_when_secondary_unavailable);
     RUN_TEST(test_handleInfo_includes_secondary_voltage);
+    RUN_TEST(test_handleInfo_includes_motors_and_profile);
     RUN_TEST(test_handleBattery_timeout_returns_zero);
     RUN_TEST(test_handleInfo_timeout_returns_zero_with_status);
+    RUN_TEST(test_handleCommand_cancels_stale_deferred_INFO_on_new_command);
+    RUN_TEST(test_profileLoad_rejected_while_running);
+    RUN_TEST(test_profileLoad_rejected_while_paused);
+    RUN_TEST(test_profileLoad_rejected_while_low_battery);
+    RUN_TEST(test_profileLoad_allowed_while_idle);
 
     return UNITY_END();
 }

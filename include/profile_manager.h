@@ -270,6 +270,11 @@ public:
      */
     uint8_t getProfileCount() const { return _profileCount; }
 
+    /**
+     * @brief Get ID of the currently loaded profile (1-based)
+     */
+    uint8_t getCurrentProfileId() const { return _currentProfileId; }
+
     // =========================================================================
     // PARAMETER MODIFICATION
     // =========================================================================

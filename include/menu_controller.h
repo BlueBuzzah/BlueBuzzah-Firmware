@@ -38,6 +38,11 @@ class BLEManager;
 // Response buffer size
 #define RESPONSE_BUFFER_SIZE 512
 
+// Responses are queued into MESSAGE_BUFFER_SIZE-sized TX entries; a smaller
+// TX buffer would silently truncate large responses (e.g. HELP)
+static_assert(MESSAGE_BUFFER_SIZE >= RESPONSE_BUFFER_SIZE,
+              "MESSAGE_BUFFER_SIZE must hold a full response");
+
 // Timeout for SECONDARY battery response (milliseconds)
 static constexpr uint32_t SECONDARY_BATTERY_TIMEOUT_MS = 1000;
 
@@ -146,9 +151,11 @@ public:
     /**
      * @brief Handle incoming command and send response via callback
      * @param message Raw command message
+     * @param allowInternal When true, bypass the internal-message prefix filter
+     *        (messages arriving on an identified PHONE connection are always commands)
      * @return true if command was processed
      */
-    bool handleCommand(const char* message);
+    bool handleCommand(const char* message, bool allowInternal = false);
 
     /**
      * @brief Check if message is an internal sync message
@@ -196,6 +203,33 @@ public:
      */
     bool isCalibrating() const { return _isCalibrating; }
 
+    /**
+     * @brief Request a non-blocking one-shot buzz on a local finger
+     *
+     * Callable from BLE-callback context: only records the pending request
+     * under a critical section. The haptic hardware is driven exclusively
+     * from loop() via updateCalibrationBuzz().
+     *
+     * @return false if the request was dropped (invalid or disabled finger)
+     */
+    bool calibrationBuzz(uint8_t finger, uint8_t intensity, uint16_t durationMs);
+
+    /**
+     * @brief Cancel any pending/in-flight one-shot calibration buzz
+     *
+     * Callable from BLE-callback context: only records the cancellation;
+     * hardware deactivation happens in updateCalibrationBuzz() from loop().
+     */
+    void cancelCalibrationBuzz();
+
+    /**
+     * @brief Service pending calibration-buzz requests/cancellations and
+     *        deactivate an expired one-shot; call every loop iteration
+     *
+     * MUST only be called from main loop context (drives haptic hardware).
+     */
+    void updateCalibrationBuzz();
+
 private:
     // Component references
     TherapyEngine* _therapy;
@@ -230,6 +264,22 @@ private:
     // State
     bool _isCalibrating;
     uint32_t _calibrationStartTime;
+
+    // Active one-shot calibration buzz. Touched ONLY from loop() context
+    // (via updateCalibrationBuzz()) so these stay plain fields.
+    int8_t _calibBuzzFinger;      // -1 = none
+    uint32_t _calibBuzzOffTime;   // millis() deadline to deactivate
+
+    // Pending calibration-buzz handoff: written from BLE-callback context
+    // (calibrationBuzz()/handleCalibrateStop()), consumed from loop() context
+    // (updateCalibrationBuzz()). Only loop() drives the haptic hardware for
+    // calibration, so these fields plus PLATFORM_CRITICAL_ENTER/EXIT are the
+    // only cross-context surface.
+    volatile int8_t _calibBuzzPendingFinger;
+    volatile uint8_t _calibBuzzPendingIntensity;
+    volatile uint16_t _calibBuzzPendingDuration;
+    volatile bool _calibBuzzCancelPending;
+    volatile bool _calibBuzzRequestPending;  // publish flag: set last
 
     // Response buffer
     char _responseBuffer[RESPONSE_BUFFER_SIZE];

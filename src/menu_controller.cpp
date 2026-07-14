@@ -40,7 +40,9 @@ const char* INTERNAL_MESSAGES[] = {
     "DEBUG_FLASH",
     "DEBUG_SYNC",
     "MC:",             // Macrocycle batch message
-    "MC_ACK:"          // Macrocycle acknowledgment
+    "MC_ACK:",         // Macrocycle acknowledgment
+    "CALIB_BUZZ:",
+    "CALIB_STOP"
 };
 
 const uint8_t INTERNAL_MESSAGE_COUNT = sizeof(INTERNAL_MESSAGES) / sizeof(INTERNAL_MESSAGES[0]);
@@ -66,7 +68,14 @@ MenuController::MenuController() :
     _secondaryBatteryReceived(false),
     _secondaryBatteryRequestTime(0),
     _isCalibrating(false),
-    _calibrationStartTime(0)
+    _calibrationStartTime(0),
+    _calibBuzzFinger(-1),
+    _calibBuzzOffTime(0),
+    _calibBuzzPendingFinger(-1),
+    _calibBuzzPendingIntensity(0),
+    _calibBuzzPendingDuration(0),
+    _calibBuzzCancelPending(false),
+    _calibBuzzRequestPending(false)
 {
     strcpy(_firmwareVersion, FIRMWARE_VERSION);
     strcpy(_deviceName, BLE_NAME);
@@ -138,14 +147,21 @@ bool MenuController::isInternalMessage(const char* message) {
     return false;
 }
 
-bool MenuController::handleCommand(const char* message) {
+bool MenuController::handleCommand(const char* message, bool allowInternal) {
     if (!message || strlen(message) == 0) {
         return false;
     }
 
-    // Skip internal messages
-    if (isInternalMessage(message)) {
+    // Skip internal messages unless caller vouches for the source
+    // (messages from an identified PHONE connection are always commands)
+    if (!allowInternal && isInternalMessage(message)) {
         return false;
+    }
+
+    // Late IDENTIFY handshake (connection already classified) — consume
+    // silently, it is never a command and must not generate an error reply
+    if (strncmp(message, "IDENTIFY:", 9) == 0) {
+        return true;
     }
 
     // Parse command
@@ -159,6 +175,16 @@ bool MenuController::handleCommand(const char* message) {
     }
 
     Serial.printf("[MENU] Command: %s, Params: %d\n", command, paramCount);
+
+    // A new command is about to be dispatched: cancel any stale deferred
+    // INFO/BATTERY response still waiting on the SECONDARY glove's battery
+    // reply. Without this, a late reply (or its timeout) would complete
+    // against a response buffer this command is about to overwrite, sending
+    // a corrupted or foreign response to the phone.
+    if (_waitingForSecondaryBattery) {
+        _waitingForSecondaryBattery = false;
+        _deferredCommand = DeferredCommand::NONE;
+    }
 
     // Dispatch to handler
     if (strcmp(command, "INFO") == 0) {
@@ -396,6 +422,13 @@ void MenuController::handleInfo() {
     addResponseLine("ROLE", deviceRoleToString(_role));
     addResponseLine("NAME", _deviceName);
     addResponseLine("FW", _firmwareVersion);
+    addResponseLine("MOTORS", static_cast<int32_t>(MAX_ACTUATORS));
+    if (_profiles) {
+        char profLine[48];
+        snprintf(profLine, sizeof(profLine), "%d:%s",
+                 _profiles->getCurrentProfileId(), _profiles->getCurrentProfileName());
+        addResponseLine("PROFILE", profLine);
+    }
 
     // Get battery status
     if (_battery) {
@@ -522,6 +555,11 @@ void MenuController::handleProfileLoad(const char params[][PARAM_BUFFER_SIZE], u
 
     if (!_profiles) {
         sendError("Profile manager not available");
+        return;
+    }
+
+    if (_stateMachine && isActiveState(_stateMachine->getCurrentState())) {
+        sendError("Session must be stopped before loading a profile");
         return;
     }
 
@@ -894,17 +932,24 @@ void MenuController::handleCalibrateBuzz(const char params[][PARAM_BUFFER_SIZE],
         return;
     }
 
-    // Execute buzz on local fingers (0-4)
-    if (finger < MAX_ACTUATORS && _haptic) {
-        uint8_t fingerIdx = static_cast<uint8_t>(finger);
-        uint8_t intensityVal = static_cast<uint8_t>(intensity);
-        if (_haptic->isEnabled(fingerIdx)) {
-            _haptic->activate(fingerIdx, intensityVal);
-            delay(duration);
-            _haptic->deactivate(fingerIdx);
+    if (finger < MAX_ACTUATORS) {
+        if (!calibrationBuzz(static_cast<uint8_t>(finger),
+                             static_cast<uint8_t>(intensity),
+                             static_cast<uint16_t>(duration))) {
+            sendError("Motor disabled");
+            return;
         }
+    } else {
+        // Relay to the SECONDARY glove (its local index = finger - MAX_ACTUATORS)
+        if (!_sendToSecondaryCallback || !_ble || !_ble->isSecondaryConnected()) {
+            sendError("Secondary glove not connected");
+            return;
+        }
+        char relay[48];
+        snprintf(relay, sizeof(relay), "CALIB_BUZZ:%d:%d:%d",
+                 finger - MAX_ACTUATORS, intensity, duration);
+        _sendToSecondaryCallback(relay);
     }
-    // Fingers 5-7 would be sent to SECONDARY device
 
     beginResponse();
     addResponseLine("FINGER", (int32_t)finger);
@@ -916,6 +961,18 @@ void MenuController::handleCalibrateBuzz(const char params[][PARAM_BUFFER_SIZE],
 void MenuController::handleCalibrateStop() {
     _isCalibrating = false;
 
+    // Cancel any pending/in-flight one-shot so it cannot reactivate a motor
+    // after emergencyStop() below. Actual hardware deactivation and clearing
+    // of _calibBuzzFinger happens in updateCalibrationBuzz() from loop().
+    cancelCalibrationBuzz();
+
+    // Stop any relayed buzz still running on the SECONDARY glove
+    if (_sendToSecondaryCallback && _ble && _ble->isSecondaryConnected()) {
+        _sendToSecondaryCallback("CALIB_STOP");
+    }
+
+    // Deliberate exception to "only loop() drives the haptic hardware":
+    // a stop must take effect immediately, not one loop iteration later
     if (_haptic) {
         _haptic->emergencyStop();
     }
@@ -923,6 +980,82 @@ void MenuController::handleCalibrateStop() {
     beginResponse();
     addResponseLine("MODE", "NORMAL");
     sendResponse();
+}
+
+bool MenuController::calibrationBuzz(uint8_t finger, uint8_t intensity, uint16_t durationMs) {
+    if (!_haptic || finger >= MAX_ACTUATORS || !_haptic->isEnabled(finger)) {
+        return false;
+    }
+
+    // Called from BLE-callback context: only record the pending request.
+    // The haptic hardware is driven exclusively from loop() via
+    // updateCalibrationBuzz(), which avoids interleaving I2C mux
+    // transactions from two contexts.
+    {
+        PLATFORM_CRITICAL_ENTER();
+        _calibBuzzPendingFinger = static_cast<int8_t>(finger);
+        _calibBuzzPendingIntensity = intensity;
+        _calibBuzzPendingDuration = durationMs;
+        _calibBuzzCancelPending = false;
+        _calibBuzzRequestPending = true;  // publish flag: set last
+        PLATFORM_CRITICAL_EXIT();
+    }
+    return true;
+}
+
+void MenuController::cancelCalibrationBuzz() {
+    PLATFORM_CRITICAL_ENTER();
+    _calibBuzzRequestPending = false;
+    _calibBuzzCancelPending = true;
+    PLATFORM_CRITICAL_EXIT();
+}
+
+void MenuController::updateCalibrationBuzz() {
+    bool requestPending;
+    bool cancelPending;
+    int8_t pendingFinger = -1;
+    uint8_t pendingIntensity = 0;
+    uint16_t pendingDuration = 0;
+
+    {
+        PLATFORM_CRITICAL_ENTER();
+        requestPending = _calibBuzzRequestPending;
+        cancelPending = _calibBuzzCancelPending;
+        if (requestPending) {
+            pendingFinger = _calibBuzzPendingFinger;
+            pendingIntensity = _calibBuzzPendingIntensity;
+            pendingDuration = _calibBuzzPendingDuration;
+        }
+        _calibBuzzRequestPending = false;
+        _calibBuzzCancelPending = false;
+        PLATFORM_CRITICAL_EXIT();
+    }
+
+    if (cancelPending && !requestPending && _calibBuzzFinger >= 0) {
+        if (_haptic) {
+            _haptic->deactivate(static_cast<uint8_t>(_calibBuzzFinger));
+        }
+        _calibBuzzFinger = -1;
+    }
+
+    if (requestPending) {
+        if (_calibBuzzFinger >= 0 && _haptic) {
+            _haptic->deactivate(static_cast<uint8_t>(_calibBuzzFinger));
+        }
+        if (_haptic) {
+            _haptic->activate(pendingFinger, pendingIntensity);
+        }
+        _calibBuzzFinger = pendingFinger;
+        _calibBuzzOffTime = millis() + pendingDuration;
+    }
+
+    if (_calibBuzzFinger >= 0 &&
+        static_cast<int32_t>(millis() - _calibBuzzOffTime) >= 0) {
+        if (_haptic) {
+            _haptic->deactivate(static_cast<uint8_t>(_calibBuzzFinger));
+        }
+        _calibBuzzFinger = -1;
+    }
 }
 
 // =============================================================================

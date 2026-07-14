@@ -249,6 +249,17 @@ public:
     bool isPhoneConnected() const;
 
     /**
+     * @brief Get the type of an active connection
+     * @param connHandle Connection handle to look up
+     * @return Connection type, or ConnectionType::NONE if handle unknown
+     */
+    ConnectionType getConnectionType(uint16_t connHandle) const {
+        // findConnection is a non-const helper; this lookup is logically const
+        BBConnection* conn = const_cast<BLEManager*>(this)->findConnection(connHandle);
+        return conn ? conn->type : ConnectionType::NONE;
+    }
+
+    /**
      * @brief Check if connected to PRIMARY (SECONDARY mode)
      */
     bool isPrimaryConnected() const;
