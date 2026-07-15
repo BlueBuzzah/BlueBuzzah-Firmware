@@ -2312,10 +2312,15 @@ void onMacrocycleStart(uint32_t macrocycleCount)
 {
     // Recover any DRV2605 that reset since configuration (VBat brownout
     // leaves it in standby, silently ignoring the coming activations).
-    // Round-robin single-chip probe (~200us); runs here in the loop task
-    // during the relax gap, BEFORE the macrocycle base timestamp is
-    // captured, so scheduled event timing is unaffected.
-    haptic.verifyAndHeal();
+    // Round-robin single-chip probe; deferred to the loop task rather than
+    // run inline because the first macrocycle-start callback fires from
+    // startSession(), which on a phone- or sync-initiated start runs in the
+    // BLE callback context. verifyAndHeal() blocks on I2C (and takes a
+    // no-timeout I2C mutex); doing that in the nRF52 SoftDevice callback
+    // starves the radio and drops the link mid-write. The deferred executor
+    // runs it in the loop task, honouring verifyAndHeal()'s single-task
+    // (loop-only) contract.
+    deferredQueue.enqueue(DeferredWorkType::HAPTIC_HEAL);
 
     // Clock sync handled by main loop 1-second PING interval
     // No additional PING needed at macrocycle boundary
