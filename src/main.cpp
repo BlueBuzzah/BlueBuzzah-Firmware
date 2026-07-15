@@ -413,6 +413,9 @@ void onMenuSendToSecondary(const char *message);
 // SECONDARY Keepalive Timeout
 void handleKeepaliveTimeout();
 
+// SECONDARY: recover the FSM from a spurious CONNECTION_LOST when link traffic resumes
+void secondaryRecoverFromSpuriousLoss(bool therapyActive);
+
 // Debug flash helper
 void triggerDebugFlash();
 
@@ -1762,6 +1765,7 @@ void onBLEMessage(uint16_t connHandle, const char *message, uint64_t rxTimestamp
         {
             // Track connectivity - MACROCYCLE proves PRIMARY is alive
             lastKeepaliveReceived = millis();
+            secondaryRecoverFromSpuriousLoss(true);  // therapy data -> RUNNING
 
             // Parse macrocycle from V2 format (includes clock offset)
             Macrocycle mc;
@@ -1914,6 +1918,7 @@ void onBLEMessage(uint16_t connHandle, const char *message, uint64_t rxTimestamp
             {
                 // Track connectivity - PING proves PRIMARY is alive
                 lastKeepaliveReceived = millis();
+                secondaryRecoverFromSpuriousLoss(false);  // keepalive only -> READY
 
                 uint64_t rxAnchor = 0;
 #if SYNC_ANCHOR_TIMESTAMPING_ENABLED
@@ -2887,6 +2892,31 @@ void handleKeepaliveTimeout()
     Serial.println(F("[RECOVERY] Connection lost - resuming scan for PRIMARY"));
     lastKeepaliveReceived = 0; // Reset for next session
     ble.startScanning(BLE_NAME);
+}
+
+void secondaryRecoverFromSpuriousLoss(bool therapyActive)
+{
+    // A keepalive gap can trip CONNECTION_LOST even though the BLE link never
+    // dropped (the SECONDARY keeps buzzing from incoming macrocycles, which don't
+    // gate on FSM state). When traffic resumes on the still-live link, the "loss"
+    // was transient — recover the FSM to match the PRIMARY instead of sitting purple
+    // until the 30s demote-to-IDLE, which strands the follower in READY (solid green)
+    // while the PRIMARY is RUNNING (pulsing green). A genuine PRIMARY hang never
+    // resumes traffic, so this never fires for it — that path still demotes to IDLE.
+    if (deviceRole != DeviceRole::SECONDARY)
+        return;
+    if (stateMachine.getCurrentState() != TherapyState::CONNECTION_LOST)
+        return;
+    if (!ble.isPrimaryConnected())
+        return;
+
+    Serial.println(F("[RECOVERY] Link traffic resumed on live link - leaving CONNECTION_LOST"));
+    stateMachine.transition(StateTrigger::CONNECTED);           // CONNECTION_LOST -> READY
+    if (therapyActive)
+    {
+        // Receiving therapy data means a session is active: follow the PRIMARY.
+        stateMachine.transition(StateTrigger::START_SESSION);   // READY -> RUNNING
+    }
 }
 
 // =============================================================================
