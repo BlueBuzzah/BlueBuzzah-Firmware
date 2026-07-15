@@ -65,7 +65,7 @@ uint64_t getMicros() {
         s_overflowCount = 0;
     } else {
         if (now < s_lastMicros) {
-            s_overflowCount++;
+            s_overflowCount = s_overflowCount + 1;
         }
         s_lastMicros = now;
     }
@@ -108,7 +108,7 @@ uint64_t getMillis64() {
 
     // Detect overflow: if current value is less than last, we wrapped
     if (now < s_lastMillis) {
-        s_millisOverflowCount++;
+        s_millisOverflowCount = s_millisOverflowCount + 1;
     }
     s_lastMillis = now;
 

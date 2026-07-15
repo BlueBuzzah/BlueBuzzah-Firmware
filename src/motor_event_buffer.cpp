@@ -39,7 +39,7 @@ bool MotorEventBuffer::stage(uint64_t activateTimeUs, uint8_t finger, uint8_t am
 
     // Calculate next head position
     uint8_t currentHead = _head;
-    uint8_t nextHead = (currentHead + 1) % MAX_STAGED;
+    uint8_t nextHead = static_cast<uint8_t>((currentHead + 1) % MAX_STAGED);
 
     // Check if buffer is full (next position would equal tail)
     if (nextHead == _tail) {
@@ -130,7 +130,7 @@ bool MotorEventBuffer::unstage(StagedMotorEvent& event) {
     platformMemoryBarrier();
 
     // Advance tail
-    _tail = (currentTail + 1) % MAX_STAGED;
+    _tail = static_cast<uint8_t>((currentTail + 1) % MAX_STAGED);
 
     return true;
 }
@@ -151,7 +151,7 @@ uint8_t MotorEventBuffer::getPendingCount() const {
     if (h >= t) {
         return h - t;
     } else {
-        return MAX_STAGED - t + h;
+        return static_cast<uint8_t>(MAX_STAGED - t + h);
     }
 }
 

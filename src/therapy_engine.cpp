@@ -381,7 +381,7 @@ void TherapyEngine::startSession(
         _macrocycleStartCallback(_cyclesCompleted);
     }
 
-    Serial.printf("[THERAPY] Session started: %lu sec, pattern=%d\n", durationSec, patternType);
+    Serial.printf("[THERAPY] Session started: %lu sec, pattern=%d\n", durationSec, static_cast<int>(patternType));
     Serial.printf("[THERAPY] Timing: ON=%.1fms, OFF=%.1fms, Jitter=%.1f%%\n",
                   timeOnMs, timeOffMs, jitterPercent);
     Serial.printf("[THERAPY] Pattern duration: %.1fms, Relax: %.1fms\n",

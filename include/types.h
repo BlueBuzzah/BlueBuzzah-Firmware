@@ -456,14 +456,14 @@ struct __attribute__((packed)) MacrocycleEvent {
         , finger(secFinger)
         , amplitude(amp)
         , durationMs(dur)
-        , freqOffset((freqHz - MACROCYCLE_FREQ_BASE) / MACROCYCLE_FREQ_STEP)
+        , freqOffset(static_cast<uint8_t>((freqHz - MACROCYCLE_FREQ_BASE) / MACROCYCLE_FREQ_STEP))
         , primaryFinger(primFinger) {}
 
     /**
      * @brief Decode frequency from freqOffset
      */
     uint16_t getFrequencyHz() const {
-        return MACROCYCLE_FREQ_BASE + (freqOffset * MACROCYCLE_FREQ_STEP);
+        return static_cast<uint16_t>(MACROCYCLE_FREQ_BASE + (freqOffset * MACROCYCLE_FREQ_STEP));
     }
 };
 

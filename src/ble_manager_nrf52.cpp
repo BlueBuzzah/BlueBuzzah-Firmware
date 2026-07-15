@@ -26,10 +26,10 @@ BLEManager::BLEManager() :
     _connectCallback(nullptr),
     _disconnectCallback(nullptr),
     _messageCallback(nullptr),
-    _txStampCallback(nullptr),
     _txHead(0),
     _txTail(0),
-    _txCount(0)
+    _txCount(0),
+    _txStampCallback(nullptr)
 {
     memset(_deviceName, 0, sizeof(_deviceName));
     memset(_targetName, 0, sizeof(_targetName));

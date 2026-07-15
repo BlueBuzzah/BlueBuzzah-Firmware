@@ -39,7 +39,7 @@
 #define MAX_CONNECTIONS 2
 
 // Message protocol
-#define EOT_CHAR 0x04  // End of transmission marker
+#define EOT_CHAR '\x04'  // End of transmission marker
 
 // Identification handshake
 #define IDENTIFY_TIMEOUT_MS 1000  // Time to wait for IDENTIFY message
