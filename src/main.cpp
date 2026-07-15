@@ -96,6 +96,11 @@ uint8_t g_autoStartRetryCount = 0; // Auto-start sync retry counter (reset on SE
 // MUST be volatile: updated in BLE callback context, read in main loop
 volatile uint32_t lastKeepaliveReceived = 0;  // SECONDARY: Last PING/BUZZ from PRIMARY
 volatile uint32_t lastSecondaryKeepalive = 0; // PRIMARY: Last PONG from SECONDARY
+volatile uint32_t g_lastMacrocycleReceivedMs = 0; // SECONDARY: last MACROCYCLE (therapy data) rx
+
+// A SECONDARY receiving macrocycles this recently is following an active session.
+// Macrocycles arrive every 50-150ms during therapy, so 1s means several missed = idle.
+static constexpr uint32_t MACROCYCLE_ACTIVE_WINDOW_MS = 1000;
 
 // PRIMARY-side keepalive timeout
 // Aligned with SECONDARY's KEEPALIVE_TIMEOUT_MS (6000) to prevent race conditions
@@ -412,9 +417,6 @@ void onMenuSendToSecondary(const char *message);
 
 // SECONDARY Keepalive Timeout
 void handleKeepaliveTimeout();
-
-// SECONDARY: recover the FSM from a spurious CONNECTION_LOST when link traffic resumes
-void secondaryRecoverFromSpuriousLoss(bool therapyActive);
 
 // Debug flash helper
 void triggerDebugFlash();
@@ -895,27 +897,62 @@ void loop()
     }
     wasTherapyRunning = isTherapyRunning;
 
-    // Demote CONNECTION_LOST (purple blink) to IDLE (blue breathe) once the
-    // peer has been gone for CONNECTION_LOST_TIMEOUT_MS. Non-blocking
-    // replacement for the old 3x2s delay() retry loop; scanning/advertising
-    // keeps running and a reconnect from IDLE still lands in READY.
-    if (stateMachine.getCurrentState() == TherapyState::CONNECTION_LOST &&
-        millis() - g_connectionLostAt >= CONNECTION_LOST_TIMEOUT_MS)
+    // ---- Peer-link state reconciliation (loop context) ----
+    // All transitions here (and their LED/Serial side effects) run in loop context,
+    // NOT the BLE host task, so they never inflate a PING/PONG PTP sample.
+    //
+    // Liveness is judged by recent app-level keepalive traffic, NOT ble.isXConnected():
+    // during an app-level PRIMARY hang the BLE link-layer keeps ticking, so isConnected
+    // stays true. Gating on it would let a demoted-to-IDLE hang be re-promoted to READY
+    // and mask the failure. peerAlive (traffic within the timeout) is the honest signal;
+    // it also makes the demote and promote branches mutually exclusive.
     {
-        Serial.println(F("[RECOVERY] No reconnect within timeout - returning to IDLE"));
-        stateMachine.transition(StateTrigger::RECONNECT_FAILED);
-    }
+        uint32_t lastPeerKA = (deviceRole == DeviceRole::SECONDARY)
+                                  ? lastKeepaliveReceived : lastSecondaryKeepalive;
+        bool peerAlive = (lastPeerKA != 0) &&
+                         (millis() - lastPeerKA < KEEPALIVE_TIMEOUT_MS);
+        TherapyState fsmState = stateMachine.getCurrentState();
 
-    // Promote IDLE back to READY (green) while the glove pair is still connected.
-    // After a session stops the FSM lands in IDLE (blue breathe); READY is only
-    // established by a CONNECTED trigger on pairing, so without this a stop would
-    // leave the LEDs breathing blue instead of solid green even though the peer
-    // glove is right there. CONNECTED is a no-op from any non-IDLE state.
-    bool peerConnected = (deviceRole == DeviceRole::PRIMARY && ble.isSecondaryConnected()) ||
-                         (deviceRole == DeviceRole::SECONDARY && ble.isPrimaryConnected());
-    if (peerConnected && stateMachine.getCurrentState() == TherapyState::IDLE)
-    {
-        stateMachine.transition(StateTrigger::CONNECTED);
+        if (fsmState == TherapyState::CONNECTION_LOST)
+        {
+            if (peerAlive)
+            {
+                // Spurious loss: a keepalive gap tripped CONNECTION_LOST but the link
+                // never dropped and traffic has resumed. Recover to match the PRIMARY
+                // instead of sitting purple until the demote below.
+                if (deviceRole == DeviceRole::SECONDARY && ble.isScanning())
+                {
+                    // handleKeepaliveTimeout() restarted scanning on the false timeout;
+                    // stop it now that we're staying connected (avoids scan-vs-sync
+                    // radio contention during the fragile period).
+                    ble.stopScanning();
+                }
+                Serial.println(F("[RECOVERY] Peer traffic resumed on live link - leaving CONNECTION_LOST"));
+                stateMachine.transition(StateTrigger::CONNECTED);           // -> READY
+                // Recent macrocycles mean a session is active: follow the PRIMARY.
+                bool therapyData = (g_lastMacrocycleReceivedMs != 0) &&
+                                   (millis() - g_lastMacrocycleReceivedMs < MACROCYCLE_ACTIVE_WINDOW_MS);
+                if (deviceRole == DeviceRole::SECONDARY && therapyData)
+                {
+                    stateMachine.transition(StateTrigger::START_SESSION);  // -> RUNNING
+                }
+            }
+            else if (millis() - g_connectionLostAt >= CONNECTION_LOST_TIMEOUT_MS)
+            {
+                // Genuine loss: no peer traffic within the window. Demote to IDLE and
+                // stay there — peerAlive is false, so the promotion below won't run.
+                Serial.println(F("[RECOVERY] No peer traffic within timeout - returning to IDLE"));
+                stateMachine.transition(StateTrigger::RECONNECT_FAILED);   // -> IDLE
+            }
+        }
+        else if (fsmState == TherapyState::IDLE && peerAlive)
+        {
+            // After a session stops the FSM lands in IDLE (blue breathe); promote to
+            // READY (solid green) while the pair is alive. Gated on peerAlive (not
+            // isConnected) so a hung peer demoted to IDLE is not falsely re-promoted.
+            // CONNECTED is a no-op from any non-IDLE state.
+            stateMachine.transition(StateTrigger::CONNECTED);              // -> READY
+        }
     }
 
     // SECONDARY: Check for keepalive timeout during active connection
@@ -1763,9 +1800,11 @@ void onBLEMessage(uint16_t connHandle, const char *message, uint64_t rxTimestamp
     {
         if (deviceRole == DeviceRole::SECONDARY)
         {
-            // Track connectivity - MACROCYCLE proves PRIMARY is alive
+            // Track connectivity - MACROCYCLE proves PRIMARY is alive. Cheap volatile
+            // writes only; the loop-context reconciliation block does any FSM recovery
+            // (keeping transitions + LED/Serial off the BLE host task / PTP path).
             lastKeepaliveReceived = millis();
-            secondaryRecoverFromSpuriousLoss(true);  // therapy data -> RUNNING
+            g_lastMacrocycleReceivedMs = millis();
 
             // Parse macrocycle from V2 format (includes clock offset)
             Macrocycle mc;
@@ -1916,9 +1955,11 @@ void onBLEMessage(uint16_t connHandle, const char *message, uint64_t rxTimestamp
             // so SECONDARY main-loop latency no longer inflates measured RTT.
             if (deviceRole == DeviceRole::SECONDARY)
             {
-                // Track connectivity - PING proves PRIMARY is alive
+                // Track connectivity - PING proves PRIMARY is alive. Recovery from a
+                // spurious CONNECTION_LOST is handled in the loop-context reconciliation
+                // block, not here, so this stays off the PTP timing path (this runs just
+                // before sendPongStamped below).
                 lastKeepaliveReceived = millis();
-                secondaryRecoverFromSpuriousLoss(false);  // keepalive only -> READY
 
                 uint64_t rxAnchor = 0;
 #if SYNC_ANCHOR_TIMESTAMPING_ENABLED
@@ -2892,31 +2933,6 @@ void handleKeepaliveTimeout()
     Serial.println(F("[RECOVERY] Connection lost - resuming scan for PRIMARY"));
     lastKeepaliveReceived = 0; // Reset for next session
     ble.startScanning(BLE_NAME);
-}
-
-void secondaryRecoverFromSpuriousLoss(bool therapyActive)
-{
-    // A keepalive gap can trip CONNECTION_LOST even though the BLE link never
-    // dropped (the SECONDARY keeps buzzing from incoming macrocycles, which don't
-    // gate on FSM state). When traffic resumes on the still-live link, the "loss"
-    // was transient — recover the FSM to match the PRIMARY instead of sitting purple
-    // until the 30s demote-to-IDLE, which strands the follower in READY (solid green)
-    // while the PRIMARY is RUNNING (pulsing green). A genuine PRIMARY hang never
-    // resumes traffic, so this never fires for it — that path still demotes to IDLE.
-    if (deviceRole != DeviceRole::SECONDARY)
-        return;
-    if (stateMachine.getCurrentState() != TherapyState::CONNECTION_LOST)
-        return;
-    if (!ble.isPrimaryConnected())
-        return;
-
-    Serial.println(F("[RECOVERY] Link traffic resumed on live link - leaving CONNECTION_LOST"));
-    stateMachine.transition(StateTrigger::CONNECTED);           // CONNECTION_LOST -> READY
-    if (therapyActive)
-    {
-        // Receiving therapy data means a session is active: follow the PRIMARY.
-        stateMachine.transition(StateTrigger::START_SESSION);   // READY -> RUNNING
-    }
 }
 
 // =============================================================================
