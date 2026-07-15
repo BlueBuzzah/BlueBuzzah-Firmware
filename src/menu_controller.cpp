@@ -798,7 +798,11 @@ void MenuController::handleSessionStop() {
     }
 
     if (_stateMachine) {
+        // Complete the stop (STOPPING -> IDLE); the main loop promotes IDLE back to
+        // READY while the glove pair is still connected. Without STOPPED the PRIMARY
+        // lingered in STOPPING after a phone-initiated stop.
         _stateMachine->transition(StateTrigger::STOP_SESSION);
+        _stateMachine->transition(StateTrigger::STOPPED);
     }
 
     // Notify SECONDARY of session stop

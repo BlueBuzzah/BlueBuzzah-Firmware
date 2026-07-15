@@ -903,6 +903,18 @@ void loop()
         stateMachine.transition(StateTrigger::RECONNECT_FAILED);
     }
 
+    // Promote IDLE back to READY (green) while the glove pair is still connected.
+    // After a session stops the FSM lands in IDLE (blue breathe); READY is only
+    // established by a CONNECTED trigger on pairing, so without this a stop would
+    // leave the LEDs breathing blue instead of solid green even though the peer
+    // glove is right there. CONNECTED is a no-op from any non-IDLE state.
+    bool peerConnected = (deviceRole == DeviceRole::PRIMARY && ble.isSecondaryConnected()) ||
+                         (deviceRole == DeviceRole::SECONDARY && ble.isPrimaryConnected());
+    if (peerConnected && stateMachine.getCurrentState() == TherapyState::IDLE)
+    {
+        stateMachine.transition(StateTrigger::CONNECTED);
+    }
+
     // SECONDARY: Check for keepalive timeout during active connection
     if (deviceRole == DeviceRole::SECONDARY && ble.isPrimaryConnected())
     {
@@ -1568,7 +1580,7 @@ void executeDeferredWork(DeferredWorkType type, uint8_t p1, uint8_t p2, uint32_t
         // p1=finger, p2=amplitude, p3=duration_ms
         uint8_t finger = p1;
         uint8_t amplitude = p2;
-        uint32_t duration = p3;
+        uint16_t duration = static_cast<uint16_t>(p3);
 
         if (haptic.isEnabled(finger))
         {
@@ -1584,7 +1596,7 @@ void executeDeferredWork(DeferredWorkType type, uint8_t p1, uint8_t p2, uint32_t
         // p1=finger, p2=amplitude, p3=duration_ms (100ms gap between pulses)
         uint8_t finger = p1;
         uint8_t amplitude = p2;
-        uint32_t duration = p3;
+        uint16_t duration = static_cast<uint16_t>(p3);
 
         if (haptic.isEnabled(finger))
         {
@@ -1727,7 +1739,7 @@ void onBLEMessage(uint16_t connHandle, const char *message, uint64_t rxTimestamp
     // ISR-safe: only sets volatile fields; actual response is built in loop()
     if (deviceRole == DeviceRole::PRIMARY && strncmp(message, "BATRESPONSE:", 12) == 0)
     {
-        float voltage = atof(message + 12);
+        float voltage = strtof(message + 12, nullptr);
         menu.setSecondaryBatteryVoltage(voltage);
         return;
     }
@@ -3126,7 +3138,7 @@ void handleSerialCommand(const char *command)
         // Adaptive Lead Time
         Serial.printf("Adaptive Lead Time: %lu μs (%.2f ms)\n",
                       (unsigned long)syncProtocol.calculateAdaptiveLeadTime(),
-                      syncProtocol.calculateAdaptiveLeadTime() / 1000.0f);
+                      static_cast<float>(syncProtocol.calculateAdaptiveLeadTime()) / 1000.0f);
         Serial.printf("Time Since Sync:    %lu ms\n", (unsigned long)syncProtocol.getTimeSinceSync());
         Serial.println(F("-------------------------------------"));
 
