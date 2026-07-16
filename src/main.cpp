@@ -2529,7 +2529,15 @@ void startTherapyTest()
 
 void stopTherapyTest()
 {
-    if (!therapy.isRunning())
+    // On a SECONDARY, therapy.isRunning() is always false — only the PRIMARY runs the
+    // engine; the SECONDARY plays macrocycle-driven motor events with the FSM in RUNNING.
+    // So don't gate the stop on isRunning() alone, or a serial "stop" would silently do
+    // nothing while motors are active. Proceed whenever the engine OR the FSM is active.
+    // (On a SECONDARY following a live PRIMARY session the next macrocycle resumes
+    // playback; a durable stop must come from the PRIMARY/phone.)
+    TherapyState st = stateMachine.getCurrentState();
+    bool fsmActive = (st == TherapyState::RUNNING || st == TherapyState::PAUSED);
+    if (!therapy.isRunning() && !fsmActive)
     {
         Serial.println(F("[TEST] Therapy not running"));
         return;
@@ -2546,8 +2554,11 @@ void stopTherapyTest()
     stateMachine.transition(StateTrigger::STOP_SESSION);
     stateMachine.transition(StateTrigger::STOPPED);
 
-    // Resume scanning after standalone test (SECONDARY only)
-    if (deviceRole == DeviceRole::SECONDARY)
+    // Resume scanning after a standalone test (SECONDARY only) — but only when not
+    // connected. Scanning while connected to the PRIMARY causes scan-vs-sync radio
+    // contention; if this stop was on a follower with the link still up, the PRIMARY
+    // still owns the session and we must not scan.
+    if (deviceRole == DeviceRole::SECONDARY && !ble.isPrimaryConnected())
     {
         Serial.println(F("[TEST] Resuming scanning..."));
         ble.setScannerAutoRestart(true); // Re-enable health check
