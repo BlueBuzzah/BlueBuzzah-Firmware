@@ -656,6 +656,23 @@ void BLEManager::drainRing(TxRing& ring, uint8_t maxEntries) {
         // see the producer's stores (pairs with the publish barrier)
         platformMemoryBarrier();
 
+        // Drop entries whose connection died: a dead handle writes 0 bytes forever,
+        // which would head-of-line block this lane permanently — after a profile-
+        // reboot disconnect that means no pings/macrocycles ever again. Purging here
+        // (within one update() of the disconnect) also closes the window where a
+        // recycled handle on reconnect would receive a stale or partial frame.
+        // Drain runs in loop context only, so this adds no cross-context mutation.
+        BBConnection* conn = findConnection(entry->connHandle);
+        if (!conn || !conn->isConnected) {
+            PLATFORM_CRITICAL_ENTER();
+            entry->pending = false;
+            ring.head = static_cast<uint8_t>((ring.head + 1) % TX_QUEUE_SIZE);
+            ring.count--;
+            PLATFORM_CRITICAL_EXIT();
+            Serial.println(F("[BLE] Dropped TX entry for disconnected handle"));
+            continue;
+        }
+
         // Late timestamping: serialize sync messages at radio handoff so the
         // embedded T1/T3 reflects when bytes are handed to the stack.
         uint64_t stampTime = 0;

@@ -65,10 +65,14 @@ rule is role-symmetric and reuses the existing `getSecondaryHandle()` / `getPrim
 accessors.
 
 **Structure:**
-- Add a second ring in the shared header: `TxEntry _txQueueHi[TX_QUEUE_HI_SIZE]` with
-  `_txHeadHi / _txTailHi / _txCountHi`. `TX_QUEUE_HI_SIZE = 6` (headroom for a fragmenting
-  macrocycle plus a couple of pings/session cmds in flight; ~3 KB extra RAM, negligible on
-  both MCUs).
+- Factor the queue into a reusable `TxRing` struct (entries + head/tail/count) and hold
+  two instances, `_txHi` and `_txNormal`. As implemented both lanes use `TX_QUEUE_SIZE`
+  (12) — simpler than a separate hi size, ~6.4 KB extra RAM total, negligible on both
+  MCUs (14–16% RAM used post-change).
+- Drain-side hygiene: `drainRing` drops any entry whose connection is no longer alive
+  (dead handles write 0 bytes forever and would otherwise head-of-line block the lane
+  permanently after a disconnect; a recycled handle could also receive a stale or
+  partial frame on reconnect).
 - The hi ring reuses the **identical reserve-fill-publish + critical-section protocol** as
   the existing ring — cross-core-safe on ESP32-S3, correct on single-core nRF52.
 - Enqueue selects the ring by destination. `processTxQueue()` gains a hi-lane drain pass
