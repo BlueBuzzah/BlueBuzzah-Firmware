@@ -450,19 +450,35 @@ private:
         uint64_t stampAnchor;    // PONG only: rx anchor timestamp (0 = absent)
     };
 
-    // Accessed from BLE task (enqueue via rx callbacks) and main loop (enqueue +
-    // processTxQueue) - concurrently across cores on ESP32-S3. Head/tail/count
-    // mutations are critical-section-guarded; entries use reserve-fill-publish
-    // (pending set last, behind a memory barrier).
-    TxEntry _txQueue[TX_QUEUE_SIZE];
-    uint8_t _txHead;
-    uint8_t _txTail;
-    uint8_t _txCount;
+    // A single-producer/consumer ring. Accessed from BLE task (enqueue via rx
+    // callbacks) and main loop (enqueue + processTxQueue) - concurrently across cores
+    // on ESP32-S3. head/tail/count mutations are critical-section-guarded; entries use
+    // reserve-fill-publish (pending set last, behind a memory barrier).
+    struct TxRing {
+        TxEntry entries[TX_QUEUE_SIZE];
+        uint8_t head;
+        uint8_t tail;
+        uint8_t count;
+    };
+
+    // Two priority lanes, routed by destination (see ringFor). The hi lane carries
+    // hard-real-time PRIMARY<->SECONDARY sync traffic (macrocycles, pings, session
+    // commands); the normal lane carries phone command responses. processTxQueue drains
+    // the hi lane before the normal lane so phone traffic can never delay or evict a
+    // macrocycle, protecting the <5ms bilateral motor sync.
+    TxRing _txHi;
+    TxRing _txNormal;
 
     BLETxStampCallback _txStampCallback;
 
+    /** Select the priority lane for a destination: peer-glove -> hi, phone -> normal. */
+    TxRing& ringFor(uint16_t connHandle);
+
+    /** True if connHandle is the peer glove (SECONDARY on PRIMARY; PRIMARY on SECONDARY). */
+    bool isPeerGloveHandle(uint16_t connHandle) const;
+
     /**
-     * @brief Enqueue message for non-blocking transmission
+     * @brief Enqueue message for non-blocking transmission (routes to a lane)
      * @param connHandle Target connection
      * @param message Message to send (EOT will be appended)
      * @return true if enqueued successfully
@@ -475,11 +491,19 @@ private:
     bool enqueueStamped(uint16_t connHandle, TxStampKind kind, uint32_t seqId,
                         uint64_t t2, uint64_t anchorUs);
 
+    /** Enqueue into a specific lane (shared body for both lanes). */
+    bool enqueueToRing(TxRing& ring, uint16_t connHandle, const char* message);
+    bool enqueueStampedToRing(TxRing& ring, uint16_t connHandle, TxStampKind kind,
+                              uint32_t seqId, uint64_t t2, uint64_t anchorUs);
+
     /**
      * @brief Process pending TX queue entries
-     * Called from update() to drain the queue incrementally
+     * Called from update() to drain the hi lane, then the normal lane, incrementally
      */
     void processTxQueue();
+
+    /** Drain up to maxEntries pending entries from one lane. */
+    void drainRing(TxRing& ring, uint8_t maxEntries);
 
     /**
      * @brief Attempt immediate write (non-blocking)
