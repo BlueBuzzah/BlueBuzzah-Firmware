@@ -1,7 +1,7 @@
 # Design: Isolate phone traffic from PRIMARY↔SECONDARY comms
 
 **Date:** 2026-07-15
-**Status:** Proposed
+**Status:** Implemented (firmware b40503a on fix/phone-reconnected-transition; app 0244c53 on ia-restructure) — pending on-device verification
 **Scope:** Firmware (both boards) + BuzzahBuddy app
 **Motivation:** Protect the <5 ms bilateral motor synchronization, which the research
 identifies as paramount.
