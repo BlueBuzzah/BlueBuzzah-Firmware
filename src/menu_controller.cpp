@@ -422,6 +422,7 @@ void MenuController::handleInfo() {
     addResponseLine("ROLE", deviceRoleToString(_role));
     addResponseLine("NAME", _deviceName);
     addResponseLine("FW", _firmwareVersion);
+    addResponseLine("HW", HW_VERSION_STRING);
     addResponseLine("MOTORS", static_cast<int32_t>(MAX_ACTUATORS));
     if (_profiles) {
         char profLine[48];

@@ -20,6 +20,14 @@
 #define FIRMWARE_VERSION "2.0.0"
 #define FIRMWARE_NAME "BlueBuzzah"
 
+// Manufacturer-specific advertising data (identifies hardware generation to the
+// mobile app before connecting, without touching the advertised name that
+// SECONDARY->PRIMARY discovery filters on). Layout, verbatim in the advert:
+//   [0..1] company ID 0xFFFF (Bluetooth SIG reserved/internal, little-endian)
+//   [2]    'B' magic
+//   [3]    HW_VERSION (2 = BlueBuzzah v2, 3 = BlueBuzzah v3)
+#define BLE_MFG_DATA_INIT { 0xFF, 0xFF, 'B', HW_VERSION }
+
 // =============================================================================
 // PIN DEFINITIONS (per-board values from board_config.h)
 // =============================================================================

@@ -208,6 +208,13 @@ void BLEManager::setupAdvertising() {
         Serial.println(F("[BLE] Service UUID added to advertising packet"));
     }
 
+    // Hardware generation for the mobile app's scan list (~6 bytes, fits the
+    // ~24 bytes already used; see BLE_MFG_DATA_INIT in config.h)
+    static const uint8_t mfgData[] = BLE_MFG_DATA_INIT;
+    if (!Bluefruit.Advertising.addManufacturerData(mfgData, sizeof(mfgData))) {
+        Serial.println(F("[BLE] WARNING: Failed to add manufacturer data to advertising!"));
+    }
+
     // Include device name in scan response
     Bluefruit.ScanResponse.addName();
 

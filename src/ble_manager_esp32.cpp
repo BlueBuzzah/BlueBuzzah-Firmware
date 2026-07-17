@@ -278,6 +278,14 @@ void BLEManager::setupAdvertising() {
     if (!adv->setName(_deviceName)) {
         Serial.println(F("[BLE] ERROR: Failed to set advertised name"));
     }
+
+    // Hardware generation for the mobile app's scan list. Lands in the main
+    // advert (flags 3 + NUS UUID 18 + this 6 = 27 of 31 bytes); the name is
+    // already routed to the scan response above. See BLE_MFG_DATA_INIT.
+    static const uint8_t mfgData[] = BLE_MFG_DATA_INIT;
+    if (!adv->setManufacturerData(mfgData, sizeof(mfgData))) {
+        Serial.println(F("[BLE] WARNING: Failed to set manufacturer data"));
+    }
     adv->setMinInterval(32);   // 20ms (0.625ms units - parity with Bluefruit)
     adv->setMaxInterval(244);  // 152.5ms
 
