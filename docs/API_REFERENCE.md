@@ -383,16 +383,22 @@ Current firmware version following semantic versioning.
 
 #### LED Colors
 
-```cpp
-// include/config.h
+Status colors are `RGBColor` constants in the `Colors` namespace (`include/types.h`),
+passed to `LEDController::setPattern()`:
 
-#define LED_BLUE    0x0000FF  // BLE operations
-#define LED_GREEN   0x00FF00  // Success/Normal
-#define LED_RED     0xFF0000  // Error/Critical
-#define LED_WHITE   0xFFFFFF  // Special indicators
-#define LED_YELLOW  0xFFFF00  // Paused
-#define LED_ORANGE  0xFF8000  // Low battery
-#define LED_OFF     0x000000  // LED off
+```cpp
+// include/types.h
+namespace Colors {
+    const RGBColor OFF(0, 0, 0);          // LED off
+    const RGBColor RED(255, 0, 0);        // Error / critical
+    const RGBColor GREEN(0, 255, 0);      // Ready / running
+    const RGBColor BLUE(0, 0, 255);       // Idle / connecting
+    const RGBColor WHITE(255, 255, 255);  // Test/diagnostic flash
+    const RGBColor YELLOW(255, 255, 0);   // Paused / stopping
+    const RGBColor ORANGE(255, 128, 0);   // Low battery / unconfigured
+    const RGBColor PURPLE(128, 0, 255);   // Connection lost (peer glove)
+    const RGBColor CYAN(0, 255, 255);     // Hardware-init success (boot)
+}
 ```
 
 ---
@@ -774,61 +780,43 @@ class LEDController {
 public:
     LEDController();
     bool begin();
+    void update();                                             // animate; call every loop()
 
-    // Basic control
-    void setColor(uint32_t color);
+    void setPattern(const RGBColor& color, LEDPattern pattern);
+    void setColor(uint8_t r, uint8_t g, uint8_t b);           // SOLID
+    void setColor(const RGBColor& color);                      // SOLID
     void off();
-
-    // Animation patterns
-    void rapidFlash(uint32_t color, uint8_t count = 5);
-    void slowFlash(uint32_t color);
-    void breathe(uint32_t color);
-    void flashCount(uint32_t color, uint8_t count);
-
-    // State-based patterns
-    void setTherapyState(TherapyState state);
-    void updateBreathing();  // Call at ~20Hz during RUNNING
-
-    // Boot sequence patterns
-    void indicateBLEInit();
-    void indicateConnectionSuccess();
-    void indicateWaitingForPhone();
-    void indicateReady();
-    void indicateFailure();
-    void indicateConnectionLost();
+    void setBrightness(uint8_t brightness);
+    RGBColor getColor() const;
+    LEDPattern getPattern() const;
 
 private:
     Adafruit_NeoPixel _pixel;
-    uint32_t _currentColor;
-    uint32_t _lastUpdate;
-    float _breathPhase;
+    RGBColor _baseColor;
+    RGBColor _displayColor;
+    LEDPattern _pattern;
+    bool _initialized;
 };
 ```
+
+The controller is intentionally state-agnostic: callers pass a color+pattern.
+The device-state → color/pattern mapping lives in `src/main.cpp` (`onStateChange`
+and the boot sequence). See [LED Controller](#led-controller) for the full mapping.
 
 **Usage:**
 ```cpp
 #include "hardware.h"  // LEDController is in hardware.h
-#include "config.h"
 
 LEDController led;
 led.begin();
 
-// Solid green
-led.setColor(LED_GREEN);
+led.setPattern(Colors::GREEN, LEDPattern::SOLID);        // READY
+led.setPattern(Colors::GREEN, LEDPattern::PULSE_SLOW);   // RUNNING
+led.setPattern(Colors::RED, LEDPattern::BLINK_SLOW);     // ERROR / boot failure
 
-// Flash red 5 times
-led.flashCount(LED_RED, 5);
+// Animate in the main loop (required for breathe/pulse/blink):
+led.update();
 
-// State-based LED
-led.setTherapyState(TherapyState::RUNNING);
-
-// Update breathing effect (call in loop at ~20Hz)
-while (therapyRunning) {
-    led.updateBreathing();
-    delay(50);
-}
-
-// Turn off
 led.off();
 ```
 
@@ -1586,30 +1574,70 @@ Serial.println(response);
 
 ## LED Controller
 
-LED patterns for boot sequence and therapy states.
+`LEDController` (`include/hardware.h`, implemented in `src/hardware.cpp`) drives the
+single onboard status NeoPixel. It exposes a generic color+pattern API; the mapping
+from device state to color/pattern lives inline in `src/main.cpp` (`onStateChange()`
+and the boot sequence), not in the controller.
 
-### Boot Sequence Patterns
+```cpp
+class LEDController {
+    bool begin();                                             // init NeoPixel
+    void update();                                            // MUST call each loop() to animate
+    void setPattern(const RGBColor& color, LEDPattern pattern);
+    void setColor(uint8_t r, uint8_t g, uint8_t b);          // SOLID
+    void setColor(const RGBColor& color);                     // SOLID
+    void off();
+    void setBrightness(uint8_t brightness);                   // capped at LED_BRIGHTNESS
+    RGBColor getColor() const;
+    LEDPattern getPattern() const;
+};
+```
 
-| Function                      | Pattern              | Color   |
-|-------------------------------|----------------------|---------|
-| `indicateBLEInit()`           | Rapid flash (10Hz)   | Blue    |
-| `indicateConnectionSuccess()` | 5x flash             | Green   |
-| `indicateWaitingForPhone()`   | Slow flash (1Hz)     | Blue    |
-| `indicateReady()`             | Solid                | Green   |
-| `indicateFailure()`           | Slow flash (0.5Hz)   | Red     |
-| `indicateConnectionLost()`    | Rapid flash (5Hz)    | Orange  |
+### Patterns (`LEDPattern`, `include/hardware.h`)
 
-### Therapy State Patterns
+| Pattern         | Timing (`include/config.h`)     | Meaning                          |
+|-----------------|---------------------------------|----------------------------------|
+| `SOLID`         | constant on                     | READY, PAUSED                    |
+| `BREATHE_SLOW`  | 2000 ms fade cycle              | IDLE                             |
+| `PULSE_SLOW`    | 1500 ms fade cycle              | RUNNING                          |
+| `BLINK_FAST`    | 200 ms on / 200 ms off          | STOPPING                         |
+| `BLINK_SLOW`    | 1000 ms on / 1000 ms off        | ERROR, LOW_BATTERY               |
+| `BLINK_URGENT`  | 150 ms on / 150 ms off          | CRITICAL_BATTERY                 |
+| `BLINK_CONNECT` | 250 ms on / 250 ms off          | CONNECTING, CONNECTION_LOST      |
+| `DOUBLE_BLINK`  | two quick blinks, then pause    | missing/failed motor(s) at boot  |
+| `OFF`           | off                             | RUNNING with "LED off" enabled   |
 
-| State                | Pattern        | Color  |
-|----------------------|----------------|--------|
-| `RUNNING`            | Breathing      | Green  |
-| `PAUSED`             | Slow pulse     | Yellow |
-| `STOPPING`           | Fade out       | Green  |
-| `LOW_BATTERY`        | Breathing      | Orange |
-| `CRITICAL_BATTERY`   | Rapid flash    | Red    |
-| `CONNECTION_LOST`    | Rapid flash    | Orange |
-| `ERROR`              | Solid          | Red    |
+### Boot Sequence Patterns (`src/main.cpp`)
+
+| Boot phase                              | Color  | Pattern         |
+|-----------------------------------------|--------|-----------------|
+| No role configured                      | Orange | `BLINK_SLOW`    |
+| LED initialized                         | Blue   | `BLINK_CONNECT` |
+| Hardware init success                   | Cyan   | `BLINK_CONNECT` |
+| Hardware init failed                    | Red    | `BLINK_SLOW`    |
+| Fewer than 4 motors detected (5 s)      | Red    | `DOUBLE_BLINK`  |
+| BLE ready (enters IDLE)                 | Blue   | `BREATHE_SLOW`  |
+| BLE init failed                         | Red    | `BLINK_SLOW`    |
+| Glove pair connected (enters READY)     | Green  | `SOLID`         |
+
+### Therapy / Device State Patterns (`src/main.cpp` `onStateChange`)
+
+| State                | Color  | Pattern                                        |
+|----------------------|--------|------------------------------------------------|
+| `IDLE`               | Blue   | `BREATHE_SLOW`                                 |
+| `CONNECTING`         | Blue   | `BLINK_CONNECT`                                |
+| `READY`              | Green  | `SOLID`                                        |
+| `RUNNING`            | Green  | `PULSE_SLOW` (or `OFF` if "LED off during therapy") |
+| `PAUSED`             | Yellow | `SOLID`                                        |
+| `STOPPING`           | Yellow | `BLINK_FAST`                                   |
+| `LOW_BATTERY`        | Orange | `BLINK_SLOW`                                   |
+| `CRITICAL_BATTERY`   | Red    | `BLINK_URGENT`                                 |
+| `ERROR`              | Red    | `BLINK_SLOW`                                   |
+| `CONNECTION_LOST`    | Purple | `BLINK_CONNECT` (30 s window, then reverts to IDLE) |
+| `PHONE_DISCONNECTED` | —      | unchanged (keeps the prior state's LED)        |
+
+A brief **white `SOLID`** flash is used for test/diagnostic feedback (e.g. Test
+Connection, motor diagnostics) and overrides "LED off during therapy" for its duration.
 
 ---
 
@@ -1659,7 +1687,7 @@ void setup() {
 
     // 3. Initialize hardware
     if (!haptic.begin()) {
-        ledController.indicateFailure();
+        led.setPattern(Colors::RED, LEDPattern::BLINK_SLOW); // boot failure
         while (true) { delay(1000); }
     }
 
@@ -1681,11 +1709,11 @@ void setup() {
     bootResult = executeBootSequence();
 
     if (bootResult == BootResult::FAILED) {
-        ledController.indicateFailure();
+        led.setPattern(Colors::RED, LEDPattern::BLINK_SLOW); // boot failure
         while (true) { delay(1000); }
     }
 
-    ledController.indicateReady();
+    led.setPattern(Colors::GREEN, LEDPattern::SOLID); // READY
     Serial.println(F("[INFO] Boot complete, entering main loop"));
 }
 
@@ -1710,8 +1738,8 @@ void runPrimaryLoop() {
     }
 
     // Update LED
-    ledController.setTherapyState(stateMachine.currentState());
-    ledController.updateBreathing();
+    // LED reflects the new state via onStateChange() — see LED Controller
+    led.update();  // animate LED (call every loop)
 }
 
 void runSecondaryLoop() {
@@ -1719,11 +1747,11 @@ void runSecondaryLoop() {
     if (syncProtocol.isKeepaliveTimeout()) {
         haptic.stopAll();
         stateMachine.forceState(TherapyState::CONNECTION_LOST);
-        ledController.indicateConnectionLost();
+        led.setPattern(Colors::PURPLE, LEDPattern::BLINK_CONNECT); // peer lost
     }
 
     // Update LED
-    ledController.updateBreathing();
+    led.update();  // animate LED (call every loop)
 }
 ```
 
@@ -1798,7 +1826,7 @@ void onStateChange(TherapyState from, TherapyState to) {
     Serial.printf("State: %s -> %s\n",
         StateMachine::stateToString(from),
         StateMachine::stateToString(to));
-    ledController.setTherapyState(to);
+    // LED reflects the new state via onStateChange() — see LED Controller
 }
 
 void setup() {
@@ -1820,7 +1848,7 @@ void setup() {
 }
 
 void loop() {
-    ledController.updateBreathing();
+    led.update();  // animate LED (call every loop)
     delay(50);
 }
 ```

@@ -422,6 +422,7 @@ void MenuController::handleInfo() {
     addResponseLine("ROLE", deviceRoleToString(_role));
     addResponseLine("NAME", _deviceName);
     addResponseLine("FW", _firmwareVersion);
+    addResponseLine("HW", HW_VERSION_STRING);
     addResponseLine("MOTORS", static_cast<int32_t>(MAX_ACTUATORS));
     if (_profiles) {
         char profLine[48];
@@ -798,7 +799,11 @@ void MenuController::handleSessionStop() {
     }
 
     if (_stateMachine) {
+        // Complete the stop (STOPPING -> IDLE); the main loop promotes IDLE back to
+        // READY while the glove pair is still connected. Without STOPPED the PRIMARY
+        // lingered in STOPPING after a phone-initiated stop.
         _stateMachine->transition(StateTrigger::STOP_SESSION);
+        _stateMachine->transition(StateTrigger::STOPPED);
     }
 
     // Notify SECONDARY of session stop

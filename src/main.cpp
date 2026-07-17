@@ -96,6 +96,11 @@ uint8_t g_autoStartRetryCount = 0; // Auto-start sync retry counter (reset on SE
 // MUST be volatile: updated in BLE callback context, read in main loop
 volatile uint32_t lastKeepaliveReceived = 0;  // SECONDARY: Last PING/BUZZ from PRIMARY
 volatile uint32_t lastSecondaryKeepalive = 0; // PRIMARY: Last PONG from SECONDARY
+volatile uint32_t g_lastMacrocycleReceivedMs = 0; // SECONDARY: last MACROCYCLE (therapy data) rx
+
+// A SECONDARY receiving macrocycles this recently is following an active session.
+// Macrocycles arrive every 50-150ms during therapy, so 1s means several missed = idle.
+static constexpr uint32_t MACROCYCLE_ACTIVE_WINDOW_MS = 1000;
 
 // PRIMARY-side keepalive timeout
 // Aligned with SECONDARY's KEEPALIVE_TIMEOUT_MS (6000) to prevent race conditions
@@ -892,15 +897,62 @@ void loop()
     }
     wasTherapyRunning = isTherapyRunning;
 
-    // Demote CONNECTION_LOST (purple blink) to IDLE (blue breathe) once the
-    // peer has been gone for CONNECTION_LOST_TIMEOUT_MS. Non-blocking
-    // replacement for the old 3x2s delay() retry loop; scanning/advertising
-    // keeps running and a reconnect from IDLE still lands in READY.
-    if (stateMachine.getCurrentState() == TherapyState::CONNECTION_LOST &&
-        millis() - g_connectionLostAt >= CONNECTION_LOST_TIMEOUT_MS)
+    // ---- Peer-link state reconciliation (loop context) ----
+    // All transitions here (and their LED/Serial side effects) run in loop context,
+    // NOT the BLE host task, so they never inflate a PING/PONG PTP sample.
+    //
+    // Liveness is judged by recent app-level keepalive traffic, NOT ble.isXConnected():
+    // during an app-level PRIMARY hang the BLE link-layer keeps ticking, so isConnected
+    // stays true. Gating on it would let a demoted-to-IDLE hang be re-promoted to READY
+    // and mask the failure. peerAlive (traffic within the timeout) is the honest signal;
+    // it also makes the demote and promote branches mutually exclusive.
     {
-        Serial.println(F("[RECOVERY] No reconnect within timeout - returning to IDLE"));
-        stateMachine.transition(StateTrigger::RECONNECT_FAILED);
+        uint32_t lastPeerKA = (deviceRole == DeviceRole::SECONDARY)
+                                  ? lastKeepaliveReceived : lastSecondaryKeepalive;
+        bool peerAlive = (lastPeerKA != 0) &&
+                         (millis() - lastPeerKA < KEEPALIVE_TIMEOUT_MS);
+        TherapyState fsmState = stateMachine.getCurrentState();
+
+        if (fsmState == TherapyState::CONNECTION_LOST)
+        {
+            if (peerAlive)
+            {
+                // Spurious loss: a keepalive gap tripped CONNECTION_LOST but the link
+                // never dropped and traffic has resumed. Recover to match the PRIMARY
+                // instead of sitting purple until the demote below.
+                if (deviceRole == DeviceRole::SECONDARY && ble.isScanning())
+                {
+                    // handleKeepaliveTimeout() restarted scanning on the false timeout;
+                    // stop it now that we're staying connected (avoids scan-vs-sync
+                    // radio contention during the fragile period).
+                    ble.stopScanning();
+                }
+                Serial.println(F("[RECOVERY] Peer traffic resumed on live link - leaving CONNECTION_LOST"));
+                stateMachine.transition(StateTrigger::CONNECTED);           // -> READY
+                // Recent macrocycles mean a session is active: follow the PRIMARY.
+                bool therapyData = (g_lastMacrocycleReceivedMs != 0) &&
+                                   (millis() - g_lastMacrocycleReceivedMs < MACROCYCLE_ACTIVE_WINDOW_MS);
+                if (deviceRole == DeviceRole::SECONDARY && therapyData)
+                {
+                    stateMachine.transition(StateTrigger::START_SESSION);  // -> RUNNING
+                }
+            }
+            else if (millis() - g_connectionLostAt >= CONNECTION_LOST_TIMEOUT_MS)
+            {
+                // Genuine loss: no peer traffic within the window. Demote to IDLE and
+                // stay there — peerAlive is false, so the promotion below won't run.
+                Serial.println(F("[RECOVERY] No peer traffic within timeout - returning to IDLE"));
+                stateMachine.transition(StateTrigger::RECONNECT_FAILED);   // -> IDLE
+            }
+        }
+        else if (fsmState == TherapyState::IDLE && peerAlive)
+        {
+            // After a session stops the FSM lands in IDLE (blue breathe); promote to
+            // READY (solid green) while the pair is alive. Gated on peerAlive (not
+            // isConnected) so a hung peer demoted to IDLE is not falsely re-promoted.
+            // CONNECTED is a no-op from any non-IDLE state.
+            stateMachine.transition(StateTrigger::CONNECTED);              // -> READY
+        }
     }
 
     // SECONDARY: Check for keepalive timeout during active connection
@@ -1428,6 +1480,15 @@ void onBLEConnect(uint16_t connHandle, ConnectionType type)
             bootWindowActive = false;
             Serial.println(F("[BOOT] Phone connected - boot window cancelled"));
         }
+
+        if (type == ConnectionType::PHONE)
+        {
+            // Leave PHONE_DISCONNECTED when the phone comes back. Without this
+            // the FSM entered PHONE_DISCONNECTED on PHONE_LOST but nothing ever
+            // fired PHONE_RECONNECTED, so the state stuck forever even with the
+            // phone connected. No-op in any other state.
+            stateMachine.transition(StateTrigger::PHONE_RECONNECTED);
+        }
     }
 
     // Quick haptic feedback on index finger (deferred - not safe in BLE callback)
@@ -1559,7 +1620,7 @@ void executeDeferredWork(DeferredWorkType type, uint8_t p1, uint8_t p2, uint32_t
         // p1=finger, p2=amplitude, p3=duration_ms
         uint8_t finger = p1;
         uint8_t amplitude = p2;
-        uint32_t duration = p3;
+        uint16_t duration = static_cast<uint16_t>(p3);
 
         if (haptic.isEnabled(finger))
         {
@@ -1575,7 +1636,7 @@ void executeDeferredWork(DeferredWorkType type, uint8_t p1, uint8_t p2, uint32_t
         // p1=finger, p2=amplitude, p3=duration_ms (100ms gap between pulses)
         uint8_t finger = p1;
         uint8_t amplitude = p2;
-        uint32_t duration = p3;
+        uint16_t duration = static_cast<uint16_t>(p3);
 
         if (haptic.isEnabled(finger))
         {
@@ -1718,7 +1779,7 @@ void onBLEMessage(uint16_t connHandle, const char *message, uint64_t rxTimestamp
     // ISR-safe: only sets volatile fields; actual response is built in loop()
     if (deviceRole == DeviceRole::PRIMARY && strncmp(message, "BATRESPONSE:", 12) == 0)
     {
-        float voltage = atof(message + 12);
+        float voltage = strtof(message + 12, nullptr);
         menu.setSecondaryBatteryVoltage(voltage);
         return;
     }
@@ -1739,8 +1800,11 @@ void onBLEMessage(uint16_t connHandle, const char *message, uint64_t rxTimestamp
     {
         if (deviceRole == DeviceRole::SECONDARY)
         {
-            // Track connectivity - MACROCYCLE proves PRIMARY is alive
+            // Track connectivity - MACROCYCLE proves PRIMARY is alive. Cheap volatile
+            // writes only; the loop-context reconciliation block does any FSM recovery
+            // (keeping transitions + LED/Serial off the BLE host task / PTP path).
             lastKeepaliveReceived = millis();
+            g_lastMacrocycleReceivedMs = millis();
 
             // Parse macrocycle from V2 format (includes clock offset)
             Macrocycle mc;
@@ -1891,7 +1955,10 @@ void onBLEMessage(uint16_t connHandle, const char *message, uint64_t rxTimestamp
             // so SECONDARY main-loop latency no longer inflates measured RTT.
             if (deviceRole == DeviceRole::SECONDARY)
             {
-                // Track connectivity - PING proves PRIMARY is alive
+                // Track connectivity - PING proves PRIMARY is alive. Recovery from a
+                // spurious CONNECTION_LOST is handled in the loop-context reconciliation
+                // block, not here, so this stays off the PTP timing path (this runs just
+                // before sendPongStamped below).
                 lastKeepaliveReceived = millis();
 
                 uint64_t rxAnchor = 0;
@@ -2109,6 +2176,9 @@ void onBLEMessage(uint16_t connHandle, const char *message, uint64_t rxTimestamp
             Serial.println(F("[SESSION] Stop requested"));
             haptic.emergencyStop();
             stateMachine.transition(StateTrigger::STOP_SESSION);
+            // Complete the stop like every other stop path — without STOPPED the
+            // SECONDARY sticks in STOPPING (yellow blink) after a phone-initiated stop.
+            stateMachine.transition(StateTrigger::STOPPED);
             break;
 
         case SyncCommandType::DEBUG_FLASH:
@@ -2288,10 +2358,15 @@ void onMacrocycleStart(uint32_t macrocycleCount)
 {
     // Recover any DRV2605 that reset since configuration (VBat brownout
     // leaves it in standby, silently ignoring the coming activations).
-    // Round-robin single-chip probe (~200us); runs here in the loop task
-    // during the relax gap, BEFORE the macrocycle base timestamp is
-    // captured, so scheduled event timing is unaffected.
-    haptic.verifyAndHeal();
+    // Round-robin single-chip probe; deferred to the loop task rather than
+    // run inline because the first macrocycle-start callback fires from
+    // startSession(), which on a phone- or sync-initiated start runs in the
+    // BLE callback context. verifyAndHeal() blocks on I2C (and takes a
+    // no-timeout I2C mutex); doing that in the nRF52 SoftDevice callback
+    // starves the radio and drops the link mid-write. The deferred executor
+    // runs it in the loop task, honouring verifyAndHeal()'s single-task
+    // (loop-only) contract.
+    deferredQueue.enqueue(DeferredWorkType::HAPTIC_HEAL);
 
     // Clock sync handled by main loop 1-second PING interval
     // No additional PING needed at macrocycle boundary
@@ -2454,7 +2529,15 @@ void startTherapyTest()
 
 void stopTherapyTest()
 {
-    if (!therapy.isRunning())
+    // On a SECONDARY, therapy.isRunning() is always false — only the PRIMARY runs the
+    // engine; the SECONDARY plays macrocycle-driven motor events with the FSM in RUNNING.
+    // So don't gate the stop on isRunning() alone, or a serial "stop" would silently do
+    // nothing while motors are active. Proceed whenever the engine OR the FSM is active.
+    // (On a SECONDARY following a live PRIMARY session the next macrocycle resumes
+    // playback; a durable stop must come from the PRIMARY/phone.)
+    TherapyState st = stateMachine.getCurrentState();
+    bool fsmActive = (st == TherapyState::RUNNING || st == TherapyState::PAUSED);
+    if (!therapy.isRunning() && !fsmActive)
     {
         Serial.println(F("[TEST] Therapy not running"));
         return;
@@ -2471,8 +2554,11 @@ void stopTherapyTest()
     stateMachine.transition(StateTrigger::STOP_SESSION);
     stateMachine.transition(StateTrigger::STOPPED);
 
-    // Resume scanning after standalone test (SECONDARY only)
-    if (deviceRole == DeviceRole::SECONDARY)
+    // Resume scanning after a standalone test (SECONDARY only) — but only when not
+    // connected. Scanning while connected to the PRIMARY causes scan-vs-sync radio
+    // contention; if this stop was on a follower with the link still up, the PRIMARY
+    // still owns the session and we must not scan.
+    if (deviceRole == DeviceRole::SECONDARY && !ble.isPrimaryConnected())
     {
         Serial.println(F("[TEST] Resuming scanning..."));
         ble.setScannerAutoRestart(true); // Re-enable health check
@@ -3114,7 +3200,7 @@ void handleSerialCommand(const char *command)
         // Adaptive Lead Time
         Serial.printf("Adaptive Lead Time: %lu μs (%.2f ms)\n",
                       (unsigned long)syncProtocol.calculateAdaptiveLeadTime(),
-                      syncProtocol.calculateAdaptiveLeadTime() / 1000.0f);
+                      static_cast<float>(syncProtocol.calculateAdaptiveLeadTime()) / 1000.0f);
         Serial.printf("Time Since Sync:    %lu ms\n", (unsigned long)syncProtocol.getTimeSinceSync());
         Serial.println(F("-------------------------------------"));
 

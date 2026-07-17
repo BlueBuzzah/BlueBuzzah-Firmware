@@ -85,9 +85,8 @@ pio test -e native_penta    # Unit tests (5-actuator config)
 
 ### Verify Deployment
 
-- Both devices show rapid blue LED flashing during boot
-- PRIMARY shows 5x green flash when SECONDARY connects
-- Both show solid green when ready
+- Both devices show a breathing/blinking blue LED during boot (waiting to pair)
+- Both switch to solid green when the glove pair connects (ready)
 
 ### Basic Usage
 
@@ -148,11 +147,14 @@ Board-specific values (pins, actuator count, battery availability) live in `incl
 
 ### Connection Loss
 
-- **Purple flashing**: Peer glove connection lost - devices attempt to reconnect for 30 seconds, then return to idle (pulsing blue)
+- **Purple flashing**: Peer glove connection lost - devices attempt to reconnect for 30 seconds, then return to idle (breathing blue)
 
-### Battery Issues (BlueBuzzah v2 only)
+### Battery Issues
 
-- **Orange LED**: Battery low (< 3.4V) - charge soon
+Battery monitoring and its LED indications apply to both boards (v2 senses VBAT via
+an ADC divider; v3 reads the DRV2605 VBAT register):
+
+- **Orange slow-blinking**: Battery low (< 3.4V) - charge soon
 - **Rapid red flashing**: Battery critical (< 3.3V) - charge immediately
 
 ### BlueBuzzah v3 Power

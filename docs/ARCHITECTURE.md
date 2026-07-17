@@ -418,7 +418,7 @@ Arduino uses two entry functions:
 #include "ble_manager.h"
 #include "therapy_engine.h"
 #include "state_machine.h"
-#include "led_controller.h"
+#include "hardware.h"
 
 // Global instances
 DeviceConfig deviceConfig;
@@ -447,7 +447,7 @@ void setup() {
 
     // 3. Initialize hardware
     if (!haptic.begin()) {
-        ledController.indicateFailure();
+        led.setPattern(Colors::RED, LEDPattern::BLINK_SLOW); // boot failure
         while (true) { delay(1000); }  // Halt
     }
 
@@ -462,7 +462,7 @@ void setup() {
     #endif
 
     if (bootResult == BootResult::FAILED) {
-        ledController.indicateFailure();
+        led.setPattern(Colors::RED, LEDPattern::BLINK_SLOW); // boot failure
         while (true) { delay(1000); }  // Halt
     }
 
@@ -487,17 +487,16 @@ void loop() {
 **PRIMARY:**
 
 1. Initialize BLE and advertise as "BlueBuzzah"
-2. LED: Rapid blue flash during connection wait
+2. LED: breathing blue (IDLE) while waiting to pair
 3. Wait for SECONDARY connection (required)
-4. Optionally wait for phone connection
-5. Success: Solid blue LED
+4. Success: solid green LED (READY)
 
 **SECONDARY:**
 
 1. Initialize BLE and scan for "BlueBuzzah"
-2. LED: Rapid blue flash during scanning
+2. LED: breathing blue (IDLE) while scanning
 3. Connect to PRIMARY within timeout
-4. Success: Solid blue LED
+4. Success: solid green LED (READY)
 
 ### Timing Breakdown
 
@@ -515,7 +514,7 @@ void loop() {
 **Components**:
 
 - `menu_controller.h/.cpp`: Parse and validate BLE commands
-- `led_controller.h/.cpp`: Visual feedback to user
+- `hardware.h` (`LEDController`): visual status feedback
 
 **Characteristics**:
 
@@ -1412,7 +1411,7 @@ private:
 // Usage
 void onStateChange(TherapyState from, TherapyState to) {
     Serial.printf("State: %d -> %d\n", (int)from, (int)to);
-    ledController.setTherapyState(to);
+    // LED reflects the new state via onStateChange() — see LED Controller
 }
 
 stateMachine.setCallback(onStateChange);
@@ -1582,7 +1581,7 @@ sequenceDiagram
 void fatalError(const char* message) {
     Serial.printf("[FATAL] %s\n", message);
     hardware.stopAllMotors();
-    ledController.indicateFailure();
+    led.setPattern(Colors::RED, LEDPattern::BLINK_SLOW); // boot failure
     while (true) { delay(1000); }  // Halt forever
 }
 ```
