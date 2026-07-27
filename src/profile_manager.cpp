@@ -313,11 +313,13 @@ bool ProfileManager::setParameter(const char* paramName, const char* value) {
     else if (strcmp(paramUpper, "AMPMIN") == 0) {
         int amp = atoi(value);
         if (amp < PARAM_MIN_AMPLITUDE_PCT || amp > MAX_AMPLITUDE) return false;
+        if (static_cast<uint8_t>(amp) > _currentProfile.amplitudeMax) return false;
         _currentProfile.amplitudeMin = static_cast<uint8_t>(amp);
     }
     else if (strcmp(paramUpper, "AMPMAX") == 0) {
         int amp = atoi(value);
         if (amp < PARAM_MIN_AMPLITUDE_PCT || amp > MAX_AMPLITUDE) return false;
+        if (static_cast<uint8_t>(amp) < _currentProfile.amplitudeMin) return false;
         _currentProfile.amplitudeMax = static_cast<uint8_t>(amp);
     }
     else if (strcmp(paramUpper, "PATTERN") == 0) {

@@ -366,6 +366,9 @@ void test_setParameter_AMPMIN_valid(void) {
 
 void test_setParameter_AMPMAX_valid(void) {
     profiles->loadProfile(1);
+    // regular_vcr defaults amplitudeMin to 100; lower it first so the
+    // AMPMIN/AMPMAX cross-check does not reject an otherwise in-range AMPMAX.
+    TEST_ASSERT_TRUE(profiles->setParameter("AMPMIN", "20"));
     TEST_ASSERT_TRUE(profiles->setParameter("AMPMAX", "75"));
 
     const TherapyProfile* p = profiles->getCurrentProfile();
@@ -515,6 +518,9 @@ void test_setParameter_AMPMAX_invalid_above_100(void) {
 
 void test_setParameter_AMPMAX_20_is_valid(void) {
     profiles->loadProfile(1);
+    // regular_vcr defaults amplitudeMin to 100; lower it first so the
+    // AMPMIN/AMPMAX cross-check does not reject the new boundary value.
+    TEST_ASSERT_TRUE(profiles->setParameter("AMPMIN", "20"));
     TEST_ASSERT_TRUE(profiles->setParameter("AMPMAX", "20"));
 
     const TherapyProfile* p = profiles->getCurrentProfile();
@@ -600,6 +606,34 @@ void test_setParameter_AMPMIN_20_is_valid(void) {
 
     const TherapyProfile* p = profiles->getCurrentProfile();
     TEST_ASSERT_EQUAL_UINT8(20, p->amplitudeMin);
+}
+
+void test_setParameter_AMPMIN_above_AMPMAX_is_rejected(void) {
+    // gentle defaults to amplitudeMin=30/amplitudeMax=70, both clear of the
+    // 60/70 values below, so the cross-check result here reflects only the
+    // writes this test makes, not whatever the loaded profile happened to hold.
+    profiles->loadProfile(5);
+    TEST_ASSERT_TRUE(profiles->setParameter("AMPMAX", "60"));
+    TEST_ASSERT_FALSE(profiles->setParameter("AMPMIN", "70"));
+
+    // The rejected write must not have taken effect.
+    const TherapyProfile* p = profiles->getCurrentProfile();
+    TEST_ASSERT_EQUAL_UINT8(60, p->amplitudeMax);
+}
+
+void test_setParameter_AMPMAX_below_AMPMIN_is_rejected(void) {
+    profiles->loadProfile(5);
+    TEST_ASSERT_TRUE(profiles->setParameter("AMPMIN", "70"));
+    TEST_ASSERT_FALSE(profiles->setParameter("AMPMAX", "60"));
+
+    const TherapyProfile* p = profiles->getCurrentProfile();
+    TEST_ASSERT_EQUAL_UINT8(70, p->amplitudeMin);
+}
+
+void test_setParameter_AMPMIN_equal_AMPMAX_is_valid(void) {
+    profiles->loadProfile(5);
+    TEST_ASSERT_TRUE(profiles->setParameter("AMPMAX", "70"));
+    TEST_ASSERT_TRUE(profiles->setParameter("AMPMIN", "70"));
 }
 
 void test_setParameter_FINGERS_1_is_valid(void) {
@@ -803,6 +837,9 @@ int main(int argc, char **argv) {
     RUN_TEST(test_setParameter_OFF_below_30_is_rejected);
     RUN_TEST(test_setParameter_AMPMIN_below_20_is_rejected);
     RUN_TEST(test_setParameter_AMPMIN_20_is_valid);
+    RUN_TEST(test_setParameter_AMPMIN_above_AMPMAX_is_rejected);
+    RUN_TEST(test_setParameter_AMPMAX_below_AMPMIN_is_rejected);
+    RUN_TEST(test_setParameter_AMPMIN_equal_AMPMAX_is_valid);
     RUN_TEST(test_setParameter_FINGERS_1_is_valid);
     RUN_TEST(test_setParameter_FINGERS_4_is_valid);
 
