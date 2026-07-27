@@ -182,6 +182,19 @@ constexpr uint32_t TEST_DURATION_SEC = 120;  // 2 minutes
 #define MAX_FREQUENCY_HZ 255            // Maximum LRA resonant frequency (v1 randrange excludes 260)
 #define DEFAULT_FREQUENCY_HZ 250        // Default/standard LRA frequency (v1 reference: 250Hz)
 
+// Therapy parameter bounds. These are the single source of truth for
+// PROFILE_CUSTOM / PARAM_SET validation and for load-time revalidation.
+// Anchored on Pfeifer et al. 2021 clinical values; see
+// docs/superpowers/specs/2026-07-27-custom-therapy-profile-design.md
+constexpr float    PARAM_MIN_TIME_ON_MS   = 50.0f;
+constexpr float    PARAM_MAX_TIME_ON_MS   = 200.0f;
+constexpr float    PARAM_MIN_TIME_OFF_MS  = 30.0f;
+constexpr float    PARAM_MAX_TIME_OFF_MS  = 200.0f;
+constexpr float    PARAM_MAX_JITTER_PCT   = 50.0f;
+constexpr uint8_t  PARAM_MIN_AMPLITUDE_PCT = 20;
+constexpr uint16_t PARAM_MIN_SESSION_MIN  = 1;
+constexpr uint16_t PARAM_MAX_SESSION_MIN  = 240;
+
 // Finger indices (boards with MAX_ACTUATORS == 5 add the thumb on index 4)
 #define FINGER_INDEX 0
 #define FINGER_MIDDLE 1

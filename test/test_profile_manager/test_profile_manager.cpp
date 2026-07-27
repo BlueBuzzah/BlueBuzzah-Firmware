@@ -416,10 +416,10 @@ void test_setParameter_PATTERN_invalid(void) {
 
 void test_setParameter_JITTER_valid(void) {
     profiles->loadProfile(1);
-    TEST_ASSERT_TRUE(profiles->setParameter("JITTER", "50.5"));
+    TEST_ASSERT_TRUE(profiles->setParameter("JITTER", "25.0"));
 
     const TherapyProfile* p = profiles->getCurrentProfile();
-    TEST_ASSERT_FLOAT_WITHIN(0.1f, 50.5f, p->jitterPercent);
+    TEST_ASSERT_FLOAT_WITHIN(0.1f, 25.0f, p->jitterPercent);
 }
 
 void test_setParameter_JITTER_invalid_negative(void) {
@@ -513,20 +513,12 @@ void test_setParameter_AMPMAX_invalid_above_100(void) {
     TEST_ASSERT_FALSE(profiles->setParameter("AMPMAX", "101"));
 }
 
-void test_setParameter_AMPMIN_zero_is_valid(void) {
+void test_setParameter_AMPMAX_20_is_valid(void) {
     profiles->loadProfile(1);
-    TEST_ASSERT_TRUE(profiles->setParameter("AMPMIN", "0"));
+    TEST_ASSERT_TRUE(profiles->setParameter("AMPMAX", "20"));
 
     const TherapyProfile* p = profiles->getCurrentProfile();
-    TEST_ASSERT_EQUAL_UINT8(0, p->amplitudeMin);
-}
-
-void test_setParameter_AMPMAX_zero_is_valid(void) {
-    profiles->loadProfile(1);
-    TEST_ASSERT_TRUE(profiles->setParameter("AMPMAX", "0"));
-
-    const TherapyProfile* p = profiles->getCurrentProfile();
-    TEST_ASSERT_EQUAL_UINT8(0, p->amplitudeMax);
+    TEST_ASSERT_EQUAL_UINT8(20, p->amplitudeMax);
 }
 
 void test_setParameter_JITTER_zero_is_valid(void) {
@@ -537,44 +529,77 @@ void test_setParameter_JITTER_zero_is_valid(void) {
     TEST_ASSERT_FLOAT_WITHIN(0.01f, 0.0f, p->jitterPercent);
 }
 
-void test_setParameter_JITTER_100_is_valid(void) {
+void test_setParameter_JITTER_50_is_valid(void) {
     profiles->loadProfile(1);
-    TEST_ASSERT_TRUE(profiles->setParameter("JITTER", "100"));
+    TEST_ASSERT_TRUE(profiles->setParameter("JITTER", "50"));
 
     const TherapyProfile* p = profiles->getCurrentProfile();
-    TEST_ASSERT_FLOAT_WITHIN(0.1f, 100.0f, p->jitterPercent);
+    TEST_ASSERT_FLOAT_WITHIN(0.1f, 50.0f, p->jitterPercent);
 }
 
-void test_setParameter_ON_10_is_valid(void) {
+void test_setParameter_JITTER_above_50_is_rejected(void) {
     profiles->loadProfile(1);
-    TEST_ASSERT_TRUE(profiles->setParameter("ON", "10"));
-
-    const TherapyProfile* p = profiles->getCurrentProfile();
-    TEST_ASSERT_FLOAT_WITHIN(0.1f, 10.0f, p->timeOnMs);
+    TEST_ASSERT_FALSE(profiles->setParameter("JITTER", "51"));
 }
 
-void test_setParameter_ON_1000_is_valid(void) {
+void test_setParameter_ON_50_is_valid(void) {
     profiles->loadProfile(1);
-    TEST_ASSERT_TRUE(profiles->setParameter("ON", "1000"));
+    TEST_ASSERT_TRUE(profiles->setParameter("ON", "50"));
 
     const TherapyProfile* p = profiles->getCurrentProfile();
-    TEST_ASSERT_FLOAT_WITHIN(0.1f, 1000.0f, p->timeOnMs);
+    TEST_ASSERT_FLOAT_WITHIN(0.1f, 50.0f, p->timeOnMs);
 }
 
-void test_setParameter_OFF_10_is_valid(void) {
+void test_setParameter_ON_200_is_valid(void) {
     profiles->loadProfile(1);
-    TEST_ASSERT_TRUE(profiles->setParameter("OFF", "10"));
+    TEST_ASSERT_TRUE(profiles->setParameter("ON", "200"));
 
     const TherapyProfile* p = profiles->getCurrentProfile();
-    TEST_ASSERT_FLOAT_WITHIN(0.1f, 10.0f, p->timeOffMs);
+    TEST_ASSERT_FLOAT_WITHIN(0.1f, 200.0f, p->timeOnMs);
 }
 
-void test_setParameter_OFF_1000_is_valid(void) {
+void test_setParameter_ON_above_200_is_rejected(void) {
     profiles->loadProfile(1);
-    TEST_ASSERT_TRUE(profiles->setParameter("OFF", "1000"));
+    TEST_ASSERT_FALSE(profiles->setParameter("ON", "201"));
+}
+
+void test_setParameter_ON_below_50_is_rejected(void) {
+    profiles->loadProfile(1);
+    TEST_ASSERT_FALSE(profiles->setParameter("ON", "49"));
+}
+
+void test_setParameter_OFF_30_is_valid(void) {
+    profiles->loadProfile(1);
+    TEST_ASSERT_TRUE(profiles->setParameter("OFF", "30"));
 
     const TherapyProfile* p = profiles->getCurrentProfile();
-    TEST_ASSERT_FLOAT_WITHIN(0.1f, 1000.0f, p->timeOffMs);
+    TEST_ASSERT_FLOAT_WITHIN(0.1f, 30.0f, p->timeOffMs);
+}
+
+void test_setParameter_OFF_200_is_valid(void) {
+    profiles->loadProfile(1);
+    TEST_ASSERT_TRUE(profiles->setParameter("OFF", "200"));
+
+    const TherapyProfile* p = profiles->getCurrentProfile();
+    TEST_ASSERT_FLOAT_WITHIN(0.1f, 200.0f, p->timeOffMs);
+}
+
+void test_setParameter_OFF_below_30_is_rejected(void) {
+    profiles->loadProfile(1);
+    TEST_ASSERT_FALSE(profiles->setParameter("OFF", "29"));
+}
+
+void test_setParameter_AMPMIN_below_20_is_rejected(void) {
+    profiles->loadProfile(1);
+    TEST_ASSERT_FALSE(profiles->setParameter("AMPMIN", "19"));
+}
+
+void test_setParameter_AMPMIN_20_is_valid(void) {
+    profiles->loadProfile(1);
+    TEST_ASSERT_TRUE(profiles->setParameter("AMPMIN", "20"));
+
+    const TherapyProfile* p = profiles->getCurrentProfile();
+    TEST_ASSERT_EQUAL_UINT8(20, p->amplitudeMin);
 }
 
 void test_setParameter_FINGERS_1_is_valid(void) {
@@ -765,14 +790,19 @@ int main(int argc, char **argv) {
     RUN_TEST(test_setParameter_OFF_invalid_below_10);
     RUN_TEST(test_setParameter_OFF_invalid_above_1000);
     RUN_TEST(test_setParameter_AMPMAX_invalid_above_100);
-    RUN_TEST(test_setParameter_AMPMIN_zero_is_valid);
-    RUN_TEST(test_setParameter_AMPMAX_zero_is_valid);
+    RUN_TEST(test_setParameter_AMPMAX_20_is_valid);
     RUN_TEST(test_setParameter_JITTER_zero_is_valid);
-    RUN_TEST(test_setParameter_JITTER_100_is_valid);
-    RUN_TEST(test_setParameter_ON_10_is_valid);
-    RUN_TEST(test_setParameter_ON_1000_is_valid);
-    RUN_TEST(test_setParameter_OFF_10_is_valid);
-    RUN_TEST(test_setParameter_OFF_1000_is_valid);
+    RUN_TEST(test_setParameter_JITTER_50_is_valid);
+    RUN_TEST(test_setParameter_JITTER_above_50_is_rejected);
+    RUN_TEST(test_setParameter_ON_50_is_valid);
+    RUN_TEST(test_setParameter_ON_200_is_valid);
+    RUN_TEST(test_setParameter_ON_above_200_is_rejected);
+    RUN_TEST(test_setParameter_ON_below_50_is_rejected);
+    RUN_TEST(test_setParameter_OFF_30_is_valid);
+    RUN_TEST(test_setParameter_OFF_200_is_valid);
+    RUN_TEST(test_setParameter_OFF_below_30_is_rejected);
+    RUN_TEST(test_setParameter_AMPMIN_below_20_is_rejected);
+    RUN_TEST(test_setParameter_AMPMIN_20_is_valid);
     RUN_TEST(test_setParameter_FINGERS_1_is_valid);
     RUN_TEST(test_setParameter_FINGERS_4_is_valid);
 
