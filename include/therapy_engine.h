@@ -187,6 +187,20 @@ Pattern generateMirroredPattern(
     bool randomize = true
 );
 
+/**
+ * @brief Relax interval between macrocycles: two full CR periods.
+ *
+ * One CR period is numFingers * (timeOnMs + timeOffMs), so this scales
+ * with the number of active fingers -- 4 on BlueBuzzah, 5 on PentaBuzzer,
+ * or fewer when the user restricts FINGERS.
+ *
+ * @param numFingers Number of active fingers
+ * @param timeOnMs Vibration burst duration
+ * @param timeOffMs Time between bursts
+ * @return Relax interval in milliseconds
+ */
+float calculateRelaxIntervalMs(uint8_t numFingers, float timeOnMs, float timeOffMs);
+
 // =============================================================================
 // CALLBACK TYPES
 // =============================================================================

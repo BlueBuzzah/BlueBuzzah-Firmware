@@ -38,9 +38,9 @@ Pattern generateRandomPermutation(
     pattern.numFingers = numFingers;
     pattern.burstDurationMs = timeOnMs;
 
-    // TIME_RELAX = 4 * (time_on + time_off) - fixed interval between pattern cycles
+    // TIME_RELAX = numFingers * (time_on + time_off) - fixed interval between pattern cycles
     float cycleDurationMs = timeOnMs + timeOffMs;
-    pattern.interBurstIntervalMs = 4.0f * cycleDurationMs;
+    pattern.interBurstIntervalMs = static_cast<float>(numFingers) * cycleDurationMs;
 
     // Generate PRIMARY device sequence (random permutation)
     for (uint8_t i = 0; i < numFingers; i++) {
@@ -103,9 +103,9 @@ Pattern generateSequentialPattern(
     pattern.numFingers = numFingers;
     pattern.burstDurationMs = timeOnMs;
 
-    // TIME_RELAX = 4 * (time_on + time_off) - fixed interval between pattern cycles
+    // TIME_RELAX = numFingers * (time_on + time_off) - fixed interval between pattern cycles
     float cycleDurationMs = timeOnMs + timeOffMs;
-    pattern.interBurstIntervalMs = 4.0f * cycleDurationMs;
+    pattern.interBurstIntervalMs = static_cast<float>(numFingers) * cycleDurationMs;
 
     // Generate sequential list
     for (uint8_t i = 0; i < numFingers; i++) {
@@ -157,9 +157,9 @@ Pattern generateMirroredPattern(
     pattern.numFingers = numFingers;
     pattern.burstDurationMs = timeOnMs;
 
-    // TIME_RELAX = 4 * (time_on + time_off) - fixed interval between pattern cycles
+    // TIME_RELAX = numFingers * (time_on + time_off) - fixed interval between pattern cycles
     float cycleDurationMs = timeOnMs + timeOffMs;
-    pattern.interBurstIntervalMs = 4.0f * cycleDurationMs;
+    pattern.interBurstIntervalMs = static_cast<float>(numFingers) * cycleDurationMs;
 
     // Generate base sequence
     for (uint8_t i = 0; i < numFingers; i++) {
@@ -190,6 +190,10 @@ Pattern generateMirroredPattern(
     }
 
     return pattern;
+}
+
+float calculateRelaxIntervalMs(uint8_t numFingers, float timeOnMs, float timeOffMs) {
+    return 2.0f * static_cast<float>(numFingers) * (timeOnMs + timeOffMs);
 }
 
 // =============================================================================
@@ -751,8 +755,8 @@ void TherapyEngine::executeMacrocycleStep() {
             break;
 
         case BuzzFlowState::WAITING_RELAX: {
-            // Wait for 2x TIME_RELAX (1336ms with default timing)
-            float doubleRelaxMs = 2.0f * 4.0f * (_timeOnMs + _timeOffMs);  // TIME_RELAX = 4 * (ON + OFF)
+            // Wait for 2x TIME_RELAX (1336ms with default timing at 4 fingers)
+            float doubleRelaxMs = calculateRelaxIntervalMs(_numFingers, _timeOnMs, _timeOffMs);
 
             if ((now - _buzzSendTime) >= (uint32_t)doubleRelaxMs) {
                 // Double TIME_RELAX elapsed - macrocycle complete

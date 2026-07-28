@@ -604,6 +604,21 @@ void test_generateRandomPermutation_jitter_still_varies_at_defaults(void) {
         "jitter produced no variation at default parameters");
 }
 
+void test_relax_interval_scales_with_finger_count(void) {
+    // The paper's 3:2 ON-OFF cycling means the relax interval must equal
+    // exactly two CR periods, and one CR period is numFingers * (ON + OFF).
+    const float onMs  = 100.0f;
+    const float offMs = 67.0f;
+
+    for (uint8_t fingers = 1; fingers <= MAX_ACTUATORS; fingers++) {
+        const float expectedRelaxMs = 2.0f * fingers * (onMs + offMs);
+        const float actualRelaxMs = calculateRelaxIntervalMs(fingers, onMs, offMs);
+
+        TEST_ASSERT_FLOAT_WITHIN_MESSAGE(0.01f, expectedRelaxMs, actualRelaxMs,
+            "relax interval is not two CR periods for this finger count");
+    }
+}
+
 void test_generateSequentialPattern_with_jitter(void) {
     Pattern p = generateSequentialPattern(4, 100.0f, 67.0f, 23.5f, true, false);
 
@@ -1258,6 +1273,7 @@ int main(int argc, char **argv) {
     RUN_TEST(test_generateRandomPermutation_high_jitter);
     RUN_TEST(test_generateRandomPermutation_gap_never_collapses_under_max_jitter);
     RUN_TEST(test_generateRandomPermutation_jitter_still_varies_at_defaults);
+    RUN_TEST(test_relax_interval_scales_with_finger_count);
     RUN_TEST(test_generateSequentialPattern_with_jitter);
     RUN_TEST(test_generateMirroredPattern_with_jitter);
 
