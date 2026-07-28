@@ -644,6 +644,11 @@ void MenuController::handleProfileCustom(const char params[][PARAM_BUFFER_SIZE],
         return;
     }
 
+    if (_profiles->getCurrentProfileId() != CUSTOM_PROFILE_ID) {
+        sendError("Custom profile must be loaded before editing parameters");
+        return;
+    }
+
     // Apply each key-value pair
     for (uint8_t i = 0; i < paramCount; i += 2) {
         if (!_profiles->setParameter(params[i], params[i + 1])) {
@@ -652,6 +657,11 @@ void MenuController::handleProfileCustom(const char params[][PARAM_BUFFER_SIZE],
             sendError(errorMsg);
             return;
         }
+    }
+
+    if (!_profiles->saveCustomOverride()) {
+        sendError("Parameters applied but could not be saved");
+        return;
     }
 
     beginResponse();
@@ -870,6 +880,11 @@ void MenuController::handleParamSet(const char params[][PARAM_BUFFER_SIZE], uint
         return;
     }
 
+    if (_profiles->getCurrentProfileId() != CUSTOM_PROFILE_ID) {
+        sendError("Custom profile must be loaded before editing parameters");
+        return;
+    }
+
     // Create local copy and convert param name to uppercase
     char paramName[PARAM_BUFFER_SIZE];
     strncpy(paramName, params[0], PARAM_BUFFER_SIZE - 1);
@@ -880,6 +895,11 @@ void MenuController::handleParamSet(const char params[][PARAM_BUFFER_SIZE], uint
 
     if (!_profiles->setParameter(paramName, params[1])) {
         sendError("Invalid parameter name or value out of range");
+        return;
+    }
+
+    if (!_profiles->saveCustomOverride()) {
+        sendError("Parameter applied but could not be saved");
         return;
     }
 
