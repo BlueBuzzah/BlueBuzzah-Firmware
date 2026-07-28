@@ -227,6 +227,11 @@ bool ProfileManager::loadProfile(uint8_t profileId) {
     _currentProfileId = profileId;
     _profileLoaded = true;
 
+    // Custom carries user-edited parameters persisted outside settings.bin.
+    if (profileId == CUSTOM_PROFILE_ID) {
+        loadCustomOverride();
+    }
+
     Serial.printf("[PROFILE] Loaded: %s (%s)\n",
                   _currentProfile.name,
                   _currentProfile.description);
@@ -485,6 +490,12 @@ bool ProfileManager::loadSettings() {
         // Log loaded timing for debugging
         Serial.printf("[SETTINGS] Timing: ON=%.1fms, OFF=%.1fms, Jitter=%.1f%%\n",
                       _currentProfile.timeOnMs, _currentProfile.timeOffMs, _currentProfile.jitterPercent);
+
+        // custom.bin is authoritative for the Custom profile: settings.bin's copy of
+        // the parameters is overwritten whenever another profile is loaded.
+        if (_currentProfileId == CUSTOM_PROFILE_ID) {
+            loadCustomOverride();
+        }
     }
 
     // Load therapy LED control setting
@@ -497,4 +508,89 @@ bool ProfileManager::loadSettings() {
 
     Serial.printf("[SETTINGS] Loaded profile: %s\n", _currentProfile.name);
     return true;
+}
+
+bool ProfileManager::saveCustomOverride() {
+    if (!_storageAvailable) {
+        return false;
+    }
+
+    CustomOverrideData data{};
+    data.magic              = CUSTOM_OVERRIDE_MAGIC;
+    data.version            = CUSTOM_OVERRIDE_VERSION;
+    data.timeOnMs           = _currentProfile.timeOnMs;
+    data.timeOffMs          = _currentProfile.timeOffMs;
+    data.jitterPercent      = _currentProfile.jitterPercent;
+    data.amplitudeMin       = _currentProfile.amplitudeMin;
+    data.amplitudeMax       = _currentProfile.amplitudeMax;
+    data.sessionDurationMin = _currentProfile.sessionDurationMin;
+    data.numFingers         = _currentProfile.numFingers;
+    data.mirrorPattern      = _currentProfile.mirrorPattern ? 1 : 0;
+
+    if (!fsb::writeFile(CUSTOM_OVERRIDE_FILE,
+                        reinterpret_cast<const uint8_t*>(&data), sizeof(data))) {
+        Serial.println(F("[CUSTOM] Write failed"));
+        return false;
+    }
+
+    Serial.println(F("[CUSTOM] Override saved"));
+    return true;
+}
+
+bool ProfileManager::loadCustomOverride() {
+    if (!_storageAvailable || !fsb::exists(CUSTOM_OVERRIDE_FILE)) {
+        return false;
+    }
+
+    CustomOverrideData data{};
+    size_t bytesRead = 0;
+    if (!fsb::readFile(CUSTOM_OVERRIDE_FILE,
+                       reinterpret_cast<uint8_t*>(&data), sizeof(data), bytesRead)) {
+        return false;
+    }
+    if (bytesRead != sizeof(data) ||
+        data.magic != CUSTOM_OVERRIDE_MAGIC ||
+        data.version != CUSTOM_OVERRIDE_VERSION) {
+        Serial.println(F("[CUSTOM] Override rejected (bad header)"));
+        return false;
+    }
+
+    // Revalidate against current bounds -- an override written by older
+    // firmware may fall outside them. Out-of-range fields keep the built-in value.
+    if (data.timeOnMs >= PARAM_MIN_TIME_ON_MS && data.timeOnMs <= PARAM_MAX_TIME_ON_MS) {
+        _currentProfile.timeOnMs = data.timeOnMs;
+    }
+    if (data.timeOffMs >= PARAM_MIN_TIME_OFF_MS && data.timeOffMs <= PARAM_MAX_TIME_OFF_MS) {
+        _currentProfile.timeOffMs = data.timeOffMs;
+    }
+    if (data.jitterPercent >= 0.0f && data.jitterPercent <= PARAM_MAX_JITTER_PCT) {
+        _currentProfile.jitterPercent = data.jitterPercent;
+    }
+    if (data.amplitudeMin >= PARAM_MIN_AMPLITUDE_PCT &&
+        data.amplitudeMax <= MAX_AMPLITUDE &&
+        data.amplitudeMin <= data.amplitudeMax) {
+        _currentProfile.amplitudeMin = data.amplitudeMin;
+        _currentProfile.amplitudeMax = data.amplitudeMax;
+    }
+    if (data.sessionDurationMin >= PARAM_MIN_SESSION_MIN &&
+        data.sessionDurationMin <= PARAM_MAX_SESSION_MIN) {
+        _currentProfile.sessionDurationMin = data.sessionDurationMin;
+    }
+    if (data.numFingers >= 1 && data.numFingers <= MAX_ACTUATORS) {
+        _currentProfile.numFingers = data.numFingers;
+    }
+    _currentProfile.mirrorPattern = (data.mirrorPattern != 0);
+
+    Serial.println(F("[CUSTOM] Override applied"));
+    return true;
+}
+
+bool ProfileManager::clearCustomOverride() {
+    if (!_storageAvailable) {
+        return false;
+    }
+    if (!fsb::exists(CUSTOM_OVERRIDE_FILE)) {
+        return true;  // Already absent; nothing to do.
+    }
+    return fsb::removeFile(CUSTOM_OVERRIDE_FILE);
 }

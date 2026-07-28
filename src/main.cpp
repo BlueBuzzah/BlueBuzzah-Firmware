@@ -3161,6 +3161,10 @@ void handleSerialCommand(const char *command)
         {
             Serial.println(F("[CONFIG] No settings file to delete"));
         }
+        if (fsb::removeFile(CUSTOM_OVERRIDE_FILE))
+        {
+            Serial.println(F("[CONFIG] Custom override deleted"));
+        }
         safeMotorShutdown(); // Ensure motors off before reset
         Serial.println(F("[CONFIG] Rebooting..."));
         Serial.flush();

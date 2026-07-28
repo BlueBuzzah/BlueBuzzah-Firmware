@@ -39,6 +39,14 @@
 #define SETTINGS_MAGIC 0xBB
 #define SETTINGS_VERSION 1
 
+// Built-in profile ID for the user-editable Custom profile
+constexpr uint8_t CUSTOM_PROFILE_ID = 4;
+
+// Custom override file path and format
+constexpr const char* CUSTOM_OVERRIDE_FILE    = "/custom.bin";
+constexpr uint8_t     CUSTOM_OVERRIDE_MAGIC   = 0xBC;
+constexpr uint8_t     CUSTOM_OVERRIDE_VERSION = 1;
+
 // =============================================================================
 // BINARY SETTINGS STRUCTURE (for persistent storage)
 // =============================================================================
@@ -68,6 +76,25 @@ struct __attribute__((packed)) SettingsData {
     uint8_t therapyLedOff;       // 0 = LED on (default), 1 = LED off during therapy
     uint8_t debugMode;           // 0 = off (default), 1 = debug mode enabled
     uint8_t reserved[2];         // Future use, padding
+};
+
+/**
+ * @brief User-edited parameters for the Custom profile
+ *
+ * Persisted independently of settings.bin so that loading another profile
+ * cannot overwrite them.
+ */
+struct __attribute__((packed)) CustomOverrideData {
+    uint8_t  magic;
+    uint8_t  version;
+    float    timeOnMs;
+    float    timeOffMs;
+    float    jitterPercent;
+    uint8_t  amplitudeMin;
+    uint8_t  amplitudeMax;
+    uint16_t sessionDurationMin;
+    uint8_t  numFingers;
+    uint8_t  mirrorPattern;
 };
 
 // =============================================================================
@@ -320,6 +347,24 @@ public:
      * @return true if loaded successfully
      */
     bool loadSettings();
+
+    /**
+     * @brief Persist the current profile's editable parameters as the Custom override
+     * @return true if saved successfully
+     */
+    bool saveCustomOverride();
+
+    /**
+     * @brief Overlay the persisted Custom override onto _currentProfile, if present
+     * @return true if an override was found and applied
+     */
+    bool loadCustomOverride();
+
+    /**
+     * @brief Delete the persisted Custom override, restoring built-in defaults
+     * @return true if deleted (or already absent)
+     */
+    bool clearCustomOverride();
 
     /**
      * @brief Check if LittleFS is available
