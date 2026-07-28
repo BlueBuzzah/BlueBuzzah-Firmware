@@ -2594,7 +2594,8 @@ void autoStartTherapy()
         profile->numFingers,
         profile->mirrorPattern,
         profile->amplitudeMin,
-        profile->amplitudeMax);
+        profile->amplitudeMax,
+        false);  // isTestMode = false (phone/auto-started session)
 }
 
 // =============================================================================

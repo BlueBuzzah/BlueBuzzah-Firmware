@@ -255,7 +255,7 @@ typedef uint32_t (*GetLeadTimeCallback)();
  *   TherapyEngine engine;
  *   engine.setActivateCallback(onActivate);
  *   engine.setDeactivateCallback(onDeactivate);
- *   engine.startSession(7200, PatternType::RNDP, 100.0f, 67.0f, 23.5f);
+ *   engine.startSession(7200, PatternType::RNDP, 100.0f, 67.0f, 23.5f, 4, true, 100, 100, false);
  *
  *   // In loop:
  *   engine.update();
@@ -344,6 +344,21 @@ public:
     uint8_t getActiveFingerCount() const { return _fingerMapCount; }
 
     /**
+     * @brief Minimum motor amplitude configured for the active session
+     */
+    [[nodiscard]] uint8_t getAmplitudeMin() const { return _amplitudeMin; }
+
+    /**
+     * @brief Maximum motor amplitude configured for the active session
+     */
+    [[nodiscard]] uint8_t getAmplitudeMax() const { return _amplitudeMax; }
+
+    /**
+     * @brief Pattern type configured for the active session
+     */
+    [[nodiscard]] PatternType getPatternType() const { return _patternType; }
+
+    /**
      * @brief Enable/disable frequency randomization (Custom vCR feature)
      * @param enabled Enable frequency randomization
      * @param minHz Minimum frequency (default 210 Hz, v1 ACTUATOR_FREQL)
@@ -368,17 +383,22 @@ public:
      * @param amplitudeMax Maximum motor amplitude (0-100)
      * @param isTestMode If true, marks session as test (for completion message)
      */
+    // amplitudeMin/amplitudeMax/isTestMode intentionally have no defaults: a
+    // caller that forgets them should fail to compile, not silently fall back
+    // to full amplitude (this was a real bug in menu_controller.cpp). C++
+    // requires defaulted parameters to be trailing, so every parameter after
+    // durationSec loses its default too.
     void startSession(
         uint32_t durationSec,
-        PatternType patternType = PatternType::RNDP,
-        float timeOnMs = 100.0f,
-        float timeOffMs = 67.0f,
-        float jitterPercent = 0.0f,
-        uint8_t numFingers = MAX_ACTUATORS,
-        bool mirrorPattern = false,
-        uint8_t amplitudeMin = 100,
-        uint8_t amplitudeMax = 100,
-        bool isTestMode = false
+        PatternType patternType,
+        float timeOnMs,
+        float timeOffMs,
+        float jitterPercent,
+        uint8_t numFingers,
+        bool mirrorPattern,
+        uint8_t amplitudeMin,
+        uint8_t amplitudeMax,
+        bool isTestMode
     );
 
     /**

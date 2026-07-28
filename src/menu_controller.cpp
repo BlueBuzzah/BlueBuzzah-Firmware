@@ -690,6 +690,8 @@ void MenuController::handleSessionStart() {
     float jitterPercent = 23.5f;
     uint8_t numFingers = MAX_ACTUATORS;  // Fallback when no profile is active
     bool mirror = true;
+    uint8_t amplitudeMin = 100;
+    uint8_t amplitudeMax = 100;
 
     if (_profiles) {
         const TherapyProfile* profile = _profiles->getCurrentProfile();
@@ -700,17 +702,22 @@ void MenuController::handleSessionStart() {
             jitterPercent = profile->jitterPercent;
             numFingers = profile->numFingers;
             mirror = profile->mirrorPattern;
+            amplitudeMin = profile->amplitudeMin;
+            amplitudeMax = profile->amplitudeMax;
 
             if (strcmp(profile->patternType, "rndp") == 0) {
                 patternType = PatternType::RNDP;
             } else if (strcmp(profile->patternType, "sequential") == 0) {
                 patternType = PatternType::SEQUENTIAL;
+            } else if (strcmp(profile->patternType, "mirrored") == 0) {
+                patternType = PatternType::MIRRORED;
             }
         }
     }
 
     // Start session
-    _therapy->startSession(durationSec, patternType, timeOnMs, timeOffMs, jitterPercent, numFingers, mirror);
+    _therapy->startSession(durationSec, patternType, timeOnMs, timeOffMs, jitterPercent, numFingers, mirror,
+                            amplitudeMin, amplitudeMax, false);
 
     // Update state machine
     if (_stateMachine) {
