@@ -619,6 +619,31 @@ void test_relax_interval_scales_with_finger_count(void) {
     }
 }
 
+void test_interBurstInterval_scales_with_finger_count_all_generators(void) {
+    // Each generator independently sets pattern.interBurstIntervalMs = numFingers *
+    // (ON + OFF). Jitter is 0 so the value is deterministic. This pins all three
+    // sites directly, unlike test_generateRandomPermutation_interBurstInterval
+    // (which hardcodes 4 fingers and can't distinguish numFingers * X from 4 * X).
+    const float onMs  = 100.0f;
+    const float offMs = 67.0f;
+
+    for (uint8_t fingers = 1; fingers <= MAX_ACTUATORS; fingers++) {
+        const float expected = static_cast<float>(fingers) * (onMs + offMs);
+
+        Pattern randomPermutation = generateRandomPermutation(fingers, onMs, offMs, 0.0f, true);
+        TEST_ASSERT_FLOAT_WITHIN_MESSAGE(0.1f, expected, randomPermutation.interBurstIntervalMs,
+            "generateRandomPermutation interBurstIntervalMs did not scale with finger count");
+
+        Pattern sequential = generateSequentialPattern(fingers, onMs, offMs, 0.0f, true, false);
+        TEST_ASSERT_FLOAT_WITHIN_MESSAGE(0.1f, expected, sequential.interBurstIntervalMs,
+            "generateSequentialPattern interBurstIntervalMs did not scale with finger count");
+
+        Pattern mirrored = generateMirroredPattern(fingers, onMs, offMs, 0.0f, true);
+        TEST_ASSERT_FLOAT_WITHIN_MESSAGE(0.1f, expected, mirrored.interBurstIntervalMs,
+            "generateMirroredPattern interBurstIntervalMs did not scale with finger count");
+    }
+}
+
 void test_generateSequentialPattern_with_jitter(void) {
     Pattern p = generateSequentialPattern(4, 100.0f, 67.0f, 23.5f, true, false);
 
@@ -1274,6 +1299,7 @@ int main(int argc, char **argv) {
     RUN_TEST(test_generateRandomPermutation_gap_never_collapses_under_max_jitter);
     RUN_TEST(test_generateRandomPermutation_jitter_still_varies_at_defaults);
     RUN_TEST(test_relax_interval_scales_with_finger_count);
+    RUN_TEST(test_interBurstInterval_scales_with_finger_count_all_generators);
     RUN_TEST(test_generateSequentialPattern_with_jitter);
     RUN_TEST(test_generateMirroredPattern_with_jitter);
 
