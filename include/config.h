@@ -194,6 +194,8 @@ constexpr float    PARAM_MAX_JITTER_PCT   = 50.0f;
 constexpr uint8_t  PARAM_MIN_AMPLITUDE_PCT = 20;
 constexpr uint16_t PARAM_MIN_SESSION_MIN  = 1;
 constexpr uint16_t PARAM_MAX_SESSION_MIN  = 240;
+constexpr uint16_t PARAM_MIN_FREQUENCY_HZ = 50;
+constexpr uint16_t PARAM_MAX_FREQUENCY_HZ = 300;
 
 // Smallest inter-burst gap the jitter excursion may leave. Consecutive bursts
 // closer than this mask one another perceptually, which defeats the purpose of

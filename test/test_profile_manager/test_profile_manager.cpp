@@ -781,6 +781,24 @@ void test_customOverride_survives_reboot(void) {
     TEST_ASSERT_EQUAL_FLOAT(80.0f, profile->timeOnMs);
 }
 
+void test_customOverride_does_not_persist_pattern(void) {
+    // CustomOverrideData has no patternType field. setParameter still accepts
+    // PATTERN (it is a general-purpose entry point used by other profiles too),
+    // but the persistence layer must not silently retain it - the handler-level
+    // rejection (menu_controller) is what actually blocks this from the phone/
+    // serial, and this test proves the underlying data path can't launder it
+    // through even if that rejection were ever bypassed.
+    profiles->loadProfile(CUSTOM_PROFILE_ID);
+    TEST_ASSERT_TRUE(profiles->setParameter("PATTERN", "sequential"));
+    TEST_ASSERT_TRUE(profiles->saveCustomOverride());
+
+    profiles->loadProfile(1);
+    profiles->loadProfile(CUSTOM_PROFILE_ID);
+
+    const TherapyProfile* profile = profiles->getCurrentProfile();
+    TEST_ASSERT_EQUAL_STRING("rndp", profile->patternType);
+}
+
 // =============================================================================
 // STORAGE TESTS
 // =============================================================================
@@ -829,6 +847,7 @@ void test_loadSettings_rejects_out_of_range_fields(void) {
     data.amplitudeMax       = 100;
     data.sessionDurationMin = 120;
     data.numFingers         = MAX_ACTUATORS;
+    data.frequencyHz        = 400;      // above PARAM_MAX_FREQUENCY_HZ
     strncpy(data.patternType, "rndp", sizeof(data.patternType) - 1);
 
     fsb::writeFile(SETTINGS_FILE,
@@ -842,6 +861,7 @@ void test_loadSettings_rejects_out_of_range_fields(void) {
     TEST_ASSERT_EQUAL_FLOAT(100.0f, profile->timeOnMs);
     TEST_ASSERT_EQUAL_FLOAT(0.0f,   profile->jitterPercent);
     TEST_ASSERT_EQUAL_UINT8(100,    profile->amplitudeMin);
+    TEST_ASSERT_EQUAL_UINT16(250,   profile->frequencyHz);
     // In-range fields are honoured.
     TEST_ASSERT_EQUAL_FLOAT(67.0f,  profile->timeOffMs);
     delete p;
@@ -979,6 +999,7 @@ int main(int argc, char **argv) {
     RUN_TEST(test_clearCustomOverride_restores_builtin_defaults);
     RUN_TEST(test_saveCustomOverride_returns_false_without_storage);
     RUN_TEST(test_customOverride_survives_reboot);
+    RUN_TEST(test_customOverride_does_not_persist_pattern);
 
     // Storage Tests
     RUN_TEST(test_isStorageAvailable_false_when_mount_fails);

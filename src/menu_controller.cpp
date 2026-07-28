@@ -627,6 +627,22 @@ void MenuController::handleProfileGet() {
     sendResponse();
 }
 
+namespace {
+
+/**
+ * @brief Parameters not adjustable on the Custom profile: PATTERN (Custom is
+ * RNDP-only by design - "sequential" removes the random fingertip ordering
+ * that makes the therapy coordinated reset) and TYPE/FREQ (dead paths -
+ * frequencyHz never reaches the DRV2605, actuatorType is fixed per hardware).
+ */
+bool isCustomProfileLockedParam(const char* paramName) {
+    return strcasecmp(paramName, "PATTERN") == 0 ||
+           strcasecmp(paramName, "TYPE") == 0 ||
+           strcasecmp(paramName, "FREQ") == 0;
+}
+
+}  // namespace
+
 void MenuController::handleProfileCustom(const char params[][PARAM_BUFFER_SIZE], uint8_t paramCount) {
     // Check if session is active
     if (_therapy && _therapy->isRunning()) {
@@ -647,6 +663,19 @@ void MenuController::handleProfileCustom(const char params[][PARAM_BUFFER_SIZE],
     if (_profiles->getCurrentProfileId() != CUSTOM_PROFILE_ID) {
         sendError("Custom profile must be loaded before editing parameters");
         return;
+    }
+
+    // Validate the whole batch's key names before applying any of them -
+    // otherwise a locked key partway through the batch would leave earlier
+    // keys applied.
+    for (uint8_t i = 0; i < paramCount; i += 2) {
+        if (isCustomProfileLockedParam(params[i])) {
+            char errorMsg[64];
+            snprintf(errorMsg, sizeof(errorMsg),
+                     "Parameter %s is not adjustable on the Custom profile", params[i]);
+            sendError(errorMsg);
+            return;
+        }
     }
 
     // Apply each key-value pair
@@ -891,6 +920,14 @@ void MenuController::handleParamSet(const char params[][PARAM_BUFFER_SIZE], uint
     paramName[PARAM_BUFFER_SIZE - 1] = '\0';
     for (char* c = paramName; *c; c++) {
         *c = static_cast<char>(toupper(*c));
+    }
+
+    if (isCustomProfileLockedParam(paramName)) {
+        char errorMsg[64];
+        snprintf(errorMsg, sizeof(errorMsg),
+                 "Parameter %s is not adjustable on the Custom profile", paramName);
+        sendError(errorMsg);
+        return;
     }
 
     if (!_profiles->setParameter(paramName, params[1])) {

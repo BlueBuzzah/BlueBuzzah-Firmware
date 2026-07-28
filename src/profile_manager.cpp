@@ -297,7 +297,7 @@ bool ProfileManager::setParameter(const char* paramName, const char* value) {
     }
     else if (strcmp(paramUpper, "FREQ") == 0) {
         int freq = atoi(value);
-        if (freq < 50 || freq > 300) return false;
+        if (freq < PARAM_MIN_FREQUENCY_HZ || freq > PARAM_MAX_FREQUENCY_HZ) return false;
         _currentProfile.frequencyHz = static_cast<uint16_t>(freq);
     }
     else if (strcmp(paramUpper, "ON") == 0) {
@@ -459,7 +459,6 @@ bool ProfileManager::loadSettings() {
 
         // Apply saved customizations
         _currentProfile.actuatorType = (data.actuatorType == 1) ? ActuatorType::ERM : ActuatorType::LRA;
-        _currentProfile.frequencyHz = data.frequencyHz;
 
         // Validate against the current parameter bounds - reject fields outside them.
         // This protects against corrupted or stale settings from old firmware versions.
@@ -480,6 +479,12 @@ bool ProfileManager::loadSettings() {
         } else {
             Serial.printf("[SETTINGS] WARNING: Invalid jitterPercent %.1f, keeping default %.1f\n",
                           data.jitterPercent, _currentProfile.jitterPercent);
+        }
+        if (data.frequencyHz >= PARAM_MIN_FREQUENCY_HZ && data.frequencyHz <= PARAM_MAX_FREQUENCY_HZ) {
+            _currentProfile.frequencyHz = data.frequencyHz;
+        } else {
+            Serial.printf("[SETTINGS] WARNING: Invalid frequencyHz %d, keeping default %d\n",
+                          data.frequencyHz, _currentProfile.frequencyHz);
         }
         if (data.amplitudeMin >= PARAM_MIN_AMPLITUDE_PCT &&
             data.amplitudeMax <= MAX_AMPLITUDE &&
