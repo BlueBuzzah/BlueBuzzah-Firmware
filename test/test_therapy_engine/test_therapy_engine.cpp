@@ -567,6 +567,43 @@ void test_generateRandomPermutation_high_jitter(void) {
     }
 }
 
+void test_generateRandomPermutation_gap_never_collapses_under_max_jitter(void) {
+    // Worst permitted combination: long burst, shortest gap, max jitter.
+    // Run many iterations because the jitter draw is random.
+    for (int iteration = 0; iteration < 500; iteration++) {
+        Pattern p = generateRandomPermutation(
+            4,       // numFingers
+            200.0f,  // timeOnMs  (PARAM_MAX_TIME_ON_MS)
+            30.0f,   // timeOffMs (PARAM_MIN_TIME_OFF_MS)
+            50.0f,   // jitterPercent (PARAM_MAX_JITTER_PCT)
+            false);  // mirrorPattern
+
+        for (uint8_t i = 0; i < 4; i++) {
+            TEST_ASSERT_TRUE_MESSAGE(p.timeOffMs[i] >= MIN_INTER_BURST_GAP_MS,
+                "inter-burst gap fell below MIN_INTER_BURST_GAP_MS under max jitter");
+        }
+    }
+}
+
+void test_generateRandomPermutation_jitter_still_varies_at_defaults(void) {
+    // The clamp must not suppress jitter at the default parameters,
+    // where jitterAmount (19.6ms) is well below OFF (67ms).
+    bool sawVariation = false;
+    Pattern first = generateRandomPermutation(
+        4, 100.0f, 67.0f, 23.5f, false);
+    for (int iteration = 0; iteration < 200 && !sawVariation; iteration++) {
+        Pattern p = generateRandomPermutation(
+            4, 100.0f, 67.0f, 23.5f, false);
+        for (uint8_t i = 0; i < 4; i++) {
+            if (p.timeOffMs[i] != first.timeOffMs[i]) {
+                sawVariation = true;
+            }
+        }
+    }
+    TEST_ASSERT_TRUE_MESSAGE(sawVariation,
+        "jitter produced no variation at default parameters");
+}
+
 void test_generateSequentialPattern_with_jitter(void) {
     Pattern p = generateSequentialPattern(4, 100.0f, 67.0f, 23.5f, true, false);
 
@@ -1219,6 +1256,8 @@ int main(int argc, char **argv) {
 
     // Jitter Edge Case Tests
     RUN_TEST(test_generateRandomPermutation_high_jitter);
+    RUN_TEST(test_generateRandomPermutation_gap_never_collapses_under_max_jitter);
+    RUN_TEST(test_generateRandomPermutation_jitter_still_varies_at_defaults);
     RUN_TEST(test_generateSequentialPattern_with_jitter);
     RUN_TEST(test_generateMirroredPattern_with_jitter);
 

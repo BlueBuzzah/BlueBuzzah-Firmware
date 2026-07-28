@@ -66,6 +66,15 @@ Pattern generateRandomPermutation(
     // With 23.5% jitter: 167ms * 0.235 / 2 = 19.6ms
     float jitterAmount = cycleDurationMs * (jitterPercent / 100.0f) / 2.0f;
 
+    // The excursion is applied to TIME_OFF alone, so it must never leave less than
+    // MIN_INTER_BURST_GAP_MS of gap -- otherwise consecutive bursts mask one another.
+    const float maxExcursion = (timeOffMs > MIN_INTER_BURST_GAP_MS)
+                                   ? (timeOffMs - MIN_INTER_BURST_GAP_MS)
+                                   : 0.0f;
+    if (jitterAmount > maxExcursion) {
+        jitterAmount = maxExcursion;
+    }
+
     // Apply jitter to TIME_OFF (67ms), NOT the inter-burst interval
     // v1 behavior: TIME_OFF_actual = TIME_OFF ± jitter (range: 47-87ms with 23.5% jitter)
     for (uint8_t i = 0; i < numFingers; i++) {
