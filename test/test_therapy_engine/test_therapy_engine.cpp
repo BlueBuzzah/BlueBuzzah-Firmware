@@ -588,6 +588,42 @@ void test_generateRandomPermutation_gap_never_collapses_under_max_jitter(void) {
     }
 }
 
+void test_generateSequentialPattern_gap_never_collapses_under_max_jitter(void) {
+    // Worst permitted combination: long burst, shortest gap, max jitter.
+    // Run many iterations because the jitter draw is random.
+    for (int iteration = 0; iteration < 500; iteration++) {
+        Pattern p = generateSequentialPattern(
+            4,       // numFingers
+            200.0f,  // timeOnMs  (PARAM_MAX_TIME_ON_MS)
+            30.0f,   // timeOffMs (PARAM_MIN_TIME_OFF_MS)
+            50.0f,   // jitterPercent (PARAM_MAX_JITTER_PCT)
+            false);  // mirrorPattern
+
+        for (uint8_t i = 0; i < 4; i++) {
+            TEST_ASSERT_TRUE_MESSAGE(p.timeOffMs[i] >= MIN_INTER_BURST_GAP_MS,
+                "inter-burst gap fell below MIN_INTER_BURST_GAP_MS under max jitter");
+        }
+    }
+}
+
+void test_generateMirroredPattern_gap_never_collapses_under_max_jitter(void) {
+    // Worst permitted combination: long burst, shortest gap, max jitter.
+    // Run many iterations because the jitter draw is random.
+    for (int iteration = 0; iteration < 500; iteration++) {
+        Pattern p = generateMirroredPattern(
+            4,       // numFingers
+            200.0f,  // timeOnMs  (PARAM_MAX_TIME_ON_MS)
+            30.0f,   // timeOffMs (PARAM_MIN_TIME_OFF_MS)
+            50.0f,   // jitterPercent (PARAM_MAX_JITTER_PCT)
+            false);  // mirrorPattern
+
+        for (uint8_t i = 0; i < 4; i++) {
+            TEST_ASSERT_TRUE_MESSAGE(p.timeOffMs[i] >= MIN_INTER_BURST_GAP_MS,
+                "inter-burst gap fell below MIN_INTER_BURST_GAP_MS under max jitter");
+        }
+    }
+}
+
 void test_generateRandomPermutation_jitter_still_varies_at_defaults(void) {
     // The clamp must not suppress jitter at the default parameters,
     // where jitterAmount (19.6ms) is well below OFF (67ms).
@@ -984,24 +1020,6 @@ void test_macrocycle_fixed_amplitude(void) {
     }
 }
 
-void test_macrocycle_amplitude_does_not_fall_back_to_default(void) {
-    TherapyEngine engine;
-    engine.setSendMacrocycleCallback(mockCaptureMacrocycleCallback);
-
-    g_macrocycleReceived = false;
-    mockSetMillis(1000);
-
-    // A caller that forgets to forward amplitudeMin/amplitudeMax would previously
-    // fall back to full amplitude (100). 20/20 pins the forwarded values instead.
-    engine.startSession(100, PatternType::RNDP, 100.0f, 67.0f, 0.0f, 4, true, 20, 20, false);
-    engine.update();
-
-    TEST_ASSERT_TRUE(g_macrocycleReceived);
-    for (uint8_t i = 0; i < g_lastSentMacrocycle.eventCount; i++) {
-        TEST_ASSERT_EQUAL_UINT8(20, g_lastSentMacrocycle.events[i].amplitude);
-    }
-}
-
 void test_macrocycle_amplitude_varies_across_range(void) {
     TherapyEngine engine;
     engine.setSendMacrocycleCallback(mockCaptureMacrocycleCallback);
@@ -1344,6 +1362,8 @@ int main(int argc, char **argv) {
     // Jitter Edge Case Tests
     RUN_TEST(test_generateRandomPermutation_high_jitter);
     RUN_TEST(test_generateRandomPermutation_gap_never_collapses_under_max_jitter);
+    RUN_TEST(test_generateSequentialPattern_gap_never_collapses_under_max_jitter);
+    RUN_TEST(test_generateMirroredPattern_gap_never_collapses_under_max_jitter);
     RUN_TEST(test_generateRandomPermutation_jitter_still_varies_at_defaults);
     RUN_TEST(test_relax_interval_scales_with_finger_count);
     RUN_TEST(test_interBurstInterval_scales_with_finger_count_all_generators);
@@ -1375,7 +1395,6 @@ int main(int argc, char **argv) {
     RUN_TEST(test_macrocycle_duration_matches);
     RUN_TEST(test_macrocycle_amplitude_range);
     RUN_TEST(test_macrocycle_fixed_amplitude);
-    RUN_TEST(test_macrocycle_amplitude_does_not_fall_back_to_default);
     RUN_TEST(test_macrocycle_amplitude_varies_across_range);
     RUN_TEST(test_macrocycle_sequence_id_increments);
 

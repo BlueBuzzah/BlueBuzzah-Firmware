@@ -23,6 +23,19 @@ constexpr void shuffleArray(std::span<uint8_t> arr) {
     }
 }
 
+/**
+ * @brief Jitter excursion applied to TIME_OFF, limited so the inter-burst gap can
+ * never fall below MIN_INTER_BURST_GAP_MS. Consecutive bursts closer than that
+ * mask one another perceptually, which defeats the purpose of the jitter.
+ */
+float clampedJitterAmount(float cycleDurationMs, float timeOffMs, float jitterPercent) {
+    const float jitterAmount = cycleDurationMs * (jitterPercent / 100.0f) / 2.0f;
+    const float maxExcursion = (timeOffMs > MIN_INTER_BURST_GAP_MS)
+                                   ? (timeOffMs - MIN_INTER_BURST_GAP_MS)
+                                   : 0.0f;
+    return (jitterAmount > maxExcursion) ? maxExcursion : jitterAmount;
+}
+
 // =============================================================================
 // PATTERN GENERATION
 // =============================================================================
@@ -64,16 +77,7 @@ Pattern generateRandomPermutation(
 
     // Calculate jitter amount per v1 formula: (TIME_ON + TIME_OFF) * jitter% / 100 / 2
     // With 23.5% jitter: 167ms * 0.235 / 2 = 19.6ms
-    float jitterAmount = cycleDurationMs * (jitterPercent / 100.0f) / 2.0f;
-
-    // The excursion is applied to TIME_OFF alone, so it must never leave less than
-    // MIN_INTER_BURST_GAP_MS of gap -- otherwise consecutive bursts mask one another.
-    const float maxExcursion = (timeOffMs > MIN_INTER_BURST_GAP_MS)
-                                   ? (timeOffMs - MIN_INTER_BURST_GAP_MS)
-                                   : 0.0f;
-    if (jitterAmount > maxExcursion) {
-        jitterAmount = maxExcursion;
-    }
+    const float jitterAmount = clampedJitterAmount(cycleDurationMs, timeOffMs, jitterPercent);
 
     // Apply jitter to TIME_OFF (67ms), NOT the inter-burst interval
     // v1 behavior: TIME_OFF_actual = TIME_OFF ± jitter (range: 47-87ms with 23.5% jitter)
@@ -130,7 +134,7 @@ Pattern generateSequentialPattern(
     }
 
     // Calculate jitter amount per v1 formula: (TIME_ON + TIME_OFF) * jitter% / 100 / 2
-    float jitterAmount = cycleDurationMs * (jitterPercent / 100.0f) / 2.0f;
+    const float jitterAmount = clampedJitterAmount(cycleDurationMs, timeOffMs, jitterPercent);
 
     // Apply jitter to TIME_OFF, NOT the inter-burst interval
     for (uint8_t i = 0; i < numFingers; i++) {
@@ -176,7 +180,7 @@ Pattern generateMirroredPattern(
     }
 
     // Calculate jitter amount per v1 formula: (TIME_ON + TIME_OFF) * jitter% / 100 / 2
-    float jitterAmount = cycleDurationMs * (jitterPercent / 100.0f) / 2.0f;
+    const float jitterAmount = clampedJitterAmount(cycleDurationMs, timeOffMs, jitterPercent);
 
     // Apply jitter to TIME_OFF, NOT the inter-burst interval
     for (uint8_t i = 0; i < numFingers; i++) {
