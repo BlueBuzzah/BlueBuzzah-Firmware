@@ -623,6 +623,7 @@ void MenuController::handleProfileGet() {
     addResponseLine("PATTERN", profile->patternType);
     addResponseLine("MIRROR", (int32_t)(profile->mirrorPattern ? 1 : 0));
     addResponseLine("JITTER", profile->jitterPercent, 1);
+    addResponseLine("FINGERS", static_cast<int32_t>(profile->numFingers));
     sendResponse();
 }
 
