@@ -61,7 +61,7 @@ struct __attribute__((packed)) SettingsData {
     uint8_t magic;               // 0xBB to validate file
     uint8_t version;             // Format version for future compatibility
     uint8_t role;                // 0=PRIMARY, 1=SECONDARY
-    uint8_t profileId;           // 1-4 (built-in profile)
+    uint8_t profileId;           // 1-6 (built-in profile)
     uint8_t actuatorType;        // 0=LRA, 1=ERM
     uint16_t frequencyHz;        // 50-300
     float timeOnMs;              // Burst duration

@@ -816,6 +816,37 @@ void test_settings_roundtrip_with_storage(void) {
     TEST_ASSERT_EQUAL(DeviceRole::SECONDARY, pm2.getDeviceRole());
 }
 
+void test_loadSettings_rejects_out_of_range_fields(void) {
+    // Hand-craft a settings block holding values that predate the current bounds.
+    SettingsData data{};
+    data.magic              = SETTINGS_MAGIC;
+    data.version            = SETTINGS_VERSION;
+    data.profileId          = 1;
+    data.timeOnMs           = 900.0f;   // above PARAM_MAX_TIME_ON_MS
+    data.timeOffMs          = 67.0f;    // valid
+    data.jitterPercent      = 95.0f;    // above PARAM_MAX_JITTER_PCT
+    data.amplitudeMin       = 5;        // below PARAM_MIN_AMPLITUDE_PCT
+    data.amplitudeMax       = 100;
+    data.sessionDurationMin = 120;
+    data.numFingers         = MAX_ACTUATORS;
+    strncpy(data.patternType, "rndp", sizeof(data.patternType) - 1);
+
+    fsb::writeFile(SETTINGS_FILE,
+                   reinterpret_cast<const uint8_t*>(&data), sizeof(data));
+
+    ProfileManager* p = new ProfileManager();
+    p->begin(true);  // Load from storage
+
+    // Out-of-range fields must fall back to the built-in profile's values.
+    const TherapyProfile* profile = p->getCurrentProfile();
+    TEST_ASSERT_EQUAL_FLOAT(100.0f, profile->timeOnMs);
+    TEST_ASSERT_EQUAL_FLOAT(0.0f,   profile->jitterPercent);
+    TEST_ASSERT_EQUAL_UINT8(100,    profile->amplitudeMin);
+    // In-range fields are honoured.
+    TEST_ASSERT_EQUAL_FLOAT(67.0f,  profile->timeOffMs);
+    delete p;
+}
+
 // =============================================================================
 // MAIN - RUN ALL TESTS
 // =============================================================================
@@ -952,6 +983,7 @@ int main(int argc, char **argv) {
     // Storage Tests
     RUN_TEST(test_isStorageAvailable_false_when_mount_fails);
     RUN_TEST(test_settings_roundtrip_with_storage);
+    RUN_TEST(test_loadSettings_rejects_out_of_range_fields);
     RUN_TEST(test_saveSettings_returns_false_without_storage);
     RUN_TEST(test_loadSettings_returns_false_without_storage);
 
