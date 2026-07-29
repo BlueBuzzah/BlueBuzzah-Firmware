@@ -12,6 +12,8 @@
 
 #if defined(BOARD_BLUEBUZZAH_NRF52)
   #define MAX_ACTUATORS            4
+  #define HW_VERSION               2              // BlueBuzzah hardware generation
+  #define HW_VERSION_STRING        "v2"
   #define NEOPIXEL_PIN_OVERRIDE    PIN_NEOPIXEL   // Feather board macro
   #define USER_BUTTON_ENABLED      1
   #define USER_BUTTON_PIN_OVERRIDE 7              // Feather USER switch (force-SECONDARY at boot)
@@ -25,6 +27,8 @@
   #define MOTOR_SILK_PORT(finger)  (finger)       // no labeled motor ports on this board
 #elif defined(BOARD_PENTABUZZER_ESP32S3)
   #define MAX_ACTUATORS            5
+  #define HW_VERSION               3              // BlueBuzzah hardware generation
+  #define HW_VERSION_STRING        "v3"
   #define NEOPIXEL_PIN_OVERRIDE    4              // RGB LED data (GPIO4)
   #define SDA_PIN_OVERRIDE         5
   #define SCL_PIN_OVERRIDE         6

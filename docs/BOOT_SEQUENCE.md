@@ -127,16 +127,16 @@ stateDiagram-v2
     [*] --> Initializing: Power On
 
     Initializing --> Advertising: BLE Init Complete
-    note right of Advertising: LED: Rapid Blue Flash
+    note right of Advertising: LED: Breathing Blue
 
     Advertising --> WaitingForDevices: Start Advertisement
     note right of WaitingForDevices: Timeout: 30 seconds
 
     WaitingForDevices --> SecondaryConnected: SECONDARY Connects
-    note right of SecondaryConnected: LED: 5x Green Flash
+    note right of SecondaryConnected: LED: Solid Green
 
     SecondaryConnected --> WaitingForPhone: No Phone Yet
-    note right of WaitingForPhone: LED: Slow Blue Flash
+    note right of WaitingForPhone: LED: Solid Green
 
     WaitingForPhone --> BothConnected: Phone Connects
     WaitingForPhone --> TherapyMode: 30s Timeout
@@ -167,11 +167,11 @@ BootResult primaryBootSequence() {
     Serial.println(F("[PRIMARY] Starting boot sequence"));
 
     // Initialize LED
-    ledController.indicateBLEInit();  // Rapid blue flash
+    led.setPattern(Colors::BLUE, LEDPattern::BLINK_CONNECT);
 
     // Initialize BLE
     if (!bleManager.begin(deviceConfig)) {
-        ledController.indicateFailure();
+        led.setPattern(Colors::RED, LEDPattern::BLINK_SLOW); // boot failure
         return BootResult::FAILED;
     }
 
@@ -181,7 +181,7 @@ BootResult primaryBootSequence() {
 }
 ```
 
-**LED Indicator**: Rapid blue flash (10Hz)
+**LED Indicator**: breathing blue (IDLE, 2s cycle)
 **Purpose**: Initialize BLE stack and begin advertising
 
 ---
@@ -201,10 +201,10 @@ while (millis() - startTime < CONNECTION_TIMEOUT_MS) {
     // Check for new connections (handled via callbacks)
     if (bleManager.hasSecondaryConnection() && !secondaryConnected) {
         secondaryConnected = true;
-        ledController.indicateConnectionSuccess();  // 5x green flash
+        led.setPattern(Colors::GREEN, LEDPattern::SOLID); // pair connected -> READY
 
         if (!phoneConnected) {
-            ledController.indicateWaitingForPhone();  // Slow blue flash
+            // (no distinct LED; device stays in IDLE/READY)
         }
     }
 
@@ -218,9 +218,9 @@ while (millis() - startTime < CONNECTION_TIMEOUT_MS) {
 ```
 
 **LED Indicators**:
-- **During wait**: Rapid blue flash continues
-- **SECONDARY connects**: 5x green flash (success acknowledgment)
-- **Waiting for phone**: Slow blue flash (1Hz)
+- **During wait**: breathing blue (IDLE) continues
+- **SECONDARY connects**: solid green (READY)
+- **Waiting for phone**: solid green (READY, phone has no distinct LED)
 
 **Purpose**: Accept connections from SECONDARY and phone within timeout window
 
@@ -236,7 +236,7 @@ if (millis() - startTime >= CONNECTION_TIMEOUT_MS) {
     if (!secondaryConnected) {
         // CRITICAL FAILURE: No SECONDARY
         Serial.println(F("[PRIMARY] ERROR: SECONDARY not connected"));
-        ledController.indicateFailure();  // Slow red flash
+        led.setPattern(Colors::RED, LEDPattern::BLINK_SLOW); // boot failure
         return BootResult::FAILED;
     }
 
@@ -257,7 +257,7 @@ if (millis() - startTime >= CONNECTION_TIMEOUT_MS) {
 
 ```cpp
 // Determine final state
-ledController.indicateReady();  // Solid green
+led.setPattern(Colors::GREEN, LEDPattern::SOLID); // READY
 
 if (secondaryConnected && phoneConnected) {
     Serial.println(F("[PRIMARY] All connections established"));
@@ -277,10 +277,10 @@ if (secondaryConnected && phoneConnected) {
 ```
 Time  | State                | LED                    | Connections
 ------|----------------------|------------------------|------------------
-0.0s  | Initializing         | Rapid Blue Flash       | None
-1.0s  | Advertising          | Rapid Blue Flash       | None
-3.5s  | SECONDARY Connected  | 5x Green Flash         | SECONDARY
-4.0s  | Waiting for Phone    | Slow Blue Flash        | SECONDARY
+0.0s  | Initializing         | Breathing Blue       | None
+1.0s  | Advertising          | Breathing Blue       | None
+3.5s  | SECONDARY Connected  | Solid Green         | SECONDARY
+4.0s  | Waiting for Phone    | Solid Green        | SECONDARY
 15.0s | Phone Connected      | (transition)           | SECONDARY + Phone
 15.5s | Ready                | Solid Green            | SECONDARY + Phone
 ```
@@ -289,10 +289,10 @@ Time  | State                | LED                    | Connections
 ```
 Time  | State                | LED                    | Connections
 ------|----------------------|------------------------|------------------
-0.0s  | Initializing         | Rapid Blue Flash       | None
-1.0s  | Advertising          | Rapid Blue Flash       | None
-3.5s  | SECONDARY Connected  | 5x Green Flash         | SECONDARY
-4.0s  | Waiting for Phone    | Slow Blue Flash        | SECONDARY
+0.0s  | Initializing         | Breathing Blue       | None
+1.0s  | Advertising          | Breathing Blue       | None
+3.5s  | SECONDARY Connected  | Solid Green         | SECONDARY
+4.0s  | Waiting for Phone    | Solid Green        | SECONDARY
 30.0s | Timeout (no phone)   | (transition)           | SECONDARY
 30.5s | Ready                | Solid Green            | SECONDARY
 ```
@@ -331,10 +331,10 @@ stateDiagram-v2
     [*] --> Initializing: Power On
 
     Initializing --> Scanning: BLE Init Complete
-    note right of Scanning: LED: Rapid Blue Flash\nTimeout: 30 seconds
+    note right of Scanning: LED: Breathing Blue\nTimeout: 30 seconds
 
     Scanning --> Connected: Found PRIMARY
-    note right of Connected: LED: 5x Green Flash
+    note right of Connected: LED: Solid Green
 
     Connected --> Ready: Connection Confirmed
     note right of Ready: LED: Solid Green
@@ -359,11 +359,11 @@ BootResult secondaryBootSequence() {
     Serial.println(F("[SECONDARY] Starting boot sequence"));
 
     // Initialize LED
-    ledController.indicateBLEInit();  // Rapid blue flash
+    led.setPattern(Colors::BLUE, LEDPattern::BLINK_CONNECT);
 
     // Initialize BLE
     if (!bleManager.begin(deviceConfig)) {
-        ledController.indicateFailure();
+        led.setPattern(Colors::RED, LEDPattern::BLINK_SLOW); // boot failure
         return BootResult::FAILED;
     }
 
@@ -371,7 +371,7 @@ BootResult secondaryBootSequence() {
 }
 ```
 
-**LED Indicator**: Rapid blue flash (10Hz)
+**LED Indicator**: breathing blue (IDLE, 2s cycle)
 **Purpose**: Initialize BLE stack for scanning
 
 ---
@@ -390,9 +390,9 @@ while (millis() - startTime < CONNECTION_TIMEOUT_MS) {
         connected = true;
 
         // Success indicators
-        ledController.indicateConnectionSuccess();  // 5x green flash
-        delay(500);  // Brief pause after success flash
-        ledController.indicateReady();  // Solid green
+        led.setPattern(Colors::GREEN, LEDPattern::SOLID); // pair connected -> READY
+        delay(500);
+        led.setPattern(Colors::GREEN, LEDPattern::SOLID); // READY
 
         Serial.println(F("[SECONDARY] Connected to PRIMARY"));
         return BootResult::SUCCESS;
@@ -403,7 +403,7 @@ while (millis() - startTime < CONNECTION_TIMEOUT_MS) {
 }
 ```
 
-**LED Indicator**: Rapid blue flash (continues during scanning)
+**LED Indicator**: breathing blue (IDLE) while scanning
 **Purpose**: Find and connect to PRIMARY device
 
 ---
@@ -412,16 +412,13 @@ while (millis() - startTime < CONNECTION_TIMEOUT_MS) {
 
 **Duration**: < 1 second
 
-**LED Sequence**:
-1. 5x green flash (success acknowledgment, synchronized with PRIMARY)
-2. Brief pause (0.5s)
-3. Solid green (ready state)
+**LED**: on connecting to PRIMARY the state goes directly to READY — solid green.
 
 ```cpp
 if (connected) {
-    ledController.indicateConnectionSuccess();  // 5x green flash
+    led.setPattern(Colors::GREEN, LEDPattern::SOLID); // pair connected -> READY
     delay(500);
-    ledController.indicateReady();  // Solid green
+    led.setPattern(Colors::GREEN, LEDPattern::SOLID); // READY
     return BootResult::SUCCESS;
 }
 ```
@@ -437,7 +434,7 @@ if (connected) {
 ```cpp
 // Timeout - connection failed
 Serial.println(F("[SECONDARY] ERROR: PRIMARY not found within timeout"));
-ledController.indicateFailure();  // Slow red flash
+led.setPattern(Colors::RED, LEDPattern::BLINK_SLOW); // boot failure
 return BootResult::FAILED;
 ```
 
@@ -452,10 +449,10 @@ return BootResult::FAILED;
 ```
 Time  | State                | LED                    | Status
 ------|----------------------|------------------------|------------------
-0.0s  | Initializing         | Rapid Blue Flash       | BLE init
-1.0s  | Scanning             | Rapid Blue Flash       | Looking for PRIMARY
-3.5s  | Found PRIMARY        | Rapid Blue Flash       | Attempting connection
-4.0s  | Connected            | 5x Green Flash         | Connection success
+0.0s  | Initializing         | Breathing Blue       | BLE init
+1.0s  | Scanning             | Breathing Blue       | Looking for PRIMARY
+3.5s  | Found PRIMARY        | Breathing Blue       | Attempting connection
+4.0s  | Connected            | Solid Green         | Connection success
 4.5s  | Ready                | Solid Green            | Awaiting commands
 ```
 
@@ -463,9 +460,9 @@ Time  | State                | LED                    | Status
 ```
 Time  | State                | LED                    | Status
 ------|----------------------|------------------------|------------------
-0.0s  | Initializing         | Rapid Blue Flash       | BLE init
-1.0s  | Scanning             | Rapid Blue Flash       | Looking for PRIMARY
-...   | Scanning             | Rapid Blue Flash       | Still searching
+0.0s  | Initializing         | Breathing Blue       | BLE init
+1.0s  | Scanning             | Breathing Blue       | Looking for PRIMARY
+...   | Scanning             | Breathing Blue       | Still searching
 30.0s | Timeout              | (transition)           | PRIMARY not found
 30.5s | Failed               | Slow Red Flash         | Boot failed
 ```
@@ -476,121 +473,60 @@ Time  | State                | LED                    | Status
 
 ### Complete LED Color and Pattern Guide
 
-| State | Color | Pattern | Frequency | Meaning |
+Colors/patterns below are the shipping firmware behavior (`src/main.cpp` boot
+sequence and `onStateChange`). See `docs/API_REFERENCE.md#led-controller` for the
+full pattern-timing table.
+
+| Boot phase | Color | Pattern | Timing | Meaning |
 |-------|-------|---------|-----------|---------|
-| **BLE Initialization** | Blue | Rapid Flash | 10 Hz | BLE stack initializing |
-| **Connection Success** | Green | 5x Flash | 5 Hz | PRIMARY-SECONDARY connected |
-| **Waiting for Phone** | Blue | Slow Flash | 1 Hz | SECONDARY connected, waiting for phone |
-| **Ready** | Green | Solid | - | Boot complete, ready for therapy |
-| **Connection Failed** | Red | Slow Flash | 1 Hz | Boot failed, restart required |
-| **Missing/Failed Motor(s)** | Red | Double Blink | 2 blinks per 1.25s | Boot probe found fewer than 4 motors (shown 5s at boot) |
+| **No role configured** | Orange | Slow blink | 1 s on/off | `SET_ROLE` not yet run |
+| **LED initialized** | Blue | Connect blink | 250 ms on/off | early boot, LED up |
+| **Hardware init success** | Cyan | Connect blink | 250 ms on/off | motors/mux/battery OK |
+| **Hardware init failed** | Red | Slow blink | 1 s on/off | a hardware subsystem failed |
+| **Missing/Failed Motor(s)** | Red | Double blink | 2 blinks/pause, shown 5 s | boot probe found fewer than 4 motors |
+| **BLE ready (enters IDLE)** | Blue | Breathe | 2 s cycle | BLE up, waiting to pair/connect |
+| **BLE init failed** | Red | Slow blink | 1 s on/off | BLE stack failed to start |
+| **Ready** | Green | Solid | - | glove pair connected, ready for therapy |
+
+> Note: earlier revisions of this doc listed a green "5x flash" on
+> PRIMARY↔SECONDARY connect and a separate "waiting for phone" blink. The shipping
+> firmware does not do those — on pairing the state goes directly to **READY (solid
+> green)**, and phone presence is not shown with a distinct LED.
 
 ### LED Pattern Details
 
-#### Rapid Blue Flash (BLE Init)
-```cpp
-// Pattern: 100ms on, 100ms off
-ledController.rapidFlash(LED_BLUE, 10.0f);
-```
-- **Duration**: Until connection attempt completes
-- **Purpose**: Indicates active BLE operations
-- **Devices**: Both PRIMARY and SECONDARY
+Each entry is `led.setPattern(color, pattern)` in `src/main.cpp`. Pattern timings
+are defined in `include/config.h` (see `docs/API_REFERENCE.md#led-controller`).
 
----
+- **Blue connect-blink** (`Colors::BLUE, BLINK_CONNECT`, 250 ms) — LED just
+  initialized, early boot. Both roles.
+- **Cyan connect-blink** (`Colors::CYAN, BLINK_CONNECT`, 250 ms) — hardware init
+  (motors, mux, battery) succeeded. Both roles.
+- **Blue breathe** (`Colors::BLUE, BREATHE_SLOW`, 2 s) — BLE up; device is in IDLE
+  waiting to pair / connect. Both roles.
+- **Solid green** (`Colors::GREEN, SOLID`) — glove pair connected; state is READY.
+  On session start this changes to green `PULSE_SLOW` (or off, if "LED off during
+  therapy" is enabled).
+- **Red slow blink** (`Colors::RED, BLINK_SLOW`, 1 s) — a boot step failed
+  (hardware or BLE init). Requires restart.
+- **Red double-blink** (`Colors::RED, DOUBLE_BLINK`, 5 s) — boot motor probe found
+  fewer than 4 motors, then boot continues.
+- **Orange slow blink** (`Colors::ORANGE, BLINK_SLOW`, 1 s) — no role configured
+  yet (run `SET_ROLE`).
 
-#### 5x Green Flash (Connection Success)
-```cpp
-// Pattern: 5 flashes, 100ms on, 100ms off each
-ledController.flashCount(LED_GREEN, 5);
-```
-- **Duration**: ~1 second (5 × 200ms)
-- **Purpose**: Confirms PRIMARY-SECONDARY connection
-- **Devices**: Both PRIMARY and SECONDARY (synchronized)
-- **Timing**: Synchronized within sub-10ms
-
----
-
-#### Slow Blue Flash (Waiting for Phone)
-```cpp
-// Pattern: 500ms on, 500ms off
-ledController.slowFlash(LED_BLUE);
-```
-- **Duration**: Until phone connects or 30s timeout
-- **Purpose**: Indicates waiting for phone connection
-- **Devices**: PRIMARY only
-
----
-
-#### Solid Green (Ready)
-```cpp
-// Pattern: Continuous solid green
-ledController.setColor(LED_GREEN);
-```
-- **Duration**: Until therapy starts
-- **Purpose**: Boot complete, system ready
-- **Devices**: Both PRIMARY and SECONDARY
-- **Transition**: Changes to breathing green when therapy starts
-
----
-
-#### Slow Red Flash (Failure)
-```cpp
-// Pattern: 500ms on, 500ms off
-ledController.slowFlash(LED_RED);
-```
-- **Duration**: Continuous (until power cycle)
-- **Purpose**: Boot sequence failed
-- **Devices**: Both PRIMARY and SECONDARY (when applicable)
-- **Recovery**: Requires device restart
-
----
-
-### LED Pattern Timing Diagram
+### Boot LED Timeline
 
 ```
-PRIMARY Boot (Success with Phone):
-0s     5s     10s    15s    20s    25s    30s
-|------|------|------|------|------|------|
-[Rapid Blue Flash................]
-                 ^
-                 SECONDARY connects
-                 [5x Green]
-                          [Slow Blue Flash...]
-                                         ^
-                                         Phone connects
-                                         [Solid Green]
+Boot (both roles), success:
+[orange slow blink]  no role set (until SET_ROLE)
+      -> [blue connect-blink]   LED init
+      -> [cyan connect-blink]   hardware init OK   (red double-blink 5s here if <4 motors)
+      -> [blue breathe]         BLE ready, IDLE (waiting to pair)
+      -> [SOLID GREEN]          glove pair connected, READY
 
-PRIMARY Boot (Success without Phone):
-0s     5s     10s    15s    20s    25s    30s
-|------|------|------|------|------|------|
-[Rapid Blue Flash................]
-                 ^
-                 SECONDARY connects
-                 [5x Green]
-                          [Slow Blue Flash.............]
-                                                      ^
-                                                      Timeout
-                                                      [Solid Green]
-
-SECONDARY Boot (Success):
-0s     5s     10s    15s    20s    25s    30s
-|------|------|------|------|------|------|
-[Rapid Blue Flash...]
-                 ^
-                 Found PRIMARY
-                 [5x Green]
-                          [Solid Green...............]
-
-PRIMARY/SECONDARY Boot (Failure):
-0s     5s     10s    15s    20s    25s    30s
-|------|------|------|------|------|------|
-[Rapid Blue Flash................................]
-                                              ^
-                                              Timeout (no connection)
-                                              [Slow Red Flash....]
+Boot, failure:
+      -> [red slow blink]       hardware or BLE init failed (until restart)
 ```
-
----
 
 ## Connection Requirements
 
@@ -749,10 +685,10 @@ while (millis() - startTime < CONNECTION_TIMEOUT_MS) {
 ```cpp
 if (timeoutReached) {
     if (!secondaryConnected) {
-        ledController.indicateFailure();
+        led.setPattern(Colors::RED, LEDPattern::BLINK_SLOW); // boot failure
         return BootResult::FAILED;
     } else {
-        ledController.indicateReady();
+        led.setPattern(Colors::GREEN, LEDPattern::SOLID); // READY
         return phoneConnected ? BootResult::SUCCESS_WITH_PHONE
                               : BootResult::SUCCESS_NO_PHONE;
     }
@@ -785,7 +721,7 @@ This "auto-start" behavior allows the system to function as a standalone therapy
 ```cpp
 if (timeoutReached) {
     if (!connected) {
-        ledController.indicateFailure();
+        led.setPattern(Colors::RED, LEDPattern::BLINK_SLOW); // boot failure
         return BootResult::FAILED;
     }
 }
@@ -827,7 +763,7 @@ if (timeoutReached) {
 if (!secondaryConnected) {
     Serial.println(F("[PRIMARY] CRITICAL: SECONDARY not connected"));
     Serial.println(F("[PRIMARY] Cannot proceed without bilateral synchronization"));
-    ledController.indicateFailure();
+    led.setPattern(Colors::RED, LEDPattern::BLINK_SLOW); // boot failure
     return BootResult::FAILED;
 }
 ```
@@ -852,7 +788,7 @@ if (!secondaryConnected) {
 if (!connected) {
     Serial.println(F("[SECONDARY] CRITICAL: PRIMARY not found"));
     Serial.println(F("[SECONDARY] Ensure PRIMARY is powered on and in range"));
-    ledController.indicateFailure();
+    led.setPattern(Colors::RED, LEDPattern::BLINK_SLOW); // boot failure
     return BootResult::FAILED;
 }
 ```
@@ -874,7 +810,7 @@ if (!connected) {
 void monitorConnectionDuringBoot() {
     if (!bleManager.isSecondaryConnected()) {
         Serial.println(F("[PRIMARY] WARNING: SECONDARY connection lost during boot"));
-        ledController.indicateFailure();
+        led.setPattern(Colors::RED, LEDPattern::BLINK_SLOW); // boot failure
         return BootResult::FAILED;
     }
 }
@@ -1027,7 +963,7 @@ Boot Failed                    | 30.5s   | -        | 30.5s
 ### Problem: Devices Stuck on Blue Flashing LED
 
 **Symptoms**:
-- LED continues rapid blue flash indefinitely
+- LED continues breathing blue (IDLE) indefinitely
 - No connection established
 - Both devices powered on
 
@@ -1202,7 +1138,7 @@ void setup() {
 
     // 3. Initialize hardware
     if (!hardware.begin()) {
-        ledController.indicateFailure();
+        led.setPattern(Colors::RED, LEDPattern::BLINK_SLOW); // boot failure
         while (true) { delay(1000); }
     }
 
@@ -1216,11 +1152,11 @@ void setup() {
     }
 
     if (bootResult == BootResult::FAILED) {
-        ledController.indicateFailure();
+        led.setPattern(Colors::RED, LEDPattern::BLINK_SLOW); // boot failure
         while (true) { delay(1000); }
     }
 
-    ledController.indicateReady();
+    led.setPattern(Colors::GREEN, LEDPattern::SOLID); // READY
     Serial.println(F("[INFO] Boot complete, entering main loop"));
 }
 ```
@@ -1229,27 +1165,32 @@ void setup() {
 
 ### LED Controller Class
 
+`LEDController` lives in `include/hardware.h` (implemented in `src/hardware.cpp`)
+and exposes a generic color+pattern API. State→LED decisions are made by the
+caller in `src/main.cpp`, not inside the controller.
+
 ```cpp
-// include/led_controller.h
+// include/hardware.h
 
 class LEDController {
 public:
-    void begin();
-
-    void indicateBLEInit();           // Rapid blue flash
-    void indicateConnectionSuccess(); // 5x green flash
-    void indicateWaitingForPhone();   // Slow blue flash
-    void indicateReady();             // Solid green
-    void indicateFailure();           // Slow red flash
+    bool begin();
+    void update();                                             // call every loop() to animate
+    void setPattern(const RGBColor& color, LEDPattern pattern);
+    void setColor(uint8_t r, uint8_t g, uint8_t b);           // SOLID
+    void setColor(const RGBColor& color);                      // SOLID
+    void off();
+    void setBrightness(uint8_t brightness);
+    RGBColor getColor() const;
+    LEDPattern getPattern() const;
 
 private:
     Adafruit_NeoPixel _pixel;
-    void rapidFlash(uint32_t color, float frequency);
-    void slowFlash(uint32_t color);
-    void flashCount(uint32_t color, uint8_t count);
-    void setColor(uint32_t color);
+    // ...
 };
 ```
+
+Example (from the boot sequence): `led.setPattern(Colors::BLUE, LEDPattern::BREATHE_SLOW);`
 
 ---
 

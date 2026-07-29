@@ -170,9 +170,6 @@ BLEManager::BLEManager() :
     _connectCallback(nullptr),
     _disconnectCallback(nullptr),
     _messageCallback(nullptr),
-    _txHead(0),
-    _txTail(0),
-    _txCount(0),
     _txStampCallback(nullptr)
 {
     memset(_deviceName, 0, sizeof(_deviceName));
@@ -184,10 +181,15 @@ BLEManager::BLEManager() :
         _connections[i].reset();
     }
 
+    _txHi.head = _txHi.tail = _txHi.count = 0;
+    _txNormal.head = _txNormal.tail = _txNormal.count = 0;
     for (uint8_t i = 0; i < TX_QUEUE_SIZE; i++) {
-        _txQueue[i].pending = false;
-        _txQueue[i].length = 0;
-        _txQueue[i].bytesSent = 0;
+        _txHi.entries[i].pending = false;
+        _txHi.entries[i].length = 0;
+        _txHi.entries[i].bytesSent = 0;
+        _txNormal.entries[i].pending = false;
+        _txNormal.entries[i].length = 0;
+        _txNormal.entries[i].bytesSent = 0;
     }
 
     g_bleManager = this;
@@ -275,6 +277,14 @@ void BLEManager::setupAdvertising() {
     adv->enableScanResponse(true);
     if (!adv->setName(_deviceName)) {
         Serial.println(F("[BLE] ERROR: Failed to set advertised name"));
+    }
+
+    // Hardware generation for the mobile app's scan list. Lands in the main
+    // advert (flags 3 + NUS UUID 18 + this 6 = 27 of 31 bytes); the name is
+    // already routed to the scan response above. See BLE_MFG_DATA_INIT.
+    static const uint8_t mfgData[] = BLE_MFG_DATA_INIT;
+    if (!adv->setManufacturerData(mfgData, sizeof(mfgData))) {
+        Serial.println(F("[BLE] WARNING: Failed to set manufacturer data"));
     }
     adv->setMinInterval(32);   // 20ms (0.625ms units - parity with Bluefruit)
     adv->setMaxInterval(244);  // 152.5ms
@@ -571,7 +581,21 @@ bool BLEManager::send(uint16_t connHandleParam, const char* message) {
     return enqueueTx(connHandleParam, message);
 }
 
+bool BLEManager::isPeerGloveHandle(uint16_t connHandle) const {
+    return (_role == DeviceRole::PRIMARY && connHandle == getSecondaryHandle()) ||
+           (_role == DeviceRole::SECONDARY && connHandle == getPrimaryHandle());
+}
+
+BLEManager::TxRing& BLEManager::ringFor(uint16_t connHandle) {
+    // Peer-glove (hard-real-time sync) -> hi lane; phone -> normal lane.
+    return isPeerGloveHandle(connHandle) ? _txHi : _txNormal;
+}
+
 bool BLEManager::enqueueTx(uint16_t connHandle, const char* message) {
+    return enqueueToRing(ringFor(connHandle), connHandle, message);
+}
+
+bool BLEManager::enqueueToRing(TxRing& ring, uint16_t connHandle, const char* message) {
     // Validate length before entering the critical section (no shared state read)
     size_t msgLen = strlen(message);
     if (msgLen >= MESSAGE_BUFFER_SIZE - 1) {
@@ -586,21 +610,21 @@ bool BLEManager::enqueueTx(uint16_t connHandle, const char* message) {
     // a half-filled entry.
     PLATFORM_CRITICAL_ENTER();
 
-    if (_txCount >= TX_QUEUE_SIZE) {
+    if (ring.count >= TX_QUEUE_SIZE) {
         PLATFORM_CRITICAL_EXIT();
         Serial.println(F("[BLE] TX queue full, dropping message"));
         return false;
     }
 
-    TxEntry* entry = &_txQueue[_txTail];
+    TxEntry* entry = &ring.entries[ring.tail];
     if (entry->pending) {
         PLATFORM_CRITICAL_EXIT();
         Serial.println(F("[BLE] TX queue corruption detected"));
         return false;
     }
 
-    _txTail = static_cast<uint8_t>((_txTail + 1) % TX_QUEUE_SIZE);
-    _txCount++;
+    ring.tail = static_cast<uint8_t>((ring.tail + 1) % TX_QUEUE_SIZE);
+    ring.count++;
 
     PLATFORM_CRITICAL_EXIT();
 
@@ -619,9 +643,17 @@ bool BLEManager::enqueueTx(uint16_t connHandle, const char* message) {
 }
 
 void BLEManager::processTxQueue() {
-    // Process up to 4 queue entries per update for responsiveness
-    for (uint8_t i = 0; i < 4 && _txCount > 0; i++) {
-        TxEntry* entry = &_txQueue[_txHead];
+    // Hard-real-time peer-glove sync traffic first (all pending, bounded by ring
+    // capacity), then phone traffic (existing 4-per-update budget). Peer traffic is
+    // rate-limited by therapy generation (one macrocycle per 50-150ms lead + 4Hz
+    // pings), so this never starves the normal lane in practice.
+    drainRing(_txHi, TX_QUEUE_SIZE);
+    drainRing(_txNormal, 4);
+}
+
+void BLEManager::drainRing(TxRing& ring, uint8_t maxEntries) {
+    for (uint8_t i = 0; i < maxEntries && ring.count > 0; i++) {
+        TxEntry* entry = &ring.entries[ring.head];
         if (!entry->pending) {
             // Reserved but not yet published: the producer (possibly on the
             // other core) is still filling the entry. Retry next update() -
@@ -631,6 +663,23 @@ void BLEManager::processTxQueue() {
         // Acquire: pending was observed true; ensure the field reads below
         // see the producer's stores (pairs with the publish barrier)
         platformMemoryBarrier();
+
+        // Drop entries whose connection died: a dead handle writes 0 bytes forever,
+        // which would head-of-line block this lane permanently — after a profile-
+        // reboot disconnect that means no pings/macrocycles ever again. Purging here
+        // (within one update() of the disconnect) also closes the window where a
+        // recycled handle on reconnect would receive a stale or partial frame.
+        // Drain runs in loop context only, so this adds no cross-context mutation.
+        BBConnection* conn = findConnection(entry->connHandle);
+        if (!conn || !conn->isConnected) {
+            PLATFORM_CRITICAL_ENTER();
+            entry->pending = false;
+            ring.head = static_cast<uint8_t>((ring.head + 1) % TX_QUEUE_SIZE);
+            ring.count--;
+            PLATFORM_CRITICAL_EXIT();
+            Serial.println(F("[BLE] Dropped TX entry for disconnected handle"));
+            continue;
+        }
 
         // Late timestamping: serialize sync messages at radio handoff so the
         // embedded T1/T3 reflects when bytes are handed to the stack.
@@ -652,8 +701,8 @@ void BLEManager::processTxQueue() {
                 uint32_t seqId = entry->stampSeqId;
                 PLATFORM_CRITICAL_ENTER();
                 entry->pending = false;
-                _txHead = static_cast<uint8_t>((_txHead + 1) % TX_QUEUE_SIZE);
-                _txCount--;
+                ring.head = static_cast<uint8_t>((ring.head + 1) % TX_QUEUE_SIZE);
+                ring.count--;
                 PLATFORM_CRITICAL_EXIT();
                 Serial.printf("[BLE] ERROR: stamped sync serialize failed seq=%lu\n", (unsigned long)seqId);
                 continue;
@@ -683,8 +732,8 @@ void BLEManager::processTxQueue() {
             if (entry->bytesSent >= entry->length) {
                 PLATFORM_CRITICAL_ENTER();
                 entry->pending = false;
-                _txHead = static_cast<uint8_t>((_txHead + 1) % TX_QUEUE_SIZE);
-                _txCount--;
+                ring.head = static_cast<uint8_t>((ring.head + 1) % TX_QUEUE_SIZE);
+                ring.count--;
                 PLATFORM_CRITICAL_EXIT();
             }
         } else {
@@ -788,25 +837,31 @@ bool BLEManager::sendPongStamped(uint16_t connHandle, uint32_t seqId, uint64_t t
 
 bool BLEManager::enqueueStamped(uint16_t connHandle, TxStampKind kind, uint32_t seqId,
                                 uint64_t t2, uint64_t anchorUs) {
-    // Reserve-fill-publish, same protocol as enqueueTx (see the cross-core
+    // Stamped sync (PING/PONG) is peer-glove traffic -> routed to the hi lane.
+    return enqueueStampedToRing(ringFor(connHandle), connHandle, kind, seqId, t2, anchorUs);
+}
+
+bool BLEManager::enqueueStampedToRing(TxRing& ring, uint16_t connHandle, TxStampKind kind,
+                                      uint32_t seqId, uint64_t t2, uint64_t anchorUs) {
+    // Reserve-fill-publish, same protocol as enqueueToRing (see the cross-core
     // rationale there).
     PLATFORM_CRITICAL_ENTER();
 
-    if (_txCount >= TX_QUEUE_SIZE) {
+    if (ring.count >= TX_QUEUE_SIZE) {
         PLATFORM_CRITICAL_EXIT();
         Serial.println(F("[BLE] TX queue full, dropping sync message"));
         return false;
     }
 
-    TxEntry* entry = &_txQueue[_txTail];
+    TxEntry* entry = &ring.entries[ring.tail];
     if (entry->pending) {
         PLATFORM_CRITICAL_EXIT();
         Serial.println(F("[BLE] TX queue corruption detected"));
         return false;
     }
 
-    _txTail = static_cast<uint8_t>((_txTail + 1) % TX_QUEUE_SIZE);
-    _txCount++;
+    ring.tail = static_cast<uint8_t>((ring.tail + 1) % TX_QUEUE_SIZE);
+    ring.count++;
 
     PLATFORM_CRITICAL_EXIT();
 
