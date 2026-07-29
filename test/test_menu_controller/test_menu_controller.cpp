@@ -13,6 +13,7 @@
 #include <Arduino.h>
 #include <cstring>
 #include <cstdlib>
+#include "internal_messages.h"
 
 // =============================================================================
 // MOCK DEFINITIONS FOR DEPENDENCIES
@@ -226,25 +227,6 @@ const char* deviceRoleToString(DeviceRole role) {
 
 // Now we manually implement the parts of MenuController we want to test
 // since including the actual header would bring in hardware dependencies
-
-// =============================================================================
-// INTERNAL MESSAGE PREFIXES (from menu_controller.cpp)
-// =============================================================================
-
-const char* INTERNAL_MESSAGES[] = {
-    "BUZZ",
-    "PING",
-    "PARAM_UPDATE",
-    "SEED",
-    "SEED_ACK",
-    "GET_BATTERY",
-    "BATRESPONSE",
-    "ACK_PARAM_UPDATE",
-    "SYNC:",
-    "IDENTIFY:"
-};
-
-const uint8_t INTERNAL_MESSAGE_COUNT = sizeof(INTERNAL_MESSAGES) / sizeof(INTERNAL_MESSAGES[0]);
 
 // =============================================================================
 // SIMPLE MENU CONTROLLER FOR TESTING
@@ -1007,7 +989,7 @@ void test_isInternalMessage_ACK_PARAM_UPDATE_returns_true() {
 }
 
 void test_isInternalMessage_SYNC_prefix_returns_true() {
-    TEST_ASSERT_TRUE(g_menu->isInternalMessage("SYNC:12345:67890"));
+    TEST_ASSERT_TRUE(g_menu->isInternalMessage("SYNC_ADJ:12345:67890"));
 }
 
 void test_isInternalMessage_IDENTIFY_prefix_returns_true() {
