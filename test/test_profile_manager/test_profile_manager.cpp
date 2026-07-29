@@ -366,6 +366,9 @@ void test_setParameter_AMPMIN_valid(void) {
 
 void test_setParameter_AMPMAX_valid(void) {
     profiles->loadProfile(1);
+    // regular_vcr defaults amplitudeMin to 100; lower it first so the
+    // AMPMIN/AMPMAX cross-check does not reject an otherwise in-range AMPMAX.
+    TEST_ASSERT_TRUE(profiles->setParameter("AMPMIN", "20"));
     TEST_ASSERT_TRUE(profiles->setParameter("AMPMAX", "75"));
 
     const TherapyProfile* p = profiles->getCurrentProfile();
@@ -416,10 +419,10 @@ void test_setParameter_PATTERN_invalid(void) {
 
 void test_setParameter_JITTER_valid(void) {
     profiles->loadProfile(1);
-    TEST_ASSERT_TRUE(profiles->setParameter("JITTER", "50.5"));
+    TEST_ASSERT_TRUE(profiles->setParameter("JITTER", "25.0"));
 
     const TherapyProfile* p = profiles->getCurrentProfile();
-    TEST_ASSERT_FLOAT_WITHIN(0.1f, 50.5f, p->jitterPercent);
+    TEST_ASSERT_FLOAT_WITHIN(0.1f, 25.0f, p->jitterPercent);
 }
 
 void test_setParameter_JITTER_invalid_negative(void) {
@@ -513,20 +516,15 @@ void test_setParameter_AMPMAX_invalid_above_100(void) {
     TEST_ASSERT_FALSE(profiles->setParameter("AMPMAX", "101"));
 }
 
-void test_setParameter_AMPMIN_zero_is_valid(void) {
+void test_setParameter_AMPMAX_20_is_valid(void) {
     profiles->loadProfile(1);
-    TEST_ASSERT_TRUE(profiles->setParameter("AMPMIN", "0"));
+    // regular_vcr defaults amplitudeMin to 100; lower it first so the
+    // AMPMIN/AMPMAX cross-check does not reject the new boundary value.
+    TEST_ASSERT_TRUE(profiles->setParameter("AMPMIN", "20"));
+    TEST_ASSERT_TRUE(profiles->setParameter("AMPMAX", "20"));
 
     const TherapyProfile* p = profiles->getCurrentProfile();
-    TEST_ASSERT_EQUAL_UINT8(0, p->amplitudeMin);
-}
-
-void test_setParameter_AMPMAX_zero_is_valid(void) {
-    profiles->loadProfile(1);
-    TEST_ASSERT_TRUE(profiles->setParameter("AMPMAX", "0"));
-
-    const TherapyProfile* p = profiles->getCurrentProfile();
-    TEST_ASSERT_EQUAL_UINT8(0, p->amplitudeMax);
+    TEST_ASSERT_EQUAL_UINT8(20, p->amplitudeMax);
 }
 
 void test_setParameter_JITTER_zero_is_valid(void) {
@@ -537,44 +535,105 @@ void test_setParameter_JITTER_zero_is_valid(void) {
     TEST_ASSERT_FLOAT_WITHIN(0.01f, 0.0f, p->jitterPercent);
 }
 
-void test_setParameter_JITTER_100_is_valid(void) {
+void test_setParameter_JITTER_50_is_valid(void) {
     profiles->loadProfile(1);
-    TEST_ASSERT_TRUE(profiles->setParameter("JITTER", "100"));
+    TEST_ASSERT_TRUE(profiles->setParameter("JITTER", "50"));
 
     const TherapyProfile* p = profiles->getCurrentProfile();
-    TEST_ASSERT_FLOAT_WITHIN(0.1f, 100.0f, p->jitterPercent);
+    TEST_ASSERT_FLOAT_WITHIN(0.1f, 50.0f, p->jitterPercent);
 }
 
-void test_setParameter_ON_10_is_valid(void) {
+void test_setParameter_JITTER_above_50_is_rejected(void) {
     profiles->loadProfile(1);
-    TEST_ASSERT_TRUE(profiles->setParameter("ON", "10"));
-
-    const TherapyProfile* p = profiles->getCurrentProfile();
-    TEST_ASSERT_FLOAT_WITHIN(0.1f, 10.0f, p->timeOnMs);
+    TEST_ASSERT_FALSE(profiles->setParameter("JITTER", "51"));
 }
 
-void test_setParameter_ON_1000_is_valid(void) {
+void test_setParameter_ON_50_is_valid(void) {
     profiles->loadProfile(1);
-    TEST_ASSERT_TRUE(profiles->setParameter("ON", "1000"));
+    TEST_ASSERT_TRUE(profiles->setParameter("ON", "50"));
 
     const TherapyProfile* p = profiles->getCurrentProfile();
-    TEST_ASSERT_FLOAT_WITHIN(0.1f, 1000.0f, p->timeOnMs);
+    TEST_ASSERT_FLOAT_WITHIN(0.1f, 50.0f, p->timeOnMs);
 }
 
-void test_setParameter_OFF_10_is_valid(void) {
+void test_setParameter_ON_200_is_valid(void) {
     profiles->loadProfile(1);
-    TEST_ASSERT_TRUE(profiles->setParameter("OFF", "10"));
+    TEST_ASSERT_TRUE(profiles->setParameter("ON", "200"));
 
     const TherapyProfile* p = profiles->getCurrentProfile();
-    TEST_ASSERT_FLOAT_WITHIN(0.1f, 10.0f, p->timeOffMs);
+    TEST_ASSERT_FLOAT_WITHIN(0.1f, 200.0f, p->timeOnMs);
 }
 
-void test_setParameter_OFF_1000_is_valid(void) {
+void test_setParameter_ON_above_200_is_rejected(void) {
     profiles->loadProfile(1);
-    TEST_ASSERT_TRUE(profiles->setParameter("OFF", "1000"));
+    TEST_ASSERT_FALSE(profiles->setParameter("ON", "201"));
+}
+
+void test_setParameter_ON_below_50_is_rejected(void) {
+    profiles->loadProfile(1);
+    TEST_ASSERT_FALSE(profiles->setParameter("ON", "49"));
+}
+
+void test_setParameter_OFF_30_is_valid(void) {
+    profiles->loadProfile(1);
+    TEST_ASSERT_TRUE(profiles->setParameter("OFF", "30"));
 
     const TherapyProfile* p = profiles->getCurrentProfile();
-    TEST_ASSERT_FLOAT_WITHIN(0.1f, 1000.0f, p->timeOffMs);
+    TEST_ASSERT_FLOAT_WITHIN(0.1f, 30.0f, p->timeOffMs);
+}
+
+void test_setParameter_OFF_200_is_valid(void) {
+    profiles->loadProfile(1);
+    TEST_ASSERT_TRUE(profiles->setParameter("OFF", "200"));
+
+    const TherapyProfile* p = profiles->getCurrentProfile();
+    TEST_ASSERT_FLOAT_WITHIN(0.1f, 200.0f, p->timeOffMs);
+}
+
+void test_setParameter_OFF_below_30_is_rejected(void) {
+    profiles->loadProfile(1);
+    TEST_ASSERT_FALSE(profiles->setParameter("OFF", "29"));
+}
+
+void test_setParameter_AMPMIN_below_20_is_rejected(void) {
+    profiles->loadProfile(1);
+    TEST_ASSERT_FALSE(profiles->setParameter("AMPMIN", "19"));
+}
+
+void test_setParameter_AMPMIN_20_is_valid(void) {
+    profiles->loadProfile(1);
+    TEST_ASSERT_TRUE(profiles->setParameter("AMPMIN", "20"));
+
+    const TherapyProfile* p = profiles->getCurrentProfile();
+    TEST_ASSERT_EQUAL_UINT8(20, p->amplitudeMin);
+}
+
+void test_setParameter_AMPMIN_above_AMPMAX_is_rejected(void) {
+    // gentle defaults to amplitudeMin=30/amplitudeMax=70, both clear of the
+    // 60/70 values below, so the cross-check result here reflects only the
+    // writes this test makes, not whatever the loaded profile happened to hold.
+    profiles->loadProfile(5);
+    TEST_ASSERT_TRUE(profiles->setParameter("AMPMAX", "60"));
+    TEST_ASSERT_FALSE(profiles->setParameter("AMPMIN", "70"));
+
+    // The rejected write must not have taken effect.
+    const TherapyProfile* p = profiles->getCurrentProfile();
+    TEST_ASSERT_EQUAL_UINT8(60, p->amplitudeMax);
+}
+
+void test_setParameter_AMPMAX_below_AMPMIN_is_rejected(void) {
+    profiles->loadProfile(5);
+    TEST_ASSERT_TRUE(profiles->setParameter("AMPMIN", "70"));
+    TEST_ASSERT_FALSE(profiles->setParameter("AMPMAX", "60"));
+
+    const TherapyProfile* p = profiles->getCurrentProfile();
+    TEST_ASSERT_EQUAL_UINT8(70, p->amplitudeMin);
+}
+
+void test_setParameter_AMPMIN_equal_AMPMAX_is_valid(void) {
+    profiles->loadProfile(5);
+    TEST_ASSERT_TRUE(profiles->setParameter("AMPMAX", "70"));
+    TEST_ASSERT_TRUE(profiles->setParameter("AMPMIN", "70"));
 }
 
 void test_setParameter_FINGERS_1_is_valid(void) {
@@ -634,6 +693,113 @@ void test_hasStoredRole_false_initially(void) {
 }
 
 // =============================================================================
+// CUSTOM OVERRIDE TESTS
+// =============================================================================
+
+void test_customOverride_roundtrip(void) {
+    profiles->loadProfile(CUSTOM_PROFILE_ID);
+    profiles->setParameter("ON", "80");
+    profiles->setParameter("OFF", "53");
+    profiles->setParameter("JITTER", "30");
+    profiles->setParameter("FINGERS", "3");
+    TEST_ASSERT_TRUE(profiles->saveCustomOverride());
+
+    // Reload Custom from the built-in table; the override must be reapplied.
+    profiles->loadProfile(1);
+    profiles->loadProfile(CUSTOM_PROFILE_ID);
+
+    const TherapyProfile* profile = profiles->getCurrentProfile();
+    TEST_ASSERT_EQUAL_FLOAT(80.0f, profile->timeOnMs);
+    TEST_ASSERT_EQUAL_FLOAT(53.0f, profile->timeOffMs);
+    TEST_ASSERT_EQUAL_FLOAT(30.0f, profile->jitterPercent);
+    TEST_ASSERT_EQUAL_UINT8(3, profile->numFingers);
+}
+
+void test_customOverride_survives_switching_to_another_profile(void) {
+    // This is the exact scenario the single settings.bin block could not survive.
+    profiles->loadProfile(CUSTOM_PROFILE_ID);
+    profiles->setParameter("ON", "80");
+    TEST_ASSERT_TRUE(profiles->saveCustomOverride());
+
+    profiles->loadProfile(1);                    // Regular
+    TEST_ASSERT_TRUE(profiles->saveSettings());  // as PROFILE_LOAD does
+    profiles->loadProfile(CUSTOM_PROFILE_ID);
+
+    TEST_ASSERT_EQUAL_FLOAT(80.0f, profiles->getCurrentProfile()->timeOnMs);
+}
+
+void test_customOverride_absent_leaves_builtin_defaults(void) {
+    profiles->loadProfile(CUSTOM_PROFILE_ID);
+    // custom_vcr built-in defaults
+    const TherapyProfile* profile = profiles->getCurrentProfile();
+    TEST_ASSERT_EQUAL_FLOAT(100.0f, profile->timeOnMs);
+    TEST_ASSERT_EQUAL_UINT8(70, profile->amplitudeMin);
+}
+
+void test_customOverride_does_not_affect_preset_profiles(void) {
+    profiles->loadProfile(CUSTOM_PROFILE_ID);
+    profiles->setParameter("ON", "80");
+    TEST_ASSERT_TRUE(profiles->saveCustomOverride());
+
+    profiles->loadProfile(1);
+    TEST_ASSERT_EQUAL_FLOAT(100.0f, profiles->getCurrentProfile()->timeOnMs);
+}
+
+void test_clearCustomOverride_restores_builtin_defaults(void) {
+    profiles->loadProfile(CUSTOM_PROFILE_ID);
+    profiles->setParameter("ON", "80");
+    profiles->saveCustomOverride();
+
+    TEST_ASSERT_TRUE(profiles->clearCustomOverride());
+    profiles->loadProfile(CUSTOM_PROFILE_ID);
+
+    TEST_ASSERT_EQUAL_FLOAT(100.0f, profiles->getCurrentProfile()->timeOnMs);
+}
+
+void test_saveCustomOverride_returns_false_without_storage(void) {
+    fsb::mock::setBeginResult(false);
+    ProfileManager* p = new ProfileManager();
+    p->begin(false);
+    TEST_ASSERT_FALSE(p->saveCustomOverride());
+    delete p;
+}
+
+void test_customOverride_survives_reboot(void) {
+    // The boot path (loadSettings) does not route through loadProfile, so it
+    // needs its own overlay call. Verifies settings.bin recording profileId 4
+    // does not silently revert Custom to built-in defaults after a reboot.
+    profiles->loadProfile(CUSTOM_PROFILE_ID);
+    profiles->setParameter("ON", "80");
+    TEST_ASSERT_TRUE(profiles->saveCustomOverride());
+    TEST_ASSERT_TRUE(profiles->saveSettings());  // Records profileId 4 in settings.bin
+
+    ProfileManager pm2;
+    pm2.begin(true);  // Load from (mock) storage
+
+    const TherapyProfile* profile = pm2.getCurrentProfile();
+    TEST_ASSERT_EQUAL_UINT8(CUSTOM_PROFILE_ID, pm2.getCurrentProfileId());
+    TEST_ASSERT_EQUAL_FLOAT(80.0f, profile->timeOnMs);
+}
+
+void test_customOverride_does_not_persist_pattern(void) {
+    // CustomOverrideData has no patternType field. setParameter still accepts
+    // PATTERN (it is a general-purpose entry point used by other profiles too),
+    // but the persistence layer must not silently retain it - the handler-level
+    // rejection (menu_controller) is what actually blocks this from the phone/
+    // serial, and this test proves the underlying data path can't launder it
+    // through even if that rejection were ever bypassed.
+    profiles->loadProfile(CUSTOM_PROFILE_ID);
+    TEST_ASSERT_TRUE(profiles->setParameter("PATTERN", "sequential"));
+    TEST_ASSERT_TRUE(profiles->saveCustomOverride());
+
+    profiles->loadProfile(1);
+    profiles->loadProfile(CUSTOM_PROFILE_ID);
+
+    const TherapyProfile* profile = profiles->getCurrentProfile();
+    TEST_ASSERT_EQUAL_STRING("rndp", profile->patternType);
+}
+
+// =============================================================================
 // STORAGE TESTS
 // =============================================================================
 
@@ -666,6 +832,39 @@ void test_settings_roundtrip_with_storage(void) {
     pm2.begin(true);  // Load from (mock) storage
     TEST_ASSERT_TRUE(pm2.hasStoredRole());
     TEST_ASSERT_EQUAL(DeviceRole::SECONDARY, pm2.getDeviceRole());
+}
+
+void test_loadSettings_rejects_out_of_range_fields(void) {
+    // Hand-craft a settings block holding values that predate the current bounds.
+    SettingsData data{};
+    data.magic              = SETTINGS_MAGIC;
+    data.version            = SETTINGS_VERSION;
+    data.profileId          = 1;
+    data.timeOnMs           = 900.0f;   // above PARAM_MAX_TIME_ON_MS
+    data.timeOffMs          = 67.0f;    // valid
+    data.jitterPercent      = 95.0f;    // above PARAM_MAX_JITTER_PCT
+    data.amplitudeMin       = 5;        // below PARAM_MIN_AMPLITUDE_PCT
+    data.amplitudeMax       = 100;
+    data.sessionDurationMin = 120;
+    data.numFingers         = MAX_ACTUATORS;
+    data.frequencyHz        = 400;      // above PARAM_MAX_FREQUENCY_HZ
+    strncpy(data.patternType, "rndp", sizeof(data.patternType) - 1);
+
+    fsb::writeFile(SETTINGS_FILE,
+                   reinterpret_cast<const uint8_t*>(&data), sizeof(data));
+
+    ProfileManager* p = new ProfileManager();
+    p->begin(true);  // Load from storage
+
+    // Out-of-range fields must fall back to the built-in profile's values.
+    const TherapyProfile* profile = p->getCurrentProfile();
+    TEST_ASSERT_EQUAL_FLOAT(100.0f, profile->timeOnMs);
+    TEST_ASSERT_EQUAL_FLOAT(0.0f,   profile->jitterPercent);
+    TEST_ASSERT_EQUAL_UINT8(100,    profile->amplitudeMin);
+    TEST_ASSERT_EQUAL_UINT16(250,   profile->frequencyHz);
+    // In-range fields are honoured.
+    TEST_ASSERT_EQUAL_FLOAT(67.0f,  profile->timeOffMs);
+    delete p;
 }
 
 // =============================================================================
@@ -765,14 +964,22 @@ int main(int argc, char **argv) {
     RUN_TEST(test_setParameter_OFF_invalid_below_10);
     RUN_TEST(test_setParameter_OFF_invalid_above_1000);
     RUN_TEST(test_setParameter_AMPMAX_invalid_above_100);
-    RUN_TEST(test_setParameter_AMPMIN_zero_is_valid);
-    RUN_TEST(test_setParameter_AMPMAX_zero_is_valid);
+    RUN_TEST(test_setParameter_AMPMAX_20_is_valid);
     RUN_TEST(test_setParameter_JITTER_zero_is_valid);
-    RUN_TEST(test_setParameter_JITTER_100_is_valid);
-    RUN_TEST(test_setParameter_ON_10_is_valid);
-    RUN_TEST(test_setParameter_ON_1000_is_valid);
-    RUN_TEST(test_setParameter_OFF_10_is_valid);
-    RUN_TEST(test_setParameter_OFF_1000_is_valid);
+    RUN_TEST(test_setParameter_JITTER_50_is_valid);
+    RUN_TEST(test_setParameter_JITTER_above_50_is_rejected);
+    RUN_TEST(test_setParameter_ON_50_is_valid);
+    RUN_TEST(test_setParameter_ON_200_is_valid);
+    RUN_TEST(test_setParameter_ON_above_200_is_rejected);
+    RUN_TEST(test_setParameter_ON_below_50_is_rejected);
+    RUN_TEST(test_setParameter_OFF_30_is_valid);
+    RUN_TEST(test_setParameter_OFF_200_is_valid);
+    RUN_TEST(test_setParameter_OFF_below_30_is_rejected);
+    RUN_TEST(test_setParameter_AMPMIN_below_20_is_rejected);
+    RUN_TEST(test_setParameter_AMPMIN_20_is_valid);
+    RUN_TEST(test_setParameter_AMPMIN_above_AMPMAX_is_rejected);
+    RUN_TEST(test_setParameter_AMPMAX_below_AMPMIN_is_rejected);
+    RUN_TEST(test_setParameter_AMPMIN_equal_AMPMAX_is_valid);
     RUN_TEST(test_setParameter_FINGERS_1_is_valid);
     RUN_TEST(test_setParameter_FINGERS_4_is_valid);
 
@@ -784,9 +991,20 @@ int main(int argc, char **argv) {
     RUN_TEST(test_setDeviceRole_SECONDARY);
     RUN_TEST(test_hasStoredRole_false_initially);
 
+    // Custom Override Tests
+    RUN_TEST(test_customOverride_roundtrip);
+    RUN_TEST(test_customOverride_survives_switching_to_another_profile);
+    RUN_TEST(test_customOverride_absent_leaves_builtin_defaults);
+    RUN_TEST(test_customOverride_does_not_affect_preset_profiles);
+    RUN_TEST(test_clearCustomOverride_restores_builtin_defaults);
+    RUN_TEST(test_saveCustomOverride_returns_false_without_storage);
+    RUN_TEST(test_customOverride_survives_reboot);
+    RUN_TEST(test_customOverride_does_not_persist_pattern);
+
     // Storage Tests
     RUN_TEST(test_isStorageAvailable_false_when_mount_fails);
     RUN_TEST(test_settings_roundtrip_with_storage);
+    RUN_TEST(test_loadSettings_rejects_out_of_range_fields);
     RUN_TEST(test_saveSettings_returns_false_without_storage);
     RUN_TEST(test_loadSettings_returns_false_without_storage);
 

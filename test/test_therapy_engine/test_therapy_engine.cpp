@@ -327,7 +327,7 @@ void test_TherapyEngine_default_state(void) {
 void test_TherapyEngine_startSession(void) {
     TherapyEngine engine;
 
-    engine.startSession(7200, PatternType::RNDP, 100.0f, 67.0f, 23.5f, 4, true);
+    engine.startSession(7200, PatternType::RNDP, 100.0f, 67.0f, 23.5f, 4, true, 100, 100, false);
 
     TEST_ASSERT_TRUE(engine.isRunning());
     TEST_ASSERT_FALSE(engine.isPaused());
@@ -336,7 +336,7 @@ void test_TherapyEngine_startSession(void) {
 
 void test_TherapyEngine_pause(void) {
     TherapyEngine engine;
-    engine.startSession(7200, PatternType::RNDP, 100.0f, 67.0f, 23.5f, 4, true);
+    engine.startSession(7200, PatternType::RNDP, 100.0f, 67.0f, 23.5f, 4, true, 100, 100, false);
 
     engine.pause();
 
@@ -346,7 +346,7 @@ void test_TherapyEngine_pause(void) {
 
 void test_TherapyEngine_resume(void) {
     TherapyEngine engine;
-    engine.startSession(7200, PatternType::RNDP, 100.0f, 67.0f, 23.5f, 4, true);
+    engine.startSession(7200, PatternType::RNDP, 100.0f, 67.0f, 23.5f, 4, true, 100, 100, false);
     engine.pause();
 
     engine.resume();
@@ -357,7 +357,7 @@ void test_TherapyEngine_resume(void) {
 
 void test_TherapyEngine_stop(void) {
     TherapyEngine engine;
-    engine.startSession(7200, PatternType::RNDP, 100.0f, 67.0f, 23.5f, 4, true);
+    engine.startSession(7200, PatternType::RNDP, 100.0f, 67.0f, 23.5f, 4, true, 100, 100, false);
 
     engine.stop();
 
@@ -366,11 +366,11 @@ void test_TherapyEngine_stop(void) {
 
 void test_TherapyEngine_resets_stats_on_start(void) {
     TherapyEngine engine;
-    engine.startSession(100, PatternType::RNDP, 100.0f, 67.0f, 0.0f, 4, true);
+    engine.startSession(100, PatternType::RNDP, 100.0f, 67.0f, 0.0f, 4, true, 100, 100, false);
     engine.stop();
 
     // Start new session
-    engine.startSession(200, PatternType::RNDP, 100.0f, 67.0f, 0.0f, 4, true);
+    engine.startSession(200, PatternType::RNDP, 100.0f, 67.0f, 0.0f, 4, true, 100, 100, false);
 
     TEST_ASSERT_EQUAL_UINT32(0, engine.getCyclesCompleted());
     TEST_ASSERT_EQUAL_UINT32(0, engine.getTotalActivations());
@@ -385,7 +385,7 @@ void test_TherapyEngine_getElapsedSeconds(void) {
     // Start with non-zero time (startTime == 0 is a guard condition in the code)
     mockSetMillis(1000);
 
-    engine.startSession(7200, PatternType::RNDP, 100.0f, 67.0f, 0.0f, 4, true);
+    engine.startSession(7200, PatternType::RNDP, 100.0f, 67.0f, 0.0f, 4, true, 100, 100, false);
 
     // Advance time by 5000ms (5 seconds)
     mockAdvanceMillis(5000);
@@ -398,7 +398,7 @@ void test_TherapyEngine_getRemainingSeconds(void) {
     // Start with non-zero time (startTime == 0 is a guard condition in the code)
     mockSetMillis(1000);
 
-    engine.startSession(100, PatternType::RNDP, 100.0f, 67.0f, 0.0f, 4, true);
+    engine.startSession(100, PatternType::RNDP, 100.0f, 67.0f, 0.0f, 4, true, 100, 100, false);
 
     // Advance time by 30 seconds
     mockAdvanceMillis(30000);
@@ -434,7 +434,7 @@ void test_TherapyEngine_update_does_nothing_when_paused(void) {
     TherapyEngine engine;
     engine.setActivateCallback(mockActivateCallback);
 
-    engine.startSession(7200, PatternType::RNDP, 100.0f, 67.0f, 0.0f, 4, true);
+    engine.startSession(7200, PatternType::RNDP, 100.0f, 67.0f, 0.0f, 4, true, 100, 100, false);
     engine.pause();
 
     int countBefore = g_activateCallCount;
@@ -447,7 +447,7 @@ void test_TherapyEngine_session_timeout(void) {
     TherapyEngine engine;
     mockSetMillis(0);
 
-    engine.startSession(10, PatternType::RNDP, 100.0f, 67.0f, 0.0f, 4, true);  // 10 second session
+    engine.startSession(10, PatternType::RNDP, 100.0f, 67.0f, 0.0f, 4, true, 100, 100, false);  // 10 second session
 
     // Advance past session duration
     mockAdvanceMillis(11000);
@@ -463,7 +463,7 @@ void test_TherapyEngine_session_timeout(void) {
 void test_TherapyEngine_startSession_sequential_pattern(void) {
     TherapyEngine engine;
 
-    engine.startSession(7200, PatternType::SEQUENTIAL, 100.0f, 67.0f, 0.0f, 4, true);
+    engine.startSession(7200, PatternType::SEQUENTIAL, 100.0f, 67.0f, 0.0f, 4, true, 100, 100, false);
 
     TEST_ASSERT_TRUE(engine.isRunning());
 }
@@ -471,9 +471,12 @@ void test_TherapyEngine_startSession_sequential_pattern(void) {
 void test_TherapyEngine_startSession_mirrored_pattern(void) {
     TherapyEngine engine;
 
-    engine.startSession(7200, PatternType::MIRRORED, 100.0f, 67.0f, 0.0f, 4, true);
+    engine.startSession(7200, PatternType::MIRRORED, 100.0f, 67.0f, 0.0f, 4, true, 100, 100, false);
 
     TEST_ASSERT_TRUE(engine.isRunning());
+    // Confirms the session actually dispatched to the MIRRORED generator rather
+    // than silently falling through to another pattern type.
+    TEST_ASSERT_EQUAL(PatternType::MIRRORED, engine.getPatternType());
 }
 
 // =============================================================================
@@ -495,7 +498,7 @@ void test_TherapyEngine_setDeactivateCallback(void) {
 
     // Verify deactivate callback is called during pause
     engine.setActivateCallback(mockActivateCallback);
-    engine.startSession(100, PatternType::RNDP, 100.0f, 67.0f, 0.0f, 4, true);
+    engine.startSession(100, PatternType::RNDP, 100.0f, 67.0f, 0.0f, 4, true, 100, 100, false);
 
     // Pause should deactivate motors if active
     engine.pause();
@@ -514,7 +517,7 @@ void test_TherapyEngine_setFrequencyRandomization(void) {
     engine.setFrequencyRandomization(true, 210, 260);
 
     // Start session to trigger frequency application
-    engine.startSession(100, PatternType::RNDP, 100.0f, 67.0f, 0.0f, 4, true);
+    engine.startSession(100, PatternType::RNDP, 100.0f, 67.0f, 0.0f, 4, true, 100, 100, false);
 
     TEST_ASSERT_TRUE(engine.isRunning());
 }
@@ -525,7 +528,7 @@ void test_TherapyEngine_setFrequencyRandomization_disabled(void) {
     // Disable frequency randomization
     engine.setFrequencyRandomization(false, 210, 260);
 
-    engine.startSession(100, PatternType::RNDP, 100.0f, 67.0f, 0.0f, 4, true);
+    engine.startSession(100, PatternType::RNDP, 100.0f, 67.0f, 0.0f, 4, true, 100, 100, false);
 
     TEST_ASSERT_TRUE(engine.isRunning());
 }
@@ -538,7 +541,7 @@ void test_TherapyEngine_amplitude_range(void) {
     TherapyEngine engine;
 
     // Start session with amplitude range (50-100)
-    engine.startSession(100, PatternType::RNDP, 100.0f, 67.0f, 0.0f, 4, true, 50, 100);
+    engine.startSession(100, PatternType::RNDP, 100.0f, 67.0f, 0.0f, 4, true, 50, 100, false);
 
     TEST_ASSERT_TRUE(engine.isRunning());
 }
@@ -547,7 +550,7 @@ void test_TherapyEngine_fixed_amplitude(void) {
     TherapyEngine engine;
 
     // Start session with fixed amplitude (min == max)
-    engine.startSession(100, PatternType::RNDP, 100.0f, 67.0f, 0.0f, 4, true, 80, 80);
+    engine.startSession(100, PatternType::RNDP, 100.0f, 67.0f, 0.0f, 4, true, 80, 80, false);
 
     TEST_ASSERT_TRUE(engine.isRunning());
 }
@@ -564,6 +567,119 @@ void test_generateRandomPermutation_high_jitter(void) {
     // With high jitter, timing values should still be valid
     for (int i = 0; i < 4; i++) {
         TEST_ASSERT_TRUE(p.timeOffMs[i] >= 0.0f);
+    }
+}
+
+void test_generateRandomPermutation_gap_never_collapses_under_max_jitter(void) {
+    // Worst permitted combination: long burst, shortest gap, max jitter.
+    // Run many iterations because the jitter draw is random.
+    for (int iteration = 0; iteration < 500; iteration++) {
+        Pattern p = generateRandomPermutation(
+            4,       // numFingers
+            200.0f,  // timeOnMs  (PARAM_MAX_TIME_ON_MS)
+            30.0f,   // timeOffMs (PARAM_MIN_TIME_OFF_MS)
+            50.0f,   // jitterPercent (PARAM_MAX_JITTER_PCT)
+            false);  // mirrorPattern
+
+        for (uint8_t i = 0; i < 4; i++) {
+            TEST_ASSERT_TRUE_MESSAGE(p.timeOffMs[i] >= MIN_INTER_BURST_GAP_MS,
+                "inter-burst gap fell below MIN_INTER_BURST_GAP_MS under max jitter");
+        }
+    }
+}
+
+void test_generateSequentialPattern_gap_never_collapses_under_max_jitter(void) {
+    // Worst permitted combination: long burst, shortest gap, max jitter.
+    // Run many iterations because the jitter draw is random.
+    for (int iteration = 0; iteration < 500; iteration++) {
+        Pattern p = generateSequentialPattern(
+            4,       // numFingers
+            200.0f,  // timeOnMs  (PARAM_MAX_TIME_ON_MS)
+            30.0f,   // timeOffMs (PARAM_MIN_TIME_OFF_MS)
+            50.0f,   // jitterPercent (PARAM_MAX_JITTER_PCT)
+            false);  // mirrorPattern
+
+        for (uint8_t i = 0; i < 4; i++) {
+            TEST_ASSERT_TRUE_MESSAGE(p.timeOffMs[i] >= MIN_INTER_BURST_GAP_MS,
+                "inter-burst gap fell below MIN_INTER_BURST_GAP_MS under max jitter");
+        }
+    }
+}
+
+void test_generateMirroredPattern_gap_never_collapses_under_max_jitter(void) {
+    // Worst permitted combination: long burst, shortest gap, max jitter.
+    // Run many iterations because the jitter draw is random.
+    for (int iteration = 0; iteration < 500; iteration++) {
+        Pattern p = generateMirroredPattern(
+            4,       // numFingers
+            200.0f,  // timeOnMs  (PARAM_MAX_TIME_ON_MS)
+            30.0f,   // timeOffMs (PARAM_MIN_TIME_OFF_MS)
+            50.0f,   // jitterPercent (PARAM_MAX_JITTER_PCT)
+            false);  // mirrorPattern
+
+        for (uint8_t i = 0; i < 4; i++) {
+            TEST_ASSERT_TRUE_MESSAGE(p.timeOffMs[i] >= MIN_INTER_BURST_GAP_MS,
+                "inter-burst gap fell below MIN_INTER_BURST_GAP_MS under max jitter");
+        }
+    }
+}
+
+void test_generateRandomPermutation_jitter_still_varies_at_defaults(void) {
+    // The clamp must not suppress jitter at the default parameters,
+    // where jitterAmount (19.6ms) is well below OFF (67ms).
+    bool sawVariation = false;
+    Pattern first = generateRandomPermutation(
+        4, 100.0f, 67.0f, 23.5f, false);
+    for (int iteration = 0; iteration < 200 && !sawVariation; iteration++) {
+        Pattern p = generateRandomPermutation(
+            4, 100.0f, 67.0f, 23.5f, false);
+        for (uint8_t i = 0; i < 4; i++) {
+            if (p.timeOffMs[i] != first.timeOffMs[i]) {
+                sawVariation = true;
+            }
+        }
+    }
+    TEST_ASSERT_TRUE_MESSAGE(sawVariation,
+        "jitter produced no variation at default parameters");
+}
+
+void test_relax_interval_scales_with_finger_count(void) {
+    // The paper's 3:2 ON-OFF cycling means the relax interval must equal
+    // exactly two CR periods, and one CR period is numFingers * (ON + OFF).
+    const float onMs  = 100.0f;
+    const float offMs = 67.0f;
+
+    for (uint8_t fingers = 1; fingers <= MAX_ACTUATORS; fingers++) {
+        const float expectedRelaxMs = 2.0f * fingers * (onMs + offMs);
+        const float actualRelaxMs = calculateRelaxIntervalMs(fingers, onMs, offMs);
+
+        TEST_ASSERT_FLOAT_WITHIN_MESSAGE(0.01f, expectedRelaxMs, actualRelaxMs,
+            "relax interval is not two CR periods for this finger count");
+    }
+}
+
+void test_interBurstInterval_scales_with_finger_count_all_generators(void) {
+    // Each generator independently sets pattern.interBurstIntervalMs = numFingers *
+    // (ON + OFF). Jitter is 0 so the value is deterministic. This pins all three
+    // sites directly, unlike test_generateRandomPermutation_interBurstInterval
+    // (which hardcodes 4 fingers and can't distinguish numFingers * X from 4 * X).
+    const float onMs  = 100.0f;
+    const float offMs = 67.0f;
+
+    for (uint8_t fingers = 1; fingers <= MAX_ACTUATORS; fingers++) {
+        const float expected = static_cast<float>(fingers) * (onMs + offMs);
+
+        Pattern randomPermutation = generateRandomPermutation(fingers, onMs, offMs, 0.0f, true);
+        TEST_ASSERT_FLOAT_WITHIN_MESSAGE(0.1f, expected, randomPermutation.interBurstIntervalMs,
+            "generateRandomPermutation interBurstIntervalMs did not scale with finger count");
+
+        Pattern sequential = generateSequentialPattern(fingers, onMs, offMs, 0.0f, true, false);
+        TEST_ASSERT_FLOAT_WITHIN_MESSAGE(0.1f, expected, sequential.interBurstIntervalMs,
+            "generateSequentialPattern interBurstIntervalMs did not scale with finger count");
+
+        Pattern mirrored = generateMirroredPattern(fingers, onMs, offMs, 0.0f, true);
+        TEST_ASSERT_FLOAT_WITHIN_MESSAGE(0.1f, expected, mirrored.interBurstIntervalMs,
+            "generateMirroredPattern interBurstIntervalMs did not scale with finger count");
     }
 }
 
@@ -595,7 +711,7 @@ void test_TherapyEngine_default_pattern_type_fallback(void) {
 
     // Use a non-standard pattern type (default branch in switch)
     // Since we can't easily pass an invalid enum, test with valid types
-    engine.startSession(100, PatternType::RNDP, 100.0f, 67.0f, 0.0f, 4, true);
+    engine.startSession(100, PatternType::RNDP, 100.0f, 67.0f, 0.0f, 4, true, 100, 100, false);
 
     TEST_ASSERT_TRUE(engine.isRunning());
 }
@@ -609,7 +725,7 @@ void test_TherapyEngine_stop_deactivates_motors(void) {
     engine.setDeactivateCallback(mockDeactivateCallback);
     engine.setActivateCallback(mockActivateCallback);
 
-    engine.startSession(100, PatternType::RNDP, 100.0f, 67.0f, 0.0f, 4, true);
+    engine.startSession(100, PatternType::RNDP, 100.0f, 67.0f, 0.0f, 4, true, 100, 100, false);
 
     // Stop should deactivate motors if active
     engine.stop();
@@ -625,7 +741,7 @@ void test_TherapyEngine_getRemainingSeconds_exceeded(void) {
     TherapyEngine engine;
     mockSetMillis(1000);
 
-    engine.startSession(10, PatternType::RNDP, 100.0f, 67.0f, 0.0f, 4, true);
+    engine.startSession(10, PatternType::RNDP, 100.0f, 67.0f, 0.0f, 4, true, 100, 100, false);
 
     // Advance past session duration
     mockAdvanceMillis(20000);
@@ -678,7 +794,7 @@ void test_TherapyEngine_setMacrocycleStartCallback(void) {
     engine.setMacrocycleStartCallback(mockMacrocycleStartCallback);
 
     g_macrocycleStartCallCount = 0;
-    engine.startSession(100, PatternType::RNDP, 100.0f, 67.0f, 0.0f, 4, true);
+    engine.startSession(100, PatternType::RNDP, 100.0f, 67.0f, 0.0f, 4, true, 100, 100, false);
 
     // Macrocycle start callback is called during startSession
     TEST_ASSERT_EQUAL_INT(1, g_macrocycleStartCallCount);
@@ -690,7 +806,7 @@ void test_TherapyEngine_setSendMacrocycleCallback(void) {
 
     g_sendMacrocycleCallCount = 0;
     mockSetMillis(1000);
-    engine.startSession(100, PatternType::RNDP, 100.0f, 67.0f, 0.0f, 4, true);
+    engine.startSession(100, PatternType::RNDP, 100.0f, 67.0f, 0.0f, 4, true, 100, 100, false);
 
     // First update should trigger macrocycle generation and send
     engine.update();
@@ -706,7 +822,7 @@ void test_TherapyEngine_setSchedulingCallbacks(void) {
     g_schedulingComplete = false;
     mockSetMillis(1000);
 
-    engine.startSession(100, PatternType::RNDP, 100.0f, 67.0f, 0.0f, 4, true);
+    engine.startSession(100, PatternType::RNDP, 100.0f, 67.0f, 0.0f, 4, true, 100, 100, false);
     engine.update();
 
     // Should have scheduled 12 activations (3 patterns * 4 fingers)
@@ -721,7 +837,7 @@ void test_TherapyEngine_setGetLeadTimeCallback(void) {
     g_lastLeadTimeReturned = 0;
     mockSetMillis(1000);
 
-    engine.startSession(100, PatternType::RNDP, 100.0f, 67.0f, 0.0f, 4, true);
+    engine.startSession(100, PatternType::RNDP, 100.0f, 67.0f, 0.0f, 4, true, 100, 100, false);
     engine.update();
 
     // Lead time callback should have been called
@@ -735,7 +851,7 @@ void test_TherapyEngine_setSetFrequencyCallback(void) {
 
     g_setFrequencyCallCount = 0;
 
-    engine.startSession(100, PatternType::RNDP, 100.0f, 67.0f, 0.0f, 4, true);
+    engine.startSession(100, PatternType::RNDP, 100.0f, 67.0f, 0.0f, 4, true, 100, 100, false);
 
     // Randomization covers every physical actuator (not just session
     // fingers): events look frequency up by physical finger index, which
@@ -762,7 +878,7 @@ void test_macrocycle_creates_12_events(void) {
     g_macrocycleReceived = false;
     mockSetMillis(1000);
 
-    engine.startSession(100, PatternType::RNDP, 100.0f, 67.0f, 0.0f, 4, true);
+    engine.startSession(100, PatternType::RNDP, 100.0f, 67.0f, 0.0f, 4, true, 100, 100, false);
     engine.update();
 
     TEST_ASSERT_TRUE(g_macrocycleReceived);
@@ -785,7 +901,7 @@ void test_macrocycle_skips_inactive_finger(void) {
     g_macrocycleReceived = false;
     mockSetMillis(1000);
 
-    engine.startSession(100, PatternType::RNDP, 100.0f, 67.0f, 0.0f, MAX_ACTUATORS, true);
+    engine.startSession(100, PatternType::RNDP, 100.0f, 67.0f, 0.0f, MAX_ACTUATORS, true, 100, 100, false);
     engine.update();
 
     TEST_ASSERT_TRUE(g_macrocycleReceived);
@@ -813,7 +929,7 @@ void test_macrocycle_sequential_pattern(void) {
     g_macrocycleReceived = false;
     mockSetMillis(1000);
 
-    engine.startSession(100, PatternType::SEQUENTIAL, 100.0f, 67.0f, 0.0f, 4, true);
+    engine.startSession(100, PatternType::SEQUENTIAL, 100.0f, 67.0f, 0.0f, 4, true, 100, 100, false);
     engine.update();
 
     TEST_ASSERT_TRUE(g_macrocycleReceived);
@@ -827,7 +943,7 @@ void test_macrocycle_mirrored_pattern(void) {
     g_macrocycleReceived = false;
     mockSetMillis(1000);
 
-    engine.startSession(100, PatternType::MIRRORED, 100.0f, 67.0f, 0.0f, 4, true);
+    engine.startSession(100, PatternType::MIRRORED, 100.0f, 67.0f, 0.0f, 4, true, 100, 100, false);
     engine.update();
 
     TEST_ASSERT_TRUE(g_macrocycleReceived);
@@ -842,7 +958,7 @@ void test_macrocycle_with_frequency_randomization(void) {
     g_macrocycleReceived = false;
     mockSetMillis(1000);
 
-    engine.startSession(100, PatternType::RNDP, 100.0f, 67.0f, 0.0f, 4, true);
+    engine.startSession(100, PatternType::RNDP, 100.0f, 67.0f, 0.0f, 4, true, 100, 100, false);
     engine.update();
 
     TEST_ASSERT_TRUE(g_macrocycleReceived);
@@ -861,7 +977,7 @@ void test_macrocycle_duration_matches(void) {
     g_macrocycleReceived = false;
     mockSetMillis(1000);
 
-    engine.startSession(100, PatternType::RNDP, 150.0f, 67.0f, 0.0f, 4, true);  // 150ms ON time
+    engine.startSession(100, PatternType::RNDP, 150.0f, 67.0f, 0.0f, 4, true, 100, 100, false);  // 150ms ON time
     engine.update();
 
     TEST_ASSERT_TRUE(g_macrocycleReceived);
@@ -876,7 +992,7 @@ void test_macrocycle_amplitude_range(void) {
     g_macrocycleReceived = false;
     mockSetMillis(1000);
 
-    engine.startSession(100, PatternType::RNDP, 100.0f, 67.0f, 0.0f, 4, true, 50, 100);
+    engine.startSession(100, PatternType::RNDP, 100.0f, 67.0f, 0.0f, 4, true, 50, 100, false);
     engine.update();
 
     TEST_ASSERT_TRUE(g_macrocycleReceived);
@@ -894,7 +1010,7 @@ void test_macrocycle_fixed_amplitude(void) {
     g_macrocycleReceived = false;
     mockSetMillis(1000);
 
-    engine.startSession(100, PatternType::RNDP, 100.0f, 67.0f, 0.0f, 4, true, 80, 80);
+    engine.startSession(100, PatternType::RNDP, 100.0f, 67.0f, 0.0f, 4, true, 80, 80, false);
     engine.update();
 
     TEST_ASSERT_TRUE(g_macrocycleReceived);
@@ -902,6 +1018,32 @@ void test_macrocycle_fixed_amplitude(void) {
     for (uint8_t i = 0; i < g_lastSentMacrocycle.eventCount; i++) {
         TEST_ASSERT_EQUAL_UINT8(80, g_lastSentMacrocycle.events[i].amplitude);
     }
+}
+
+void test_macrocycle_amplitude_varies_across_range(void) {
+    TherapyEngine engine;
+    engine.setSendMacrocycleCallback(mockCaptureMacrocycleCallback);
+
+    g_macrocycleReceived = false;
+    mockSetMillis(1000);
+
+    engine.startSession(100, PatternType::RNDP, 100.0f, 67.0f, 0.0f, 4, true, 20, 100, false);
+    engine.update();
+
+    TEST_ASSERT_TRUE(g_macrocycleReceived);
+
+    // A wide amplitude range should actually produce varying amplitudes across
+    // events, not just amplitudes that happen to satisfy the bounds check.
+    uint8_t firstAmplitude = g_lastSentMacrocycle.events[0].amplitude;
+    bool sawVariation = false;
+    for (uint8_t i = 0; i < g_lastSentMacrocycle.eventCount; i++) {
+        TEST_ASSERT_TRUE(g_lastSentMacrocycle.events[i].amplitude >= 20);
+        TEST_ASSERT_TRUE(g_lastSentMacrocycle.events[i].amplitude <= 100);
+        if (g_lastSentMacrocycle.events[i].amplitude != firstAmplitude) {
+            sawVariation = true;
+        }
+    }
+    TEST_ASSERT_TRUE_MESSAGE(sawVariation, "Expected amplitude to vary across events for a 20-100 range");
 }
 
 void test_macrocycle_sequence_id_increments(void) {
@@ -913,7 +1055,7 @@ void test_macrocycle_sequence_id_increments(void) {
     g_schedulingComplete = true;  // Fast completion
     mockSetMillis(1000);
 
-    engine.startSession(100, PatternType::RNDP, 100.0f, 67.0f, 0.0f, 4, true);
+    engine.startSession(100, PatternType::RNDP, 100.0f, 67.0f, 0.0f, 4, true, 100, 100, false);
 
     // First macrocycle
     engine.update();
@@ -945,7 +1087,7 @@ void test_executeMacrocycleStep_transitions_to_active(void) {
     g_schedulingComplete = false;
     mockSetMillis(1000);
 
-    engine.startSession(100, PatternType::RNDP, 100.0f, 67.0f, 0.0f, 4, true);
+    engine.startSession(100, PatternType::RNDP, 100.0f, 67.0f, 0.0f, 4, true, 100, 100, false);
 
     // First update should transition IDLE -> ACTIVE
     engine.update();
@@ -963,7 +1105,7 @@ void test_executeMacrocycleStep_waits_for_completion(void) {
     g_cycleCompleteCallCount = 0;
     mockSetMillis(1000);
 
-    engine.startSession(100, PatternType::RNDP, 100.0f, 67.0f, 0.0f, 4, true);
+    engine.startSession(100, PatternType::RNDP, 100.0f, 67.0f, 0.0f, 4, true, 100, 100, false);
 
     // First update - IDLE -> ACTIVE
     engine.update();
@@ -985,7 +1127,7 @@ void test_executeMacrocycleStep_transitions_to_waiting_relax(void) {
     g_cycleCompleteCallCount = 0;
     mockSetMillis(1000);
 
-    engine.startSession(100, PatternType::RNDP, 100.0f, 67.0f, 0.0f, 4, true);
+    engine.startSession(100, PatternType::RNDP, 100.0f, 67.0f, 0.0f, 4, true, 100, 100, false);
 
     // First update - IDLE -> ACTIVE
     engine.update();
@@ -1014,7 +1156,7 @@ void test_executeMacrocycleStep_full_cycle(void) {
     g_macrocycleStartCallCount = 0;
     mockSetMillis(1000);
 
-    engine.startSession(100, PatternType::RNDP, 100.0f, 67.0f, 0.0f, 4, true);
+    engine.startSession(100, PatternType::RNDP, 100.0f, 67.0f, 0.0f, 4, true, 100, 100, false);
 
     // First macrocycle start called during startSession
     TEST_ASSERT_EQUAL_INT(1, g_macrocycleStartCallCount);
@@ -1049,7 +1191,7 @@ void test_TherapyEngine_pause_with_motor_active(void) {
     g_schedulingComplete = false;
     mockSetMillis(1000);
 
-    engine.startSession(100, PatternType::RNDP, 100.0f, 67.0f, 0.0f, 4, true);
+    engine.startSession(100, PatternType::RNDP, 100.0f, 67.0f, 0.0f, 4, true, 100, 100, false);
     engine.update();
 
     // Pause during active state - should deactivate motors if any active
@@ -1067,7 +1209,7 @@ void test_TherapyEngine_stop_with_motor_active(void) {
     g_schedulingComplete = false;
     mockSetMillis(1000);
 
-    engine.startSession(100, PatternType::RNDP, 100.0f, 67.0f, 0.0f, 4, true);
+    engine.startSession(100, PatternType::RNDP, 100.0f, 67.0f, 0.0f, 4, true, 100, 100, false);
     engine.update();
 
     // Stop during active state
@@ -1084,7 +1226,7 @@ void test_TherapyEngine_update_stops_when_shouldStop_set(void) {
     TherapyEngine engine;
     mockSetMillis(1000);
 
-    engine.startSession(100, PatternType::RNDP, 100.0f, 67.0f, 0.0f, 4, true);
+    engine.startSession(100, PatternType::RNDP, 100.0f, 67.0f, 0.0f, 4, true, 100, 100, false);
     engine.stop();  // Sets _shouldStop flag
 
     engine.update();  // Should recognize stop flag
@@ -1101,7 +1243,7 @@ void test_TherapyEngine_zero_duration_session_runs_forever(void) {
     mockSetMillis(1000);
 
     // Duration of 0 means run indefinitely
-    engine.startSession(0, PatternType::RNDP, 100.0f, 67.0f, 0.0f, 4, true);
+    engine.startSession(0, PatternType::RNDP, 100.0f, 67.0f, 0.0f, 4, true, 100, 100, false);
 
     // Advance a lot of time
     mockAdvanceMillis(1000000);
@@ -1116,7 +1258,7 @@ void test_TherapyEngine_getRemainingSeconds_with_zero_duration(void) {
     mockSetMillis(1000);
 
     // Duration of 0 means run indefinitely
-    engine.startSession(0, PatternType::RNDP, 100.0f, 67.0f, 0.0f, 4, true);
+    engine.startSession(0, PatternType::RNDP, 100.0f, 67.0f, 0.0f, 4, true, 100, 100, false);
 
     // Should return 0 when duration is 0
     TEST_ASSERT_EQUAL(0, engine.getRemainingSeconds());
@@ -1219,6 +1361,12 @@ int main(int argc, char **argv) {
 
     // Jitter Edge Case Tests
     RUN_TEST(test_generateRandomPermutation_high_jitter);
+    RUN_TEST(test_generateRandomPermutation_gap_never_collapses_under_max_jitter);
+    RUN_TEST(test_generateSequentialPattern_gap_never_collapses_under_max_jitter);
+    RUN_TEST(test_generateMirroredPattern_gap_never_collapses_under_max_jitter);
+    RUN_TEST(test_generateRandomPermutation_jitter_still_varies_at_defaults);
+    RUN_TEST(test_relax_interval_scales_with_finger_count);
+    RUN_TEST(test_interBurstInterval_scales_with_finger_count_all_generators);
     RUN_TEST(test_generateSequentialPattern_with_jitter);
     RUN_TEST(test_generateMirroredPattern_with_jitter);
 
@@ -1247,6 +1395,7 @@ int main(int argc, char **argv) {
     RUN_TEST(test_macrocycle_duration_matches);
     RUN_TEST(test_macrocycle_amplitude_range);
     RUN_TEST(test_macrocycle_fixed_amplitude);
+    RUN_TEST(test_macrocycle_amplitude_varies_across_range);
     RUN_TEST(test_macrocycle_sequence_id_increments);
 
     // ExecuteMacrocycleStep State Machine Tests

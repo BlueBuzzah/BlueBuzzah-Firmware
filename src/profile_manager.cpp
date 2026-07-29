@@ -6,6 +6,7 @@
  */
 
 #include "profile_manager.h"
+#include "config.h"
 #include "fs_backend.h"
 
 // =============================================================================
@@ -226,6 +227,11 @@ bool ProfileManager::loadProfile(uint8_t profileId) {
     _currentProfileId = profileId;
     _profileLoaded = true;
 
+    // Custom carries user-edited parameters persisted outside settings.bin.
+    if (profileId == CUSTOM_PROFILE_ID) {
+        loadCustomOverride();
+    }
+
     Serial.printf("[PROFILE] Loaded: %s (%s)\n",
                   _currentProfile.name,
                   _currentProfile.description);
@@ -291,32 +297,34 @@ bool ProfileManager::setParameter(const char* paramName, const char* value) {
     }
     else if (strcmp(paramUpper, "FREQ") == 0) {
         int freq = atoi(value);
-        if (freq < 50 || freq > 300) return false;
+        if (freq < PARAM_MIN_FREQUENCY_HZ || freq > PARAM_MAX_FREQUENCY_HZ) return false;
         _currentProfile.frequencyHz = static_cast<uint16_t>(freq);
     }
     else if (strcmp(paramUpper, "ON") == 0) {
         float onTime = static_cast<float>(atof(value));
-        if (onTime < 10.0f || onTime > 1000.0f) return false;
+        if (onTime < PARAM_MIN_TIME_ON_MS || onTime > PARAM_MAX_TIME_ON_MS) return false;
         _currentProfile.timeOnMs = onTime;
     }
     else if (strcmp(paramUpper, "OFF") == 0) {
         float offTime = static_cast<float>(atof(value));
-        if (offTime < 10.0f || offTime > 1000.0f) return false;
+        if (offTime < PARAM_MIN_TIME_OFF_MS || offTime > PARAM_MAX_TIME_OFF_MS) return false;
         _currentProfile.timeOffMs = offTime;
     }
     else if (strcmp(paramUpper, "SESSION") == 0) {
         int duration = atoi(value);
-        if (duration < 1 || duration > 240) return false;
+        if (duration < PARAM_MIN_SESSION_MIN || duration > PARAM_MAX_SESSION_MIN) return false;
         _currentProfile.sessionDurationMin = static_cast<uint16_t>(duration);
     }
     else if (strcmp(paramUpper, "AMPMIN") == 0) {
         int amp = atoi(value);
-        if (amp < 0 || amp > 100) return false;
+        if (amp < PARAM_MIN_AMPLITUDE_PCT || amp > MAX_AMPLITUDE) return false;
+        if (static_cast<uint8_t>(amp) > _currentProfile.amplitudeMax) return false;
         _currentProfile.amplitudeMin = static_cast<uint8_t>(amp);
     }
     else if (strcmp(paramUpper, "AMPMAX") == 0) {
         int amp = atoi(value);
-        if (amp < 0 || amp > 100) return false;
+        if (amp < PARAM_MIN_AMPLITUDE_PCT || amp > MAX_AMPLITUDE) return false;
+        if (static_cast<uint8_t>(amp) < _currentProfile.amplitudeMin) return false;
         _currentProfile.amplitudeMax = static_cast<uint8_t>(amp);
     }
     else if (strcmp(paramUpper, "PATTERN") == 0) {
@@ -339,7 +347,7 @@ bool ProfileManager::setParameter(const char* paramName, const char* value) {
     }
     else if (strcmp(paramUpper, "JITTER") == 0) {
         float jitter = static_cast<float>(atof(value));
-        if (jitter < 0.0f || jitter > 100.0f) return false;
+        if (jitter < 0.0f || jitter > PARAM_MAX_JITTER_PCT) return false;
         _currentProfile.jitterPercent = jitter;
     }
     else if (strcmp(paramUpper, "FINGERS") == 0) {
@@ -451,37 +459,69 @@ bool ProfileManager::loadSettings() {
 
         // Apply saved customizations
         _currentProfile.actuatorType = (data.actuatorType == 1) ? ActuatorType::ERM : ActuatorType::LRA;
-        _currentProfile.frequencyHz = data.frequencyHz;
 
-        // Validate timing values - reject if outside v1 reasonable range (10-500ms)
-        // This protects against corrupted settings from old firmware versions
-        if (data.timeOnMs >= 10.0f && data.timeOnMs <= 500.0f) {
+        // Validate against the current parameter bounds - reject fields outside them.
+        // This protects against corrupted or stale settings from old firmware versions.
+        if (data.timeOnMs >= PARAM_MIN_TIME_ON_MS && data.timeOnMs <= PARAM_MAX_TIME_ON_MS) {
             _currentProfile.timeOnMs = data.timeOnMs;
         } else {
             Serial.printf("[SETTINGS] WARNING: Invalid timeOnMs %.1f, keeping default %.1f\n",
                           data.timeOnMs, _currentProfile.timeOnMs);
         }
-        if (data.timeOffMs >= 10.0f && data.timeOffMs <= 500.0f) {
+        if (data.timeOffMs >= PARAM_MIN_TIME_OFF_MS && data.timeOffMs <= PARAM_MAX_TIME_OFF_MS) {
             _currentProfile.timeOffMs = data.timeOffMs;
         } else {
             Serial.printf("[SETTINGS] WARNING: Invalid timeOffMs %.1f, keeping default %.1f\n",
                           data.timeOffMs, _currentProfile.timeOffMs);
         }
-
-        _currentProfile.jitterPercent = data.jitterPercent;
-        _currentProfile.amplitudeMin = data.amplitudeMin;
-        _currentProfile.amplitudeMax = data.amplitudeMax;
-        _currentProfile.sessionDurationMin = data.sessionDurationMin;
+        if (data.jitterPercent >= 0.0f && data.jitterPercent <= PARAM_MAX_JITTER_PCT) {
+            _currentProfile.jitterPercent = data.jitterPercent;
+        } else {
+            Serial.printf("[SETTINGS] WARNING: Invalid jitterPercent %.1f, keeping default %.1f\n",
+                          data.jitterPercent, _currentProfile.jitterPercent);
+        }
+        if (data.frequencyHz >= PARAM_MIN_FREQUENCY_HZ && data.frequencyHz <= PARAM_MAX_FREQUENCY_HZ) {
+            _currentProfile.frequencyHz = data.frequencyHz;
+        } else {
+            Serial.printf("[SETTINGS] WARNING: Invalid frequencyHz %d, keeping default %d\n",
+                          data.frequencyHz, _currentProfile.frequencyHz);
+        }
+        if (data.amplitudeMin >= PARAM_MIN_AMPLITUDE_PCT &&
+            data.amplitudeMax <= MAX_AMPLITUDE &&
+            data.amplitudeMin <= data.amplitudeMax) {
+            _currentProfile.amplitudeMin = data.amplitudeMin;
+            _currentProfile.amplitudeMax = data.amplitudeMax;
+        } else {
+            Serial.println(F("[SETTINGS] WARNING: Invalid amplitude range, keeping defaults"));
+        }
+        if (data.sessionDurationMin >= PARAM_MIN_SESSION_MIN &&
+            data.sessionDurationMin <= PARAM_MAX_SESSION_MIN) {
+            _currentProfile.sessionDurationMin = data.sessionDurationMin;
+        } else {
+            Serial.printf("[SETTINGS] WARNING: Invalid sessionDurationMin %d, keeping default %d\n",
+                          data.sessionDurationMin, _currentProfile.sessionDurationMin);
+        }
+        if (data.numFingers >= 1 && data.numFingers <= MAX_ACTUATORS) {
+            _currentProfile.numFingers = data.numFingers;
+        } else {
+            Serial.printf("[SETTINGS] WARNING: Invalid numFingers %d, keeping default %d\n",
+                          data.numFingers, _currentProfile.numFingers);
+        }
         strncpy(_currentProfile.patternType, data.patternType, PATTERN_TYPE_MAX - 1);
         _currentProfile.patternType[PATTERN_TYPE_MAX - 1] = '\0';
         _currentProfile.mirrorPattern = (data.mirrorPattern != 0);
-        _currentProfile.numFingers = data.numFingers;
 
         _profileLoaded = true;
 
         // Log loaded timing for debugging
         Serial.printf("[SETTINGS] Timing: ON=%.1fms, OFF=%.1fms, Jitter=%.1f%%\n",
                       _currentProfile.timeOnMs, _currentProfile.timeOffMs, _currentProfile.jitterPercent);
+
+        // custom.bin is authoritative for the Custom profile: settings.bin's copy of
+        // the parameters is overwritten whenever another profile is loaded.
+        if (_currentProfileId == CUSTOM_PROFILE_ID) {
+            loadCustomOverride();
+        }
     }
 
     // Load therapy LED control setting
@@ -494,4 +534,89 @@ bool ProfileManager::loadSettings() {
 
     Serial.printf("[SETTINGS] Loaded profile: %s\n", _currentProfile.name);
     return true;
+}
+
+bool ProfileManager::saveCustomOverride() {
+    if (!_storageAvailable) {
+        return false;
+    }
+
+    CustomOverrideData data{};
+    data.magic              = CUSTOM_OVERRIDE_MAGIC;
+    data.version            = CUSTOM_OVERRIDE_VERSION;
+    data.timeOnMs           = _currentProfile.timeOnMs;
+    data.timeOffMs          = _currentProfile.timeOffMs;
+    data.jitterPercent      = _currentProfile.jitterPercent;
+    data.amplitudeMin       = _currentProfile.amplitudeMin;
+    data.amplitudeMax       = _currentProfile.amplitudeMax;
+    data.sessionDurationMin = _currentProfile.sessionDurationMin;
+    data.numFingers         = _currentProfile.numFingers;
+    data.mirrorPattern      = _currentProfile.mirrorPattern ? 1 : 0;
+
+    if (!fsb::writeFile(CUSTOM_OVERRIDE_FILE,
+                        reinterpret_cast<const uint8_t*>(&data), sizeof(data))) {
+        Serial.println(F("[CUSTOM] Write failed"));
+        return false;
+    }
+
+    Serial.println(F("[CUSTOM] Override saved"));
+    return true;
+}
+
+bool ProfileManager::loadCustomOverride() {
+    if (!_storageAvailable || !fsb::exists(CUSTOM_OVERRIDE_FILE)) {
+        return false;
+    }
+
+    CustomOverrideData data{};
+    size_t bytesRead = 0;
+    if (!fsb::readFile(CUSTOM_OVERRIDE_FILE,
+                       reinterpret_cast<uint8_t*>(&data), sizeof(data), bytesRead)) {
+        return false;
+    }
+    if (bytesRead != sizeof(data) ||
+        data.magic != CUSTOM_OVERRIDE_MAGIC ||
+        data.version != CUSTOM_OVERRIDE_VERSION) {
+        Serial.println(F("[CUSTOM] Override rejected (bad header)"));
+        return false;
+    }
+
+    // Revalidate against current bounds -- an override written by older
+    // firmware may fall outside them. Out-of-range fields keep the built-in value.
+    if (data.timeOnMs >= PARAM_MIN_TIME_ON_MS && data.timeOnMs <= PARAM_MAX_TIME_ON_MS) {
+        _currentProfile.timeOnMs = data.timeOnMs;
+    }
+    if (data.timeOffMs >= PARAM_MIN_TIME_OFF_MS && data.timeOffMs <= PARAM_MAX_TIME_OFF_MS) {
+        _currentProfile.timeOffMs = data.timeOffMs;
+    }
+    if (data.jitterPercent >= 0.0f && data.jitterPercent <= PARAM_MAX_JITTER_PCT) {
+        _currentProfile.jitterPercent = data.jitterPercent;
+    }
+    if (data.amplitudeMin >= PARAM_MIN_AMPLITUDE_PCT &&
+        data.amplitudeMax <= MAX_AMPLITUDE &&
+        data.amplitudeMin <= data.amplitudeMax) {
+        _currentProfile.amplitudeMin = data.amplitudeMin;
+        _currentProfile.amplitudeMax = data.amplitudeMax;
+    }
+    if (data.sessionDurationMin >= PARAM_MIN_SESSION_MIN &&
+        data.sessionDurationMin <= PARAM_MAX_SESSION_MIN) {
+        _currentProfile.sessionDurationMin = data.sessionDurationMin;
+    }
+    if (data.numFingers >= 1 && data.numFingers <= MAX_ACTUATORS) {
+        _currentProfile.numFingers = data.numFingers;
+    }
+    _currentProfile.mirrorPattern = (data.mirrorPattern != 0);
+
+    Serial.println(F("[CUSTOM] Override applied"));
+    return true;
+}
+
+bool ProfileManager::clearCustomOverride() {
+    if (!_storageAvailable) {
+        return false;
+    }
+    if (!fsb::exists(CUSTOM_OVERRIDE_FILE)) {
+        return true;  // Already absent; nothing to do.
+    }
+    return fsb::removeFile(CUSTOM_OVERRIDE_FILE);
 }

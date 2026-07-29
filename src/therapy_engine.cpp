@@ -23,6 +23,19 @@ constexpr void shuffleArray(std::span<uint8_t> arr) {
     }
 }
 
+/**
+ * @brief Jitter excursion applied to TIME_OFF, limited so the inter-burst gap can
+ * never fall below MIN_INTER_BURST_GAP_MS. Consecutive bursts closer than that
+ * mask one another perceptually, which defeats the purpose of the jitter.
+ */
+float clampedJitterAmount(float cycleDurationMs, float timeOffMs, float jitterPercent) {
+    const float jitterAmount = cycleDurationMs * (jitterPercent / 100.0f) / 2.0f;
+    const float maxExcursion = (timeOffMs > MIN_INTER_BURST_GAP_MS)
+                                   ? (timeOffMs - MIN_INTER_BURST_GAP_MS)
+                                   : 0.0f;
+    return (jitterAmount > maxExcursion) ? maxExcursion : jitterAmount;
+}
+
 // =============================================================================
 // PATTERN GENERATION
 // =============================================================================
@@ -38,9 +51,9 @@ Pattern generateRandomPermutation(
     pattern.numFingers = numFingers;
     pattern.burstDurationMs = timeOnMs;
 
-    // TIME_RELAX = 4 * (time_on + time_off) - fixed interval between pattern cycles
+    // TIME_RELAX = numFingers * (time_on + time_off) - fixed interval between pattern cycles
     float cycleDurationMs = timeOnMs + timeOffMs;
-    pattern.interBurstIntervalMs = 4.0f * cycleDurationMs;
+    pattern.interBurstIntervalMs = static_cast<float>(numFingers) * cycleDurationMs;
 
     // Generate PRIMARY device sequence (random permutation)
     for (uint8_t i = 0; i < numFingers; i++) {
@@ -64,7 +77,7 @@ Pattern generateRandomPermutation(
 
     // Calculate jitter amount per v1 formula: (TIME_ON + TIME_OFF) * jitter% / 100 / 2
     // With 23.5% jitter: 167ms * 0.235 / 2 = 19.6ms
-    float jitterAmount = cycleDurationMs * (jitterPercent / 100.0f) / 2.0f;
+    const float jitterAmount = clampedJitterAmount(cycleDurationMs, timeOffMs, jitterPercent);
 
     // Apply jitter to TIME_OFF (67ms), NOT the inter-burst interval
     // v1 behavior: TIME_OFF_actual = TIME_OFF ± jitter (range: 47-87ms with 23.5% jitter)
@@ -94,9 +107,9 @@ Pattern generateSequentialPattern(
     pattern.numFingers = numFingers;
     pattern.burstDurationMs = timeOnMs;
 
-    // TIME_RELAX = 4 * (time_on + time_off) - fixed interval between pattern cycles
+    // TIME_RELAX = numFingers * (time_on + time_off) - fixed interval between pattern cycles
     float cycleDurationMs = timeOnMs + timeOffMs;
-    pattern.interBurstIntervalMs = 4.0f * cycleDurationMs;
+    pattern.interBurstIntervalMs = static_cast<float>(numFingers) * cycleDurationMs;
 
     // Generate sequential list
     for (uint8_t i = 0; i < numFingers; i++) {
@@ -121,7 +134,7 @@ Pattern generateSequentialPattern(
     }
 
     // Calculate jitter amount per v1 formula: (TIME_ON + TIME_OFF) * jitter% / 100 / 2
-    float jitterAmount = cycleDurationMs * (jitterPercent / 100.0f) / 2.0f;
+    const float jitterAmount = clampedJitterAmount(cycleDurationMs, timeOffMs, jitterPercent);
 
     // Apply jitter to TIME_OFF, NOT the inter-burst interval
     for (uint8_t i = 0; i < numFingers; i++) {
@@ -148,9 +161,9 @@ Pattern generateMirroredPattern(
     pattern.numFingers = numFingers;
     pattern.burstDurationMs = timeOnMs;
 
-    // TIME_RELAX = 4 * (time_on + time_off) - fixed interval between pattern cycles
+    // TIME_RELAX = numFingers * (time_on + time_off) - fixed interval between pattern cycles
     float cycleDurationMs = timeOnMs + timeOffMs;
-    pattern.interBurstIntervalMs = 4.0f * cycleDurationMs;
+    pattern.interBurstIntervalMs = static_cast<float>(numFingers) * cycleDurationMs;
 
     // Generate base sequence
     for (uint8_t i = 0; i < numFingers; i++) {
@@ -167,7 +180,7 @@ Pattern generateMirroredPattern(
     }
 
     // Calculate jitter amount per v1 formula: (TIME_ON + TIME_OFF) * jitter% / 100 / 2
-    float jitterAmount = cycleDurationMs * (jitterPercent / 100.0f) / 2.0f;
+    const float jitterAmount = clampedJitterAmount(cycleDurationMs, timeOffMs, jitterPercent);
 
     // Apply jitter to TIME_OFF, NOT the inter-burst interval
     for (uint8_t i = 0; i < numFingers; i++) {
@@ -181,6 +194,10 @@ Pattern generateMirroredPattern(
     }
 
     return pattern;
+}
+
+float calculateRelaxIntervalMs(uint8_t numFingers, float timeOnMs, float timeOffMs) {
+    return 2.0f * static_cast<float>(numFingers) * (timeOnMs + timeOffMs);
 }
 
 // =============================================================================
@@ -742,8 +759,8 @@ void TherapyEngine::executeMacrocycleStep() {
             break;
 
         case BuzzFlowState::WAITING_RELAX: {
-            // Wait for 2x TIME_RELAX (1336ms with default timing)
-            float doubleRelaxMs = 2.0f * 4.0f * (_timeOnMs + _timeOffMs);  // TIME_RELAX = 4 * (ON + OFF)
+            // Wait for 2x TIME_RELAX (1336ms with default timing at 4 fingers)
+            float doubleRelaxMs = calculateRelaxIntervalMs(_numFingers, _timeOnMs, _timeOffMs);
 
             if ((now - _buzzSendTime) >= (uint32_t)doubleRelaxMs) {
                 // Double TIME_RELAX elapsed - macrocycle complete

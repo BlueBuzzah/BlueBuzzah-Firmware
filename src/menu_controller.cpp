@@ -624,8 +624,25 @@ void MenuController::handleProfileGet() {
     addResponseLine("PATTERN", profile->patternType);
     addResponseLine("MIRROR", (int32_t)(profile->mirrorPattern ? 1 : 0));
     addResponseLine("JITTER", profile->jitterPercent, 1);
+    addResponseLine("FINGERS", static_cast<int32_t>(profile->numFingers));
     sendResponse();
 }
+
+namespace {
+
+/**
+ * @brief Parameters not adjustable on the Custom profile: PATTERN (Custom is
+ * RNDP-only by design - "sequential" removes the random fingertip ordering
+ * that makes the therapy coordinated reset) and TYPE/FREQ (dead paths -
+ * frequencyHz never reaches the DRV2605, actuatorType is fixed per hardware).
+ */
+bool isCustomProfileLockedParam(const char* paramName) {
+    return strcasecmp(paramName, "PATTERN") == 0 ||
+           strcasecmp(paramName, "TYPE") == 0 ||
+           strcasecmp(paramName, "FREQ") == 0;
+}
+
+}  // namespace
 
 void MenuController::handleProfileCustom(const char params[][PARAM_BUFFER_SIZE], uint8_t paramCount) {
     // Check if session is active
@@ -644,6 +661,24 @@ void MenuController::handleProfileCustom(const char params[][PARAM_BUFFER_SIZE],
         return;
     }
 
+    if (_profiles->getCurrentProfileId() != CUSTOM_PROFILE_ID) {
+        sendError("Custom profile must be loaded before editing parameters");
+        return;
+    }
+
+    // Validate the whole batch's key names before applying any of them -
+    // otherwise a locked key partway through the batch would leave earlier
+    // keys applied.
+    for (uint8_t i = 0; i < paramCount; i += 2) {
+        if (isCustomProfileLockedParam(params[i])) {
+            char errorMsg[64];
+            snprintf(errorMsg, sizeof(errorMsg),
+                     "Parameter %s is not adjustable on the Custom profile", params[i]);
+            sendError(errorMsg);
+            return;
+        }
+    }
+
     // Apply each key-value pair
     for (uint8_t i = 0; i < paramCount; i += 2) {
         if (!_profiles->setParameter(params[i], params[i + 1])) {
@@ -652,6 +687,11 @@ void MenuController::handleProfileCustom(const char params[][PARAM_BUFFER_SIZE],
             sendError(errorMsg);
             return;
         }
+    }
+
+    if (!_profiles->saveCustomOverride()) {
+        sendError("Parameters applied but could not be saved");
+        return;
     }
 
     beginResponse();
@@ -691,6 +731,8 @@ void MenuController::handleSessionStart() {
     float jitterPercent = 23.5f;
     uint8_t numFingers = MAX_ACTUATORS;  // Fallback when no profile is active
     bool mirror = true;
+    uint8_t amplitudeMin = 100;
+    uint8_t amplitudeMax = 100;
 
     if (_profiles) {
         const TherapyProfile* profile = _profiles->getCurrentProfile();
@@ -701,17 +743,22 @@ void MenuController::handleSessionStart() {
             jitterPercent = profile->jitterPercent;
             numFingers = profile->numFingers;
             mirror = profile->mirrorPattern;
+            amplitudeMin = profile->amplitudeMin;
+            amplitudeMax = profile->amplitudeMax;
 
             if (strcmp(profile->patternType, "rndp") == 0) {
                 patternType = PatternType::RNDP;
             } else if (strcmp(profile->patternType, "sequential") == 0) {
                 patternType = PatternType::SEQUENTIAL;
+            } else if (strcmp(profile->patternType, "mirrored") == 0) {
+                patternType = PatternType::MIRRORED;
             }
         }
     }
 
     // Start session
-    _therapy->startSession(durationSec, patternType, timeOnMs, timeOffMs, jitterPercent, numFingers, mirror);
+    _therapy->startSession(durationSec, patternType, timeOnMs, timeOffMs, jitterPercent, numFingers, mirror,
+                            amplitudeMin, amplitudeMax, false);
 
     // Update state machine
     if (_stateMachine) {
@@ -867,6 +914,11 @@ void MenuController::handleParamSet(const char params[][PARAM_BUFFER_SIZE], uint
         return;
     }
 
+    if (_profiles->getCurrentProfileId() != CUSTOM_PROFILE_ID) {
+        sendError("Custom profile must be loaded before editing parameters");
+        return;
+    }
+
     // Create local copy and convert param name to uppercase
     char paramName[PARAM_BUFFER_SIZE];
     strncpy(paramName, params[0], PARAM_BUFFER_SIZE - 1);
@@ -875,8 +927,21 @@ void MenuController::handleParamSet(const char params[][PARAM_BUFFER_SIZE], uint
         *c = static_cast<char>(toupper(*c));
     }
 
+    if (isCustomProfileLockedParam(paramName)) {
+        char errorMsg[64];
+        snprintf(errorMsg, sizeof(errorMsg),
+                 "Parameter %s is not adjustable on the Custom profile", paramName);
+        sendError(errorMsg);
+        return;
+    }
+
     if (!_profiles->setParameter(paramName, params[1])) {
         sendError("Invalid parameter name or value out of range");
+        return;
+    }
+
+    if (!_profiles->saveCustomOverride()) {
+        sendError("Parameter applied but could not be saved");
         return;
     }
 

@@ -2680,7 +2680,8 @@ void autoStartTherapy()
         profile->numFingers,
         profile->mirrorPattern,
         profile->amplitudeMin,
-        profile->amplitudeMax);
+        profile->amplitudeMax,
+        false);  // isTestMode = false (phone/auto-started session)
 }
 
 // =============================================================================
@@ -3245,6 +3246,10 @@ void handleSerialCommand(const char *command)
         else
         {
             Serial.println(F("[CONFIG] No settings file to delete"));
+        }
+        if (fsb::removeFile(CUSTOM_OVERRIDE_FILE))
+        {
+            Serial.println(F("[CONFIG] Custom override deleted"));
         }
         safeMotorShutdown(); // Ensure motors off before reset
         Serial.println(F("[CONFIG] Rebooting..."));
