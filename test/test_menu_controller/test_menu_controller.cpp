@@ -1026,6 +1026,31 @@ void test_isInternalMessage_user_command_SESSION_START_returns_false() {
     TEST_ASSERT_FALSE(g_menu->isInternalMessage("SESSION_START"));
 }
 
+// The Updater reaches the firmware menu over USB serial precisely because these
+// commands are NOT internal — handleSerialCommand falls through to
+// onBLEMessage(0, ...) with fromPhone == false, and main.cpp's role gate then
+// requires !menu.isInternalMessage(message). Adding any of these to
+// INTERNAL_MESSAGES silently severs the desktop Updater from the device.
+void test_isInternalMessage_updater_command_PROFILE_LIST_returns_false() {
+    TEST_ASSERT_FALSE(g_menu->isInternalMessage("PROFILE_LIST"));
+}
+
+void test_isInternalMessage_updater_command_PROFILE_LOAD_returns_false() {
+    TEST_ASSERT_FALSE(g_menu->isInternalMessage("PROFILE_LOAD:4"));
+}
+
+void test_isInternalMessage_updater_command_PROFILE_GET_returns_false() {
+    TEST_ASSERT_FALSE(g_menu->isInternalMessage("PROFILE_GET"));
+}
+
+void test_isInternalMessage_updater_command_PROFILE_CUSTOM_returns_false() {
+    TEST_ASSERT_FALSE(g_menu->isInternalMessage("PROFILE_CUSTOM:ON:100:OFF:67"));
+}
+
+void test_isInternalMessage_updater_command_PARAM_SET_returns_false() {
+    TEST_ASSERT_FALSE(g_menu->isInternalMessage("PARAM_SET:FINGERS:4"));
+}
+
 void test_isInternalMessage_PING_returns_true() {
     TEST_ASSERT_TRUE(g_menu->isInternalMessage("PING"));
 }
@@ -1772,6 +1797,11 @@ int main(int argc, char **argv) {
     RUN_TEST(test_isInternalMessage_user_command_INFO_returns_false);
     RUN_TEST(test_isInternalMessage_user_command_BATTERY_returns_false);
     RUN_TEST(test_isInternalMessage_user_command_SESSION_START_returns_false);
+    RUN_TEST(test_isInternalMessage_updater_command_PROFILE_LIST_returns_false);
+    RUN_TEST(test_isInternalMessage_updater_command_PROFILE_LOAD_returns_false);
+    RUN_TEST(test_isInternalMessage_updater_command_PROFILE_GET_returns_false);
+    RUN_TEST(test_isInternalMessage_updater_command_PROFILE_CUSTOM_returns_false);
+    RUN_TEST(test_isInternalMessage_updater_command_PARAM_SET_returns_false);
     RUN_TEST(test_isInternalMessage_PING_returns_true);
     RUN_TEST(test_isInternalMessage_partial_match_not_prefix_returns_false);
     RUN_TEST(test_isInternalMessage_case_sensitive);
