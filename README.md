@@ -19,17 +19,17 @@ One codebase builds for two hardware generations, selected by PlatformIO environ
 | **Environment** | `adafruit_feather_nrf52840` | `pentabuzzer_esp32s3` |
 | **Motors** | 4 (index–pinky) | 5 (adds thumb) |
 | **BLE stack** | Bluefruit / SoftDevice | NimBLE-Arduino 2.x |
-| **Battery monitoring** | VBAT divider on ADC | none (reports healthy) |
+| **Battery monitoring** | VBAT divider on ADC | DRV2605 VBAT register (0x21) over I2C |
 | **Power switch** | none | slide switch + deep sleep |
 
 ## Features
 
-- **Bilateral Synchronization**: Sub-millisecond (<1ms) synchronization between left and right gloves
-- **Research-Based Therapy**: Regular vCR, Noisy vCR, and Hybrid vCR profiles
+- **Bilateral Synchronization**: PTP-inspired clock sync over BLE on a 1MHz hardware timebase; current acceptance target is <5ms clock-offset precision, pending re-validation (see [SYNC_VALIDATION.md](docs/SYNC_VALIDATION.md))
+- **Research-Based Therapy**: Six built-in profiles — Regular vCR, Noisy vCR, Hybrid vCR, Gentle, Quick Test, and a user-editable Custom vCR profile
 - **Mobile Control**: Comprehensive BLE protocol for iOS/Android app integration
 - **Real-Time Session Management**: Pause, resume, and progress tracking
 - **Multi-Connection Support**: Simultaneous phone and glove connections
-- **Battery Safety**: Monitoring with automatic shutdown at critical levels (BlueBuzzah v2)
+- **Battery Safety**: Monitoring with automatic shutdown at critical levels (both boards)
 - **Calibration Mode**: Individual finger testing and adjustment
 - **Assembly QA**: `MOTOR_DIAG`, `MOTOR_TEST:<n>`, and `MOTOR_PRESENT` serial commands for motor verification
 
@@ -99,7 +99,18 @@ pio test -e native_penta    # Unit tests (5-actuator config)
 
 ### Therapy Profiles
 
-Therapy profiles are defined in `include/config.h` and managed by the ProfileManager. See the code for available configuration options.
+The six built-in profiles are defined in `src/profile_manager.cpp` and selected with `SET_PROFILE:REGULAR|NOISY|HYBRID|GENTLE` over serial or BLE:
+
+| Profile | Internal name | Notes |
+| --- | --- | --- |
+| Regular vCR | `regular_vcr` | Default; non-mirrored, no jitter |
+| Noisy vCR | `noisy_vcr` | Mirrored, 23.5% jitter |
+| Hybrid vCR | `hybrid_vcr` | Non-mirrored, 23.5% jitter |
+| Gentle | `gentle` | Lower amplitude (30–70%) |
+| Quick Test | `quick_test` | 5-minute session |
+| Custom vCR | `custom_vcr` | User-editable; see below |
+
+The Custom profile's seven parameters (burst on/off, jitter, amplitude min/max, session length, mirroring) are edited via `PROFILE_CUSTOM:KEY:VALUE` and persisted to `custom.bin`. Firmware is the sole validator — bounds are the `PARAM_MIN_*`/`PARAM_MAX_*` constants in `include/config.h`.
 
 ### System Constants
 
@@ -181,6 +192,9 @@ an ADC divider; v3 reads the DRV2605 VBAT register):
 - **[API Reference](docs/API_REFERENCE.md)**: Module API documentation
 - **[BLE Protocol](docs/BLE_PROTOCOL.md)**: Command protocol specification
 - **[Synchronization Protocol](docs/SYNCHRONIZATION_PROTOCOL.md)**: PRIMARY↔SECONDARY glove coordination
+- **[Sync Validation](docs/SYNC_VALIDATION.md)**: GPIO-based bilateral sync measurement and acceptance gates
+- **[Therapy Session Flow](docs/THERAPY_SESSION_FLOW.md)**: Session state machine flow
+- **[Timing Baseline](docs/TIMING_BASELINE.md)**: Timing analysis and profiling
 - **[Testing Guide](docs/TESTING.md)**: Test framework and patterns
 - **[Calibration Guide](docs/CALIBRATION_GUIDE.md)**: Motor calibration procedures
 - **[Boot Sequence](docs/BOOT_SEQUENCE.md)**: Boot process and LED indicators
