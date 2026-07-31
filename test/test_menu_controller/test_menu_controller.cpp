@@ -13,6 +13,7 @@
 #include <Arduino.h>
 #include <cstring>
 #include <cstdlib>
+#include "internal_messages.h"
 
 // =============================================================================
 // MOCK DEFINITIONS FOR DEPENDENCIES
@@ -226,25 +227,6 @@ const char* deviceRoleToString(DeviceRole role) {
 
 // Now we manually implement the parts of MenuController we want to test
 // since including the actual header would bring in hardware dependencies
-
-// =============================================================================
-// INTERNAL MESSAGE PREFIXES (from menu_controller.cpp)
-// =============================================================================
-
-const char* INTERNAL_MESSAGES[] = {
-    "BUZZ",
-    "PING",
-    "PARAM_UPDATE",
-    "SEED",
-    "SEED_ACK",
-    "GET_BATTERY",
-    "BATRESPONSE",
-    "ACK_PARAM_UPDATE",
-    "SYNC:",
-    "IDENTIFY:"
-};
-
-const uint8_t INTERNAL_MESSAGE_COUNT = sizeof(INTERNAL_MESSAGES) / sizeof(INTERNAL_MESSAGES[0]);
 
 // =============================================================================
 // SIMPLE MENU CONTROLLER FOR TESTING
@@ -1007,7 +989,7 @@ void test_isInternalMessage_ACK_PARAM_UPDATE_returns_true() {
 }
 
 void test_isInternalMessage_SYNC_prefix_returns_true() {
-    TEST_ASSERT_TRUE(g_menu->isInternalMessage("SYNC:12345:67890"));
+    TEST_ASSERT_TRUE(g_menu->isInternalMessage("SYNC_ADJ:12345:67890"));
 }
 
 void test_isInternalMessage_IDENTIFY_prefix_returns_true() {
@@ -1024,6 +1006,31 @@ void test_isInternalMessage_user_command_BATTERY_returns_false() {
 
 void test_isInternalMessage_user_command_SESSION_START_returns_false() {
     TEST_ASSERT_FALSE(g_menu->isInternalMessage("SESSION_START"));
+}
+
+// The Updater reaches the firmware menu over USB serial precisely because these
+// commands are NOT internal — handleSerialCommand falls through to
+// onBLEMessage(0, ...) with fromPhone == false, and main.cpp's role gate then
+// requires !menu.isInternalMessage(message). Adding any of these to
+// INTERNAL_MESSAGES silently severs the desktop Updater from the device.
+void test_isInternalMessage_updater_command_PROFILE_LIST_returns_false() {
+    TEST_ASSERT_FALSE(g_menu->isInternalMessage("PROFILE_LIST"));
+}
+
+void test_isInternalMessage_updater_command_PROFILE_LOAD_returns_false() {
+    TEST_ASSERT_FALSE(g_menu->isInternalMessage("PROFILE_LOAD:4"));
+}
+
+void test_isInternalMessage_updater_command_PROFILE_GET_returns_false() {
+    TEST_ASSERT_FALSE(g_menu->isInternalMessage("PROFILE_GET"));
+}
+
+void test_isInternalMessage_updater_command_PROFILE_CUSTOM_returns_false() {
+    TEST_ASSERT_FALSE(g_menu->isInternalMessage("PROFILE_CUSTOM:ON:100:OFF:67"));
+}
+
+void test_isInternalMessage_updater_command_PARAM_SET_returns_false() {
+    TEST_ASSERT_FALSE(g_menu->isInternalMessage("PARAM_SET:FINGERS:4"));
 }
 
 void test_isInternalMessage_PING_returns_true() {
@@ -1772,6 +1779,11 @@ int main(int argc, char **argv) {
     RUN_TEST(test_isInternalMessage_user_command_INFO_returns_false);
     RUN_TEST(test_isInternalMessage_user_command_BATTERY_returns_false);
     RUN_TEST(test_isInternalMessage_user_command_SESSION_START_returns_false);
+    RUN_TEST(test_isInternalMessage_updater_command_PROFILE_LIST_returns_false);
+    RUN_TEST(test_isInternalMessage_updater_command_PROFILE_LOAD_returns_false);
+    RUN_TEST(test_isInternalMessage_updater_command_PROFILE_GET_returns_false);
+    RUN_TEST(test_isInternalMessage_updater_command_PROFILE_CUSTOM_returns_false);
+    RUN_TEST(test_isInternalMessage_updater_command_PARAM_SET_returns_false);
     RUN_TEST(test_isInternalMessage_PING_returns_true);
     RUN_TEST(test_isInternalMessage_partial_match_not_prefix_returns_false);
     RUN_TEST(test_isInternalMessage_case_sensitive);

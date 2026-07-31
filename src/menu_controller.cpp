@@ -15,39 +15,6 @@
 #include "platform.h"
 
 // =============================================================================
-// INTERNAL MESSAGE PREFIXES
-// =============================================================================
-
-const char* INTERNAL_MESSAGES[] = {
-    "BUZZ",
-    "PING",
-    "PONG",
-    "PARAM_UPDATE",
-    "SEED",
-    "SEED_ACK",
-    "GET_BATTERY",
-    "BATRESPONSE",
-    "ACK_PARAM_UPDATE",
-    "SYNC_",           // Covers SYNC_ADJ, SYNC_PROBE, SYNC_PROBE_ACK
-    "FIRST_SYNC",
-    "ACK_SYNC",        // Covers ACK_SYNC_ADJ
-    "START_SESSION",
-    "PAUSE_SESSION",
-    "RESUME_SESSION",
-    "STOP_SESSION",
-    "IDENTIFY:",
-    "LED_OFF_SYNC",
-    "DEBUG_FLASH",
-    "DEBUG_SYNC",
-    "MC:",             // Macrocycle batch message
-    "MC_ACK:",         // Macrocycle acknowledgment
-    "CALIB_BUZZ:",
-    "CALIB_STOP"
-};
-
-const uint8_t INTERNAL_MESSAGE_COUNT = sizeof(INTERNAL_MESSAGES) / sizeof(INTERNAL_MESSAGES[0]);
-
-// =============================================================================
 // CONSTRUCTOR
 // =============================================================================
 

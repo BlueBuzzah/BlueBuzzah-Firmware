@@ -19,6 +19,7 @@
 #include <Arduino.h>
 #include "types.h"
 #include "config.h"
+#include "internal_messages.h"
 
 // Forward declarations
 class TherapyEngine;
@@ -56,9 +57,8 @@ static constexpr uint32_t SECONDARY_BATTERY_TIMEOUT_MS = 1000;
 // INTERNAL MESSAGE PREFIXES
 // =============================================================================
 
-// Messages that should be passed through without menu processing
-extern const char* INTERNAL_MESSAGES[];
-extern const uint8_t INTERNAL_MESSAGE_COUNT;
+// Messages that should be passed through without menu processing.
+// Defined in internal_messages.h (single source of truth, shared with tests).
 
 // =============================================================================
 // CALLBACK TYPES
