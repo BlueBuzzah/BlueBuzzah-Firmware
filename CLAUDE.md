@@ -37,6 +37,7 @@ The board is selected by a build macro (`BOARD_BLUEBUZZAH_NRF52` / `BOARD_PENTAB
 | `state_machine.cpp`  | 11-state therapy FSM                  |
 | `menu_controller.cpp`| Phone command routing                 |
 | `profile_manager.cpp`| Therapy profiles (via `fs_backend`)   |
+| `vbat_estimator.cpp` | Battery voltage from DRV2605 VBAT register (0x21) — median-of-burst + EMA; used where there is no battery ADC |
 | `fs_backend_*.cpp`   | Filesystem shim: InternalFS (nRF) / LittleFS (ESP32) / in-memory mock (native) |
 | `power_controller_*.cpp` | PentaBuzzer power switch + deep sleep; no-op on nRF |
 | `latency_metrics.cpp`| Runtime latency measurement, RTT tracking, sync quality reporting |
@@ -47,8 +48,16 @@ The board is selected by a build macro (`BOARD_BLUEBUZZAH_NRF52` / `BOARD_PENTAB
 | `motor_event_buffer.cpp`| Lock-free staging buffer (BLE callbacks → main loop) |
 | `board_config.h`     | Per-board pins, `MAX_ACTUATORS`, battery availability |
 | `platform.h`         | Critical sections, memory barrier, system reset, RTOS headers |
-| `config.h`           | Shared constants, BLE parameters, tuning values |
+| `config.h`           | Shared constants, BLE parameters, tuning values, `PARAM_MIN_*`/`PARAM_MAX_*` therapy bounds |
 | `types.h`            | Enums, packed structs, macrocycle format definitions |
+| `internal_messages.h`| `INTERNAL_MESSAGES[]` — the single definition site for device-to-device prefixes the menu must not treat as user commands |
+
+## Cross-Repo Contracts
+
+- **`INTERNAL_MESSAGES[]` is a trapdoor.** Any command *not* matched by a prefix in `include/internal_messages.h` reaches `MenuController::handleCommand()`, which is how the desktop Updater (over USB serial) and the mobile app reach the menu. Adding `INFO`, `PROFILE_LOAD`, `PROFILE_GET`, or `PROFILE_CUSTOM` there silently severs the Updater with no compile error — `test_menu_controller` guards exactly this.
+- **Serial response markers are a wire format.** `[MENU-TX]` (`menu_controller.cpp`), plus `[CONFIG]`, `[ERROR]`, `[BOOT]` and the `"Role set to"` / `"Profile set to"` strings from `main.cpp`, are parsed verbatim by BlueBuzzah-Updater. Rewording either side breaks the other. The Updater also scans for `[SETTING]`, `[READY]`, and `[INIT]`, which this firmware no longer emits — it treats their absence as success, so don't reintroduce them expecting a behavior change.
+- **Firmware is the sole validator of therapy parameters.** The `PARAM_*` bounds in `config.h` are mirrored into the Updater (`src/lib/therapy-bounds.ts`) for input constraint only; that copy can never widen what the device accepts. Changing a bound here means updating the mirror.
+- **v3 package manifest**: `scripts/package_penta.py` produces the schema `esp/manifest.rs` in the Updater parses — keep the two in sync on any field change.
 
 ## Configuration
 
