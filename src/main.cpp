@@ -394,6 +394,10 @@ void onBLEDisconnect(uint16_t connHandle, ConnectionType type, uint8_t reason);
 void onBLEMessage(uint16_t connHandle, const char *message, uint64_t rxTimestamp);
 void onTxStamped(TxStampKind kind, uint32_t seqId, uint64_t txTimeUs);
 
+// Menu command deferral (see definitions above onBLEMessage)
+bool enqueueMenuCommand(const char *message, bool allowInternal);
+void processPendingMenuCommand();
+
 // Therapy Callbacks
 void onSendMacrocycle(const Macrocycle& macrocycle);
 void onSetFrequency(uint8_t finger, uint16_t frequencyHz);
@@ -749,6 +753,9 @@ void loop()
 
     // Process deferred work queue (haptic operations from BLE callbacks)
     deferredQueue.processOne();
+
+    // Execute one menu command deferred off the 3KB Bluefruit callback task
+    processPendingMenuCommand();
 
     // Process SECONDARY battery response in main loop context (thread-safe)
     menu.checkSecondaryBatteryResponse();
@@ -1682,6 +1689,111 @@ void executeDeferredWork(DeferredWorkType type, uint8_t p1, uint8_t p2, uint32_t
     }
 }
 
+// =============================================================================
+// MENU COMMAND DEFERRAL
+// =============================================================================
+// Bluefruit dispatches BLE data callbacks on its "Callback" task, whose stack is
+// a hard-coded 3KB (CALLBACK_STACK_SZ = 256*3 in the core's main.cpp - a plain
+// #define, so it cannot be raised from platformio.ini).
+//
+// Running menu.handleCommand() there overflows it. Measured on v2 with both the
+// phone and the SECONDARY connected: headroom reaches 0 bytes inside
+// SESSION_START, at _therapy->startSession(). The chain is
+//   onBLEMessage -> handleCommand -> handleSessionStart -> startSession
+//   -> generateNextPattern -> macrocycle callback (Macrocycle copy + >=200B
+//      serialize buffer) -> sendToSecondary
+// plus several Serial.printf frames (vsnprintf costs ~0.5KB each on ARM newlib).
+// The overflow corrupted adjacent memory, which is why the same defect appeared
+// as a freeze, as a garbled "Command: <junk>ION_START", and as a USB drop.
+//
+// So phone/menu commands are copied here and executed from loop() instead, which
+// is the pattern DeferredQueue already documents for BLE-callback work. Internal
+// PRIMARY<->SECONDARY sync traffic is deliberately NOT deferred: it is
+// hard-real-time and stays on its existing inline path.
+//
+// One command executes per loop() pass, matching deferredQueue.processOne().
+static constexpr uint8_t MENU_CMD_QUEUE_DEPTH = 4;
+static constexpr size_t MENU_CMD_MAX_LEN = 256;
+
+struct PendingMenuCommand
+{
+    char text[MENU_CMD_MAX_LEN];
+    bool allowInternal;
+    volatile bool ready;  // published last, after text is filled
+};
+
+static PendingMenuCommand s_menuCmdQueue[MENU_CMD_QUEUE_DEPTH];
+static volatile uint8_t s_menuCmdHead = 0;
+static volatile uint8_t s_menuCmdTail = 0;
+static volatile uint8_t s_menuCmdCount = 0;
+
+/**
+ * @brief Copy a menu command for later execution in loop() context.
+ *
+ * Called from the Bluefruit callback task. Reserve-fill-publish: the slot is
+ * claimed under a critical section, filled outside it, and only then marked
+ * ready - so loop() can never read a half-written command.
+ *
+ * @return false if the command is too long or the queue is full (caller warns).
+ */
+bool enqueueMenuCommand(const char *message, bool allowInternal)
+{
+    const size_t len = strlen(message);
+    if (len >= MENU_CMD_MAX_LEN)
+    {
+        return false;
+    }
+
+    PLATFORM_CRITICAL_ENTER();
+    if (s_menuCmdCount >= MENU_CMD_QUEUE_DEPTH)
+    {
+        PLATFORM_CRITICAL_EXIT();
+        return false;
+    }
+    const uint8_t slot = s_menuCmdTail;
+    s_menuCmdTail = static_cast<uint8_t>((s_menuCmdTail + 1) % MENU_CMD_QUEUE_DEPTH);
+    s_menuCmdCount++;
+    PLATFORM_CRITICAL_EXIT();
+
+    memcpy(s_menuCmdQueue[slot].text, message, len + 1);
+    s_menuCmdQueue[slot].allowInternal = allowInternal;
+
+    platformMemoryBarrier();
+    s_menuCmdQueue[slot].ready = true;
+    return true;
+}
+
+/** Execute at most one queued menu command. Call from loop() only. */
+void processPendingMenuCommand()
+{
+    // Each PLATFORM_CRITICAL_ENTER declares its own `_pm`, so every critical
+    // section needs its own scope (see the note in platform.h).
+    bool empty;
+    uint8_t slot;
+    {
+        PLATFORM_CRITICAL_ENTER();
+        empty = (s_menuCmdCount == 0);
+        slot = s_menuCmdHead;
+        PLATFORM_CRITICAL_EXIT();
+    }
+
+    if (empty || !s_menuCmdQueue[slot].ready)
+    {
+        return;  // empty, or the producer is still filling this slot
+    }
+    platformMemoryBarrier();
+
+    menu.handleCommand(s_menuCmdQueue[slot].text, s_menuCmdQueue[slot].allowInternal);
+
+    s_menuCmdQueue[slot].ready = false;
+    {
+        PLATFORM_CRITICAL_ENTER();
+        s_menuCmdHead = static_cast<uint8_t>((s_menuCmdHead + 1) % MENU_CMD_QUEUE_DEPTH);
+        s_menuCmdCount--;
+        PLATFORM_CRITICAL_EXIT();
+    }
+}
+
 void onBLEMessage(uint16_t connHandle, const char *message, uint64_t rxTimestamp)
 {
     // rxTimestamp is captured at the earliest possible point in the BLE stack
@@ -1708,10 +1820,18 @@ void onBLEMessage(uint16_t connHandle, const char *message, uint64_t rxTimestamp
     bool fromPhone = ble.getConnectionType(connHandle) == ConnectionType::PHONE;
     if (deviceRole == DeviceRole::PRIMARY && (fromPhone || !menu.isInternalMessage(message)))
     {
-        if (menu.handleCommand(message, fromPhone))
+        // Deferred, not executed here: this runs on the 3KB Bluefruit callback
+        // task and handleCommand overflows it (see enqueueMenuCommand above).
+        //
+        // Returning unconditionally is safe where the original fell through on a
+        // false return: every PRIMARY-side handler below this point matches only
+        // internal messages (BATRESPONSE:, sync protocol), and an internal
+        // message only reaches here when it came from the phone.
+        if (!enqueueMenuCommand(message, fromPhone))
         {
-            return; // Command handled by menu controller
+            Serial.println(F("[BLE] WARN: menu command queue full or oversized - dropped"));
         }
+        return;
     }
 
     // Handle LED_OFF_SYNC from PRIMARY (SECONDARY only)
