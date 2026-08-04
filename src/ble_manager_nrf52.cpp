@@ -95,7 +95,25 @@ bool BLEManager::begin(DeviceRole role, const char* deviceName) {
     // EVENT_LEN and queue sizes must also be increased to prevent SoftDevice instability
     // See: https://github.com/adafruit/Adafruit_nRF52_Arduino/issues/721
     const uint16_t BLE_MTU = 200;          // Fits MACROCYCLE (~160 bytes) with headroom
-    const uint16_t BLE_EVENT_LEN = 10;     // 12.5ms - sufficient for full packet + 2 connections
+
+    // event_length is the radio time the SoftDevice RESERVES per connection
+    // event, in 1.25ms units. It must fit inside the connection interval, and
+    // the sum across concurrent links must fit as well. The PRIMARY carries two
+    // links (phone + SECONDARY), so the budget is the 7.5ms minimum interval
+    // split two ways: 3.75ms = 3 units. That is also the Bluefruit default.
+    //
+    // This was 10 (12.5ms), sized against the packet rather than the interval.
+    // Two links then asked for 25ms of radio time inside a 7.5-10ms interval -
+    // 2.5x oversubscribed for one link, 5x for two - and the SECONDARY would
+    // fail to connect while the phone was attached, because no schedulable
+    // radio time remained for a second connection event.
+    //
+    // MTU is unaffected: event_length caps radio time per event, not packet
+    // size, and 3.75ms on the 2M PHY carries a 200-byte MTU with room to spare.
+    constexpr uint16_t BLE_EVENT_LEN = 3;
+    static_assert(2 * BLE_EVENT_LEN * 1.25f <= BLE_INTERVAL_MIN_MS,
+                  "Two concurrent links must fit inside the minimum connection interval");
+
     const uint8_t  BLE_HVN_QSIZE = 8;      // Handle notification bursts without overflow
     const uint8_t  BLE_WRCMD_QSIZE = 8;    // Match for write commands
 
@@ -859,8 +877,12 @@ void BLEManager::queryConnectionInterval(uint16_t connHandleParam) {
                            (conn->type == ConnectionType::PRIMARY) ? "PRIMARY" : "UNKNOWN";
 
     if (intervalMs > BLE_INTERVAL_WARNING_THRESHOLD_MS) {
+        // Explicit doubles: BLE_INTERVAL_MAX_MS is an int, and a bare int passed
+        // to %f is not promoted, which printed the target as "7.5-0.0ms".
         Serial.printf("[BLE] WARN: %s interval %.1fms exceeds target (%.1f-%.1fms)\n",
-                      typeName, intervalMs, BLE_INTERVAL_MIN_MS, BLE_INTERVAL_MAX_MS);
+                      typeName, intervalMs,
+                      static_cast<double>(BLE_INTERVAL_MIN_MS),
+                      static_cast<double>(BLE_INTERVAL_MAX_MS));
     } else {
         Serial.printf("[BLE] %s connection interval: %.1fms\n", typeName, intervalMs);
     }
