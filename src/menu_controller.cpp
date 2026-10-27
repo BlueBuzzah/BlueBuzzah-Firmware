@@ -708,7 +708,8 @@ void MenuController::handleSessionStart() {
 
     // Until clock sync converges the PRIMARY sends macrocycles with offset 0,
     // so the hands buzz as far apart as their boot times (or only the PRIMARY
-    // buzzes). Transient - the app retries.
+    // buzzes). Transient - the app retries, and the callback lets the start
+    // through (degraded) once the SECONDARY has been connected long enough.
     if (_ble && _ble->isSecondaryConnected() && _syncReadyCallback && !_syncReadyCallback()) {
         sendError("Sync not ready");
         return;

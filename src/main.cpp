@@ -96,6 +96,7 @@ uint8_t g_autoStartRetryCount = 0; // Auto-start sync retry counter (reset on SE
 // MUST be volatile: updated in BLE callback context, read in main loop
 volatile uint32_t lastKeepaliveReceived = 0;  // SECONDARY: Last PING/BUZZ from PRIMARY
 volatile uint32_t lastSecondaryKeepalive = 0; // PRIMARY: Last PONG from SECONDARY
+uint32_t g_secondaryConnectedAt = 0;          // PRIMARY: millis() of the current SECONDARY link's IDENTIFY
 volatile uint32_t g_lastMacrocycleReceivedMs = 0; // SECONDARY: last MACROCYCLE (therapy data) rx
 
 // A SECONDARY receiving macrocycles this recently is following an active session.
@@ -421,6 +422,7 @@ void onStateChange(const StateTransition &transition);
 void onMenuSendResponse(const char *response);
 void onMenuSendToSecondary(const char *message);
 void restartAfterTxDrain();
+bool phoneStartSyncReady();
 
 // SECONDARY Keepalive Timeout
 void handleKeepaliveTimeout();
@@ -652,7 +654,7 @@ void setup()
     menu.setSendCallback(onMenuSendResponse);
     menu.setSendToSecondaryCallback(onMenuSendToSecondary);
     menu.setRestartCallback(restartAfterTxDrain);
-    menu.setSyncReadyCallback([] { return syncProtocol.isClockSyncValid(); });
+    menu.setSyncReadyCallback(phoneStartSyncReady);
     Serial.println(F("[SUCCESS] Menu controller initialized"));
 
     // Initialize Deferred Queue (for ISR-safe callback operations)
@@ -1505,6 +1507,7 @@ void onBLEConnect(uint16_t connHandle, ConnectionType type)
 
             // Initialize keepalive tracking (timeout detection starts when first PONG received)
             lastSecondaryKeepalive = millis();
+            g_secondaryConnectedAt = millis();
 
             // Reset clock sync state
             syncProtocol.resetClockSync();
@@ -3083,6 +3086,25 @@ void restartAfterTxDrain()
     ble.disconnectAll();
     delay(100);
     platformSystemReset();
+}
+
+// Gate for a phone SESSION_START while the SECONDARY is connected. Same
+// degraded-mode fallback as autoStartTherapy(): if sync still hasn't
+// converged SYNC_START_FALLBACK_MS after the glove connected (noisy RF,
+// every PONG over the RTT quality threshold), start anyway rather than
+// refuse until a glove is power-cycled.
+bool phoneStartSyncReady()
+{
+    if (syncProtocol.isClockSyncValid())
+    {
+        return true;
+    }
+    if (millis() - g_secondaryConnectedAt >= SYNC_START_FALLBACK_MS)
+    {
+        Serial.println(F("[SYNC] Not valid after fallback window - starting phone session (timing may be degraded)"));
+        return true;
+    }
+    return false;
 }
 
 void onMenuSendToSecondary(const char *message)

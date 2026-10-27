@@ -99,6 +99,9 @@
 #define SYNC_OFFSET_EMA_ALPHA_DEN 10
 #define SYNC_ACTIVE_INTERVAL_MS 250       // PING cadence while therapy is running (4Hz)
                                            // Idle cadence stays KEEPALIVE_INTERVAL_MS (1Hz)
+#define SYNC_START_FALLBACK_MS 10000      // A phone SESSION_START refused "Sync not ready" starts anyway
+                                           // (degraded timing) once the SECONDARY has been connected this
+                                           // long - matches autoStartTherapy()'s 10 x 1s retries
 #define SYNC_ACQUIRE_INTERVAL_MS 70        // PING cadence until clock sync is valid (cold or warm start):
                                            // 5 samples in ~350ms instead of ~5s at the idle rate.
                                            // Must exceed SYNC_RTT_QUALITY_THRESHOLD_US: only one PING's
