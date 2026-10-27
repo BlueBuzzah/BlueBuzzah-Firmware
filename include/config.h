@@ -67,7 +67,11 @@
 #define BLE_INTERVAL_MIN_MS 7.5f     // Minimum connection interval (7.5ms = 6 units, BLE spec minimum)
 #define BLE_INTERVAL_MAX_MS 10       // Maximum connection interval (tighter than default 15ms)
 #define BLE_TIMEOUT_MS 6000          // Supervision timeout (6 seconds - increased for interference tolerance)
-#define BLE_ADV_INTERVAL_MS 500      // Advertising interval
+#define BLE_ADV_FAST_MIN_UNITS 32    // 20ms advertising (0.625ms units) while the SECONDARY slot is free
+#define BLE_ADV_FAST_MAX_UNITS 244   // 152.5ms
+#define BLE_ADV_SLOW_UNITS 800       // 500ms advertising while the SECONDARY is connected (phone slot only)
+#define BLE_PHONE_INTERVAL_MIN_UNITS 24  // 30ms phone link interval (1.25ms units); glove link keeps 7.5-10ms
+#define BLE_PHONE_INTERVAL_MAX_UNITS 40  // 50ms
 #define BLE_USE_2M_PHY 1             // Enable 2M PHY for faster BLE transmission
 #define BLE_INTERVAL_WARNING_THRESHOLD_MS 12.0f  // Warn if negotiated interval > 12ms
 

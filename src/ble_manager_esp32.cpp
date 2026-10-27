@@ -289,8 +289,8 @@ void BLEManager::setupAdvertising() {
     if (!adv->setManufacturerData(mfgData, sizeof(mfgData))) {
         Serial.println(F("[BLE] WARNING: Failed to set manufacturer data"));
     }
-    adv->setMinInterval(32);   // 20ms (0.625ms units - parity with Bluefruit)
-    adv->setMaxInterval(244);  // 152.5ms
+    adv->setMinInterval(BLE_ADV_FAST_MIN_UNITS);  // 20ms (parity with Bluefruit)
+    adv->setMaxInterval(BLE_ADV_FAST_MAX_UNITS);  // 152.5ms
 
     adv->start(0);
     s_advertising = true;
@@ -376,6 +376,7 @@ void BLEManager::update() {
                 conn->type = ConnectionType::PHONE;
                 conn->pendingIdentify = false;
                 queryConnectionInterval(conn->connHandle);
+                requestLinkConnParams(conn->connHandle, ConnectionType::PHONE);
                 if (_connectCallback) {
                     _connectCallback(conn->connHandle, ConnectionType::PHONE);
                 }
@@ -418,6 +419,38 @@ bool BLEManager::isAdvertising() const {
     return NimBLEDevice::getAdvertising()->isAdvertising();
 }
 
+void BLEManager::updateAdvertisingInterval() {
+    // Fast advertising is for the SECONDARY's reconnect. While it is attached
+    // only a phone can take the free slot, and 20ms adverts there just take
+    // airtime from the sync link.
+    NimBLEAdvertising* adv = NimBLEDevice::getAdvertising();
+    if (isSecondaryConnected()) {
+        adv->setMinInterval(BLE_ADV_SLOW_UNITS);
+        adv->setMaxInterval(BLE_ADV_SLOW_UNITS);
+    } else {
+        adv->setMinInterval(BLE_ADV_FAST_MIN_UNITS);
+        adv->setMaxInterval(BLE_ADV_FAST_MAX_UNITS);
+    }
+    if (adv->isAdvertising()) {
+        adv->stop();
+        adv->start(0);
+    }
+}
+
+void BLEManager::requestLinkConnParams(uint16_t connHandle, ConnectionType type) {
+    // The phone link shared the sync link's 7.5-10ms interval, so the PRIMARY
+    // spent up to half its radio time servicing command traffic. Ask a phone
+    // for 30-50ms; no peripheral latency, so phone writes aren't held back.
+    if (!s_server) return;
+    if (type == ConnectionType::PHONE) {
+        s_server->updateConnParams(connHandle, BLE_PHONE_INTERVAL_MIN_UNITS,
+                                   BLE_PHONE_INTERVAL_MAX_UNITS, 0, CONN_SUPERVISION_TIMEOUT_10MS);
+    } else {
+        s_server->updateConnParams(connHandle, CONN_INTERVAL_MIN_UNITS,
+                                   CONN_INTERVAL_MAX_UNITS, 0, CONN_SUPERVISION_TIMEOUT_10MS);
+    }
+}
+
 // =============================================================================
 // SCANNING & CONNECTING (SECONDARY MODE)
 // =============================================================================
@@ -432,8 +465,16 @@ void BBScanCallbacks::onResult(const NimBLEAdvertisedDevice* device) {
     // above -90; the name match below is the actual filter.
     if (device->getRSSI() < -90) return;
 
+    // A PRIMARY carries NUS + the BlueBuzzah manufacturer magic in its main
+    // advert, so it matches without waiting for the scan response that holds
+    // the name. Name match stays for PRIMARYs without manufacturer data.
+    std::string mfg = device->getManufacturerData();
+    bool advertMatch = mfg.size() >= 3 && static_cast<uint8_t>(mfg[0]) == 0xFF &&
+                       static_cast<uint8_t>(mfg[1]) == 0xFF && mfg[2] == 'B' &&
+                       device->isAdvertisingService(NimBLEUUID(NUS_SERVICE_UUID));
     std::string name = device->getName();
-    if (name.empty() || strcmp(name.c_str(), BLE_NAME) != 0) return;
+    bool nameMatch = !name.empty() && strcmp(name.c_str(), BLE_NAME) == 0;
+    if (!advertMatch && !nameMatch) return;
 
     Serial.printf("[SCAN] Found '%s' RSSI:%d, connecting...\n", name.c_str(), device->getRSSI());
     // Publish address + flag as one unit: reader (update(), loop task) may run
@@ -457,8 +498,10 @@ bool BLEManager::startScanning(const char* targetName) {
     NimBLEScan* scan = NimBLEDevice::getScan();
     scan->setScanCallbacks(&s_scanCallbacks, false);
     scan->setActiveScan(true);      // Request scan response for name
-    scan->setInterval(200);         // ms (parity with 200ms/37.5ms duty cycle)
-    scan->setWindow(38);
+    // Continuous scan: it only runs while disconnected, and the old 19%
+    // duty cycle stretched reconnects to seconds
+    scan->setInterval(100);         // ms
+    scan->setWindow(100);
 
     bool started = scan->start(0, false);
     s_scanning = started;
@@ -1028,6 +1071,7 @@ void BLEManager::deliverMessage(BBConnection* conn, uint16_t connHandleParam) {
             conn->type = ConnectionType::SECONDARY;
             conn->pendingIdentify = false;
             queryConnectionInterval(connHandleParam);
+            updateAdvertisingInterval();
             if (_connectCallback) {
                 _connectCallback(connHandleParam, ConnectionType::SECONDARY);
             }
@@ -1037,11 +1081,29 @@ void BLEManager::deliverMessage(BBConnection* conn, uint16_t connHandleParam) {
             conn->type = ConnectionType::PHONE;
             conn->pendingIdentify = false;
             queryConnectionInterval(connHandleParam);
+            requestLinkConnParams(connHandleParam, ConnectionType::PHONE);
             if (_connectCallback) {
                 _connectCallback(connHandleParam, ConnectionType::PHONE);
             }
             return;
         }
+    }
+
+    // Late IDENTIFY:SECONDARY: the glove's handshake can miss the 1s window
+    // (it sends once, after blocking discovery) and get classified as PHONE,
+    // which left the pair unsynced until a reconnect. Reclassify while the
+    // SECONDARY slot is empty, and restore the glove link's interval.
+    if (conn->type == ConnectionType::PHONE && !isSecondaryConnected() &&
+        strcmp(conn->rxBuffer, "IDENTIFY:SECONDARY") == 0) {
+        Serial.println(F("[BLE] Late IDENTIFY:SECONDARY - reclassifying from PHONE"));
+        conn->type = ConnectionType::SECONDARY;
+        requestLinkConnParams(connHandleParam, ConnectionType::SECONDARY);
+        queryConnectionInterval(connHandleParam);
+        updateAdvertisingInterval();
+        if (_connectCallback) {
+            _connectCallback(connHandleParam, ConnectionType::SECONDARY);
+        }
+        return;
     }
 
     if (_messageCallback) {
@@ -1158,6 +1220,9 @@ void BLEManager::_onPeriphDisconnect(uint16_t connHandle, uint8_t reason) {
     if (conn) {
         ConnectionType type = conn->type;
         conn->reset();
+        if (type == ConnectionType::SECONDARY) {
+            g_bleManager->updateAdvertisingInterval();
+        }
 
         if (g_bleManager->_disconnectCallback) {
             g_bleManager->_disconnectCallback(connHandle, type, reason);

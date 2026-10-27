@@ -241,7 +241,7 @@ void BLEManager::setupAdvertising() {
 
     // Configure advertising parameters
     Bluefruit.Advertising.restartOnDisconnect(true);
-    Bluefruit.Advertising.setInterval(32, 244);  // 20ms - 152.5ms (in 0.625ms units)
+    Bluefruit.Advertising.setInterval(BLE_ADV_FAST_MIN_UNITS, BLE_ADV_FAST_MAX_UNITS);  // 20ms - 152.5ms
     Bluefruit.Advertising.setFastTimeout(30);    // Fast mode for 30 seconds
 
     Bluefruit.Advertising.start(0);              // 0 = Don't stop advertising
@@ -288,6 +288,7 @@ void BLEManager::update() {
 
                 // Query and log connection interval
                 queryConnectionInterval(conn->connHandle);
+                requestLinkConnParams(conn->connHandle, ConnectionType::PHONE);
 
                 // Fire connect callback
                 if (_connectCallback) {
@@ -332,6 +333,39 @@ bool BLEManager::isAdvertising() const {
     return Bluefruit.Advertising.isRunning();
 }
 
+void BLEManager::updateAdvertisingInterval() {
+    // Fast advertising is for the SECONDARY's reconnect. While it is attached
+    // only a phone can take the free slot, and 20ms adverts there just take
+    // airtime from the sync link.
+    if (isSecondaryConnected()) {
+        Bluefruit.Advertising.setInterval(BLE_ADV_SLOW_UNITS, BLE_ADV_SLOW_UNITS);
+    } else {
+        Bluefruit.Advertising.setInterval(BLE_ADV_FAST_MIN_UNITS, BLE_ADV_FAST_MAX_UNITS);
+    }
+    if (Bluefruit.Advertising.isRunning()) {
+        Bluefruit.Advertising.stop();
+        Bluefruit.Advertising.start(0);
+    }
+}
+
+void BLEManager::requestLinkConnParams(uint16_t connHandle, ConnectionType type) {
+    // The phone link shared the sync link's 7.5-10ms interval, so the PRIMARY
+    // spent up to half its radio time servicing command traffic. Ask a phone
+    // for 30-50ms; no peripheral latency, so phone writes aren't held back.
+    bool phone = (type == ConnectionType::PHONE);
+    ble_gap_conn_params_t connParams = {
+        .min_conn_interval = phone ? static_cast<uint16_t>(BLE_PHONE_INTERVAL_MIN_UNITS)
+                                   : static_cast<uint16_t>((BLE_INTERVAL_MIN_MS * 1000) / 1250),
+        .max_conn_interval = phone ? static_cast<uint16_t>(BLE_PHONE_INTERVAL_MAX_UNITS)
+                                   : static_cast<uint16_t>((BLE_INTERVAL_MAX_MS * 1000) / 1250),
+        .slave_latency = 0,
+        .conn_sup_timeout = BLE_TIMEOUT_MS / 10,
+    };
+    if (sd_ble_gap_conn_param_update(connHandle, &connParams) != NRF_SUCCESS) {
+        Serial.println(F("[BLE] WARN: connection parameter request failed"));
+    }
+}
+
 // =============================================================================
 // SCANNING & CONNECTING (SECONDARY MODE)
 // =============================================================================
@@ -361,8 +395,9 @@ bool BLEManager::startScanning(const char* targetName) {
     // Keep a floor only as callback-flood protection.
     Bluefruit.Scanner.filterRssi(-90);
 
-    // Use longer interval with shorter window to reduce CPU load
-    Bluefruit.Scanner.setInterval(320, 60);  // 200ms interval, 37.5ms window (19% duty)
+    // Continuous scan: it only runs while disconnected (stopped on connect),
+    // and the old 19% duty cycle stretched reconnects to seconds
+    Bluefruit.Scanner.setInterval(160, 160);  // 100ms interval, 100ms window
     Bluefruit.Scanner.useActiveScan(true);   // Request scan response for name
 
     // Start scanning
@@ -969,6 +1004,7 @@ void BLEManager::deliverMessage(BBConnection* conn, uint16_t connHandleParam) {
             conn->type = ConnectionType::SECONDARY;
             conn->pendingIdentify = false;
             queryConnectionInterval(connHandleParam);
+            updateAdvertisingInterval();
             if (_connectCallback) {
                 _connectCallback(connHandleParam, ConnectionType::SECONDARY);
             }
@@ -978,11 +1014,29 @@ void BLEManager::deliverMessage(BBConnection* conn, uint16_t connHandleParam) {
             conn->type = ConnectionType::PHONE;
             conn->pendingIdentify = false;
             queryConnectionInterval(connHandleParam);
+            requestLinkConnParams(connHandleParam, ConnectionType::PHONE);
             if (_connectCallback) {
                 _connectCallback(connHandleParam, ConnectionType::PHONE);
             }
             return;
         }
+    }
+
+    // Late IDENTIFY:SECONDARY: the glove's handshake can miss the 1s window
+    // (it sends once, after blocking discovery) and get classified as PHONE,
+    // which left the pair unsynced until a reconnect. Reclassify while the
+    // SECONDARY slot is empty, and restore the glove link's interval.
+    if (conn->type == ConnectionType::PHONE && !isSecondaryConnected() &&
+        strcmp(conn->rxBuffer, "IDENTIFY:SECONDARY") == 0) {
+        Serial.println(F("[BLE] Late IDENTIFY:SECONDARY - reclassifying from PHONE"));
+        conn->type = ConnectionType::SECONDARY;
+        requestLinkConnParams(connHandleParam, ConnectionType::SECONDARY);
+        queryConnectionInterval(connHandleParam);
+        updateAdvertisingInterval();
+        if (_connectCallback) {
+            _connectCallback(connHandleParam, ConnectionType::SECONDARY);
+        }
+        return;
     }
 
     // Normal message - deliver to callback with captured RX timestamp
@@ -1093,6 +1147,9 @@ void BLEManager::_onPeriphDisconnect(uint16_t connHandle, uint8_t reason) {
     if (conn) {
         ConnectionType type = conn->type;
         conn->reset();
+        if (type == ConnectionType::SECONDARY) {
+            g_bleManager->updateAdvertisingInterval();
+        }
 
         // Notify callback
         if (g_bleManager->_disconnectCallback) {
@@ -1216,8 +1273,18 @@ void BLEManager::_onScanCallback(ble_gap_evt_adv_report_t* report) {
                                                       (uint8_t*)name, sizeof(name) - 1);
     }
 
-    // Check for name match and connect
-    if (nameLen > 0 && strcmp(name, g_bleManager->_targetName) == 0) {
+    // A PRIMARY carries NUS + the BlueBuzzah manufacturer magic in its main
+    // advert, so it matches without waiting for the scan response that holds
+    // the name. Name match stays for PRIMARYs without manufacturer data.
+    uint8_t mfg[8];
+    uint8_t mfgLen = Bluefruit.Scanner.parseReportByType(report, BLE_GAP_AD_TYPE_MANUFACTURER_SPECIFIC_DATA,
+                                                          mfg, sizeof(mfg));
+    bool advertMatch = mfgLen >= 3 && mfg[0] == 0xFF && mfg[1] == 0xFF && mfg[2] == 'B' &&
+                       Bluefruit.Scanner.checkReportForService(report, g_bleManager->_clientUart);
+    bool nameMatch = nameLen > 0 && strcmp(name, g_bleManager->_targetName) == 0;
+
+    // Check for a match and connect
+    if (advertMatch || nameMatch) {
         Serial.printf("[SCAN] Found '%s' RSSI:%d, connecting...\n", name, report->rssi);
         g_bleManager->connectToPrimary(report);
         return;  // Don't resume scanner - we're connecting

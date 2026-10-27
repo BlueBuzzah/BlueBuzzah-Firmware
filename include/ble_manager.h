@@ -539,6 +539,16 @@ private:
      * @param connHandle Connection handle to query
      */
     void queryConnectionInterval(uint16_t connHandle);
+
+    /**
+     * @brief Advertise slowly while the SECONDARY is connected, fast otherwise
+     */
+    void updateAdvertisingInterval();
+
+    /**
+     * @brief Request the interval for a link's type: 30-50ms phone, 7.5-10ms glove
+     */
+    void requestLinkConnParams(uint16_t connHandle, ConnectionType type);
 };
 
 // Global instance (needed for static callbacks)
