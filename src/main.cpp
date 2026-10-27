@@ -1093,7 +1093,9 @@ void loop()
         hiresClockEnsureHfclk();
     }
 
-    // Unified keepalive + clock sync (PRIMARY only). 25Hz until sync is
+    static_assert(SYNC_ACQUIRE_INTERVAL_MS * 1000 > SYNC_RTT_QUALITY_THRESHOLD_US,
+                  "An acceptable PONG must arrive before the next PING overwrites T1");
+    // Unified keepalive + clock sync (PRIMARY only). ~14Hz until sync is
     // valid, so a session can start promptly after the gloves connect; 4Hz
     // during therapy for tighter drift tracking and more samples for the
     // quality gates; 1Hz idle. More PINGs only strengthens keepalive
@@ -2765,7 +2767,7 @@ void autoStartTherapy()
     }
 
     // Check sync validity before starting therapy (SECONDARY must be synced)
-    // After reconnection, sync requires 5 samples (~200ms at the acquire cadence)
+    // After reconnection, sync requires 5 samples (~350ms at the acquire cadence)
     if (ble.isSecondaryConnected() && !syncProtocol.isClockSyncValid())
     {
         if (++g_autoStartRetryCount > 10)
