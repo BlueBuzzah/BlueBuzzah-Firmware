@@ -520,11 +520,7 @@ void safeMotorShutdown()
     // 2. Clear deferred work queue
     deferredQueue.clear();
 
-    // 3. Drop staged macrocycle events not yet forwarded (unstage is the
-    //    consumer side, safe against a concurrent BLE-task stage), then clear
-    //    the activation queue (macrocycle scheduled events)
-    StagedMotorEvent staged;
-    while (motorEventBuffer.unstage(staged)) {}
+    // 3. Clear activation queue (macrocycle scheduled events)
     activationQueue.clear();
 
     // 4. Emergency stop all motors
@@ -719,6 +715,12 @@ void loop()
     // Semaphore handles multiple signals correctly - each give results in a take
     if (safetyShutdownSema && xSemaphoreTake(safetyShutdownSema, 0) == pdTRUE)
     {
+        // Drop staged macrocycle events not yet forwarded, so a STOP_SESSION
+        // can't be undone by the forwarding below. Here, not in
+        // safeMotorShutdown(): that also runs on the BLE task (raw STOP), and
+        // the staging buffer allows only one consumer - this loop.
+        StagedMotorEvent staged;
+        while (motorEventBuffer.unstage(staged)) {}
         safeMotorShutdown();
         Serial.println(F("[SAFETY] Emergency motor shutdown complete"));
     }
@@ -730,22 +732,18 @@ void loop()
     // Forward from lock-free staging buffer to mutex-protected activationQueue
     // Defensive check: only process if motor task is initialized
     if (motorTaskHandle != nullptr && motorEventBuffer.hasPending()) {
-        // Check if this is a macrocycle batch (needs queue clear first).
-        // Clear once per batch: the pending flag stays set until the batch's
-        // last event is unstaged, and on dual-core ESP32 the loop can see a
-        // half-staged batch - clearing every iteration then wiped the events
-        // already forwarded.
-        static uint32_t clearedBatch = 0;
         bool isMacrocycleBatch = motorEventBuffer.isMacrocyclePending();
-        uint32_t batch = motorEventBuffer.getMacrocycleBatch();
-        if (isMacrocycleBatch && batch != clearedBatch) {
-            activationQueue.clear();  // Start fresh for macrocycle
-            clearedBatch = batch;
-        }
 
         uint8_t eventsForwarded = 0;
         StagedMotorEvent staged;
         while (motorEventBuffer.unstage(staged)) {
+            // A new macrocycle replaces the previous one. Cleared when its
+            // first event is unstaged: on dual-core ESP32 the loop can see a
+            // half-staged batch, and clearing on the pending flag wiped the
+            // events already forwarded.
+            if (staged.isMacrocycleFirst) {
+                activationQueue.clear();
+            }
             activationQueue.enqueue(staged.activateTimeUs, staged.finger, staged.amplitude,
                                    staged.durationMs, staged.frequencyHz);
             eventsForwarded++;
@@ -2334,6 +2332,9 @@ void onBLEMessage(uint16_t connHandle, const char *message, uint64_t rxTimestamp
 
         case SyncCommandType::STOP_SESSION:
             Serial.println(F("[SESSION] Stop requested"));
+            // The session is over: recovery must not read a macrocycle from
+            // before the stop as "therapy active" and restart RUNNING
+            g_lastMacrocycleReceivedMs = 0;
             // emergencyStop() alone left already-scheduled macrocycle events
             // buzzing for up to ~2s, and took the I2C mutex on the BLE task.
             // The loop's safety shutdown clears the queues and stops motors.
@@ -3114,9 +3115,10 @@ void onBLEEvent(ble_evt_t* evt)
     if (phy->status != BLE_HCI_STATUS_CODE_SUCCESS) return;
 
     // Only the glove link's PHY affects sync RTT; a phone PHY change must
-    // not reset the glove statistics
-    uint16_t handle = evt->evt.gap_evt.conn_handle;
-    if (handle != ble.getSecondaryHandle() && handle != ble.getPrimaryHandle()) return;
+    // not reset the glove statistics. Filter the phone out rather than
+    // matching the glove: on the PRIMARY the glove link is still UNKNOWN
+    // when its post-connect PHY update lands.
+    if (evt->evt.gap_evt.conn_handle == ble.getPhoneHandle()) return;
 
     g_newPhy = phy->tx_phy;
     g_phyChangeDetected = true;

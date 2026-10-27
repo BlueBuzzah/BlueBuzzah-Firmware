@@ -298,6 +298,23 @@ void BLEManager::update() {
         }
     }
 
+    // Retry link requests the stack refused BUSY
+    for (int i = 0; i < MAX_CONNECTIONS; i++) {
+        BBConnection* conn = &_connections[i];
+        if (!conn->isConnected || (!conn->pendingConnParams && !conn->pendingDataLength) ||
+            static_cast<int32_t>(now - conn->linkRetryAt) < 0) {
+            continue;
+        }
+        if (conn->pendingConnParams) {
+            conn->pendingConnParams = false;
+            requestLinkConnParams(conn->connHandle, conn->type);
+        }
+        if (conn->pendingDataLength) {
+            conn->pendingDataLength = false;
+            requestDataLength(conn->connHandle);
+        }
+    }
+
     // Check for pending interval requeries
     for (int i = 0; i < MAX_CONNECTIONS; i++) {
         BBConnection* conn = &_connections[i];
@@ -361,8 +378,27 @@ void BLEManager::requestLinkConnParams(uint16_t connHandle, ConnectionType type)
         .slave_latency = 0,
         .conn_sup_timeout = BLE_TIMEOUT_MS / 10,
     };
-    if (sd_ble_gap_conn_param_update(connHandle, &connParams) != NRF_SUCCESS) {
+    uint32_t err = sd_ble_gap_conn_param_update(connHandle, &connParams);
+    BBConnection* conn = findConnection(connHandle);
+    if (err == NRF_ERROR_BUSY && conn) {
+        // Typically the connect-time PHY update is still running
+        conn->pendingConnParams = true;
+        conn->linkRetryAt = millis() + 100;
+    } else if (err != NRF_SUCCESS) {
         Serial.println(F("[BLE] WARN: connection parameter request failed"));
+    }
+}
+
+void BLEManager::requestDataLength(uint16_t connHandle) {
+    uint32_t err = sd_ble_gap_data_length_update(connHandle, nullptr, nullptr);
+    BBConnection* conn = findConnection(connHandle);
+    if (err == NRF_ERROR_BUSY && conn) {
+        // PHY update or a peer-initiated DLE still running; without DLE each
+        // 200-byte ATT packet goes out as ~8 link-layer fragments
+        conn->pendingDataLength = true;
+        conn->linkRetryAt = millis() + 100;
+    } else if (err != NRF_SUCCESS) {
+        Serial.println(F("[BLE] WARN: data length update request failed"));
     }
 }
 
@@ -395,9 +431,15 @@ bool BLEManager::startScanning(const char* targetName) {
     // Keep a floor only as callback-flood protection.
     Bluefruit.Scanner.filterRssi(-90);
 
-    // Continuous scan: it only runs while disconnected (stopped on connect),
-    // and the old 19% duty cycle stretched reconnects to seconds
-    Bluefruit.Scanner.setInterval(160, 160);  // 100ms interval, 100ms window
+    // Continuous scan while disconnected: the old 19% duty cycle stretched
+    // reconnects to seconds. A false keepalive timeout restarts scanning
+    // with the link still up, though - keep the low duty cycle then so the
+    // scan doesn't crowd out the sync traffic.
+    if (getConnectionCount() == 0) {
+        Bluefruit.Scanner.setInterval(160, 160);  // 100ms interval, 100ms window
+    } else {
+        Bluefruit.Scanner.setInterval(320, 60);   // 200ms interval, 37.5ms window (19% duty)
+    }
     Bluefruit.Scanner.useActiveScan(true);   // Request scan response for name
 
     // Start scanning
@@ -1173,13 +1215,6 @@ void BLEManager::_onCentralConnect(uint16_t connHandle) {
     }
 #endif
 
-    // Data length extension lets each larger ATT packet (see the MTU exchange
-    // below) go in one radio PDU. Requested after the PHY: the PHY request
-    // can fail BUSY while another LL procedure runs, this one cannot.
-    if (bleConn && !bleConn->requestDataLengthUpdate()) {
-        Serial.println(F("[BLE] WARN: data length update request failed"));
-    }
-
     // Find free connection slot
     BBConnection* conn = g_bleManager->findFreeConnection();
     if (!conn) {
@@ -1194,6 +1229,10 @@ void BLEManager::_onCentralConnect(uint16_t connHandle) {
     conn->isConnected = true;
     conn->connectedAt = millis();
     conn->rxIndex = 0;
+
+    // Data length extension lets each larger ATT packet (see the MTU exchange
+    // below) go in one radio PDU
+    g_bleManager->requestDataLength(connHandle);
 
     // Discover UART service on PRIMARY
     Serial.println(F("[BLE] Discovering UART service on PRIMARY..."));

@@ -150,7 +150,11 @@ class BBClientCallbacks : public NimBLEClientCallbacks {
 };
 
 class BBScanCallbacks : public NimBLEScanCallbacks {
-    void onResult(const NimBLEAdvertisedDevice* device) override;
+    // onDiscovered fires on the advert itself; for a scannable advertiser
+    // under active scan, onResult waits for the scan response (the name)
+    void onDiscovered(const NimBLEAdvertisedDevice* device) override { match(device, false); }
+    void onResult(const NimBLEAdvertisedDevice* device) override { match(device, true); }
+    void match(const NimBLEAdvertisedDevice* device, bool allowNameMatch);
 };
 
 static BBServerCallbacks s_serverCallbacks;
@@ -455,8 +459,8 @@ void BLEManager::requestLinkConnParams(uint16_t connHandle, ConnectionType type)
 // SCANNING & CONNECTING (SECONDARY MODE)
 // =============================================================================
 
-void BBScanCallbacks::onResult(const NimBLEAdvertisedDevice* device) {
-    if (!g_bleManager) return;
+void BBScanCallbacks::match(const NimBLEAdvertisedDevice* device, bool allowNameMatch) {
+    if (!g_bleManager || s_pendingConnect) return;
 
     // -90 floor is host-task CPU flood protection only (std::string + strcmp
     // per advertisement in dense RF), NOT peer selection: glove-to-glove
@@ -473,7 +477,7 @@ void BBScanCallbacks::onResult(const NimBLEAdvertisedDevice* device) {
                        static_cast<uint8_t>(mfg[1]) == 0xFF && mfg[2] == 'B' &&
                        device->isAdvertisingService(NimBLEUUID(NUS_SERVICE_UUID));
     std::string name = device->getName();
-    bool nameMatch = !name.empty() && strcmp(name.c_str(), BLE_NAME) == 0;
+    bool nameMatch = allowNameMatch && !name.empty() && strcmp(name.c_str(), BLE_NAME) == 0;
     if (!advertMatch && !nameMatch) return;
 
     Serial.printf("[SCAN] Found '%s' RSSI:%d, connecting...\n", name.c_str(), device->getRSSI());
@@ -498,10 +502,13 @@ bool BLEManager::startScanning(const char* targetName) {
     NimBLEScan* scan = NimBLEDevice::getScan();
     scan->setScanCallbacks(&s_scanCallbacks, false);
     scan->setActiveScan(true);      // Request scan response for name
-    // Continuous scan: it only runs while disconnected, and the old 19%
-    // duty cycle stretched reconnects to seconds
-    scan->setInterval(100);         // ms
-    scan->setWindow(100);
+    // Continuous scan while disconnected: the old 19% duty cycle stretched
+    // reconnects to seconds. A false keepalive timeout restarts scanning
+    // with the link still up, though - keep the low duty cycle then so the
+    // scan doesn't crowd out the sync traffic.
+    bool linkUp = getConnectionCount() > 0;
+    scan->setInterval(linkUp ? 200 : 100);  // ms
+    scan->setWindow(linkUp ? 38 : 100);
 
     bool started = scan->start(0, false);
     s_scanning = started;

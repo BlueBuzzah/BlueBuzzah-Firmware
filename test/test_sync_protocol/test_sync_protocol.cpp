@@ -987,8 +987,13 @@ void test_SimpleSyncProtocol_getCorrectedOffset_uses_warm_start_projection(void)
     sync.resetClockSync();
     TEST_ASSERT_EQUAL_INT64(0, sync.getCorrectedOffset());
 
-    // Not yet confirmed, but the projected offset beats sending 0
+    // The projection alone is unproven (the SECONDARY may have rebooted)
     TEST_ASSERT_TRUE(sync.tryWarmStart());
+    TEST_ASSERT_EQUAL_INT64(0, sync.getCorrectedOffset());
+
+    // One agreeing sample: not yet valid, but the projection beats sending 0
+    sync.addOffsetSample(10000);
+    TEST_ASSERT_TRUE(sync.isWarmStartMode());
     TEST_ASSERT_FALSE(sync.isClockSyncValid());
     TEST_ASSERT_INT64_WITHIN(100, 10000, sync.getCorrectedOffset());
 }

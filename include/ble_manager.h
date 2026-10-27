@@ -85,6 +85,12 @@ struct BBConnection {
     bool pendingIntervalRequery;         // True if interval query returned 0, needs retry
     uint32_t intervalRequeryTime;        // millis() when to retry query
 
+    // Link requests the stack refused BUSY (another LL procedure running);
+    // retried from update()
+    bool pendingConnParams;
+    bool pendingDataLength;
+    uint32_t linkRetryAt;                // millis() of the next retry
+
     BBConnection() :
         connHandle(CONN_HANDLE_INVALID),
         type(ConnectionType::NONE),
@@ -98,7 +104,10 @@ struct BBConnection {
         negotiatedIntervalUnits(0),
         intervalQueriedAt(0),
         pendingIntervalRequery(false),
-        intervalRequeryTime(0) {
+        intervalRequeryTime(0),
+        pendingConnParams(false),
+        pendingDataLength(false),
+        linkRetryAt(0) {
         memset(rxBuffer, 0, sizeof(rxBuffer));
     }
 
@@ -116,6 +125,9 @@ struct BBConnection {
         intervalQueriedAt = 0;
         pendingIntervalRequery = false;
         intervalRequeryTime = 0;
+        pendingConnParams = false;
+        pendingDataLength = false;
+        linkRetryAt = 0;
         memset(rxBuffer, 0, sizeof(rxBuffer));
     }
 };
@@ -554,6 +566,11 @@ private:
      * @brief Request the interval for a link's type: 30-50ms phone, 7.5-10ms glove
      */
     void requestLinkConnParams(uint16_t connHandle, ConnectionType type);
+
+    /**
+     * @brief Request data length extension, retried from update() if BUSY
+     */
+    void requestDataLength(uint16_t connHandle);
 };
 
 // Global instance (needed for static callbacks)
