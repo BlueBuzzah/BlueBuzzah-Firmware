@@ -38,6 +38,7 @@ struct StagedMotorEvent {
     uint16_t durationMs;       // Duration in milliseconds
     uint16_t frequencyHz;      // Frequency in Hz
     bool isMacrocycleLast;     // True if this is the last event in a macrocycle batch
+    bool isMacrocycleFirst;    // True if this is the first event after beginMacrocycle()
     volatile bool valid;       // Marks slot as ready for consumption
 
     StagedMotorEvent() :
@@ -47,6 +48,7 @@ struct StagedMotorEvent {
         durationMs(0),
         frequencyHz(0),
         isMacrocycleLast(false),
+        isMacrocycleFirst(false),
         valid(false) {}
 
     void clear() {
@@ -56,6 +58,7 @@ struct StagedMotorEvent {
         durationMs = 0;
         frequencyHz = 0;
         isMacrocycleLast = false;
+        isMacrocycleFirst = false;
         valid = false;
     }
 };
@@ -164,6 +167,7 @@ private:
     volatile uint8_t _head;  // Next write position (producer)
     volatile uint8_t _tail;  // Next read position (consumer)
     volatile bool _macrocyclePending;  // True when macrocycle batch needs processing
+    bool _nextIsFirst;                  // Producer-only: next stage() opens a macrocycle
 };
 
 // =============================================================================

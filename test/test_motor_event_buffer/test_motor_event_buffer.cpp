@@ -179,6 +179,21 @@ void test_MotorEventBuffer_beginMacrocycle_sets_pending(void) {
     TEST_ASSERT_TRUE(buffer.isMacrocyclePending());
 }
 
+void test_MotorEventBuffer_only_first_event_after_begin_is_flagged_first(void) {
+    buffer.stage(500000, 0, 100, 50, 250, false);  // standalone event
+    buffer.beginMacrocycle();
+    buffer.stage(1000000, 0, 100, 50, 250, false);
+    buffer.stage(1100000, 1, 100, 50, 250, true);
+
+    StagedMotorEvent event;
+    TEST_ASSERT_TRUE(buffer.unstage(event));
+    TEST_ASSERT_FALSE(event.isMacrocycleFirst);
+    TEST_ASSERT_TRUE(buffer.unstage(event));
+    TEST_ASSERT_TRUE(event.isMacrocycleFirst);
+    TEST_ASSERT_TRUE(buffer.unstage(event));
+    TEST_ASSERT_FALSE(event.isMacrocycleFirst);
+}
+
 void test_MotorEventBuffer_isMacrocycleLast_clears_pending(void) {
     buffer.beginMacrocycle();
     TEST_ASSERT_TRUE(buffer.isMacrocyclePending());
@@ -365,6 +380,7 @@ int main(int argc, char **argv) {
     // Macrocycle tests
     RUN_TEST(test_MotorEventBuffer_macrocycle_pending_initially_false);
     RUN_TEST(test_MotorEventBuffer_beginMacrocycle_sets_pending);
+    RUN_TEST(test_MotorEventBuffer_only_first_event_after_begin_is_flagged_first);
     RUN_TEST(test_MotorEventBuffer_isMacrocycleLast_clears_pending);
     RUN_TEST(test_MotorEventBuffer_full_macrocycle_batch);
 

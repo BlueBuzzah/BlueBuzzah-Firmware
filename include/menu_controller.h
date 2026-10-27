@@ -79,6 +79,11 @@ typedef void (*RestartCallback)();
  */
 typedef void (*SendToSecondaryCallback)(const char* message);
 
+/**
+ * @brief Callback reporting whether PRIMARY<->SECONDARY clock sync is valid
+ */
+typedef bool (*SyncReadyCallback)();
+
 // =============================================================================
 // MENU CONTROLLER CLASS
 // =============================================================================
@@ -174,6 +179,11 @@ public:
     void setSendToSecondaryCallback(SendToSecondaryCallback callback);
 
     /**
+     * @brief Set callback that gates SESSION_START on bilateral clock sync
+     */
+    void setSyncReadyCallback(SyncReadyCallback callback);
+
+    /**
      * @brief Set SECONDARY battery voltage from ISR/BLE callback context
      * @param voltage Battery voltage from SECONDARY glove
      *
@@ -248,6 +258,7 @@ private:
     SendResponseCallback _sendCallback;
     RestartCallback _restartCallback;
     SendToSecondaryCallback _sendToSecondaryCallback;
+    SyncReadyCallback _syncReadyCallback;
 
     // Deferred command tracking for SECONDARY battery query
     enum class DeferredCommand : uint8_t {
@@ -283,6 +294,7 @@ private:
 
     // Response buffer
     char _responseBuffer[RESPONSE_BUFFER_SIZE];
+    char _currentCommand[32];  // Echoed as CMD:<name> on every reply to it
 
     // =========================================================================
     // COMMAND PARSING

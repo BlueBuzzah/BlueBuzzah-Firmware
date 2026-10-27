@@ -21,7 +21,8 @@ MotorEventBuffer motorEventBuffer;
 MotorEventBuffer::MotorEventBuffer() :
     _head(0),
     _tail(0),
-    _macrocyclePending(false)
+    _macrocyclePending(false),
+    _nextIsFirst(false)
 {
     for (uint8_t i = 0; i < MAX_STAGED; i++) {
         _buffer[i].clear();
@@ -55,6 +56,8 @@ bool MotorEventBuffer::stage(uint64_t activateTimeUs, uint8_t finger, uint8_t am
     slot.durationMs = durationMs;
     slot.frequencyHz = frequencyHz;
     slot.isMacrocycleLast = isMacrocycleLast;
+    slot.isMacrocycleFirst = _nextIsFirst;
+    _nextIsFirst = false;
 
     // Memory barrier to ensure all data writes complete before marking valid
     platformMemoryBarrier();
@@ -73,6 +76,7 @@ bool MotorEventBuffer::stage(uint64_t activateTimeUs, uint8_t finger, uint8_t am
 
 void MotorEventBuffer::beginMacrocycle() {
     platformMemoryBarrier();
+    _nextIsFirst = true;
     _macrocyclePending = true;
     platformMemoryBarrier();
 }
@@ -116,6 +120,7 @@ bool MotorEventBuffer::unstage(StagedMotorEvent& event) {
     event.durationMs = slot.durationMs;
     event.frequencyHz = slot.frequencyHz;
     event.isMacrocycleLast = slot.isMacrocycleLast;
+    event.isMacrocycleFirst = slot.isMacrocycleFirst;
     event.valid = true;
 
     // If this was the last macrocycle event, clear the pending flag
@@ -159,6 +164,7 @@ void MotorEventBuffer::clear() {
     _head = 0;
     _tail = 0;
     _macrocyclePending = false;
+    _nextIsFirst = false;
     for (uint8_t i = 0; i < MAX_STAGED; i++) {
         _buffer[i].clear();
     }

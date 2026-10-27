@@ -974,6 +974,30 @@ void test_SimpleSyncProtocol_tryWarmStart_with_valid_cache_succeeds(void) {
     TEST_ASSERT_TRUE(sync.isWarmStartMode());
 }
 
+void test_SimpleSyncProtocol_getCorrectedOffset_uses_warm_start_projection(void) {
+    SimpleSyncProtocol sync;
+
+    for (int i = 0; i < 5; i++) {
+        sync.addOffsetSample(10000);
+    }
+    mockSetMillis(100);
+    sync.updateOffsetEMA(10000);
+
+    mockSetMillis(5000);
+    sync.resetClockSync();
+    TEST_ASSERT_EQUAL_INT64(0, sync.getCorrectedOffset());
+
+    // The projection alone is unproven (the SECONDARY may have rebooted)
+    TEST_ASSERT_TRUE(sync.tryWarmStart());
+    TEST_ASSERT_EQUAL_INT64(0, sync.getCorrectedOffset());
+
+    // One agreeing sample: not yet valid, but the projection beats sending 0
+    sync.addOffsetSample(10000);
+    TEST_ASSERT_TRUE(sync.isWarmStartMode());
+    TEST_ASSERT_FALSE(sync.isClockSyncValid());
+    TEST_ASSERT_INT64_WITHIN(100, 10000, sync.getCorrectedOffset());
+}
+
 void test_SimpleSyncProtocol_tryWarmStart_with_expired_cache_fails(void) {
     SimpleSyncProtocol sync;
 
@@ -1518,6 +1542,27 @@ void test_SyncCommand_serializeMacrocycle_buffer_too_small(void) {
 
     char buffer[50];  // Too small
     TEST_ASSERT_FALSE(SyncCommand::serializeMacrocycle(buffer, sizeof(buffer), mc));
+}
+
+void test_SyncCommand_deserializeMacrocycle_rejects_count_mismatch(void) {
+    Macrocycle mc;
+    // Count says 3, frame carries 2 (e.g. a truncated notification)
+    const char* shortFrame = "MC:42|0|5000000|0|1000|100|3|0,0,80|50,1,90";
+    TEST_ASSERT_FALSE(SyncCommand::deserializeMacrocycle(shortFrame, strlen(shortFrame), mc));
+    // Count says 1, frame carries 2 (two frames glued together)
+    const char* longFrame = "MC:42|0|5000000|0|1000|100|1|0,0,80|50,1,90";
+    TEST_ASSERT_FALSE(SyncCommand::deserializeMacrocycle(longFrame, strlen(longFrame), mc));
+    // Event cut mid-field
+    const char* cutFrame = "MC:42|0|5000000|0|1000|100|2|0,0,80|50";
+    TEST_ASSERT_FALSE(SyncCommand::deserializeMacrocycle(cutFrame, strlen(cutFrame), mc));
+    // Event cut after its finger field
+    const char* cutAfterFinger = "MC:42|0|5000000|0|1000|100|2|0,0,80|50,1";
+    TEST_ASSERT_FALSE(SyncCommand::deserializeMacrocycle(cutAfterFinger, strlen(cutAfterFinger), mc));
+    // Count beyond what a macrocycle can hold
+    char tooMany[64];
+    snprintf(tooMany, sizeof(tooMany), "MC:42|0|5000000|0|1000|100|%d|0,0,80",
+             MACROCYCLE_MAX_EVENTS + 1);
+    TEST_ASSERT_FALSE(SyncCommand::deserializeMacrocycle(tooMany, strlen(tooMany), mc));
 }
 
 void test_SyncCommand_deserializeMacrocycle_invalid(void) {
@@ -2349,6 +2394,7 @@ int main(int argc, char **argv) {
     // Warm-Start Sync Tests
     RUN_TEST(test_SimpleSyncProtocol_tryWarmStart_with_no_cache_returns_false);
     RUN_TEST(test_SimpleSyncProtocol_tryWarmStart_with_valid_cache_succeeds);
+    RUN_TEST(test_SimpleSyncProtocol_getCorrectedOffset_uses_warm_start_projection);
     RUN_TEST(test_SimpleSyncProtocol_tryWarmStart_with_expired_cache_fails);
     RUN_TEST(test_SimpleSyncProtocol_warmStart_validates_confirmatory_samples);
     RUN_TEST(test_SimpleSyncProtocol_warmStart_aborts_on_divergent_sample);
@@ -2399,6 +2445,7 @@ int main(int argc, char **argv) {
     RUN_TEST(test_SyncCommand_deserializeMacrocycle_basic);
     RUN_TEST(test_SyncCommand_serializeMacrocycle_with_freqOffset);
     RUN_TEST(test_SyncCommand_serializeMacrocycle_buffer_too_small);
+    RUN_TEST(test_SyncCommand_deserializeMacrocycle_rejects_count_mismatch);
     RUN_TEST(test_SyncCommand_deserializeMacrocycle_invalid);
     RUN_TEST(test_SyncCommand_getMacrocycleSerializedSize);
 

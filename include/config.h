@@ -67,7 +67,11 @@
 #define BLE_INTERVAL_MIN_MS 7.5f     // Minimum connection interval (7.5ms = 6 units, BLE spec minimum)
 #define BLE_INTERVAL_MAX_MS 10       // Maximum connection interval (tighter than default 15ms)
 #define BLE_TIMEOUT_MS 6000          // Supervision timeout (6 seconds - increased for interference tolerance)
-#define BLE_ADV_INTERVAL_MS 500      // Advertising interval
+#define BLE_ADV_FAST_MIN_UNITS 32    // 20ms advertising (0.625ms units) while the SECONDARY slot is free
+#define BLE_ADV_FAST_MAX_UNITS 244   // 152.5ms
+#define BLE_ADV_SLOW_UNITS 800       // 500ms advertising while the SECONDARY is connected (phone slot only)
+#define BLE_PHONE_INTERVAL_MIN_UNITS 24  // 30ms phone link interval (1.25ms units); glove link keeps 7.5-10ms
+#define BLE_PHONE_INTERVAL_MAX_UNITS 40  // 50ms
 #define BLE_USE_2M_PHY 1             // Enable 2M PHY for faster BLE transmission
 #define BLE_INTERVAL_WARNING_THRESHOLD_MS 12.0f  // Warn if negotiated interval > 12ms
 
@@ -88,12 +92,21 @@
 // NOTE: MACROCYCLE_TRANSMISSION_OVERHEAD_US was removed after fixing the DEBUG_FLASH
 // blocking bug. The old code's delayMicroseconds() blocked BLE callbacks for ~300ms,
 // making it appear that MACROCYCLE transmission took much longer than it actually does.
-// Actual MACROCYCLE BLE transmission is ~40-50ms (included in RTT-based calculation).
+// MACROCYCLE delivery is covered by the RTT-based lead time calculation; at the
+// negotiated 200-byte MTU a macrocycle is one or two notifications.
 #define SYNC_MIN_VALID_SAMPLES 5     // Minimum samples before clock sync is valid
 #define SYNC_OFFSET_EMA_ALPHA_NUM 1  // Slow EMA α = 1/10 = 0.1 for continuous updates
 #define SYNC_OFFSET_EMA_ALPHA_DEN 10
 #define SYNC_ACTIVE_INTERVAL_MS 250       // PING cadence while therapy is running (4Hz)
                                            // Idle cadence stays KEEPALIVE_INTERVAL_MS (1Hz)
+#define SYNC_START_FALLBACK_MS 10000      // A phone SESSION_START refused "Sync not ready" starts anyway
+                                           // (degraded timing) once the SECONDARY has been connected this
+                                           // long - matches autoStartTherapy()'s 10 x 1s retries
+#define SYNC_ACQUIRE_INTERVAL_MS 70        // PING cadence until clock sync is valid (cold or warm start):
+                                           // 5 samples in ~350ms instead of ~5s at the idle rate.
+                                           // Must exceed SYNC_RTT_QUALITY_THRESHOLD_US: only one PING's
+                                           // T1 is tracked, so a usable PONG has to land before the next
+                                           // PING replaces it (main.cpp static_asserts this)
 #define SYNC_RTT_QUALITY_THRESHOLD_US 60000 // 60ms RTT threshold - reject retransmission-affected samples
                                              // (reduced from 120ms for stricter quality filtering)
 #define SYNC_OUTLIER_THRESHOLD_US 5000   // 5ms threshold for offset outlier rejection (was hardcoded)

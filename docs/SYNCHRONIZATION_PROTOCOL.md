@@ -73,7 +73,7 @@ sequenceDiagram
             S->>P: PONG (T2, T3)
             Note over P: Compute clock offset
         end
-        Note over P: 5+ valid samples = sync ready (~5s)
+        Note over P: 5+ valid samples = sync ready (~350ms at 70ms PINGs)
     end
 
     rect rgba(5, 33, 45, 0.5)
@@ -103,7 +103,7 @@ sequenceDiagram
 | Phase | Maximum Duration |
 |-------|------------------|
 | Connection establishment | 15 seconds |
-| Initial clock sync | ~5 seconds (5 samples @ 1s interval) |
+| Initial clock sync | ~350ms (5 samples @ 70ms acquire interval) |
 | Session start | Immediate after sync |
 | Keepalive timeout | 6 seconds (6 missed) |
 
@@ -202,7 +202,7 @@ T1 (PING sent) and T3 (PONG sent) are stamped at **SoftDevice handoff** rather t
 ### Filtering and Maintenance
 
 - **Initial sync:** Idle keepalive (1s) accumulates samples, median offset selected
-- **Minimum valid:** At least 5 good samples required (~5s after connect)
+- **Minimum valid:** At least 5 good samples required (~350ms after connect: PINGs run every 70ms, `SYNC_ACQUIRE_INTERVAL_MS`, until sync is valid)
 - **Drift compensation:** Ongoing sync at 4Hz during therapy / 1Hz idle corrects for crystal drift
 - **Smoothing:** Exponential moving average prevents sudden jumps
 - **Drift rate capping:** Dual caps for safety (see below)
@@ -261,9 +261,9 @@ Brief BLE disconnections (interference, range limits) can recover quickly using 
 
 | Scenario | Samples Required | Recovery Time |
 |----------|------------------|---------------|
-| Cold start (first connect) | 5 | ~5 seconds |
-| Warm start (<15s disconnect) | 3 confirmatory | ~3 seconds |
-| Long disconnect (>15s) | 5 | ~5 seconds |
+| Cold start (first connect) | 5 | ~350ms |
+| Warm start (<15s disconnect) | 3 confirmatory | ~210ms (macrocycles carry the projected offset meanwhile) |
+| Long disconnect (>15s) | 5 | ~350ms |
 
 **Warm-start process:**
 1. On valid sync, cache current offset + drift rate (updated continuously)
@@ -670,7 +670,7 @@ PRIMARY detects the anchor format by the presence of data field index 4 (`hasDat
 anchorOffset = secondaryAnchor - primaryAnchor - SYNC_ANCHOR_BIAS_US
 ```
 
-`SYNC_ANCHOR_BIAS_US` is a calibrated constant (default 0) that corrects for any systematic asymmetry between the central (PRIMARY) and peripheral (SECONDARY) radio-event timing. Positive values correct for peripheral RX-window widening where PRIMARY's anchor fires slightly early relative to SECONDARY's.
+`SYNC_ANCHOR_BIAS_US` is a calibrated constant (default 0) that corrects for any systematic asymmetry between the peripheral (PRIMARY) and central (SECONDARY) radio-event timing. Positive values correct for peripheral RX-window widening where PRIMARY's anchor fires slightly early relative to SECONDARY's.
 
 The anchor offset replaces the PTP offset for that sample when it is considered plausible (see pre-filter below). PTP is still calculated on every exchange and used as the fallback.
 
@@ -723,8 +723,9 @@ Sync state variables are accessed from both main loop and BLE callbacks. Key con
 | Parameter | Value | Description |
 |-----------|-------|-------------|
 | RTT quality threshold (`SYNC_RTT_QUALITY_THRESHOLD_US`) | 60ms | Hard ceiling — discard samples with higher RTT |
-| Minimum valid samples (`SYNC_MIN_VALID_SAMPLES`) | 5 | Required for valid sync (~5s from connect) |
+| Minimum valid samples (`SYNC_MIN_VALID_SAMPLES`) | 5 | Required for valid sync (~350ms from connect) |
 | Outlier threshold (`SYNC_OUTLIER_THRESHOLD_US`) | 5ms | Offset outlier rejection (MAD-based filtering) |
+| PING/PONG interval (acquiring, `SYNC_ACQUIRE_INTERVAL_MS`) | 70ms | Until clock sync is valid (cold or warm start) |
 | PING/PONG interval (idle) | 1s | Keepalive + clock sync when no therapy session active |
 | PING/PONG interval during therapy (`SYNC_ACTIVE_INTERVAL_MS`) | 250ms (4Hz) | Higher cadence while therapy is running |
 | Keepalive timeout (SECONDARY, `KEEPALIVE_TIMEOUT_MS`) | 6s | 6 missed PINGs = connection lost |

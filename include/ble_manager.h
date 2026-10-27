@@ -77,12 +77,19 @@ struct BBConnection {
     char rxBuffer[RX_BUFFER_SIZE];
     uint16_t rxIndex;
     uint64_t rxTimestamp;  // Timestamp when first byte of current message was received
+    bool rxDiscard;        // Current frame overflowed rxBuffer; skip to its EOT
 
     // Connection interval tracking (for diagnostics)
     uint16_t negotiatedIntervalUnits;    // Actual interval in 1.25ms units
     uint32_t intervalQueriedAt;          // millis() when queried
     bool pendingIntervalRequery;         // True if interval query returned 0, needs retry
     uint32_t intervalRequeryTime;        // millis() when to retry query
+
+    // Link requests the stack refused BUSY (another LL procedure running);
+    // retried from update()
+    bool pendingConnParams;
+    bool pendingDataLength;
+    uint32_t linkRetryAt;                // millis() of the next retry
 
     BBConnection() :
         connHandle(CONN_HANDLE_INVALID),
@@ -93,10 +100,14 @@ struct BBConnection {
         identifyStartTime(0),
         rxIndex(0),
         rxTimestamp(0),
+        rxDiscard(false),
         negotiatedIntervalUnits(0),
         intervalQueriedAt(0),
         pendingIntervalRequery(false),
-        intervalRequeryTime(0) {
+        intervalRequeryTime(0),
+        pendingConnParams(false),
+        pendingDataLength(false),
+        linkRetryAt(0) {
         memset(rxBuffer, 0, sizeof(rxBuffer));
     }
 
@@ -109,10 +120,14 @@ struct BBConnection {
         identifyStartTime = 0;
         rxIndex = 0;
         rxTimestamp = 0;
+        rxDiscard = false;
         negotiatedIntervalUnits = 0;
         intervalQueriedAt = 0;
         pendingIntervalRequery = false;
         intervalRequeryTime = 0;
+        pendingConnParams = false;
+        pendingDataLength = false;
+        linkRetryAt = 0;
         memset(rxBuffer, 0, sizeof(rxBuffer));
     }
 };
@@ -247,6 +262,16 @@ public:
      * @brief Check if connected to phone (PRIMARY mode)
      */
     bool isPhoneConnected() const;
+
+    /**
+     * @brief True while either TX lane still holds a queued message
+     */
+    bool hasPendingTx() const { return _txHi.count > 0 || _txNormal.count > 0; }
+
+    /**
+     * @brief Send queued peer-glove traffic now, without waiting for update()
+     */
+    void processPeerTx() { drainRing(_txHi, TX_QUEUE_SIZE); }
 
     /**
      * @brief Get the type of an active connection
@@ -531,6 +556,21 @@ private:
      * @param connHandle Connection handle to query
      */
     void queryConnectionInterval(uint16_t connHandle);
+
+    /**
+     * @brief Advertise slowly while the SECONDARY is connected, fast otherwise
+     */
+    void updateAdvertisingInterval();
+
+    /**
+     * @brief Request the interval for a link's type: 30-50ms phone, 7.5-10ms glove
+     */
+    void requestLinkConnParams(uint16_t connHandle, ConnectionType type);
+
+    /**
+     * @brief Request data length extension, retried from update() if BUSY
+     */
+    void requestDataLength(uint16_t connHandle);
 };
 
 // Global instance (needed for static callbacks)

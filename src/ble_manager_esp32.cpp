@@ -150,7 +150,11 @@ class BBClientCallbacks : public NimBLEClientCallbacks {
 };
 
 class BBScanCallbacks : public NimBLEScanCallbacks {
-    void onResult(const NimBLEAdvertisedDevice* device) override;
+    // onDiscovered fires on the advert itself; for a scannable advertiser
+    // under active scan, onResult waits for the scan response (the name)
+    void onDiscovered(const NimBLEAdvertisedDevice* device) override { match(device, false); }
+    void onResult(const NimBLEAdvertisedDevice* device) override { match(device, true); }
+    void match(const NimBLEAdvertisedDevice* device, bool allowNameMatch);
 };
 
 static BBServerCallbacks s_serverCallbacks;
@@ -264,6 +268,9 @@ void BLEManager::setupSecondaryMode() {
     // Request 7.5-10ms interval directly in the connect request
     s_client->setConnectionParams(CONN_INTERVAL_MIN_UNITS, CONN_INTERVAL_MAX_UNITS,
                                   0, CONN_SUPERVISION_TIMEOUT_10MS);
+    // connect() runs in loop(): NimBLE's 30s default froze the loop that long
+    // when the PRIMARY vanished between scan and connect
+    s_client->setConnectTimeout(3000);
 }
 
 void BLEManager::setupAdvertising() {
@@ -286,8 +293,8 @@ void BLEManager::setupAdvertising() {
     if (!adv->setManufacturerData(mfgData, sizeof(mfgData))) {
         Serial.println(F("[BLE] WARNING: Failed to set manufacturer data"));
     }
-    adv->setMinInterval(32);   // 20ms (0.625ms units - parity with Bluefruit)
-    adv->setMaxInterval(244);  // 152.5ms
+    adv->setMinInterval(BLE_ADV_FAST_MIN_UNITS);  // 20ms (parity with Bluefruit)
+    adv->setMaxInterval(BLE_ADV_FAST_MAX_UNITS);  // 152.5ms
 
     adv->start(0);
     s_advertising = true;
@@ -373,6 +380,7 @@ void BLEManager::update() {
                 conn->type = ConnectionType::PHONE;
                 conn->pendingIdentify = false;
                 queryConnectionInterval(conn->connHandle);
+                requestLinkConnParams(conn->connHandle, ConnectionType::PHONE);
                 if (_connectCallback) {
                     _connectCallback(conn->connHandle, ConnectionType::PHONE);
                 }
@@ -415,12 +423,44 @@ bool BLEManager::isAdvertising() const {
     return NimBLEDevice::getAdvertising()->isAdvertising();
 }
 
+void BLEManager::updateAdvertisingInterval() {
+    // Fast advertising is for the SECONDARY's reconnect. While it is attached
+    // only a phone can take the free slot, and 20ms adverts there just take
+    // airtime from the sync link.
+    NimBLEAdvertising* adv = NimBLEDevice::getAdvertising();
+    if (isSecondaryConnected()) {
+        adv->setMinInterval(BLE_ADV_SLOW_UNITS);
+        adv->setMaxInterval(BLE_ADV_SLOW_UNITS);
+    } else {
+        adv->setMinInterval(BLE_ADV_FAST_MIN_UNITS);
+        adv->setMaxInterval(BLE_ADV_FAST_MAX_UNITS);
+    }
+    if (adv->isAdvertising()) {
+        adv->stop();
+        adv->start(0);
+    }
+}
+
+void BLEManager::requestLinkConnParams(uint16_t connHandle, ConnectionType type) {
+    // The phone link shared the sync link's 7.5-10ms interval, so the PRIMARY
+    // spent up to half its radio time servicing command traffic. Ask a phone
+    // for 30-50ms; no peripheral latency, so phone writes aren't held back.
+    if (!s_server) return;
+    if (type == ConnectionType::PHONE) {
+        s_server->updateConnParams(connHandle, BLE_PHONE_INTERVAL_MIN_UNITS,
+                                   BLE_PHONE_INTERVAL_MAX_UNITS, 0, CONN_SUPERVISION_TIMEOUT_10MS);
+    } else {
+        s_server->updateConnParams(connHandle, CONN_INTERVAL_MIN_UNITS,
+                                   CONN_INTERVAL_MAX_UNITS, 0, CONN_SUPERVISION_TIMEOUT_10MS);
+    }
+}
+
 // =============================================================================
 // SCANNING & CONNECTING (SECONDARY MODE)
 // =============================================================================
 
-void BBScanCallbacks::onResult(const NimBLEAdvertisedDevice* device) {
-    if (!g_bleManager) return;
+void BBScanCallbacks::match(const NimBLEAdvertisedDevice* device, bool allowNameMatch) {
+    if (!g_bleManager || s_pendingConnect) return;
 
     // -90 floor is host-task CPU flood protection only (std::string + strcmp
     // per advertisement in dense RF), NOT peer selection: glove-to-glove
@@ -429,8 +469,16 @@ void BBScanCallbacks::onResult(const NimBLEAdvertisedDevice* device) {
     // above -90; the name match below is the actual filter.
     if (device->getRSSI() < -90) return;
 
+    // A PRIMARY carries NUS + the BlueBuzzah manufacturer magic in its main
+    // advert, so it matches without waiting for the scan response that holds
+    // the name. Name match stays for PRIMARYs without manufacturer data.
+    std::string mfg = device->getManufacturerData();
+    bool advertMatch = mfg.size() >= 3 && static_cast<uint8_t>(mfg[0]) == 0xFF &&
+                       static_cast<uint8_t>(mfg[1]) == 0xFF && mfg[2] == 'B' &&
+                       device->isAdvertisingService(NimBLEUUID(NUS_SERVICE_UUID));
     std::string name = device->getName();
-    if (name.empty() || strcmp(name.c_str(), BLE_NAME) != 0) return;
+    bool nameMatch = allowNameMatch && !name.empty() && strcmp(name.c_str(), BLE_NAME) == 0;
+    if (!advertMatch && !nameMatch) return;
 
     Serial.printf("[SCAN] Found '%s' RSSI:%d, connecting...\n", name.c_str(), device->getRSSI());
     // Publish address + flag as one unit: reader (update(), loop task) may run
@@ -454,8 +502,13 @@ bool BLEManager::startScanning(const char* targetName) {
     NimBLEScan* scan = NimBLEDevice::getScan();
     scan->setScanCallbacks(&s_scanCallbacks, false);
     scan->setActiveScan(true);      // Request scan response for name
-    scan->setInterval(200);         // ms (parity with 200ms/37.5ms duty cycle)
-    scan->setWindow(38);
+    // Continuous scan while disconnected: the old 19% duty cycle stretched
+    // reconnects to seconds. A false keepalive timeout restarts scanning
+    // with the link still up, though - keep the low duty cycle then so the
+    // scan doesn't crowd out the sync traffic.
+    bool linkUp = getConnectionCount() > 0;
+    scan->setInterval(linkUp ? 200 : 100);  // ms
+    scan->setWindow(linkUp ? 38 : 100);
 
     bool started = scan->start(0, false);
     s_scanning = started;
@@ -744,8 +797,14 @@ void BLEManager::drainRing(TxRing& ring, uint8_t maxEntries) {
 }
 
 size_t BLEManager::tryWriteImmediate(uint16_t connHandle, const uint8_t* data, size_t len) {
-    // Cap at BLE_CHUNK_SIZE per attempt (fits one notification at MTU 200)
-    size_t chunk = len < BLE_CHUNK_SIZE ? len : BLE_CHUNK_SIZE;
+    // One packet per attempt, capped at the link's negotiated MTU: NimBLE
+    // truncates a notify to MTU-3, so a fixed 100-byte chunk on an
+    // un-negotiated (23) link silently lost the tail
+    uint16_t mtu = ble_att_mtu(connHandle);
+    if (mtu < BLE_ATT_MTU_DFLT) return 0;  // 0 = no such connection
+    size_t chunk = mtu - 3;
+    if (chunk > BLE_CHUNK_SIZE) chunk = BLE_CHUNK_SIZE;
+    if (len < chunk) chunk = len;
 
     if (_role == DeviceRole::PRIMARY) {
         // Peripheral -> phone/SECONDARY via notification on the TX characteristic.
@@ -986,7 +1045,7 @@ void BLEManager::processIncomingData(uint16_t connHandleParam, const uint8_t* da
         conn->rxTimestamp = rxTimestamp;
     }
 
-    for (uint16_t i = 0; i < len && conn->rxIndex < RX_BUFFER_SIZE - 1; i++) {
+    for (uint16_t i = 0; i < len; i++) {
         uint8_t c = data[i];
 
         if (c == '\r') {
@@ -999,14 +1058,16 @@ void BLEManager::processIncomingData(uint16_t connHandleParam, const uint8_t* da
                 deliverMessage(conn, connHandleParam);
             }
             conn->rxIndex = 0;
+            conn->rxDiscard = false;
+        } else if (conn->rxDiscard) {
+            // Rest of an overflowed frame: drop it up to its EOT
+        } else if (conn->rxIndex >= RX_BUFFER_SIZE - 1) {
+            Serial.println(F("[BLE] WARNING: RX buffer overflow, discarding frame"));
+            conn->rxIndex = 0;
+            conn->rxDiscard = true;
         } else {
             conn->rxBuffer[conn->rxIndex++] = c;
         }
-    }
-
-    if (conn->rxIndex >= RX_BUFFER_SIZE - 1) {
-        Serial.println(F("[BLE] WARNING: RX buffer overflow, clearing"));
-        conn->rxIndex = 0;
     }
 }
 
@@ -1017,6 +1078,7 @@ void BLEManager::deliverMessage(BBConnection* conn, uint16_t connHandleParam) {
             conn->type = ConnectionType::SECONDARY;
             conn->pendingIdentify = false;
             queryConnectionInterval(connHandleParam);
+            updateAdvertisingInterval();
             if (_connectCallback) {
                 _connectCallback(connHandleParam, ConnectionType::SECONDARY);
             }
@@ -1026,11 +1088,29 @@ void BLEManager::deliverMessage(BBConnection* conn, uint16_t connHandleParam) {
             conn->type = ConnectionType::PHONE;
             conn->pendingIdentify = false;
             queryConnectionInterval(connHandleParam);
+            requestLinkConnParams(connHandleParam, ConnectionType::PHONE);
             if (_connectCallback) {
                 _connectCallback(connHandleParam, ConnectionType::PHONE);
             }
             return;
         }
+    }
+
+    // Late IDENTIFY:SECONDARY: the glove's handshake can miss the 1s window
+    // (it sends once, after blocking discovery) and get classified as PHONE,
+    // which left the pair unsynced until a reconnect. Reclassify while the
+    // SECONDARY slot is empty, and restore the glove link's interval.
+    if (conn->type == ConnectionType::PHONE && !isSecondaryConnected() &&
+        strcmp(conn->rxBuffer, "IDENTIFY:SECONDARY") == 0) {
+        Serial.println(F("[BLE] Late IDENTIFY:SECONDARY - reclassifying from PHONE"));
+        conn->type = ConnectionType::SECONDARY;
+        requestLinkConnParams(connHandleParam, ConnectionType::SECONDARY);
+        queryConnectionInterval(connHandleParam);
+        updateAdvertisingInterval();
+        if (_connectCallback) {
+            _connectCallback(connHandleParam, ConnectionType::SECONDARY);
+        }
+        return;
     }
 
     if (_messageCallback) {
@@ -1046,7 +1126,7 @@ void BLEManager::processClientIncomingData(const uint8_t* data, uint16_t len, ui
         conn->rxTimestamp = rxTimestamp;
     }
 
-    for (uint16_t i = 0; i < len && conn->rxIndex < RX_BUFFER_SIZE - 1; i++) {
+    for (uint16_t i = 0; i < len; i++) {
         uint8_t c = data[i];
 
         if (c == '\r') {
@@ -1059,14 +1139,16 @@ void BLEManager::processClientIncomingData(const uint8_t* data, uint16_t len, ui
                 _messageCallback(conn->connHandle, conn->rxBuffer, conn->rxTimestamp);
             }
             conn->rxIndex = 0;
+            conn->rxDiscard = false;
+        } else if (conn->rxDiscard) {
+            // Rest of an overflowed frame: drop it up to its EOT
+        } else if (conn->rxIndex >= RX_BUFFER_SIZE - 1) {
+            Serial.println(F("[BLE] WARNING: RX buffer overflow, discarding frame"));
+            conn->rxIndex = 0;
+            conn->rxDiscard = true;
         } else {
             conn->rxBuffer[conn->rxIndex++] = c;
         }
-    }
-
-    if (conn->rxIndex >= RX_BUFFER_SIZE - 1) {
-        Serial.println(F("[BLE] WARNING: RX buffer overflow, clearing"));
-        conn->rxIndex = 0;
     }
 }
 
@@ -1145,6 +1227,9 @@ void BLEManager::_onPeriphDisconnect(uint16_t connHandle, uint8_t reason) {
     if (conn) {
         ConnectionType type = conn->type;
         conn->reset();
+        if (type == ConnectionType::SECONDARY) {
+            g_bleManager->updateAdvertisingInterval();
+        }
 
         if (g_bleManager->_disconnectCallback) {
             g_bleManager->_disconnectCallback(connHandle, type, reason);
