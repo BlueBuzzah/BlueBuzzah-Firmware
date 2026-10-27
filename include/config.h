@@ -94,6 +94,9 @@
 #define SYNC_OFFSET_EMA_ALPHA_DEN 10
 #define SYNC_ACTIVE_INTERVAL_MS 250       // PING cadence while therapy is running (4Hz)
                                            // Idle cadence stays KEEPALIVE_INTERVAL_MS (1Hz)
+#define SYNC_ACQUIRE_INTERVAL_MS 40        // PING cadence until clock sync is valid (cold or warm start):
+                                           // 5 samples in ~200ms instead of ~5s at the idle rate.
+                                           // Stays above one glove-link RTT so PINGs don't overlap.
 #define SYNC_RTT_QUALITY_THRESHOLD_US 60000 // 60ms RTT threshold - reject retransmission-affected samples
                                              // (reduced from 120ms for stricter quality filtering)
 #define SYNC_OUTLIER_THRESHOLD_US 5000   // 5ms threshold for offset outlier rejection (was hardcoded)

@@ -974,6 +974,25 @@ void test_SimpleSyncProtocol_tryWarmStart_with_valid_cache_succeeds(void) {
     TEST_ASSERT_TRUE(sync.isWarmStartMode());
 }
 
+void test_SimpleSyncProtocol_getCorrectedOffset_uses_warm_start_projection(void) {
+    SimpleSyncProtocol sync;
+
+    for (int i = 0; i < 5; i++) {
+        sync.addOffsetSample(10000);
+    }
+    mockSetMillis(100);
+    sync.updateOffsetEMA(10000);
+
+    mockSetMillis(5000);
+    sync.resetClockSync();
+    TEST_ASSERT_EQUAL_INT64(0, sync.getCorrectedOffset());
+
+    // Not yet confirmed, but the projected offset beats sending 0
+    TEST_ASSERT_TRUE(sync.tryWarmStart());
+    TEST_ASSERT_FALSE(sync.isClockSyncValid());
+    TEST_ASSERT_INT64_WITHIN(100, 10000, sync.getCorrectedOffset());
+}
+
 void test_SimpleSyncProtocol_tryWarmStart_with_expired_cache_fails(void) {
     SimpleSyncProtocol sync;
 
@@ -2349,6 +2368,7 @@ int main(int argc, char **argv) {
     // Warm-Start Sync Tests
     RUN_TEST(test_SimpleSyncProtocol_tryWarmStart_with_no_cache_returns_false);
     RUN_TEST(test_SimpleSyncProtocol_tryWarmStart_with_valid_cache_succeeds);
+    RUN_TEST(test_SimpleSyncProtocol_getCorrectedOffset_uses_warm_start_projection);
     RUN_TEST(test_SimpleSyncProtocol_tryWarmStart_with_expired_cache_fails);
     RUN_TEST(test_SimpleSyncProtocol_warmStart_validates_confirmatory_samples);
     RUN_TEST(test_SimpleSyncProtocol_warmStart_aborts_on_divergent_sample);

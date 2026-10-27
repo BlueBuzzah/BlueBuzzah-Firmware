@@ -21,7 +21,8 @@ MotorEventBuffer motorEventBuffer;
 MotorEventBuffer::MotorEventBuffer() :
     _head(0),
     _tail(0),
-    _macrocyclePending(false)
+    _macrocyclePending(false),
+    _macrocycleBatch(0)
 {
     for (uint8_t i = 0; i < MAX_STAGED; i++) {
         _buffer[i].clear();
@@ -73,6 +74,7 @@ bool MotorEventBuffer::stage(uint64_t activateTimeUs, uint8_t finger, uint8_t am
 
 void MotorEventBuffer::beginMacrocycle() {
     platformMemoryBarrier();
+    _macrocycleBatch = _macrocycleBatch + 1;
     _macrocyclePending = true;
     platformMemoryBarrier();
 }

@@ -418,6 +418,7 @@ void onStateChange(const StateTransition &transition);
 // Menu Controller Callbacks
 void onMenuSendResponse(const char *response);
 void onMenuSendToSecondary(const char *message);
+void restartAfterTxDrain();
 
 // SECONDARY Keepalive Timeout
 void handleKeepaliveTimeout();
@@ -517,7 +518,11 @@ void safeMotorShutdown()
     // 2. Clear deferred work queue
     deferredQueue.clear();
 
-    // 3. Clear activation queue (macrocycle scheduled events)
+    // 3. Drop staged macrocycle events not yet forwarded (unstage is the
+    //    consumer side, safe against a concurrent BLE-task stage), then clear
+    //    the activation queue (macrocycle scheduled events)
+    StagedMotorEvent staged;
+    while (motorEventBuffer.unstage(staged)) {}
     activationQueue.clear();
 
     // 4. Emergency stop all motors
@@ -648,6 +653,8 @@ void setup()
     menu.setDeviceInfo(deviceRole, FIRMWARE_VERSION, BLE_NAME);
     menu.setSendCallback(onMenuSendResponse);
     menu.setSendToSecondaryCallback(onMenuSendToSecondary);
+    menu.setRestartCallback(restartAfterTxDrain);
+    menu.setSyncReadyCallback([] { return syncProtocol.isClockSyncValid(); });
     Serial.println(F("[SUCCESS] Menu controller initialized"));
 
     // Initialize Deferred Queue (for ISR-safe callback operations)
@@ -721,10 +728,17 @@ void loop()
     // Forward from lock-free staging buffer to mutex-protected activationQueue
     // Defensive check: only process if motor task is initialized
     if (motorTaskHandle != nullptr && motorEventBuffer.hasPending()) {
-        // Check if this is a macrocycle batch (needs queue clear first)
+        // Check if this is a macrocycle batch (needs queue clear first).
+        // Clear once per batch: the pending flag stays set until the batch's
+        // last event is unstaged, and on dual-core ESP32 the loop can see a
+        // half-staged batch - clearing every iteration then wiped the events
+        // already forwarded.
+        static uint32_t clearedBatch = 0;
         bool isMacrocycleBatch = motorEventBuffer.isMacrocyclePending();
-        if (isMacrocycleBatch) {
+        uint32_t batch = motorEventBuffer.getMacrocycleBatch();
+        if (isMacrocycleBatch && batch != clearedBatch) {
             activationQueue.clear();  // Start fresh for macrocycle
+            clearedBatch = batch;
         }
 
         uint8_t eventsForwarded = 0;
@@ -965,8 +979,11 @@ void loop()
     // SECONDARY: Check for keepalive timeout during active connection
     if (deviceRole == DeviceRole::SECONDARY && ble.isPrimaryConnected())
     {
-        if (lastKeepaliveReceived > 0 &&
-            (millis() - lastKeepaliveReceived > KEEPALIVE_TIMEOUT_MS))
+        // Snapshot before millis(): the operand order of an inline
+        // millis() - lastKeepaliveReceived is unspecified, and a BLE-task
+        // update between the two reads underflowed into a false timeout
+        uint32_t lastKA = lastKeepaliveReceived;
+        if (lastKA > 0 && (millis() - lastKA > KEEPALIVE_TIMEOUT_MS))
         {
             handleKeepaliveTimeout();
         }
@@ -1069,10 +1086,16 @@ void loop()
         hiresClockEnsureHfclk();
     }
 
-    // Unified keepalive + clock sync (PRIMARY only). 4Hz during therapy for
-    // tighter drift tracking and more samples for the quality gates; 1Hz idle.
-    // More PINGs only strengthens keepalive semantics (timeouts unchanged).
+    // Unified keepalive + clock sync (PRIMARY only). 25Hz until sync is
+    // valid, so a session can start promptly after the gloves connect; 4Hz
+    // during therapy for tighter drift tracking and more samples for the
+    // quality gates; 1Hz idle. More PINGs only strengthens keepalive
+    // semantics (timeouts unchanged).
     uint32_t pingIntervalMs = therapy.isRunning() ? SYNC_ACTIVE_INTERVAL_MS : KEEPALIVE_INTERVAL_MS;
+    if (!syncProtocol.isClockSyncValid() || syncProtocol.isWarmStartMode())
+    {
+        pingIntervalMs = SYNC_ACQUIRE_INTERVAL_MS;
+    }
     if (deviceRole == DeviceRole::PRIMARY &&
         isConnected &&
         (now - lastKeepalive >= pingIntervalMs))
@@ -1458,15 +1481,23 @@ void onBLEConnect(uint16_t connHandle, ConnectionType type)
     // PRIMARY: Boot window logic for auto-start
     if (deviceRole == DeviceRole::PRIMARY)
     {
-        if (type == ConnectionType::SECONDARY && !autoStartTriggered)
+        if (type == ConnectionType::SECONDARY)
         {
-            // SECONDARY connected - start 30-second boot window for phone
-            bootWindowStart = millis();
-            bootWindowActive = true;
+            // Only the boot window is once-per-boot. Sync and keepalive reset
+            // on every SECONDARY connect: behind the auto-start guard, a
+            // rebooted SECONDARY kept the stale "valid" offset after the first
+            // auto-start and early macrocycles were mistimed.
+            if (!autoStartTriggered)
+            {
+                // SECONDARY connected - start 30-second boot window for phone
+                bootWindowStart = millis();
+                bootWindowActive = true;
+                Serial.printf("[BOOT] SECONDARY connected at %lu - starting 30s boot window for phone\n",
+                              (unsigned long)bootWindowStart);
+            }
+
             // Initialize keepalive tracking (timeout detection starts when first PONG received)
             lastSecondaryKeepalive = millis();
-            Serial.printf("[BOOT] SECONDARY connected at %lu - starting 30s boot window for phone\n",
-                          (unsigned long)bootWindowStart);
 
             // Reset clock sync state
             syncProtocol.resetClockSync();
@@ -1474,11 +1505,11 @@ void onBLEConnect(uint16_t connHandle, ConnectionType type)
             // Try warm-start if recent disconnect (cache preserved across resetClockSync)
             if (syncProtocol.tryWarmStart())
             {
-                Serial.println(F("[SYNC] Warm-start mode - need 3 confirmatory samples (~3s)"));
+                Serial.println(F("[SYNC] Warm-start mode - need 3 confirmatory samples"));
             }
             else
             {
-                Serial.println(F("[SYNC] Cold start - need 5 samples for sync (~5s)"));
+                Serial.println(F("[SYNC] Cold start - need 5 samples for sync"));
             }
         }
         else if (type == ConnectionType::PHONE && bootWindowActive)
@@ -2294,7 +2325,13 @@ void onBLEMessage(uint16_t connHandle, const char *message, uint64_t rxTimestamp
 
         case SyncCommandType::STOP_SESSION:
             Serial.println(F("[SESSION] Stop requested"));
-            haptic.emergencyStop();
+            // emergencyStop() alone left already-scheduled macrocycle events
+            // buzzing for up to ~2s, and took the I2C mutex on the BLE task.
+            // The loop's safety shutdown clears the queues and stops motors.
+            if (safetyShutdownSema)
+            {
+                xSemaphoreGive(safetyShutdownSema);
+            }
             stateMachine.transition(StateTrigger::STOP_SESSION);
             // Complete the stop like every other stop path — without STOPPED the
             // SECONDARY sticks in STOPPING (yellow blink) after a phone-initiated stop.
@@ -2707,7 +2744,7 @@ void autoStartTherapy()
     }
 
     // Check sync validity before starting therapy (SECONDARY must be synced)
-    // After reconnection, sync requires 5 samples (~5 seconds) to become valid
+    // After reconnection, sync requires 5 samples (~200ms at the acquire cadence)
     if (ble.isSecondaryConnected() && !syncProtocol.isClockSyncValid())
     {
         if (++g_autoStartRetryCount > 10)
@@ -3004,6 +3041,24 @@ void onMenuSendResponse(const char *response)
     {
         ble.sendToPhone(response);
     }
+}
+
+// Menu-initiated reboot (PROFILE_LOAD, RESTART). The handler queues
+// STATUS:REBOOTING and then calls this from the same loop iteration, so
+// without draining here the reply never left the TX queue and the app sat
+// out a command timeout plus a supervision timeout before reconnecting.
+void restartAfterTxDrain()
+{
+    uint32_t start = millis();
+    while (ble.hasPendingTx() && millis() - start < 300)
+    {
+        ble.update();
+        delay(5);
+    }
+    delay(100); // queued packets go out on the next connection events
+    ble.disconnectAll();
+    delay(100);
+    platformSystemReset();
 }
 
 void onMenuSendToSecondary(const char *message)

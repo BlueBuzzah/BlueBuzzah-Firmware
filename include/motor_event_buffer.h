@@ -125,6 +125,11 @@ public:
     bool isMacrocyclePending() const;
 
     /**
+     * @brief Count of beginMacrocycle() calls; changes once per new batch
+     */
+    uint32_t getMacrocycleBatch() const { return _macrocycleBatch; }
+
+    /**
      * @brief Unstage the next pending event (main loop only)
      *
      * Must only be called from main loop context.
@@ -164,6 +169,7 @@ private:
     volatile uint8_t _head;  // Next write position (producer)
     volatile uint8_t _tail;  // Next read position (consumer)
     volatile bool _macrocyclePending;  // True when macrocycle batch needs processing
+    volatile uint32_t _macrocycleBatch; // Incremented by beginMacrocycle()
 };
 
 // =============================================================================

@@ -1041,7 +1041,9 @@ void SimpleSyncProtocol::updateOffsetEMA(int64_t offset) {
 }
 
 int64_t SimpleSyncProtocol::getCorrectedOffset() const {
-    if (!_clockSyncValid) {
+    // Warm-start seeds the offset with the cached projection: a far better
+    // estimate than 0 for macrocycles sent while it is being confirmed
+    if (!_clockSyncValid && !_warmStartMode) {
         return 0;
     }
 

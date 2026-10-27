@@ -29,6 +29,7 @@ MenuController::MenuController() :
     _sendCallback(nullptr),
     _restartCallback(nullptr),
     _sendToSecondaryCallback(nullptr),
+    _syncReadyCallback(nullptr),
     _deferredCommand(DeferredCommand::NONE),
     _secondaryBatteryVoltage(0.0f),
     _waitingForSecondaryBattery(false),
@@ -47,6 +48,7 @@ MenuController::MenuController() :
     strcpy(_firmwareVersion, FIRMWARE_VERSION);
     strcpy(_deviceName, BLE_NAME);
     memset(_responseBuffer, 0, sizeof(_responseBuffer));
+    _currentCommand[0] = '\0';
 }
 
 // =============================================================================
@@ -97,6 +99,10 @@ void MenuController::setSendToSecondaryCallback(SendToSecondaryCallback callback
     _sendToSecondaryCallback = callback;
 }
 
+void MenuController::setSyncReadyCallback(SyncReadyCallback callback) {
+    _syncReadyCallback = callback;
+}
+
 // =============================================================================
 // COMMAND PROCESSING
 // =============================================================================
@@ -137,9 +143,16 @@ bool MenuController::handleCommand(const char* message, bool allowInternal) {
     uint8_t paramCount = 0;
 
     if (!parseCommand(message, command, params, paramCount)) {
+        _currentCommand[0] = '\0';
         sendError("Invalid command format");
         return false;
     }
+
+    // Every reply to this command (including a deferred one) starts with
+    // CMD:<command>, so the app can tell a late reply to an earlier command
+    // from the one it is waiting for. Readers that look up keys ignore it.
+    strncpy(_currentCommand, command, sizeof(_currentCommand) - 1);
+    _currentCommand[sizeof(_currentCommand) - 1] = '\0';
 
     Serial.printf("[MENU] Command: %s, Params: %d\n", command, paramCount);
 
@@ -269,6 +282,9 @@ bool MenuController::parseCommand(const char* message, char* command, char param
 
 void MenuController::beginResponse() {
     _responseBuffer[0] = '\0';
+    if (_currentCommand[0] != '\0') {
+        addResponseLine("CMD", _currentCommand);
+    }
 }
 
 void MenuController::addResponseLine(const char* key, const char* value) {
@@ -690,6 +706,14 @@ void MenuController::handleSessionStart() {
         }
     }
 
+    // Until clock sync converges the PRIMARY sends macrocycles with offset 0,
+    // so the hands buzz as far apart as their boot times (or only the PRIMARY
+    // buzzes). Transient - the app retries.
+    if (_ble && _ble->isSecondaryConnected() && _syncReadyCallback && !_syncReadyCallback()) {
+        sendError("Sync not ready");
+        return;
+    }
+
     // Get profile parameters
     uint32_t durationSec = 7200;  // Default 2 hours
     PatternType patternType = PatternType::RNDP;
@@ -743,6 +767,8 @@ void MenuController::handleSessionStart() {
 
     beginResponse();
     addResponseLine("SESSION_STATUS", "RUNNING");
+    addResponseLine("ELAPSED", static_cast<int32_t>(0));
+    addResponseLine("TOTAL", static_cast<int32_t>(durationSec));
     sendResponse();
 }
 
