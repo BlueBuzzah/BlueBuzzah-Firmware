@@ -1164,18 +1164,6 @@ void BLEManager::_onCentralConnect(uint16_t connHandle) {
     Serial.printf("[BLE] Central connected to PRIMARY: handle=%d\n", connHandle);
 
     BLEConnection* bleConn = Bluefruit.Connection(connHandle);
-    // Only the GATT client can start an MTU exchange, and Bluefruit's central
-    // never does: without this the glove link ran at ATT MTU 23 (20-byte
-    // packets, ~10 notifications per macrocycle). Data length extension lets
-    // each larger packet go in one radio PDU.
-    if (bleConn) {
-        if (!bleConn->requestMtuExchange(BLE_MTU)) {
-            Serial.println(F("[BLE] WARN: MTU exchange request failed"));
-        }
-        if (!bleConn->requestDataLengthUpdate()) {
-            Serial.println(F("[BLE] WARN: data length update request failed"));
-        }
-    }
 
     // Request 2M PHY for faster BLE transmission (reduces latency)
 #ifdef BLE_USE_2M_PHY
@@ -1184,6 +1172,13 @@ void BLEManager::_onCentralConnect(uint16_t connHandle) {
         Serial.println(F("[BLE] Requested 2M PHY upgrade"));
     }
 #endif
+
+    // Data length extension lets each larger ATT packet (see the MTU exchange
+    // below) go in one radio PDU. Requested after the PHY: the PHY request
+    // can fail BUSY while another LL procedure runs, this one cannot.
+    if (bleConn && !bleConn->requestDataLengthUpdate()) {
+        Serial.println(F("[BLE] WARN: data length update request failed"));
+    }
 
     // Find free connection slot
     BBConnection* conn = g_bleManager->findFreeConnection();
@@ -1206,6 +1201,15 @@ void BLEManager::_onCentralConnect(uint16_t connHandle) {
     if (g_bleManager->_clientUart.discover(connHandle)) {
         Serial.println(F("[BLE] UART service discovered, enabling notifications"));
         g_bleManager->_clientUart.enableTXD();
+
+        // Only the GATT client can start an MTU exchange, and Bluefruit's
+        // central never does: without this the glove link ran at ATT MTU 23
+        // (20-byte packets, ~10 notifications per macrocycle). After
+        // discovery, not before: the SoftDevice allows one GATTC procedure
+        // at a time and discovery would fail BUSY.
+        if (bleConn && !bleConn->requestMtuExchange(BLE_MTU)) {
+            Serial.println(F("[BLE] WARN: MTU exchange request failed"));
+        }
     } else {
         Serial.println(F("[BLE] ERROR: UART service not found on PRIMARY"));
         Bluefruit.disconnect(connHandle);
