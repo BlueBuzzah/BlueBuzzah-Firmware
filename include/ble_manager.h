@@ -77,6 +77,7 @@ struct BBConnection {
     char rxBuffer[RX_BUFFER_SIZE];
     uint16_t rxIndex;
     uint64_t rxTimestamp;  // Timestamp when first byte of current message was received
+    bool rxDiscard;        // Current frame overflowed rxBuffer; skip to its EOT
 
     // Connection interval tracking (for diagnostics)
     uint16_t negotiatedIntervalUnits;    // Actual interval in 1.25ms units
@@ -93,6 +94,7 @@ struct BBConnection {
         identifyStartTime(0),
         rxIndex(0),
         rxTimestamp(0),
+        rxDiscard(false),
         negotiatedIntervalUnits(0),
         intervalQueriedAt(0),
         pendingIntervalRequery(false),
@@ -109,6 +111,7 @@ struct BBConnection {
         identifyStartTime = 0;
         rxIndex = 0;
         rxTimestamp = 0;
+        rxDiscard = false;
         negotiatedIntervalUnits = 0;
         intervalQueriedAt = 0;
         pendingIntervalRequery = false;
@@ -247,6 +250,11 @@ public:
      * @brief Check if connected to phone (PRIMARY mode)
      */
     bool isPhoneConnected() const;
+
+    /**
+     * @brief True while either TX lane still holds a queued message
+     */
+    bool hasPendingTx() const { return _txHi.count > 0 || _txNormal.count > 0; }
 
     /**
      * @brief Get the type of an active connection

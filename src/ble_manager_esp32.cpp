@@ -264,6 +264,9 @@ void BLEManager::setupSecondaryMode() {
     // Request 7.5-10ms interval directly in the connect request
     s_client->setConnectionParams(CONN_INTERVAL_MIN_UNITS, CONN_INTERVAL_MAX_UNITS,
                                   0, CONN_SUPERVISION_TIMEOUT_10MS);
+    // connect() runs in loop(): NimBLE's 30s default froze the loop that long
+    // when the PRIMARY vanished between scan and connect
+    s_client->setConnectTimeout(3000);
 }
 
 void BLEManager::setupAdvertising() {
@@ -744,8 +747,14 @@ void BLEManager::drainRing(TxRing& ring, uint8_t maxEntries) {
 }
 
 size_t BLEManager::tryWriteImmediate(uint16_t connHandle, const uint8_t* data, size_t len) {
-    // Cap at BLE_CHUNK_SIZE per attempt (fits one notification at MTU 200)
-    size_t chunk = len < BLE_CHUNK_SIZE ? len : BLE_CHUNK_SIZE;
+    // One packet per attempt, capped at the link's negotiated MTU: NimBLE
+    // truncates a notify to MTU-3, so a fixed 100-byte chunk on an
+    // un-negotiated (23) link silently lost the tail
+    uint16_t mtu = ble_att_mtu(connHandle);
+    if (mtu < BLE_ATT_MTU_DFLT) return 0;  // 0 = no such connection
+    size_t chunk = mtu - 3;
+    if (chunk > BLE_CHUNK_SIZE) chunk = BLE_CHUNK_SIZE;
+    if (len < chunk) chunk = len;
 
     if (_role == DeviceRole::PRIMARY) {
         // Peripheral -> phone/SECONDARY via notification on the TX characteristic.
@@ -986,7 +995,7 @@ void BLEManager::processIncomingData(uint16_t connHandleParam, const uint8_t* da
         conn->rxTimestamp = rxTimestamp;
     }
 
-    for (uint16_t i = 0; i < len && conn->rxIndex < RX_BUFFER_SIZE - 1; i++) {
+    for (uint16_t i = 0; i < len; i++) {
         uint8_t c = data[i];
 
         if (c == '\r') {
@@ -999,14 +1008,16 @@ void BLEManager::processIncomingData(uint16_t connHandleParam, const uint8_t* da
                 deliverMessage(conn, connHandleParam);
             }
             conn->rxIndex = 0;
+            conn->rxDiscard = false;
+        } else if (conn->rxDiscard) {
+            // Rest of an overflowed frame: drop it up to its EOT
+        } else if (conn->rxIndex >= RX_BUFFER_SIZE - 1) {
+            Serial.println(F("[BLE] WARNING: RX buffer overflow, discarding frame"));
+            conn->rxIndex = 0;
+            conn->rxDiscard = true;
         } else {
             conn->rxBuffer[conn->rxIndex++] = c;
         }
-    }
-
-    if (conn->rxIndex >= RX_BUFFER_SIZE - 1) {
-        Serial.println(F("[BLE] WARNING: RX buffer overflow, clearing"));
-        conn->rxIndex = 0;
     }
 }
 
@@ -1046,7 +1057,7 @@ void BLEManager::processClientIncomingData(const uint8_t* data, uint16_t len, ui
         conn->rxTimestamp = rxTimestamp;
     }
 
-    for (uint16_t i = 0; i < len && conn->rxIndex < RX_BUFFER_SIZE - 1; i++) {
+    for (uint16_t i = 0; i < len; i++) {
         uint8_t c = data[i];
 
         if (c == '\r') {
@@ -1059,14 +1070,16 @@ void BLEManager::processClientIncomingData(const uint8_t* data, uint16_t len, ui
                 _messageCallback(conn->connHandle, conn->rxBuffer, conn->rxTimestamp);
             }
             conn->rxIndex = 0;
+            conn->rxDiscard = false;
+        } else if (conn->rxDiscard) {
+            // Rest of an overflowed frame: drop it up to its EOT
+        } else if (conn->rxIndex >= RX_BUFFER_SIZE - 1) {
+            Serial.println(F("[BLE] WARNING: RX buffer overflow, discarding frame"));
+            conn->rxIndex = 0;
+            conn->rxDiscard = true;
         } else {
             conn->rxBuffer[conn->rxIndex++] = c;
         }
-    }
-
-    if (conn->rxIndex >= RX_BUFFER_SIZE - 1) {
-        Serial.println(F("[BLE] WARNING: RX buffer overflow, clearing"));
-        conn->rxIndex = 0;
     }
 }
 

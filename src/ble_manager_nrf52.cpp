@@ -15,6 +15,10 @@
 
 BLEManager* g_bleManager = nullptr;
 
+// ATT MTU for both roles: fits a MACROCYCLE (~160-230 bytes) in one or two
+// packets. The SECONDARY (GATT client) requests it on connect.
+static constexpr uint16_t BLE_MTU = 200;
+
 // =============================================================================
 // CONSTRUCTOR
 // =============================================================================
@@ -94,7 +98,6 @@ bool BLEManager::begin(DeviceRole role, const char* deviceName) {
     // MACROCYCLE messages are ~160 bytes - MTU must exceed this to avoid fragmentation
     // EVENT_LEN and queue sizes must also be increased to prevent SoftDevice instability
     // See: https://github.com/adafruit/Adafruit_nRF52_Arduino/issues/721
-    const uint16_t BLE_MTU = 200;          // Fits MACROCYCLE (~160 bytes) with headroom
 
     // event_length is the radio time the SoftDevice RESERVES per connection
     // event, in 1.25ms units. It must fit inside the connection interval, and
@@ -649,16 +652,9 @@ void BLEManager::drainRing(TxRing& ring, uint8_t maxEntries) {
 
             entry->bytesSent = static_cast<uint16_t>(entry->bytesSent + written);
 
-            // Check if complete
+            // Check if complete. No flush() here: on BLEUart it clears the
+            // RX FIFO, which discarded bytes received while we were sending.
             if (entry->bytesSent >= entry->length) {
-                // Note: flush() clears the RX FIFO (not TX). With _tx_buffered=false,
-                // write() already sends via _txd.notify() immediately — no TX flush needed.
-                if (_role == DeviceRole::PRIMARY) {
-                    _uartService.flush();
-                } else {
-                    _clientUart.flush();
-                }
-
                 // Mark slot free and advance head
                 PLATFORM_CRITICAL_ENTER();
                 entry->pending = false;
@@ -674,12 +670,22 @@ void BLEManager::drainRing(TxRing& ring, uint8_t maxEntries) {
 }
 
 size_t BLEManager::tryWriteImmediate(uint16_t connHandle, const uint8_t* data, size_t len) {
-    // Non-blocking write attempt - use per-connection overload for PRIMARY
-    // to target the correct recipient (phone vs secondary)
+    // One ATT packet per call, like the NimBLE backend. Handing Bluefruit the
+    // whole message let notify() silently cut it at the characteristic's
+    // 200-byte max (EOT included), and a mid-message failure returned 0 so
+    // drainRing resent the frame from byte 0 - duplicated fragments.
+    // ponytail: still waits up to 100ms in getHvnPacket() if the SoftDevice
+    // queue is full; gate on BLE_GATTS_EVT_HVN_TX_COMPLETE if that shows up.
+    BLEConnection* bleConn = Bluefruit.Connection(connHandle);
+    if (!bleConn) return 0;
+    size_t chunk = bleConn->getMtu() - 3;
+    if (len < chunk) chunk = len;
+
+    // Per-connection overload for PRIMARY targets the right recipient
     if (_role == DeviceRole::PRIMARY) {
-        return _uartService.write(connHandle, data, len);
+        return _uartService.write(connHandle, data, chunk);
     } else {
-        return _clientUart.write(data, len);
+        return _clientUart.write(data, chunk);
     }
 }
 
@@ -918,7 +924,7 @@ void BLEManager::processIncomingData(uint16_t connHandleParam, const uint8_t* da
     }
 
     // Append data to buffer
-    for (uint16_t i = 0; i < len && conn->rxIndex < RX_BUFFER_SIZE - 1; i++) {
+    for (uint16_t i = 0; i < len; i++) {
         uint8_t c = data[i];
 
         // Skip carriage return
@@ -937,8 +943,14 @@ void BLEManager::processIncomingData(uint16_t connHandleParam, const uint8_t* da
 
             // Reset buffer for next message
             conn->rxIndex = 0;
+            conn->rxDiscard = false;
+        } else if (conn->rxDiscard) {
+            // Rest of an overflowed frame: drop it up to its EOT
+        } else if (conn->rxIndex >= RX_BUFFER_SIZE - 1) {
+            Serial.println(F("[BLE] WARNING: RX buffer overflow, discarding frame"));
+            conn->rxIndex = 0;
+            conn->rxDiscard = true;
         } else {
-            // Add to buffer
             conn->rxBuffer[conn->rxIndex++] = c;
         }
     }
@@ -947,12 +959,6 @@ void BLEManager::processIncomingData(uint16_t connHandleParam, const uint8_t* da
     // Messages can be fragmented across BLE packets.
     // Only deliver when EOT terminator is received.
     // Phone apps MUST send EOT (0x04) for proper message framing.
-
-    // Handle buffer overflow
-    if (conn->rxIndex >= RX_BUFFER_SIZE - 1) {
-        Serial.println(F("[BLE] WARNING: RX buffer overflow, clearing"));
-        conn->rxIndex = 0;
-    }
 }
 
 void BLEManager::deliverMessage(BBConnection* conn, uint16_t connHandleParam) {
@@ -996,7 +1002,7 @@ void BLEManager::processClientIncomingData(const uint8_t* data, uint16_t len, ui
     }
 
     // Append data to buffer
-    for (uint16_t i = 0; i < len && conn->rxIndex < RX_BUFFER_SIZE - 1; i++) {
+    for (uint16_t i = 0; i < len; i++) {
         uint8_t c = data[i];
 
         // Skip carriage return
@@ -1015,16 +1021,16 @@ void BLEManager::processClientIncomingData(const uint8_t* data, uint16_t len, ui
 
             // Reset buffer for next message
             conn->rxIndex = 0;
+            conn->rxDiscard = false;
+        } else if (conn->rxDiscard) {
+            // Rest of an overflowed frame: drop it up to its EOT
+        } else if (conn->rxIndex >= RX_BUFFER_SIZE - 1) {
+            Serial.println(F("[BLE] WARNING: RX buffer overflow, discarding frame"));
+            conn->rxIndex = 0;
+            conn->rxDiscard = true;
         } else {
-            // Add to buffer
             conn->rxBuffer[conn->rxIndex++] = c;
         }
-    }
-
-    // Handle buffer overflow
-    if (conn->rxIndex >= RX_BUFFER_SIZE - 1) {
-        Serial.println(F("[BLE] WARNING: RX buffer overflow, clearing"));
-        conn->rxIndex = 0;
     }
 }
 
@@ -1100,9 +1106,22 @@ void BLEManager::_onCentralConnect(uint16_t connHandle) {
 
     Serial.printf("[BLE] Central connected to PRIMARY: handle=%d\n", connHandle);
 
+    BLEConnection* bleConn = Bluefruit.Connection(connHandle);
+    // Only the GATT client can start an MTU exchange, and Bluefruit's central
+    // never does: without this the glove link ran at ATT MTU 23 (20-byte
+    // packets, ~10 notifications per macrocycle). Data length extension lets
+    // each larger packet go in one radio PDU.
+    if (bleConn) {
+        if (!bleConn->requestMtuExchange(BLE_MTU)) {
+            Serial.println(F("[BLE] WARN: MTU exchange request failed"));
+        }
+        if (!bleConn->requestDataLengthUpdate()) {
+            Serial.println(F("[BLE] WARN: data length update request failed"));
+        }
+    }
+
     // Request 2M PHY for faster BLE transmission (reduces latency)
 #ifdef BLE_USE_2M_PHY
-    BLEConnection* bleConn = Bluefruit.Connection(connHandle);
     if (bleConn) {
         bleConn->requestPHY(BLE_GAP_PHY_2MBPS);
         Serial.println(F("[BLE] Requested 2M PHY upgrade"));
@@ -1215,11 +1234,12 @@ void BLEManager::_onUartRx(uint16_t connHandle) {
     // This provides the most accurate RX timestamp for sync calculations
     uint64_t rxTimestamp = getMicros();
 
-    // Read available data
+    // Drain everything available: one read left the rest of a >64-byte
+    // write in the FIFO (shared by phone and SECONDARY on the PRIMARY) to be
+    // delivered under the next callback's connection handle.
     uint8_t buf[64];
-    int len = g_bleManager->_uartService.read(buf, sizeof(buf));
-
-    if (len > 0) {
+    int len;
+    while ((len = g_bleManager->_uartService.read(buf, sizeof(buf))) > 0) {
         g_bleManager->processIncomingData(connHandle, buf, static_cast<uint16_t>(len), rxTimestamp);
     }
 }
@@ -1231,11 +1251,12 @@ void BLEManager::_onClientUartRx(BLEClientUart& clientUart) {
     // This provides the most accurate RX timestamp for sync calculations
     uint64_t rxTimestamp = getMicros();
 
-    // Read available data
+    // Drain everything available: one read left the rest of a >64-byte
+    // write in the FIFO (shared by phone and SECONDARY on the PRIMARY) to be
+    // delivered under the next callback's connection handle.
     uint8_t buf[64];
-    int len = clientUart.read(buf, sizeof(buf));
-
-    if (len > 0) {
+    int len;
+    while ((len = clientUart.read(buf, sizeof(buf))) > 0) {
         g_bleManager->processClientIncomingData(buf, static_cast<uint16_t>(len), rxTimestamp);
     }
 }
