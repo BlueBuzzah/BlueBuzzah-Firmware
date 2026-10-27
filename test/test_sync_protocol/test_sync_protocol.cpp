@@ -1539,6 +1539,19 @@ void test_SyncCommand_serializeMacrocycle_buffer_too_small(void) {
     TEST_ASSERT_FALSE(SyncCommand::serializeMacrocycle(buffer, sizeof(buffer), mc));
 }
 
+void test_SyncCommand_deserializeMacrocycle_rejects_count_mismatch(void) {
+    Macrocycle mc;
+    // Count says 3, frame carries 2 (e.g. a truncated notification)
+    const char* shortFrame = "MC:42|0|5000000|0|1000|100|3|0,0,80|50,1,90";
+    TEST_ASSERT_FALSE(SyncCommand::deserializeMacrocycle(shortFrame, strlen(shortFrame), mc));
+    // Count says 1, frame carries 2 (two frames glued together)
+    const char* longFrame = "MC:42|0|5000000|0|1000|100|1|0,0,80|50,1,90";
+    TEST_ASSERT_FALSE(SyncCommand::deserializeMacrocycle(longFrame, strlen(longFrame), mc));
+    // Event cut mid-field
+    const char* cutFrame = "MC:42|0|5000000|0|1000|100|2|0,0,80|50";
+    TEST_ASSERT_FALSE(SyncCommand::deserializeMacrocycle(cutFrame, strlen(cutFrame), mc));
+}
+
 void test_SyncCommand_deserializeMacrocycle_invalid(void) {
     Macrocycle mc;
 
@@ -2419,6 +2432,7 @@ int main(int argc, char **argv) {
     RUN_TEST(test_SyncCommand_deserializeMacrocycle_basic);
     RUN_TEST(test_SyncCommand_serializeMacrocycle_with_freqOffset);
     RUN_TEST(test_SyncCommand_serializeMacrocycle_buffer_too_small);
+    RUN_TEST(test_SyncCommand_deserializeMacrocycle_rejects_count_mismatch);
     RUN_TEST(test_SyncCommand_deserializeMacrocycle_invalid);
     RUN_TEST(test_SyncCommand_getMacrocycleSerializedSize);
 

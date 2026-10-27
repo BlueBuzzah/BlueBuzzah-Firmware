@@ -700,32 +700,31 @@ bool SyncCommand::deserializeMacrocycle(const char* message, size_t messageLen, 
     if (*endptr != '|') return false;
     ptr = endptr + 1;
 
-    // Parse event count
-    macrocycle.eventCount = (uint8_t)strtoul(ptr, &endptr, 10);
-    if (macrocycle.eventCount > MACROCYCLE_MAX_EVENTS) {
-        macrocycle.eventCount = MACROCYCLE_MAX_EVENTS;
+    // Parse event count. A frame whose events don't match its count is
+    // truncated or corrupt - reject it rather than play part of it.
+    unsigned long eventCount = strtoul(ptr, &endptr, 10);
+    if (eventCount > MACROCYCLE_MAX_EVENTS) {
+        return false;
     }
+    macrocycle.eventCount = static_cast<uint8_t>(eventCount);
 
     // Parse events: |deltaTimeMs,finger,amplitude[,freqOffset]
     // freqOffset is optional (defaults to 0 if not present)
     for (uint8_t i = 0; i < macrocycle.eventCount; i++) {
         // Skip to next pipe delimiter
-        if (*endptr != '|') {
-            macrocycle.eventCount = i;  // Truncate to parsed events
-            break;
-        }
+        if (*endptr != '|') return false;
         ptr = endptr + 1;
 
         MacrocycleEvent& evt = macrocycle.events[i];
 
         // Parse deltaTimeMs
         evt.deltaTimeMs = (uint16_t)strtoul(ptr, &endptr, 10);
-        if (*endptr != ',') { macrocycle.eventCount = i; break; }
+        if (*endptr != ',') return false;
         ptr = endptr + 1;
 
         // Parse finger
         evt.finger = (uint8_t)strtoul(ptr, &endptr, 10);
-        if (*endptr != ',') { macrocycle.eventCount = i; break; }
+        if (*endptr != ',') return false;
         ptr = endptr + 1;
 
         // Parse amplitude
@@ -743,6 +742,9 @@ bool SyncCommand::deserializeMacrocycle(const char* message, size_t messageLen, 
         }
         // Note: endptr now points to '|' or end of string for next iteration
     }
+
+    // More events than the count says is just as corrupt
+    if (*endptr != '\0') return false;
 
     return macrocycle.eventCount > 0;
 }

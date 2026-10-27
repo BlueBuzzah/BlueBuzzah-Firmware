@@ -99,8 +99,10 @@ volatile uint32_t lastSecondaryKeepalive = 0; // PRIMARY: Last PONG from SECONDA
 volatile uint32_t g_lastMacrocycleReceivedMs = 0; // SECONDARY: last MACROCYCLE (therapy data) rx
 
 // A SECONDARY receiving macrocycles this recently is following an active session.
-// Macrocycles arrive every 50-150ms during therapy, so 1s means several missed = idle.
-static constexpr uint32_t MACROCYCLE_ACTIVE_WINDOW_MS = 1000;
+// One macrocycle covers a full buzz cycle plus its relax period (~3.4s with the
+// default profiles), so the window must span more than one period - at 1s the
+// recovery path rarely saw "therapy active".
+static constexpr uint32_t MACROCYCLE_ACTIVE_WINDOW_MS = 8000;
 
 // PRIMARY-side keepalive timeout
 // Aligned with SECONDARY's KEEPALIVE_TIMEOUT_MS (6000) to prevent race conditions
@@ -2398,12 +2400,17 @@ void onBLEMessage(uint16_t connHandle, const char *message, uint64_t rxTimestamp
 // THERAPY CALLBACKS
 // =============================================================================
 
+// Set when a macrocycle could not be queued for the SECONDARY: the PRIMARY
+// then skips it too rather than buzzing one hand
+bool g_skipLocalMacrocycle = false;
+
 void onSendMacrocycle(const Macrocycle& macrocycle)
 {
     // PRIMARY: Send entire macrocycle (up to MACROCYCLE_MAX_EVENTS events) to
     // SECONDARY in a single message
     // SECONDARY will apply clock offset once and schedule all activations
 
+    g_skipLocalMacrocycle = false;
     if (deviceRole != DeviceRole::PRIMARY || !ble.isSecondaryConnected())
     {
         return;
@@ -2423,7 +2430,11 @@ void onSendMacrocycle(const Macrocycle& macrocycle)
     char buffer[MESSAGE_BUFFER_SIZE];
     if (SyncCommand::serializeMacrocycle(buffer, sizeof(buffer), mcCopy))
     {
-        ble.sendToSecondary(buffer);
+        if (!ble.sendToSecondary(buffer))
+        {
+            g_skipLocalMacrocycle = true;
+            Serial.println(F("[ERROR] MACROCYCLE send failed - skipping it on both gloves"));
+        }
 
         if (profiles.getDebugMode())
         {
@@ -2436,6 +2447,7 @@ void onSendMacrocycle(const Macrocycle& macrocycle)
     }
     else
     {
+        g_skipLocalMacrocycle = true;
         Serial.println(F("[ERROR] Failed to serialize MACROCYCLE"));
     }
 }
@@ -2484,6 +2496,10 @@ void onScheduleActivation(uint64_t activateTimeUs, uint8_t finger, uint8_t ampli
 {
     // Enqueue activation to ActivationQueue for FreeRTOS motor task
     // This is called by TherapyEngine for each event in a macrocycle
+    if (g_skipLocalMacrocycle)
+    {
+        return;
+    }
     activationQueue.enqueue(activateTimeUs, finger, amplitude, durationMs, frequencyHz);
 }
 
@@ -3089,6 +3105,11 @@ void onBLEEvent(ble_evt_t* evt)
 
     ble_gap_evt_phy_update_t* phy = &evt->evt.gap_evt.params.phy_update;
     if (phy->status != BLE_HCI_STATUS_CODE_SUCCESS) return;
+
+    // Only the glove link's PHY affects sync RTT; a phone PHY change must
+    // not reset the glove statistics
+    uint16_t handle = evt->evt.gap_evt.conn_handle;
+    if (handle != ble.getSecondaryHandle() && handle != ble.getPrimaryHandle()) return;
 
     g_newPhy = phy->tx_phy;
     g_phyChangeDetected = true;
