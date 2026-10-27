@@ -257,6 +257,11 @@ public:
     bool hasPendingTx() const { return _txHi.count > 0 || _txNormal.count > 0; }
 
     /**
+     * @brief Send queued peer-glove traffic now, without waiting for update()
+     */
+    void processPeerTx() { drainRing(_txHi, TX_QUEUE_SIZE); }
+
+    /**
      * @brief Get the type of an active connection
      * @param connHandle Connection handle to look up
      * @return Connection type, or ConnectionType::NONE if handle unknown

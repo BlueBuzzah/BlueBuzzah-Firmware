@@ -890,6 +890,11 @@ void loop()
     // SECONDARY needs this for standalone hardware tests)
     therapy.update();
 
+    // A macrocycle queued by therapy.update() goes out now rather than after
+    // the next iteration's deferred work, menu commands and LED updates -
+    // that wait came straight out of its lead time
+    ble.processPeerTx();
+
     // Detect when therapy session ends (for resuming scanning on SECONDARY)
     bool isTherapyRunning = therapy.isRunning();
     if (wasTherapyRunning && !isTherapyRunning)
