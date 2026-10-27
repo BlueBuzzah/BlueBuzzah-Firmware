@@ -1550,6 +1550,14 @@ void test_SyncCommand_deserializeMacrocycle_rejects_count_mismatch(void) {
     // Event cut mid-field
     const char* cutFrame = "MC:42|0|5000000|0|1000|100|2|0,0,80|50";
     TEST_ASSERT_FALSE(SyncCommand::deserializeMacrocycle(cutFrame, strlen(cutFrame), mc));
+    // Event cut after its finger field
+    const char* cutAfterFinger = "MC:42|0|5000000|0|1000|100|2|0,0,80|50,1";
+    TEST_ASSERT_FALSE(SyncCommand::deserializeMacrocycle(cutAfterFinger, strlen(cutAfterFinger), mc));
+    // Count beyond what a macrocycle can hold
+    char tooMany[64];
+    snprintf(tooMany, sizeof(tooMany), "MC:42|0|5000000|0|1000|100|%d|0,0,80",
+             MACROCYCLE_MAX_EVENTS + 1);
+    TEST_ASSERT_FALSE(SyncCommand::deserializeMacrocycle(tooMany, strlen(tooMany), mc));
 }
 
 void test_SyncCommand_deserializeMacrocycle_invalid(void) {
