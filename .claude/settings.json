@@ -1,14 +1,10 @@
 {
   "permissions": {
     "allow": [
-      "mcp__memory",
-      "mcp__sequential-thinking",
-      "mcp__context7",
       "WebFetch(domain:pmc.ncbi.nlm.nih.gov)",
       "WebFetch(domain:docs.platformio.org)",
       "WebFetch(domain:community.platformio.org)",
       "WebFetch(domain:learn.adafruit.com)",
-      "WebSearch",
       "Bash(pio test:*)"
     ],
     "enabledPlugins": {
@@ -16,5 +12,6 @@
     },
     "deny": [],
     "ask": []
-  }
+  },
+  "enableAllProjectMcpServers": true
 }

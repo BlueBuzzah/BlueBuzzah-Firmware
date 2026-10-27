@@ -32,19 +32,6 @@ Legacy patterns acceptable when:
 - **Arduino API**: Some functions require C-style arrays
 - **Hot paths**: Fixed arrays to avoid heap in tight loops
 
-## Embedded-Specific Rules
+## Callbacks
 
-### Memory Management
-- Pre-allocate buffers at startup (prevent fragmentation)
-- Avoid `new`/`malloc` in `loop()`
-- Use `static` or global for persistent data
-- Result codes over exceptions
-
-### Timing
-- **Never** use `delay()` in main loop (blocks BLE)
-- Use `millis()`-based state machines
-- `micros()` for sub-millisecond precision
-
-### Callbacks
-- Bluefruit requires C-style function pointers
-- Use global instance pointer to bridge to OOP methods
+- Bluefruit requires C-style function pointers; bridge to methods through a global instance pointer (`g_bleManager`).

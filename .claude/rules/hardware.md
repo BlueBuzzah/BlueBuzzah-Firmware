@@ -1,5 +1,5 @@
 ---
-paths: "src/hardware.{cpp,h}"
+paths: "{src,include}/hardware.{cpp,h}"
 description: Hardware abstraction patterns (nRF52840 + ESP32-S3)
 ---
 # Hardware Module Guidelines
