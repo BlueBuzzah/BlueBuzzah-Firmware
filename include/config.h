@@ -17,7 +17,10 @@
 // FIRMWARE VERSION
 // =============================================================================
 
+// CI release builds override this with the release tag via -D
+#ifndef FIRMWARE_VERSION
 #define FIRMWARE_VERSION "2.0.0"
+#endif
 #define FIRMWARE_NAME "BlueBuzzah"
 
 // Manufacturer-specific advertising data (identifies hardware generation to the

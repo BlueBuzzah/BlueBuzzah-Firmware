@@ -22,11 +22,3 @@ Source code should be self-documenting and timeless. Planning artifacts belong i
 - Technical TODOs (`// TODO: optimize buffer allocation`)
 - GitHub issue references (`// Fixes #123`)
 
-## Development Notes
-
-- Serial output: 115200 baud
-- BLE service: Nordic UART Service (NUS)
-- Role configuration: `SET_ROLE:PRIMARY` or `SET_ROLE:SECONDARY`
-- Assembly QA: `MOTOR_DIAG` (buzz all channels + supply canary), `MOTOR_TEST:<n>` (one channel), `MOTOR_PRESENT` (open-load probe of all ports)
-- Build flags (nRF): `-DCFG_DEBUG=0 -DNRF52840_XXAA -DBOARD_BLUEBUZZAH_NRF52 -std=gnu++20`
-- Build flags (Penta): `-DBOARD_PENTABUZZER_ESP32S3 -std=gnu++20`

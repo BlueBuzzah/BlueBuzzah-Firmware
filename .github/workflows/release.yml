@@ -18,6 +18,20 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Set firmware version from release tag
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          VERSION="${TAG#v}"
+          # Lands in a C string literal via -D
+          if [[ ! "$VERSION" =~ ^[A-Za-z0-9.+-]+$ ]]; then
+            echo "::error::Unsupported release tag for FIRMWARE_VERSION: $TAG"
+            exit 1
+          fi
+          echo "FIRMWARE_VERSION=$VERSION" >> $GITHUB_ENV
+          # Overrides the #ifndef default in include/config.h for every pio build
+          echo "PLATFORMIO_BUILD_FLAGS=-DFIRMWARE_VERSION=\\\"$VERSION\\\"" >> $GITHUB_ENV
+
       - name: Cache pip and PlatformIO
         uses: actions/cache@v4
         with:
@@ -50,7 +64,7 @@ jobs:
 
       - name: Build firmware (PentaBuzzer ESP32-S3 / v3)
         env:
-          BLUEBUZZAH_VERSION: ${{ github.event.release.tag_name }}
+          BLUEBUZZAH_VERSION: ${{ env.FIRMWARE_VERSION }}
         run: pio run -e pentabuzzer_esp32s3
 
       - name: Rename firmware archives
