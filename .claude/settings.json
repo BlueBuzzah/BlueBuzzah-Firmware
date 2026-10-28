@@ -7,11 +7,11 @@
       "WebFetch(domain:learn.adafruit.com)",
       "Bash(pio test:*)"
     ],
-    "enabledPlugins": {
-      "clangd-lsp@claude-plugins-official": true
-    },
     "deny": [],
     "ask": []
+  },
+  "enabledPlugins": {
+    "clangd-lsp@claude-plugins-official": true
   },
   "enableAllProjectMcpServers": true
 }

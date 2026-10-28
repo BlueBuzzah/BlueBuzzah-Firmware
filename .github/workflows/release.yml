@@ -17,39 +17,20 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-        with:
-          # GITHUB_TOKEN can't push to the protected main branch
-          token: ${{ secrets.RELEASE_PUSH_TOKEN }}
 
-      - name: Sync FIRMWARE_VERSION to release tag
+      - name: Set firmware version from release tag
         env:
           TAG: ${{ github.event.release.tag_name }}
         run: |
           VERSION="${TAG#v}"
-          # Lands in a C string literal and a sed replacement
+          # Lands in a C string literal via -D
           if [[ ! "$VERSION" =~ ^[A-Za-z0-9.+-]+$ ]]; then
             echo "::error::Unsupported release tag for FIRMWARE_VERSION: $TAG"
             exit 1
           fi
-
-          CURRENT=$(sed -n 's/^#define FIRMWARE_VERSION "\(.*\)"$/\1/p' include/config.h)
-          if [ -z "$CURRENT" ]; then
-            echo "::error::FIRMWARE_VERSION define not found in include/config.h"
-            exit 1
-          fi
-          if [ "$CURRENT" = "$VERSION" ]; then
-            echo "FIRMWARE_VERSION already $VERSION, skipping"
-            exit 0
-          fi
-
-          sed -i "s/^#define FIRMWARE_VERSION \".*\"$/#define FIRMWARE_VERSION \"$VERSION\"/" include/config.h
-          echo "FIRMWARE_VERSION: $CURRENT -> $VERSION"
-
-          git config user.name "github-actions[bot]"
-          git config user.email "41898283+github-actions[bot]@users.noreply.github.com"
-          git commit -m "chore(release): set FIRMWARE_VERSION to $VERSION" include/config.h
-          # Fast-forward only: fails if main has moved past the release tag
-          git push origin HEAD:main
+          echo "FIRMWARE_VERSION=$VERSION" >> $GITHUB_ENV
+          # Overrides the #ifndef default in include/config.h for every pio build
+          echo "PLATFORMIO_BUILD_FLAGS=-DFIRMWARE_VERSION=\\\"$VERSION\\\"" >> $GITHUB_ENV
 
       - name: Cache pip and PlatformIO
         uses: actions/cache@v4
@@ -83,7 +64,7 @@ jobs:
 
       - name: Build firmware (PentaBuzzer ESP32-S3 / v3)
         env:
-          BLUEBUZZAH_VERSION: ${{ github.event.release.tag_name }}
+          BLUEBUZZAH_VERSION: ${{ env.FIRMWARE_VERSION }}
         run: pio run -e pentabuzzer_esp32s3
 
       - name: Rename firmware archives
