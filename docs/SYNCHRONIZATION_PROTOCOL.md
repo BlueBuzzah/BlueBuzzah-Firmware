@@ -7,7 +7,7 @@
 
 ## Overview
 
-BlueBuzzah uses a bilateral synchronization protocol to coordinate haptic feedback between two gloves (PRIMARY and SECONDARY) over Bluetooth Low Energy. The protocol achieves <1ms synchronization accuracy using IEEE 1588 PTP-inspired clock synchronization with absolute time scheduling and microsecond-precision timestamps.
+BlueBuzzah uses a bilateral synchronization protocol to coordinate haptic feedback between two gloves (PRIMARY and SECONDARY) over Bluetooth Low Energy. The protocol uses IEEE 1588 PTP-inspired clock synchronization with absolute time scheduling and microsecond-precision timestamps.
 
 | Metric | Target | Achieved |
 |--------|--------|----------|
@@ -63,12 +63,12 @@ sequenceDiagram
         P->>P: Advertise "BlueBuzzah"
         S->>S: Scan for "BlueBuzzah"
         S->>P: BLE Connect
-        S->>P: READY
+        S->>P: IDENTIFY:SECONDARY
     end
 
     rect rgba(5, 33, 45, 0.5)
         Note over P,S: Phase 2: Idle Clock Synchronization
-        loop Every 1s (keepalive)
+        loop Every 70ms until sync valid, then 1s (keepalive)
             P->>S: PING (T1)
             S->>P: PONG (T2, T3)
             Note over P: Compute clock offset
@@ -79,10 +79,10 @@ sequenceDiagram
     rect rgba(5, 33, 45, 0.5)
         Note over P,S: Phase 3: Therapy Session
         P->>S: START_SESSION
-        loop Every ~2s
-            P->>S: MACROCYCLE (batch of 12 events)
+        loop Every ~3.3s (~4.2s on v3)
+            P->>S: MACROCYCLE (batch of 12 events, 15 on v3)
             S->>P: MACROCYCLE_ACK
-            Note over P,S: Both gloves execute 12 events with <2ms sync
+            Note over P,S: Both gloves execute the batch at the scheduled times
         end
         loop Every 250ms during therapy (4Hz)
             P->>S: PING (T1)
@@ -102,9 +102,8 @@ sequenceDiagram
 
 | Phase | Maximum Duration |
 |-------|------------------|
-| Connection establishment | 15 seconds |
 | Initial clock sync | ~350ms (5 samples @ 70ms acquire interval) |
-| Session start | Immediate after sync |
+| Session start | After sync is valid; refused with `Sync not ready` until then, then starts anyway (degraded timing) 10s after the SECONDARY connected (`SYNC_START_FALLBACK_MS`) |
 | Keepalive timeout | 6 seconds (6 missed) |
 
 ---
@@ -191,17 +190,17 @@ Excluding processing time provides:
 
 ### Transmit Timestamping
 
-T1 (PING sent) and T3 (PONG sent) are stamped at **SoftDevice handoff** rather than at message creation. Both PING and PONG are enqueued as deferred-stamp TX entries; the timestamp is filled by the `onTxStamped` callback inside `processTxQueue` at the moment the BLE stack accepts the packet for transmission.
+T1 (PING sent) and T3 (PONG sent) are stamped at **BLE-stack handoff** (SoftDevice on v2, NimBLE on v3) rather than at message creation. Both PING and PONG are enqueued as deferred-stamp TX entries; `processTxQueue` serializes them with the handoff time at the moment the BLE stack accepts the packet for transmission and reports it through the `onTxStamped` callback.
 
 **Why this matters:** Between message construction and the BLE radio actually picking up a packet, the main loop may run other work (sensor reads, state-machine ticks, motor-queue processing). Stamping at creation captures that variable queuing delay as apparent propagation time, introducing an asymmetric bias into PTP offset samples. Stamping at handoff removes that latency from the measurement.
 
 `onTxStamped` records `pingT1` and `pingSeq` for PING packets so the offset calculation can correlate the correct T1 with the matching PONG response.
 
-**PONG sequence matching:** The PONG handler validates that the received sequence number matches the in-flight `pingSeq`. A sequence-mismatched (stale) PONG is discarded without clearing in-flight state or consuming the keepalive credit, preventing stale replies from poisoning offset samples or triggering a false keepalive timeout.
+**PONG sequence matching:** The PONG handler validates that the received sequence number matches the in-flight `pingSeq`. A sequence-mismatched (stale) PONG is excluded from the offset calculation without clearing the in-flight T1, so a stale reply can't poison an offset sample. It still refreshes the PRIMARY's keepalive timer: any PONG proves the SECONDARY is alive.
 
 ### Filtering and Maintenance
 
-- **Initial sync:** Idle keepalive (1s) accumulates samples, median offset selected
+- **Initial sync:** Acquire-rate PINGs (70ms) accumulate samples, median offset selected
 - **Minimum valid:** At least 5 good samples required (~350ms after connect: PINGs run every 70ms, `SYNC_ACQUIRE_INTERVAL_MS`, until sync is valid)
 - **Drift compensation:** Ongoing sync at 4Hz during therapy / 1Hz idle corrects for crystal drift
 - **Smoothing:** Exponential moving average prevents sudden jumps
@@ -215,7 +214,7 @@ Three gates are applied in order before a maintenance sample updates the EMA:
 
 2. **Lucky-packet gate (decaying minimum RTT):** A tracked per-session minimum RTT (`minRTT`) is maintained and decays upward by `SYNC_MIN_RTT_DECAY_US` (200µs) per sample to allow gradual adaptation. Only exchanges with `RTT <= minRTT + SYNC_LUCKY_RTT_MARGIN_US` (10ms) are accepted. This gate selects low-jitter "lucky" packets whose round-trip approximates the true one-way propagation time, providing better offset estimates.
 
-3. **Innovation gate with hard re-anchor on persistence:** If a candidate offset deviates from the current EMA by more than `SYNC_INNOVATION_GATE_US` (5ms) it is initially rejected. If the same direction of deviation persists across `SYNC_INNOVATION_REJECT_LIMIT` (5) consecutive samples, the protocol interprets this as a true step change (e.g., from a long disconnect or oscillator retrim) and **hard re-anchors** the offset to the new value rather than blending it in via EMA. This prevents the EMA from chasing transient noise while still tracking genuine clock jumps.
+3. **Innovation gate with hard re-anchor on persistence:** If a candidate offset deviates from the current EMA by more than `SYNC_INNOVATION_GATE_US` (5ms) it is initially rejected. After `SYNC_INNOVATION_REJECT_LIMIT` (5) such rejections with no accepted sample in between, the next deviating sample is treated as a true step change (e.g., from a long disconnect or oscillator retrim) and **hard re-anchors** the offset to the new value rather than blending it in via EMA. This prevents the EMA from chasing transient noise while still tracking genuine clock jumps.
 
 #### Dedicated Drift-Measurement Anchor
 
@@ -226,9 +225,9 @@ Drift rate is measured over wall-time windows of at least `SYNC_MIN_DRIFT_INTERV
 The clock sync algorithm uses MAD (Median Absolute Deviation) to filter outliers before computing the final offset:
 
 1. Compute preliminary median from all offset samples
-2. Filter samples with deviation > 5ms from preliminary median
+2. Filter samples deviating from the preliminary median by more than max(3 × MAD, 5ms)
 3. Compute final median from filtered samples only
-4. Require minimum 5 valid samples after filtering
+4. If fewer than 5 samples survive filtering, use the preliminary median instead (sync still becomes valid)
 
 This improves robustness against BLE retransmissions and RF interference that cause anomalous RTT measurements.
 
@@ -238,12 +237,12 @@ The protocol uses **two separate drift rate caps** for safety:
 
 | Cap | Value | Application | Purpose |
 |-----|-------|-------------|---------|
-| Measurement cap | ±150 ppm (0.15 µs/ms) | `updateDriftRate()` | Reject implausible measurements |
+| Measurement cap | ±150 ppm (0.15 µs/ms) | `updateOffsetEMA()` (before drift EMA smoothing) | Clamp implausible measurements |
 | Applied cap | ±100 ppm (0.10 µs/ms) | `getCorrectedOffset()`, `getProjectedOffset()` | Conservative correction limit |
 
 **Why two caps?**
 
-1. **Measurement cap (150 ppm):** Filters out measurements that exceed typical crystal drift (±20-50 ppm). A measurement of 150 ppm indicates BLE anomalies, not actual clock drift.
+1. **Measurement cap (150 ppm):** Clamps measurements that exceed typical crystal drift (±20-50 ppm) before they enter the drift EMA. A measurement of 150 ppm indicates BLE anomalies, not actual clock drift.
 
 2. **Applied cap (100 ppm):** More conservative limit for actual corrections. Even if measured drift is valid, applying too large a correction can cause over-compensation and oscillation.
 
@@ -262,19 +261,19 @@ Brief BLE disconnections (interference, range limits) can recover quickly using 
 | Scenario | Samples Required | Recovery Time |
 |----------|------------------|---------------|
 | Cold start (first connect) | 5 | ~350ms |
-| Warm start (<15s disconnect) | 3 confirmatory | ~210ms (macrocycles carry the projected offset meanwhile) |
-| Long disconnect (>15s) | 5 | ~350ms |
+| Warm start (reconnect <15s after the last cached sample) | 3 confirmatory | ~210ms (macrocycles carry the projected offset once the first confirmatory sample agrees) |
+| Long disconnect (cache older than 15s) | 5 | ~350ms |
 
 **Warm-start process:**
-1. On valid sync, cache current offset + drift rate (updated continuously)
-2. On disconnect, cache preserved with timestamp
-3. On reconnect within 15 seconds:
+1. On valid sync, cache current offset + drift rate with a timestamp (updated by every accepted sample)
+2. On disconnect, the cache is preserved
+3. On reconnect within 15 seconds of the cache timestamp:
    - Project cached offset forward using drift rate
    - Enter warm-start mode
    - Require 3 confirmatory samples within 5ms of projection
-4. If samples diverge >5ms, abort to cold start (safety fallback)
+4. If a single sample diverges >5ms, abort to cold start (safety fallback)
 
-This reduces user-perceived disruption from 6-10+ seconds to ~3 seconds for brief BLE interference events.
+This shortens re-sync after brief BLE interference events from ~350ms (cold start) to ~210ms.
 
 ---
 
@@ -300,9 +299,9 @@ This reduces user-perceived disruption from 6-10+ seconds to ~3 seconds for brie
 }}}%%
 flowchart LR
     subgraph PRIMARY
-        A[Generate 3 patterns<br/>12 events total] --> B[Calculate base time]
+        A[Generate 3 patterns<br/>12 events on v2, 15 on v3] --> B[Calculate base time]
         B --> C[Send MACROCYCLE]
-        C --> D[Enqueue all 12 events]
+        C --> D[Enqueue all events]
         D --> E[FreeRTOS motor task<br/>executes chain]
     end
 
@@ -312,13 +311,13 @@ flowchart LR
 
     subgraph SECONDARY
         F[Receive MACROCYCLE] --> G[Convert to local time]
-        G --> H[Enqueue all 12 events]
+        G --> H[Enqueue all events]
         H --> I[FreeRTOS motor task<br/>executes chain]
     end
 
     E --> J((Events fire))
     I --> J
-    J --> K[Motors activate with <2ms sync]
+    J --> K[Motors activate at the scheduled time]
 ```
 
 ### Lead Time Calculation
@@ -327,15 +326,18 @@ The activation time is set in the future to ensure SECONDARY receives and proces
 
 ```text
 activate_time = current_time + lead_time
-lead_time = average_RTT + 3σ_variance + processing_overhead
+lead_time = average_RTT + safety_margin + processing_overhead + generation_overhead
 ```
+
+`average_RTT` is twice the smoothed one-way latency from PING/PONG (`calculateAdaptiveLeadTime()`). Until 3 RTT samples exist the lead time is a fixed, unclamped 50ms (`SYNC_LEAD_TIME_US` 35ms + 10ms + 5ms).
 
 | Parameter | Value | Purpose |
 |-----------|-------|---------|
-| Minimum lead time | 70ms | Covers RTT (~40ms) + variance (~5ms) + processing (20ms) + generation (5ms) |
+| Minimum lead time | 70ms | Covers RTT (~40ms) + variance (~5ms) + processing (10ms) + generation (5ms) + margin (10ms) |
 | Maximum lead time | 150ms | Conservative upper bound for worst-case BLE conditions |
-| Safety margin | 3× latency variance | Handles jitter |
-| Processing overhead | 10ms | BLE callback + deserialization + queue forwarding |
+| Safety margin | 6× smoothed one-way latency deviation | 3σ at RTT scale; handles jitter |
+| Processing overhead | 10ms | BLE callback + deserialization + queue forwarding (SECONDARY) |
+| Generation overhead | 5ms | Macrocycle generation + serialization (PRIMARY) |
 
 ### Time Conversion
 
@@ -367,15 +369,14 @@ local_time = primary_time + clock_offset
 }}}%%
 flowchart TD
     A[Therapy Pattern Generator] --> B{Macrocycle ready?}
-    B -->|Yes| C[Generate 3 patterns<br/>12 events total]
+    B -->|Yes| C[Generate 3 patterns<br/>12 events on v2, 15 on v3]
     B -->|No| D[Wait for completion]
     D --> B
 
     C --> E[Calculate base time<br/>now + lead_time]
     E --> F[Create MACROCYCLE message]
     F --> G[Send to SECONDARY]
-    G --> H[Await MACROCYCLE_ACK]
-    H --> I[Enqueue all 12 events]
+    G --> I[Enqueue all events]
 
     I --> J{Next event time?}
     J -->|Wait| J
@@ -390,29 +391,29 @@ flowchart TD
 
 ### Macrocycle Structure
 
-One therapy macrocycle consists of 3 patterns (12 buzz events total) followed by a relax period:
+One therapy macrocycle consists of 3 patterns (12 buzz events on v2, 15 on v3) followed by a relax period. Values below are for the default timing; v3 values in parentheses:
 
 | Component | Duration |
 |-----------|----------|
 | Motor ON time | 100ms (configurable) |
 | Motor OFF time | 67ms (configurable) |
-| Fingers per pattern | 4 |
+| Fingers per pattern | 4 (5); profile `FINGERS`, limited to detected motors |
 | Patterns per macrocycle | 3 |
-| Events per macrocycle | 12 (3 patterns × 4 fingers) |
-| Pattern duration | ~668ms |
-| Inter-macrocycle relax | ~1336ms (2× pattern duration) |
-| **Total macrocycle** | **~3.3 seconds** |
+| Events per macrocycle | 12 (15): 3 patterns × fingers |
+| Pattern duration | ~668ms (~835ms) |
+| Inter-macrocycle relax | ~1336ms (~1670ms): 2× pattern duration |
+| **Total macrocycle** | **~3.3 seconds (~4.2 seconds)**, plus the lead time |
 
 ### Macrocycle Batching Architecture
 
-PRIMARY sends all 12 events in a single MACROCYCLE message. This batching approach provides:
+PRIMARY sends all of a macrocycle's events in a single MACROCYCLE message. This batching approach provides:
 
 - **~4× reduction in BLE traffic** (~200 bytes vs ~720 bytes)
-- **Zero BLE during motor activity** — all commands sent before first buzz
+- **No per-buzz BLE traffic** — every motor event is sent before the first buzz (PING/PONG continues at 4Hz)
 - **Single clock offset application** — less computation, fewer rounding errors
 - **Cleaner architecture** — macrocycle as atomic unit
 
-SECONDARY's `ActivationQueue` schedules all 12 events with their local activation times, then processes them as time elapses.
+SECONDARY's `ActivationQueue` schedules all events with their local activation times, then processes them as time elapses. PRIMARY does not wait for `MC_ACK`: it enqueues its own events right after sending, and any `MC_ACK` only refreshes its SECONDARY keepalive timer. If the macrocycle can't be queued for the SECONDARY, PRIMARY skips it locally too.
 
 ---
 
@@ -445,21 +446,15 @@ SECONDARY's `ActivationQueue` schedules all 12 events with their local activatio
 stateDiagram-v2
     [*] --> Normal
 
-    Normal --> ConnectionLost: Keepalive timeout
+    Normal --> ConnectionLost: Keepalive timeout or BLE disconnect
 
     ConnectionLost --> EmergencyStop: Immediate
-    EmergencyStop --> Reconnect1: Motors safe
+    EmergencyStop --> Reconnecting: Motors safe (purple LED)
 
-    Reconnect1 --> Normal: Success
-    Reconnect1 --> Reconnect2: Failed (wait 2s)
+    Reconnecting --> Normal: Peer traffic resumes
+    Reconnecting --> Idle: 30s without peer
 
-    Reconnect2 --> Normal: Success
-    Reconnect2 --> Reconnect3: Failed (wait 2s)
-
-    Reconnect3 --> Normal: Success
-    Reconnect3 --> Idle: Failed
-
-    Idle --> [*]: Manual restart required
+    Idle --> Normal: Peer reconnects (scanning/advertising continue)
 ```
 
 ### Timeout Behavior
@@ -477,7 +472,7 @@ stateDiagram-v2
 
 ### Message Format
 
-All messages use the format:
+All `SyncCommand` messages use the format (the plain-string internal messages noted in the Handshake and Status tables are the exceptions):
 
 ```text
 COMMAND:field1|field2|field3|...
@@ -491,8 +486,10 @@ COMMAND:field1|field2|field3|...
 
 | Message | Direction | Fields | Example |
 |---------|-----------|--------|---------|
-| `READY` | S → P | (none) | `READY` |
+| `IDENTIFY:SECONDARY` | S → P | (plain string, not pipe-delimited) | `IDENTIFY:SECONDARY` |
 | `START_SESSION` | P → S | seq, timestamp | `START_SESSION:1\|50000` |
+| `PAUSE_SESSION` | P → S | seq, timestamp | `PAUSE_SESSION:0\|61000000` |
+| `RESUME_SESSION` | P → S | seq, timestamp | `RESUME_SESSION:0\|65000000` |
 | `STOP_SESSION` | P → S | seq, timestamp | `STOP_SESSION:99\|120000000` |
 
 ### Synchronization Messages
@@ -500,7 +497,7 @@ COMMAND:field1|field2|field3|...
 | Message | Direction | Fields | Example |
 |---------|-----------|--------|---------|
 | `PING` | P → S | seq, T1 | `PING:42\|1000000` |
-| `PONG` (legacy) | S → P | seq, tx_micros, T2, T3 | `PONG:42\|1000550\|1000500\|1000600` |
+| `PONG` (legacy) | S → P | seq, tx_micros, T2, T3 (T2High, T2Low, T3High, T3Low once either exceeds 32 bits) | `PONG:42\|1000550\|1000500\|1000600` |
 | `PONG` (anchor, 6 data fields) | S → P | seq, tx_micros, T2High, T2Low, T3High, T3Low, AnchorHigh, AnchorLow — *see anchor section* | `PONG:42\|1000550\|0\|1000500\|0\|1000600\|0\|999800` |
 
 PONG has two wire forms; see [Connection-Anchor Timestamping](#connection-anchor-timestamping-experimental) for the 6-data-field format and detection rules. When anchor timestamping is disabled (default), only the legacy 4-field form is used.
@@ -513,6 +510,7 @@ The protocol uses a single unified mechanism for both keepalive and clock synchr
 
 | State | Mechanism | Interval | Purpose |
 |-------|-----------|----------|---------|
+| Acquiring (sync not yet valid, or warm start) | PING/PONG | 70ms | Fast initial clock sync + keepalive |
 | Idle / no session | PING/PONG | 1 second | Clock sync + keepalive (unified) |
 | Therapy active | PING/PONG | 250ms (4Hz) | Higher-cadence sync during therapy |
 
@@ -531,7 +529,7 @@ This unified approach provides continuous clock synchronization throughout all s
 | `MACROCYCLE_ACK` | S → P | seq, tx_micros | `MC_ACK:42\|5050120` |
 | `DEACTIVATE` (reserved) | — | seq, tx_micros | `DEACTIVATE:43\|5050120` |
 
-> **`serialize()` always emits the `seq|timestamp` pair**, and the timestamp is the message construction time (`getMicros()`), **never `0`**. The 2-arg `SyncCommand` constructor calls `setTimestampNow()`, so `createMacrocycleAck` produces `MC_ACK:42|<micros>` (not `MC_ACK:42` and not `MC_ACK:42|0`). PRIMARY ignores the field for `MC_ACK` — ACK matching keys on `seq`.
+> **`serialize()` always emits the `seq|timestamp` pair**, and the timestamp is the message construction time (`getMicros()`), **never `0`**. The 2-arg `SyncCommand` constructor calls `setTimestampNow()`, so `createMacrocycleAck` produces `MC_ACK:42|<micros>` (not `MC_ACK:42` and not `MC_ACK:42|0`). PRIMARY ignores the field for `MC_ACK` and does no ACK matching or retransmission: an `MC_ACK` only refreshes its SECONDARY keepalive timer (`seq` is logged in debug mode).
 >
 > **`DEACTIVATE` is reserved/unused.** The `SyncCommandType::DEACTIVATE` value and `createDeactivate()` factory exist, but no `DEACTIVATE` message is sent over BLE: SECONDARY turns motors off locally via its paired activate/deactivate `ActivationQueue`. The factory does not override the construction timestamp, so if it were ever serialized it would be `DEACTIVATE:43|<micros>`. The same applies to the `BUZZ` type, which was superseded by `MACROCYCLE` batching.
 
@@ -549,31 +547,27 @@ MC:seq|baseHigh|baseLow|offHigh|offLow|dur|count|d,f,a[,fo]|d,f,a[,fo]|...
 | offHigh | High 32 bits of clockOffset (signed) |
 | offLow | Low 32 bits of clockOffset |
 | dur | Common ON duration for all events (ms) |
-| count | Number of events (typically 12: 3 patterns × 4 fingers) |
+| count | Number of events (3 patterns × fingers: 12 on v2, 15 on v3 by default; at most `MACROCYCLE_MAX_EVENTS`) |
 | d | Delta time from baseTime (ms) |
-| f | Finger index (0-3) |
+| f | SECONDARY finger index (0 to motors − 1: 0-3 on v2, 0-4 on v3) |
 | a | Amplitude percentage (0-100) |
-| fo | Frequency offset (optional): `(freq - 200) / 5` for 200-455 Hz range |
+| fo | Frequency offset (optional, omitted when 0): `(freq - 200) / 5` for 200-455 Hz range |
 
 **Example MACROCYCLE:**
 
 ```text
-MC:1|0|5050000|0|12345|100|12|0,0,100|167,1,100|334,2,100,7|...
+MC:1|0|5050000|0|12345|100|12|0,0,100,10|167,1,100,10|334,2,100,10|...
 ```
 
-The third event carries `fo=7`, decoded as `200 + 7×5 = 235 Hz`; events without an `fo` field leave the frequency unchanged.
+Each event carries `fo=10`, decoded as `200 + 10×5 = 250 Hz`; current firmware sends 250 Hz on every event. An event without an `fo` field decodes as `fo=0` (200 Hz).
 
 **Note:** The V5 format preserves full microsecond precision for baseTime by splitting the 64-bit value into two 32-bit parts, avoiding the up to 999µs precision loss in the previous millisecond-based format.
 
-SECONDARY applies clock offset once to baseTime, then schedules all 12 events via an activation queue. This reduces BLE traffic from 12 messages to 1 per macrocycle (~200 bytes vs ~720 bytes).
+SECONDARY applies clock offset once to baseTime, then schedules all events via an activation queue. This reduces BLE traffic from 12 messages to 1 per macrocycle (~200 bytes vs ~720 bytes).
 
 ### Parameter Messages
 
-| Message | Direction | Fields | Example |
-|---------|-----------|--------|---------|
-| `PARAM_UPDATE` | P → S | key:value pairs | `PARAM_UPDATE:TIME_ON:150:JITTER:10` |
-| `SEED` | P → S | random seed | `SEED:123456` |
-| `SEED_ACK` | S → P | (none) | `SEED_ACK` |
+None are sent. `PARAM_UPDATE`, `SEED`, `SEED_ACK` and `ACK_PARAM_UPDATE` survive only as reserved prefixes in `INTERNAL_MESSAGES[]` (`include/internal_messages.h`); nothing sends or handles them. Therapy parameters reach the SECONDARY inside each `MC` (duration, amplitude, frequency per event).
 
 ### Status Messages
 
@@ -581,6 +575,13 @@ SECONDARY applies clock offset once to baseTime, then schedules all 12 events vi
 |---------|-----------|--------|---------|
 | `GET_BATTERY` | P → S | (none) | `GET_BATTERY` |
 | `BATRESPONSE` | S → P | voltage | `BATRESPONSE:3.68` |
+| `LED_OFF_SYNC` | P → S | 0 or 1 (mirrors `THERAPY_LED_OFF`) | `LED_OFF_SYNC:1` |
+| `DEBUG_SYNC` | P → S | 0 or 1 (mirrors `DEBUG`) | `DEBUG_SYNC:1` |
+| `CALIB_BUZZ` | P → S | finger, intensity, duration (relayed `CALIBRATE_BUZZ`) | `CALIB_BUZZ:1:80:500` |
+| `CALIB_STOP` | P → S | (none) | `CALIB_STOP` |
+| `DEBUG_FLASH` | P → S | seq, timestamp, flash time (sent at each macrocycle start, debug mode only) | `DEBUG_FLASH:7\|5000000\|5070000` |
+
+These are plain colon-delimited strings, except `DEBUG_FLASH`, which is a `SyncCommand` frame.
 
 ---
 
@@ -590,8 +591,7 @@ The protocol includes several safety mechanisms to prevent incorrect synchroniza
 
 | Validation | Threshold | Action |
 |------------|-----------|--------|
-| Offset magnitude | ±35 seconds | Reject samples with unreasonable clock drift |
-| baseTime freshness | ±30 seconds | Reject macrocycles with stale timestamps |
+| baseTime freshness | ±5 seconds | SECONDARY plays nothing from a macrocycle whose local base time is further than this from now (still sends `MC_ACK`) |
 | Drift rate (measured) | ±150 ppm | Cap measured drift for plausibility |
 | Drift rate (applied) | ±100 ppm | Cap corrections to prevent oscillation |
 | Elapsed time | 10 seconds max | Cap EMA time delta to prevent overflow |
@@ -608,7 +608,7 @@ These validations ensure that BLE interference or momentary disconnects don't ca
 The `SYNC_RTT_QUALITY_THRESHOLD_US` (60ms) balances sample acceptance vs quality:
 - **Too low (20ms):** Rejects most samples, slow sync convergence
 - **Too high (200ms):** Accepts retransmission-affected samples, poor accuracy
-- **Recommended:** 60ms rejects ~10-20% of samples while maintaining <1ms accuracy
+- **Recommended:** 60ms rejects ~10-20% of samples
 
 ### Connection Interval Trade-offs
 
@@ -618,7 +618,7 @@ The `SYNC_RTT_QUALITY_THRESHOLD_US` (60ms) balances sample acceptance vs quality
 | 15ms | Medium | Medium drain | Idle monitoring |
 | 30ms | Higher | Lower drain | Background connection |
 
-Current setting: 7.5-10ms for maximum sync accuracy during therapy.
+Current setting: 7.5-10ms on the glove link for maximum sync accuracy during therapy; the phone link requests 30-50ms.
 
 ### Outlier Threshold
 
@@ -631,7 +631,7 @@ The outlier rejection uses MAD (Median Absolute Deviation) with minimum 5ms:
 
 ## Connection-Anchor Timestamping (Experimental)
 
-> **Status:** Off by default (`SYNC_ANCHOR_TIMESTAMPING_ENABLED 0`). Both gloves must be built with the same flag value; mismatched builds will produce incompatible PONG wire formats.
+> **Status:** Off by default (`SYNC_ANCHOR_TIMESTAMPING_ENABLED 0`). **v2 (nRF52) only**: radio notifications are a SoftDevice feature, and on v3 `radio_anchor` is an inert stub, so sync stays on PTP. PRIMARY parses every PONG form regardless of the flag, so mismatched builds fall back to PTP rather than breaking.
 
 ### Motivation
 
@@ -680,7 +680,7 @@ Before an anchor offset is accepted, it is checked against the current converged
 
 ### Caveats
 
-- **Both-gloves-same-flag requirement:** A glove running with the anchor flag enabled will emit 6-data-field PONGs. A peer running without the flag will not find data field index 4 and will treat the exchange as a plain PTP sample. This is safe (it falls back to PTP) but means anchor offsets will not be computed on the primary side. Mismatched builds must not be deployed together if anchor-based accuracy is the goal.
+- **Both-gloves-same-flag requirement:** A SECONDARY built with the anchor flag emits 6-data-field PONGs; one built without it emits plain PONGs. PRIMARY parses either form, but only computes anchor offsets when it is built with the flag and receives a 6-field PONG. Otherwise the exchange is a plain PTP sample. This is safe (it falls back to PTP), but both gloves need the flag if anchor-based accuracy is the goal.
 - **Dual-link suppression:** On nRF52840, when PRIMARY is simultaneously connected to a phone app and to SECONDARY, the SoftDevice schedules two separate connection intervals. The anchor ring may contain events from either link. The `SYNC_ANCHOR_RX_WINDOW_US` and `SYNC_ANCHOR_TX_WINDOW_US` windows are sized conservatively to select the correct event, but this has not been validated under all dual-link timing configurations. Use with caution on dual-connected hardware.
 
 ---
@@ -696,12 +696,12 @@ The SECONDARY glove operates statelessly—it receives macrocycles with clock of
 
 ### Timestamp Precision
 
-The firmware uses a dedicated 1MHz hardware timebase (`hires_clock` module) rather than the FreeRTOS tick clock:
+The firmware uses a dedicated 1MHz hardware timebase (`hires_clock` module) rather than the FreeRTOS tick clock. On v3 this is `esp_timer` (always available; the HFXO watchdog and tick-clock fallback below are nRF-only). On v2:
 
 - **Hardware timebase:** NRF_TIMER4 is configured as a 1MHz free-running counter clocked from the on-board 32MHz HFXO crystal. This gives 1µs resolution independent of the FreeRTOS tick rate (previously ~976µs quantization because DWT was never enabled).
 - **HFXO watchdog:** `loop()` calls `hiresClockEnsureHfclk()` once per second. It checks whether the HFCLK is still running and, if not, **re-asserts** the HFCLK request (`sd_clock_hfclk_request()`) so TIMER4 stays on the crystal. It logs only on failure — `[CLOCK] HFCLK re-request failed` — and is otherwise silent; the counter keeps advancing throughout.
 - **Fallback path:** If `hiresClockBegin()` fails at boot (e.g., SoftDevice pre-empts TIMER4 allocation), `setup()` logs the degradation once (`[CLOCK] WARNING: hardware timebase unavailable - falling back to tick clock (~1ms resolution)`). `getMicros()` then switches sources **silently** based on `hiresClockIsRunning()`. All sync time math (`syncNowMs()` = `getMicros() / 1000`) uses a single unified clock domain in either case.
-- **Overflow safety:** `getMicros()` returns a `uint64_t`. At 1MHz the 64-bit counter wraps at ~584,000 years; no runtime overflow handling is needed beyond the 64-bit type.
+- **Overflow safety:** `getMicros()` returns a `uint64_t`. It extends the 32-bit source (which wraps every ~71.6 minutes) with an overflow counter, updated inside a critical section so concurrent callers can't double-count a wrap. At 1MHz the 64-bit result wraps at ~584,000 years.
 
 ### Interrupt Safety
 
@@ -712,7 +712,7 @@ Sync state variables are accessed from both main loop and BLE callbacks. Key con
 
 ### ARM printf Limitations
 
-- 64-bit printf (%llu, %lld) not supported on ARM Cortex-M4
+- 64-bit printf (%llu, %lld) not supported by the nRF52 Arduino toolchain (Cortex-M4); both boards use the same split format
 - Macrocycle serialization splits 64-bit values into high/low 32-bit parts
 - This adds ~10 bytes overhead per macrocycle but ensures portability
 
@@ -724,19 +724,20 @@ Sync state variables are accessed from both main loop and BLE callbacks. Key con
 |-----------|-------|-------------|
 | RTT quality threshold (`SYNC_RTT_QUALITY_THRESHOLD_US`) | 60ms | Hard ceiling — discard samples with higher RTT |
 | Minimum valid samples (`SYNC_MIN_VALID_SAMPLES`) | 5 | Required for valid sync (~350ms from connect) |
-| Outlier threshold (`SYNC_OUTLIER_THRESHOLD_US`) | 5ms | Offset outlier rejection (MAD-based filtering) |
+| Outlier threshold (`SYNC_OUTLIER_THRESHOLD_US`) | 5ms | Floor of the max(3 × MAD, 5ms) offset outlier threshold |
 | PING/PONG interval (acquiring, `SYNC_ACQUIRE_INTERVAL_MS`) | 70ms | Until clock sync is valid (cold or warm start) |
 | PING/PONG interval (idle) | 1s | Keepalive + clock sync when no therapy session active |
 | PING/PONG interval during therapy (`SYNC_ACTIVE_INTERVAL_MS`) | 250ms (4Hz) | Higher cadence while therapy is running |
 | Keepalive timeout (SECONDARY, `KEEPALIVE_TIMEOUT_MS`) | 6s | 6 missed PINGs = connection lost |
-| Keepalive timeout (PRIMARY) | 6s | During therapy (emergency shutdown) |
+| Keepalive timeout (PRIMARY, `PRIMARY_KEEPALIVE_TIMEOUT_MS`) | 6s | During therapy: sends `STOP_SESSION` and shuts down its motors |
 | Lead time range | 70-150ms | Adaptive scheduling window |
-| Initial lead time | 35ms (clamped to 70ms) | Base value before RTT samples, clamped to min |
-| Processing overhead | 10ms | SECONDARY processing time allowance |
+| Initial lead time | 50ms (not clamped) | `SYNC_LEAD_TIME_US` (35ms) + processing + generation overhead, used until 3 RTT samples exist |
+| Processing overhead (`SYNC_PROCESSING_OVERHEAD_US`) | 10ms | SECONDARY processing time allowance |
+| Generation overhead (`SYNC_GENERATION_OVERHEAD_US`) | 5ms | PRIMARY macrocycle generation + serialization |
 | Max drift rate (measurement) (`SYNC_MAX_DRIFT_RATE_US_PER_MS`) | ±150 ppm | Measurement cap for plausibility |
 | Max drift rate (applied) (`SYNC_MAX_APPLIED_DRIFT_RATE_US_PER_MS`) | ±100 ppm | Conservative correction limit |
-| Warm-start validity | 15s | Cache valid after disconnect |
-| BLE connection interval | 7.5-10ms | Low-latency communication (6-8 BLE units) |
+| Warm-start validity (`SYNC_WARM_START_VALIDITY_MS`) | 15s | Cache valid for this long after its last update |
+| BLE connection interval (glove link) | 7.5-10ms | Low-latency communication (6-8 BLE units); phone link requests 30-50ms |
 | Lucky-packet RTT margin (`SYNC_LUCKY_RTT_MARGIN_US`) | 10ms | Accept only RTT ≤ minRTT + 10ms |
 | Minimum RTT decay (`SYNC_MIN_RTT_DECAY_US`) | 200µs/sample | Per-sample upward creep of tracked minRTT |
 | Innovation gate (`SYNC_INNOVATION_GATE_US`) | 5ms | Reject offset jumps larger than this threshold |
@@ -752,6 +753,6 @@ Sync state variables are accessed from both main loop and BLE callbacks. Key con
 
 ## See Also
 
-- **[BLE_PROTOCOL.md](BLE_PROTOCOL.md)** — Phone app command protocol
+- **[BLE-Protocol (wiki)](https://github.com/BlueBuzzah/BlueBuzzah-Firmware/wiki/BLE-Protocol)** — Phone app command protocol
 - **[THERAPY_ENGINE.md](THERAPY_ENGINE.md)** — Pattern generation
 - **[ARCHITECTURE.md](ARCHITECTURE.md)** — System design overview

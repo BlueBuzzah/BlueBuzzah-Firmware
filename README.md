@@ -29,7 +29,7 @@ One codebase builds for two hardware generations, selected by PlatformIO environ
 - **Mobile Control**: Comprehensive BLE protocol for iOS/Android app integration
 - **Real-Time Session Management**: Pause, resume, and progress tracking
 - **Multi-Connection Support**: Simultaneous phone and glove connections
-- **Battery Safety**: Monitoring with automatic shutdown at critical levels (both boards)
+- **Battery Monitoring**: Voltage and percentage reporting on both boards; app-started sessions are refused at critical levels
 - **Calibration Mode**: Individual finger testing and adjustment
 - **Assembly QA**: `MOTOR_DIAG`, `MOTOR_TEST:<n>`, and `MOTOR_PRESENT` serial commands for motor verification
 
@@ -92,14 +92,14 @@ pio test -e native_penta    # Unit tests (5-actuator config)
 
 1. Power on both devices
 2. Wait for boot sequence (up to 30 seconds)
-3. After boot success (solid green LED), therapy begins automatically
+3. Once the gloves pair (solid green LED), therapy begins automatically if no phone connects within the 30-second boot window
 4. Connect phone via BLE to "BlueBuzzah" for mobile app control
 
 ## Configuration
 
 ### Therapy Profiles
 
-The six built-in profiles are defined in `src/profile_manager.cpp` and selected with `SET_PROFILE:REGULAR|NOISY|HYBRID|GENTLE` over serial or BLE:
+The six built-in profiles are defined in `src/profile_manager.cpp` and selected with `PROFILE_LOAD:<id>` over BLE or serial (`SET_PROFILE:REGULAR|NOISY|HYBRID|GENTLE` is a serial-only shortcut for four of them):
 
 | Profile | Internal name | Notes |
 | --- | --- | --- |
@@ -110,7 +110,7 @@ The six built-in profiles are defined in `src/profile_manager.cpp` and selected 
 | Quick Test | `quick_test` | 5-minute session |
 | Custom vCR | `custom_vcr` | User-editable; see below |
 
-The Custom profile's seven parameters (burst on/off, jitter, amplitude min/max, session length, mirroring) are edited via `PROFILE_CUSTOM:KEY:VALUE` and persisted to `custom.bin`. Firmware is the sole validator — bounds are the `PARAM_MIN_*`/`PARAM_MAX_*` constants in `include/config.h`.
+The Custom profile's eight parameters (burst on/off, jitter, amplitude min/max, session length, mirroring, finger count) are edited via `PROFILE_CUSTOM:KEY:VALUE` and persisted to `custom.bin`. Firmware is the sole validator — bounds are the `PARAM_MIN_*`/`PARAM_MAX_*` constants in `include/config.h`.
 
 ### System Constants
 
@@ -130,18 +130,21 @@ Board-specific values (pins, actuator count, battery availability) live in `incl
 
 ### Boot Issues
 
-**Red flashing LED after 30 seconds:**
+**Orange slow-blinking LED at boot (role not set):**
 
-- Power cycle both devices simultaneously
-- Move devices closer together (< 1m)
+- The device is waiting for a role over USB serial: send `SET_ROLE:PRIMARY` or `SET_ROLE:SECONDARY` (or run `python deploy.py`)
+
+**Red slow-blinking LED during boot (hardware or BLE initialization failed):**
+
+- Power cycle the device
 - Check battery voltage (> 3.4V)
 - Verify I2C connections
 
-**Blue flashing indefinitely:**
+**Breathing blue indefinitely (gloves never pair):**
 
 - Verify device role: `GET_ROLE` in serial monitor
 - Re-set role: `SET_ROLE:PRIMARY` or `SET_ROLE:SECONDARY`
-- Redeploy firmware: `pio run -t upload`
+- Redeploy firmware: `pio run -e <env> -t upload`
 
 ### Therapy Issues
 
@@ -162,11 +165,11 @@ Board-specific values (pins, actuator count, battery availability) live in `incl
 
 ### Battery Issues
 
-Battery monitoring and its LED indications apply to both boards (v2 senses VBAT via
-an ADC divider; v3 reads the DRV2605 VBAT register):
+Battery monitoring applies to both boards (v2 senses VBAT via an ADC divider; v3 reads
+the DRV2605 VBAT register). Voltage is reported by the `BATTERY` command and logged to
+serial every 60 seconds. There is no low-battery LED indication or automatic shutdown:
 
-- **Orange slow-blinking**: Battery low (< 3.4V) - charge soon
-- **Rapid red flashing**: Battery critical (< 3.3V) - charge immediately
+- **`Battery too low` error when the app starts a session**: Battery critical (< 3.3V) - charge before starting therapy
 
 ### BlueBuzzah v3 Power
 
@@ -190,7 +193,7 @@ an ADC divider; v3 reads the DRV2605 VBAT register):
 
 - **[Architecture Guide](docs/ARCHITECTURE.md)**: System design and patterns (source of truth)
 - **[API Reference](docs/API_REFERENCE.md)**: Module API documentation
-- **[BLE Protocol](docs/BLE_PROTOCOL.md)**: Command protocol specification
+- **[BLE Protocol](https://github.com/BlueBuzzah/BlueBuzzah-Firmware/wiki/BLE-Protocol)**: Command protocol specification (wiki)
 - **[Synchronization Protocol](docs/SYNCHRONIZATION_PROTOCOL.md)**: PRIMARY↔SECONDARY glove coordination
 - **[Sync Validation](docs/SYNC_VALIDATION.md)**: GPIO-based bilateral sync measurement and acceptance gates
 - **[Therapy Session Flow](docs/THERAPY_SESSION_FLOW.md)**: Session state machine flow

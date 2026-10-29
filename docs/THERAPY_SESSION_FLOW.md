@@ -15,7 +15,7 @@ The BlueBuzzah system uses a dual-glove architecture with synchronized bilateral
 
 ## 1. Session Lifecycle State Machine
 
-The therapy session follows an 11-state finite state machine with graceful error handling:
+The therapy session follows an 11-state finite state machine (`src/state_machine.cpp`). The diagram shows the transitions current firmware actually fires; CONNECTING, LOW_BATTERY, CRITICAL_BATTERY and ERROR are defined but never entered (see the table below):
 
 ```mermaid
 %%{init: {'theme': 'base', 'themeVariables': {
@@ -42,55 +42,47 @@ The therapy session follows an 11-state finite state machine with graceful error
 stateDiagram-v2
     [*] --> IDLE: Boot
 
-    IDLE --> CONNECTING: BLE scan/advertise
+    IDLE --> READY: CONNECTED\n(glove pair connects,\nor peer keepalive alive after a stop)
 
-    CONNECTING --> READY: SECONDARY connects\n(PRIMARY receives READY)
+    READY --> RUNNING: START_SESSION\n(SESSION_START or auto-start)
+    IDLE --> RUNNING: START_SESSION\n(no SECONDARY connected)
 
-    READY --> RUNNING: SESSION_START command\nfrom phone
+    RUNNING --> PAUSED: PAUSE_SESSION
+    RUNNING --> STOPPING: STOP_SESSION\n(SESSION_STOP, session end,\nSECONDARY keepalive timeout)
+    RUNNING --> CONNECTION_LOST: DISCONNECTED\n(link drop, or SECONDARY's\n6s keepalive timeout)
 
-    RUNNING --> PAUSED: SESSION_PAUSE command
-    RUNNING --> STOPPING: SESSION_STOP command
-    RUNNING --> LOW_BATTERY: Battery warning\n(>50s remaining)
-    RUNNING --> CONNECTION_LOST: No PONG for 6s
-    RUNNING --> ERROR: Emergency stop\nor timeout
+    PAUSED --> RUNNING: RESUME_SESSION
+    PAUSED --> STOPPING: STOP_SESSION
+    PAUSED --> CONNECTION_LOST: DISCONNECTED
 
-    PAUSED --> RUNNING: SESSION_RESUME command
-    PAUSED --> STOPPING: SESSION_STOP command
-    PAUSED --> ERROR: Connection lost
+    READY --> CONNECTION_LOST: DISCONNECTED
 
-    LOW_BATTERY --> RUNNING: Battery recovers
-    LOW_BATTERY --> CRITICAL_BATTERY: Battery critical
+    CONNECTION_LOST --> READY: CONNECTED\n(reconnect or peer traffic resumes)
+    CONNECTION_LOST --> IDLE: RECONNECT_FAILED\n(30s without peer)
 
-    CRITICAL_BATTERY --> IDLE: Forced shutdown
+    STOPPING --> IDLE: STOPPED\n(motors off)
 
-    CONNECTION_LOST --> READY: RECONNECTED\n(3 retry attempts,\n2s between)
-    CONNECTION_LOST --> IDLE: RECONNECT_FAILED\n(all retries exhausted)
-
-    ERROR --> IDLE: RESET
-
-    STOPPING --> IDLE: Motors off,\ncleanup complete
-
-    READY --> IDLE: Timeout or\nmanual reset
-
-    PHONE_DISCONNECTED --> READY: Phone reconnects\n(within 30s)
-    PHONE_DISCONNECTED --> IDLE: Phone timeout\n(>30s)
+    READY --> PHONE_DISCONNECTED: PHONE_LOST
+    RUNNING --> PHONE_DISCONNECTED: PHONE_LOST
+    PHONE_DISCONNECTED --> READY: PHONE_RECONNECTED\n(back to previous state)
+    PHONE_DISCONNECTED --> RUNNING: PHONE_RECONNECTED\n(back to previous state)
 ```
 
 **State Descriptions:**
 
 | State                | Description                                             |
 | -------------------- | ------------------------------------------------------- |
-| `IDLE`               | System initialized, no connections                      |
-| `CONNECTING`         | BLE scanning/advertising for device pairing             |
-| `READY`              | Devices connected, synchronized, awaiting session start |
+| `IDLE`               | No session; glove pair not connected (advertising/scanning) |
+| `CONNECTING`         | Defined but never entered (pairing goes IDLE → READY)  |
+| `READY`              | Glove pair connected, awaiting session start            |
 | `RUNNING`            | Active therapy session, motors executing patterns       |
 | `PAUSED`             | Session paused, motors idle, timing preserved           |
-| `STOPPING`           | Graceful shutdown in progress                           |
-| `ERROR`              | Error condition, requires reset                         |
-| `LOW_BATTERY`        | Battery low (`3.3-3.6V`), continue with warning         |
-| `CRITICAL_BATTERY`   | Battery critical (`<3.3V`), forced shutdown             |
-| `CONNECTION_LOST`    | SECONDARY disconnected, attempting reconnection         |
-| `PHONE_DISCONNECTED` | Phone disconnected, gloves remain paired                |
+| `STOPPING`           | Stop in progress; `STOPPED` follows immediately, so it lands in IDLE (then READY if the pair is still connected) |
+| `ERROR`              | Defined but never entered (no code fires `ERROR_OCCURRED` or `EMERGENCY_STOP`) |
+| `LOW_BATTERY`        | Defined but never entered (no code fires battery triggers) |
+| `CRITICAL_BATTERY`   | Defined but never entered (no code fires battery triggers) |
+| `CONNECTION_LOST`    | Glove link lost; therapy stopped, purple blink, waits up to 30s for the peer |
+| `PHONE_DISCONNECTED` | PRIMARY only: phone lost from READY or RUNNING; informational, LED unchanged |
 
 ---
 
@@ -133,29 +125,30 @@ sequenceDiagram
     P->>P: Boot, advertise "BlueBuzzah"
     S->>S: Boot, scan for "BlueBuzzah"
     S->>P: BLE Connect
-    S->>P: READY message
+    S->>P: IDENTIFY:SECONDARY
     P->>P: STATE: IDLE → READY
-    P->>P: Start keepalive (PING/PONG every 1s)
+    S->>S: STATE: IDLE → READY
+    P->>P: Start keepalive (PING/PONG every 70ms until sync valid, then 1s)
 
-    Note over P,S: PHASE 2: Clock Synchronization (5+ seconds)
-    loop Every 1 second (keepalive)
+    Note over P,S: PHASE 2: Clock Synchronization (~350ms)
+    loop Every 70ms until sync valid (keepalive)
         P->>S: PING:seq|T1 (T1=PRIMARY time)
         Note over S: Record T2 (receive time)
         S->>S: Record T3 (send time)
-        S->>P: PONG:seq|0|T2|T3
+        S->>P: PONG:seq|tx_micros|T2|T3
         Note over P: Record T4 (receive time)<br/>Calculate offset = ((T2-T1)+(T3-T4))/2
         P->>P: Collect offset samples (EMA smoothing)
     end
-    Note over P: After 5 valid samples (~5s):<br/>Clock sync ready
+    Note over P: After 5 valid samples (~350ms):<br/>Clock sync ready
 
     Note over APP,P: PHASE 3: User Commands
     APP->>P: PROFILE_LOAD or PROFILE_CUSTOM
-    P->>S: PARAM_UPDATE:... (broadcast params)
+    Note over P: Profile stays on PRIMARY<br/>(PROFILE_LOAD saves and reboots)<br/>SECONDARY gets timing in each MC: message
 
     APP->>P: SESSION_START
-    Note over P: Check: SECONDARY connected? Battery OK?
-    P->>S: START_SESSION:seq|ts
+    Note over P: Check: Battery OK?<br/>SECONDARY connected → clock sync valid?<br/>(else Sync not ready error until 10s after connect)
     P->>P: STATE: READY → RUNNING
+    P->>S: START_SESSION:seq|ts
     S->>S: STATE: READY → RUNNING
 
     Note over P,S: PHASE 4: Active Therapy (see next diagram)
@@ -186,13 +179,13 @@ Pattern generation, message batching, and motor scheduling during an active sess
 flowchart TD
     A["SESSION RUNNING<br/>(PRIMARY & SECONDARY both in RUNNING state)"]
 
-    A --> B["PRIMARY: Start macrocycle generation<br/>(3 patterns = 12 buzz events)"]
+    A --> B["PRIMARY: Start macrocycle generation<br/>(3 patterns × fingers = 12 buzz events at 4 fingers)"]
 
-    B --> C["Generate all 12 events<br/>with absolute activation times"]
+    B --> C["Generate all 12 events<br/>with delta times from baseTime"]
 
-    C --> D["Calculate activate_time<br/>= now + lead_time<br/>(lead_time = RTT + 3σ margin)"]
+    C --> D["Calculate baseTime<br/>= now + lead_time<br/>(lead_time = RTT + 3σ margin + overheads)"]
 
-    D --> E["Serialize MACROCYCLE message<br/>MC:seq|baseTime|12|events..."]
+    D --> E["Serialize MACROCYCLE message<br/>MC:seq|baseHigh|baseLow|offHigh|offLow|dur|count|events..."]
 
     E --> F["Send MACROCYCLE to SECONDARY<br/>(~200 bytes, 72% reduction)"]
 
@@ -214,19 +207,11 @@ flowchart TD
 
     O -->|No| J
 
-    O -->|Yes - Pattern Complete| P["Check inter-pattern timing"]
+    O -->|Yes - Macrocycle Complete| S["Inter-macrocycle RELAX<br/>(2× pattern duration = 1336ms)"]
 
-    P --> Q{Pattern count<br/>== 3?}
-
-    Q -->|No| R["Next pattern in macrocycle<br/>(no relaxation)"]
-    Q -->|Yes| S["Inter-macrocycle RELAX<br/>(2× pattern duration = 1336ms)"]
-
-    R --> B
     S --> B
 
     style A fill:#35B6F2,color:#0a0a0a
-    style Q fill:#17a2b8,color:#fafafa
-    style R fill:#35B6F2,color:#0a0a0a
     style S fill:#05212D,color:#fafafa
 ```
 
@@ -284,7 +269,7 @@ sequenceDiagram
         Note over S: T2 = getMicros()<br/>(receive time on SECONDARY)
         Note over S: Process & prepare response
         Note over S: T3 = getMicros()<br/>(send time on SECONDARY)
-        S->>P: PONG:42|0|T2|T3
+        S->>P: PONG:42|tx_micros|T2|T3
     end
 
     rect rgba(5, 33, 45, 0.5)
@@ -297,7 +282,7 @@ sequenceDiagram
 
     Note over P,S: After 5+ valid samples:<br/>Clock sync ready ✓
 
-    Note over P,S: During therapy:<br/>Refresh offset every 1s<br/>(EMA smoothing for drift)
+    Note over P,S: During therapy:<br/>Refresh offset every 250ms<br/>(EMA smoothing for drift)
 ```
 
 **Offset Calculation Formula:**
@@ -310,10 +295,10 @@ RTT = (T4 - T1) - (T3 - T2)
 **Synchronization Parameters:**
 
 - **Target accuracy**: <2ms bilateral sync
-- **Confidence threshold**: RTT < 80ms
+- **Confidence threshold**: RTT < 60ms
 - **Minimum samples**: 5 for sync ready
-- **Smoothing**: Exponential moving average (α = 0.2)
-- **Update frequency**: Every 1 second (with keepalive)
+- **Smoothing**: Exponential moving average (α = 0.1)
+- **Update frequency**: Every PING/PONG (70ms until sync valid, 250ms during therapy, 1s idle)
 
 ### Warm-Start Sync Recovery
 
@@ -351,24 +336,23 @@ sequenceDiagram
 
     Note over P,S: SCENARIO: Brief BLE disconnect (<15s)
 
+    Note over P: Sync cache (refreshed on every accepted sample):<br/>• Last clock offset<br/>• Last drift rate<br/>• Cached timestamp
     P->>P: Connection lost
     S->>S: Connection lost
-    Note over P: Cache sync state:<br/>• Last clock offset<br/>• Last drift rate<br/>• Cached timestamp
     Note over S: Wait for reconnection
 
     rect rgba(5, 33, 45, 0.5)
         Note over P,S: Reconnection within 15 seconds
         S->>P: BLE Reconnect
-        S->>P: READY message
+        S->>P: IDENTIFY:SECONDARY
+        P->>P: STATE: CONNECTION_LOST → READY
         P->>P: Check sync cache age
         Note over P: Cache age < 15s?<br/>→ WARM START
     end
 
     P->>S: PING:seq|T1 (1st keepalive)
-    S->>P: PONG:seq|0|T2|T3
-    Note over P: Single sample + cached state<br/>= sync ready (~3s vs 5+s)
-
-    P->>P: STATE: READY → can resume
+    S->>P: PONG:seq|tx_micros|T2|T3
+    Note over P: 3 confirmatory samples (each within 5ms<br/>of the projected offset) = sync ready<br/>(~210ms vs ~350ms)
 ```
 
 **Warm-Start Conditions:**
@@ -378,30 +362,33 @@ sequenceDiagram
 | Disconnect duration < 15s | ✓ | ✗ |
 | Disconnect duration ≥ 15s | ✗ | ✓ |
 | First connection (no cache) | ✗ | ✓ |
-| Device reboot | ✗ | ✓ |
+| Device reboot (or a sample > 5ms off the projection) | ✗ | ✓ |
 
 **Recovery Time Comparison:**
 
 | Start Type | Required Samples | Time to Sync Ready |
 |------------|:----------------:|:------------------:|
-| Cold-Start | 5+ samples | ~5+ seconds |
-| Warm-Start | 1-2 samples | ~2-3 seconds |
+| Cold-Start | 5+ samples | ~350ms |
+| Warm-Start | 3 samples | ~210ms |
 
 **Sync Cache Contents:**
 
 ```cpp
-struct SyncCache {
-    int32_t lastClockOffset;      // Microseconds offset
-    float lastDriftRate;          // us/ms drift compensation
-    uint32_t cachedTimestamp;     // When cache was written
-    uint8_t confidenceLevel;      // Sample quality indicator
+// include/sync_protocol.h
+struct WarmStartCache {
+    int64_t cachedOffset;        // Last known median offset
+    float cachedDriftRate;       // Last known drift rate (us/ms)
+    uint32_t cacheTimestamp;     // syncNowMs() epoch (getMicros()/1000) when cached
+    bool isValid;                // Cache contains usable data
 };
 
 // From config.h:
 // SYNC_WARM_START_VALIDITY_MS = 15000 (15 seconds)
+// SYNC_WARM_START_MIN_SAMPLES = 3
+// SYNC_WARM_START_TOLERANCE_US = 5000 (5ms)
 ```
 
-**Purpose:** Warm-start significantly improves therapy continuity after transient BLE issues (interference, temporary out-of-range) by avoiding full re-synchronization.
+**Purpose:** Warm-start gets the gloves back to a valid clock sync sooner after transient BLE issues (interference, temporary out-of-range) by avoiding full re-synchronization. The session itself is stopped on connection loss and must be started again.
 
 ---
 
@@ -428,9 +415,9 @@ How both gloves achieve sub-2ms synchronization despite BLE latency:
 flowchart LR
     subgraph PRIMARY["PRIMARY (0ms reference)"]
         A["1. Generate macrocycle<br/>t=500ms"]
-        B["2. baseTime<br/>= 500ms + lead_time<br/>= 550ms"]
+        B["2. baseTime<br/>= 500ms + lead_time<br/>= 570ms"]
         C["3. Send MACROCYCLE<br/>(12 events)"]
-        D["4. Schedule all in queue<br/>baseTime=550ms"]
+        D["4. Schedule all in queue<br/>baseTime=570ms"]
     end
 
     subgraph BLE["Bluetooth Latency<br/>(~7.5-20ms)"]
@@ -438,10 +425,10 @@ flowchart LR
     end
 
     subgraph SECONDARY["SECONDARY (offset=-1ms)"]
-        F["5. Receive MACROCYCLE<br/>(550ms PRIMARY time)"]
-        G["6. Convert to LOCAL<br/>time = 550ms + (-1ms)<br/>= 549ms"]
-        H["7. Schedule all in queue<br/>baseTime=549ms"]
-        I["8. Wait for 549ms"]
+        F["5. Receive MACROCYCLE<br/>(570ms PRIMARY time,<br/>offset carried in MC:)"]
+        G["6. Convert to LOCAL<br/>time = 570ms + (-1ms)<br/>= 569ms"]
+        H["7. Schedule all in queue<br/>baseTime=569ms"]
+        I["8. Wait for 569ms"]
     end
 
     subgraph EXECUTION["Motor Activation"]
@@ -450,8 +437,8 @@ flowchart LR
 
     A --> B --> C --> E --> F --> G --> H --> I --> J
     C --> D --> J
-    D -.->|Waits for<br/>550ms| J
-    I -.->|Waits for<br/>549ms| J
+    D -.->|Waits for<br/>570ms| J
+    I -.->|Waits for<br/>569ms| J
 ```
 
 **Key Insight:** By scheduling events with absolute activation times (in PRIMARY's timebase) and applying clock offset conversion on SECONDARY, the system decouples synchronization accuracy from BLE transmission latency.
@@ -486,31 +473,31 @@ graph TD
     D["Therapy Messages"]
     E["Status Messages"]
 
+    B --> B0["IDENTIFY:SECONDARY<br/>(SECONDARY → PRIMARY on connect)"]
     B --> B1["START_SESSION:seq|ts"]
     B --> B2["PAUSE_SESSION:seq|ts"]
     B --> B3["RESUME_SESSION:seq|ts"]
     B --> B4["STOP_SESSION:seq|ts"]
 
-    C --> C1["PING:seq|T1<br/>(every 1s, all states)"]
-    C --> C2["PONG:seq|0|T2|T3<br/>(response)"]
+    C --> C1["PING:seq|T1<br/>(70ms acquiring, 250ms therapy, 1s idle)"]
+    C --> C2["PONG:seq|tx_micros|T2|T3<br/>(response)"]
 
-    D --> D2["MACROCYCLE:seq|baseTime|12|events<br/>(batched, 3 patterns)"]
-    D --> D3["MACROCYCLE_ACK:seq<br/>(acknowledgment)"]
+    D --> D2["MC:seq|baseHigh|baseLow|offHigh|offLow|dur|count|events<br/>(batched, 3 patterns)"]
+    D --> D3["MC_ACK:seq|ts<br/>(acknowledgment)"]
 
     E --> E1["GET_BATTERY"]
-    E --> E2["BAT_RESPONSE:voltage"]
+    E --> E2["BATRESPONSE:voltage"]
 
     A --> B
     A --> C
     A --> D
     A --> E
 
-    B1 --> F["All motors start<br/>@scheduled time"]
-    B2 --> G["All motors stop<br/>immediately"]
-    B3 --> H["Resume therapy<br/>from paused point"]
-    B4 --> I["Clean shutdown"]
+    B1 --> F["SECONDARY state → RUNNING<br/>(motors follow MC: events)"]
+    B2 --> G["SECONDARY state → PAUSED"]
+    B3 --> H["SECONDARY state → RUNNING"]
+    B4 --> I["Clean shutdown<br/>(queues cleared, motors off)"]
 
-    D1 --> J["Activate single finger<br/>at activate_time"]
     D2 --> K["Activate 12 events<br/>over ~3.3 seconds"]
 
     E1 --> L["Query SECONDARY<br/>battery voltage"]
@@ -520,7 +507,7 @@ graph TD
 
 - **Phone → PRIMARY**: BLE UART service (Nordic UART Service)
 - **PRIMARY → SECONDARY**: Custom sync protocol over BLE UART
-- **Keepalive**: PING/PONG every 1s in all connected states
+- **Keepalive**: PING/PONG in all connected states: every 70ms until clock sync is valid, 250ms during therapy, 1s idle
 
 ---
 
@@ -560,7 +547,7 @@ flowchart TD
 
     G --> J{Mirror Pattern?}
     H --> J
-    I --> J
+    I --> K
 
     J -->|Yes| K["PRIMARY finger =<br/>SECONDARY finger<br/>(noisy vCR)"]
     J -->|No| L["PRIMARY & SECONDARY<br/>independent sequences<br/>(standard vCR)"]
@@ -592,8 +579,8 @@ flowchart TD
 **Pattern Types:**
 
 - **RNDP (Random Permutation)**: Finger order randomized each pattern
-- **SEQUENTIAL**: Fingers activate in order (0→1→2→3 or reverse)
-- **MIRRORED**: Both hands use identical finger sequences (noisy vCR mode)
+- **SEQUENTIAL**: Fingers activate in order (0→1→2→3)
+- **MIRRORED**: Both hands use the same random finger order, regardless of the mirror setting
 
 **Timing:**
 
@@ -605,7 +592,7 @@ flowchart TD
 
 ## 8. Battery & Error Handling
 
-Battery monitoring and error recovery flows:
+Battery checks and connection-loss recovery flows:
 
 ```mermaid
 %%{init: {'theme': 'base', 'themeVariables': {
@@ -630,47 +617,32 @@ Battery monitoring and error recovery flows:
   'noteTextColor': '#fafafa'
 }}}%%
 stateDiagram-v2
-    [*] --> RUNNING
+    [*] --> READY
 
-    RUNNING --> NORMAL: Battery >3.6V
-    RUNNING --> LOW: Battery 3.3-3.6V\n(>50s remaining)
-    RUNNING --> CRITICAL: Battery <3.3V\n(immediately)
+    READY --> REFUSED: SESSION_START with\nbattery below 3.3V
+    REFUSED --> READY: Error "Battery too low"
+    READY --> RUNNING: SESSION_START\n(battery OK)
 
-    NORMAL --> LOW: Voltage drops
+    RUNNING --> CONNECTION_LOST: Link drop, or SECONDARY\nhears no PING/MC for 6s
+    RUNNING --> IDLE: PRIMARY hears no PONG/MC_ACK\nfor 6s (stop + STOP_SESSION)
 
-    LOW --> NORMAL: Voltage recovers
-    LOW --> CRITICAL: Voltage drops further
+    CONNECTION_LOST --> READY: Reconnect or\npeer traffic resumes
+    CONNECTION_LOST --> IDLE: 30s without\npeer traffic
 
-    CRITICAL --> SHUTDOWN: Motors stop\nSession ends
-
-    RUNNING --> CONNECTION_LOST: No PONG\nfor 6 seconds
-
-    CONNECTION_LOST --> RECONNECT: Attempt\nreconnection
-
-    RECONNECT --> RUNNING: Success
-    RECONNECT --> RETRY2: Failed,\nwait 2s
-
-    RETRY2 --> RUNNING: Success
-    RETRY2 --> RETRY3: Failed,\nwait 2s
-
-    RETRY3 --> RUNNING: Success
-    RETRY3 --> IDLE: Failed,\nall retries\nexhausted
-
-    SHUTDOWN --> [*]
     IDLE --> [*]
 ```
 
 **Battery Thresholds:**
 
-- **Normal**: >3.6V (full operation)
-- **Low**: 3.3-3.6V (warning, >50s estimated remaining)
-- **Critical**: <3.3V (immediate forced shutdown)
+- **Low**: <3.4V (`BATTERY_LOW_VOLTAGE`): reported in battery status only
+- **Critical**: <3.3V (`BATTERY_CRITICAL_VOLTAGE`): `SESSION_START` is refused with `Battery too low`
+- Battery is not monitored during a session; the LOW_BATTERY and CRITICAL_BATTERY states are never entered
 
 **Connection Loss Handling:**
 
-- **Detection**: 6 seconds without PONG response (3 missed keepalives)
-- **Reconnection**: 3 attempts with 2s intervals
-- **Timeout**: Return to IDLE after all retries exhausted
+- **Detection**: BLE disconnect on either glove; on the SECONDARY, 6 seconds without a PING or macrocycle (`KEEPALIVE_TIMEOUT_MS`); on the PRIMARY during therapy, 6 seconds without SECONDARY traffic stops the session instead
+- **Reconnection**: Scanning/advertising continue; the peer can reconnect at any time
+- **Timeout**: Return to IDLE (LED back to breathing blue) after 30s without peer traffic
 
 ---
 
@@ -699,19 +671,17 @@ flowchart TD
 
     B["Calculate one-way latency<br/>latency = RTT / 2"]
 
-    C["Apply EMA smoothing<br/>smooth_lat = α×measured + (1-α)×prev"]
+    C["Apply EMA smoothing (α = 0.3)<br/>smooth_lat = α×measured + (1-α)×prev<br/>(samples > 3× smooth_lat rejected)"]
 
-    D["Calculate variance<br/>σ² = deviation from smoothed"]
+    D["Track variance<br/>EMA of |measured - smooth_lat|"]
 
-    E["Compute lead time<br/>lead_time = smooth_lat + 3σ"]
+    E["Compute lead time<br/>lead_time = 2×smooth_lat + 6×variance<br/>+ 10ms processing + 5ms generation"]
 
-    F["Clamp to bounds<br/>70ms ≤ lead_time ≤ 150ms"]
+    F["Clamp to bounds<br/>70ms (SYNC_MIN_LEAD_TIME_US) ≤ lead_time<br/>≤ 150ms (SYNC_MAX_LEAD_TIME_US)"]
 
     G["Use for MACROCYCLE events<br/>baseTime = now + lead_time"]
 
     A --> B --> C --> D --> E --> F --> G
-
-    Note over A: Minimum: 70ms (SYNC_MIN_LEAD_TIME_US)<br/>Maximum: 150ms (SYNC_MAX_LEAD_TIME_US)
 
     style E fill:#17a2b8,color:#fafafa
     style F fill:#35B6F2,color:#0a0a0a
@@ -720,8 +690,11 @@ flowchart TD
 **Lead Time Formula:**
 
 ```
-lead_time = RTT/2 + processing_overhead + margin
+lead_time = RTT + 3σ margin + processing_overhead + generation_overhead
+          = 2×smoothed_one_way + 6×variance + 10ms + 5ms
 lead_time = clamp(lead_time, 70ms, 150ms)
+
+// Before 3 latency samples: 35ms + 10ms + 5ms = 50ms (not clamped)
 
 // From config.h:
 // SYNC_MIN_LEAD_TIME_US = 70000  (70ms minimum)
@@ -772,28 +745,25 @@ sequenceDiagram
     participant S as SECONDARY
 
     Ph->>P: SESSION_START
-    P->>P: Validate (battery, SECONDARY connected)
+    P->>P: Validate (battery, clock sync if SECONDARY connected)
 
     P->>P: Load profile settings
-    P->>S: PARAM_UPDATE:ON:0.100:OFF:0.067:...
-    S->>S: Update local params
-
-    P->>S: START_SESSION:seq|ts
     P->>P: State: READY → RUNNING
+    P->>S: START_SESSION:seq|ts
     S->>S: State: READY → RUNNING
 
     P->>Ph: SESSION_STATUS:RUNNING
 
-    loop Every 1 second (keepalive + clock sync)
+    loop Every 250ms (keepalive + clock sync)
         P->>S: PING:seq|T1
-        S->>P: PONG:seq|0|T2|T3
+        S->>P: PONG:seq|tx_micros|T2|T3
         P->>P: Compute clock offset, EMA update
     end
 
-    loop Every ~200ms (pattern execution)
+    loop Every ~3.3s (pattern execution)
         alt Batching Mode
-            P->>S: MACROCYCLE:seq|baseTime|12|...
-            S->>P: MACROCYCLE_ACK:seq
+            P->>S: MC:seq|baseHigh|baseLow|offHigh|offLow|dur|count|...
+            S->>P: MC_ACK:seq|ts
         end
 
         P->>P: Schedule all 12 events in ActivationQueue
@@ -809,30 +779,27 @@ sequenceDiagram
     end
 
     Ph->>P: SESSION_PAUSE
-    P->>S: PAUSE_SESSION:seq|ts
     P->>P: State: RUNNING → PAUSED
+    P->>S: PAUSE_SESSION:seq|ts
     S->>S: State: RUNNING → PAUSED
     P->>Ph: SESSION_STATUS:PAUSED
 
     Ph->>P: SESSION_RESUME
-    P->>S: RESUME_SESSION:seq|ts
     P->>P: State: PAUSED → RUNNING
+    P->>S: RESUME_SESSION:seq|ts
     S->>S: State: PAUSED → RUNNING
     P->>Ph: SESSION_STATUS:RUNNING
 
     Note over P,S: ... therapy continues ...
 
     Ph->>P: SESSION_STOP
+    P->>P: Stop therapy, motors off
+    P->>P: State: RUNNING/PAUSED → STOPPING → IDLE
     P->>S: STOP_SESSION:seq|ts
-    P->>P: State: RUNNING/PAUSED → STOPPING
-    S->>S: State: RUNNING/PAUSED → STOPPING
-    P->>P: Cancel pending events
-    S->>S: Cancel pending events
-    P->>P: Motors off
-    S->>S: Motors off
-    P->>P: State: STOPPING → IDLE
-    S->>S: State: STOPPING → IDLE
+    S->>S: Cancel pending events, motors off
+    S->>S: State: RUNNING/PAUSED → STOPPING → IDLE
     P->>Ph: SESSION_STATUS:IDLE
+    Note over P,S: main loop promotes IDLE → READY while the pair is connected
 ```
 
 ---
@@ -867,10 +834,9 @@ sequenceDiagram
 | Pattern duration      | ~668ms  | 4 events × (TIME_ON + TIME_OFF + jitter)  |
 | Macrocycle duration   | ~3.3s   | 3 patterns + inter-macrocycle relaxation  |
 | Relaxation period     | ~1336ms | 2× pattern duration (between macrocycles) |
-| PING/PONG frequency   | 1s      | Keepalive and clock sync refresh rate     |
-| Connection timeout    | 6s      | 3 missed PING/PONGs triggers reconnection |
-| Reconnection interval | 2s      | Delay between reconnection attempts       |
-| Reconnection attempts | 3       | Maximum retries before returning to IDLE  |
+| PING/PONG frequency   | 70ms / 250ms / 1s | Keepalive and clock sync refresh rate (acquiring / therapy / idle) |
+| Connection timeout    | 6s      | SECONDARY: no PING/MC for 6s → connection lost; PRIMARY: no SECONDARY traffic for 6s during therapy → session stopped |
+| Connection-lost window | 30s    | Purple LED before returning to IDLE (reconnect still possible) |
 
 ### Synchronization Accuracy
 
@@ -878,10 +844,10 @@ sequenceDiagram
 | ---------------------- | ------------------------- | --------------------------------------- |
 | Target accuracy        | <2ms                      | Bilateral synchronization (both gloves) |
 | Synchronization method | IEEE 1588 PTP 4-timestamp | Clock offset calculation                |
-| Confidence threshold   | RTT < 80ms                | For accepting offset samples            |
+| Confidence threshold   | RTT < 60ms                | For accepting offset samples            |
 | Minimum samples        | 5                         | Before declaring sync ready             |
-| Smoothing algorithm    | EMA (α = 0.2)             | Exponential moving average              |
-| Update frequency       | 1 Hz                      | Every PING/PONG cycle                   |
+| Smoothing algorithm    | EMA (α = 0.1)             | Exponential moving average              |
+| Update frequency       | ~14 Hz / 4 Hz / 1 Hz      | Every PING/PONG cycle (acquiring / therapy / idle) |
 
 ### Message Efficiency
 
@@ -892,11 +858,11 @@ sequenceDiagram
 
 ### Battery Thresholds
 
-| Level    | Voltage Range | Remaining Time | Action                        |
-| -------- | ------------- | -------------- | ----------------------------- |
-| Normal   | >3.6V         | Full           | Normal operation              |
-| Low      | 3.3-3.6V      | >50s           | Warning, continue             |
-| Critical | <3.3V         | <50s           | **Immediate forced shutdown** |
+| Level    | Voltage Range | Action                                            |
+| -------- | ------------- | ------------------------------------------------- |
+| Normal   | ≥3.4V         | Normal operation                                  |
+| Low      | 3.3-3.4V      | Flagged in battery status only                    |
+| Critical | <3.3V         | `SESSION_START` refused (`Battery too low`); a running session is not stopped |
 
 ---
 
@@ -904,10 +870,9 @@ sequenceDiagram
 
 This document complements the following technical documentation:
 
-- **[ARDUINO_FIRMWARE_ARCHITECTURE.md](./ARDUINO_FIRMWARE_ARCHITECTURE.md)** - Complete firmware architecture overview
+- **[ARCHITECTURE.md](./ARCHITECTURE.md)** - Complete firmware architecture overview
 - **[SYNCHRONIZATION_PROTOCOL.md](./SYNCHRONIZATION_PROTOCOL.md)** - Detailed PRIMARY ↔ SECONDARY sync protocol specification
 - **[BLE_PROTOCOL.md](./BLE_PROTOCOL.md)** - Phone ↔ PRIMARY BLE command protocol
-- **[COMMAND_REFERENCE.md](./COMMAND_REFERENCE.md)** - All 18 BLE commands with syntax and examples
 
 ---
 
@@ -919,7 +884,7 @@ The BlueBuzzah firmware implements a sophisticated bilateral synchronization sys
 2. **IEEE 1588 PTP-style clock synchronization** achieving <2ms bilateral sync accuracy
 3. **Adaptive lead time scheduling** that decouples sync accuracy from BLE latency variability
 4. **Message batching (MACROCYCLE)** reducing BLE bandwidth by 72%
-5. **Graceful error handling** with automatic reconnection and battery failsafes
+5. **Graceful error handling** with automatic reconnection and a battery check at session start
 6. **FreeRTOS task isolation** for deterministic motor timing (<1ms activation accuracy)
 
-This architecture enables precise bilateral haptic feedback while operating within the constraints of BLE latency (7.5-20ms typical) and embedded hardware limitations (256KB RAM, 1MB flash).
+This architecture enables precise bilateral haptic feedback while operating within the constraints of BLE latency (7.5-20ms typical) and embedded hardware limitations (nRF52840: 256KB RAM, 1MB flash).

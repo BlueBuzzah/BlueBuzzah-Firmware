@@ -1,9 +1,9 @@
-# BlueBuzzah v2 Boot Sequence
+# BlueBuzzah Firmware Boot Sequence
 
 **Comprehensive boot sequence documentation for bilateral haptic therapy system**
 
 Version: 2.0.0
-Platform: Arduino C++ on Adafruit Feather nRF52840 Express
+Platform: Arduino C++ on Adafruit Feather nRF52840 Express (v2) and Seeed XIAO ESP32-S3 / PentaBuzzer (v3)
 Last Updated: 2025-01-11
 
 ---
@@ -26,22 +26,22 @@ Last Updated: 2025-01-11
 
 ## Overview
 
-The BlueBuzzah boot sequence establishes the necessary BLE connections between PRIMARY, SECONDARY, and optionally a phone app within a **30-second window**. Clear LED feedback provides visual indication of boot progress, success, or failure.
+The BlueBuzzah boot sequence (`setup()` in `src/main.cpp`) initializes the LED, role, hardware and BLE stack, then leaves the device in IDLE while the PRIMARY advertises and the SECONDARY scans for it. There is no boot timeout: advertising and scanning continue until the pair connects. On the PRIMARY, a **30-second window** starts when the SECONDARY connects; if no phone connects within it, therapy auto-starts. Clear LED feedback provides visual indication of boot progress and of any init failure.
 
 ### Boot Sequence Goals
 
 1. **Establish bilateral synchronization** between PRIMARY and SECONDARY devices
 2. **Optional phone connection** for app control (not required for therapy)
 3. **Visual feedback** via LED at every stage
-4. **Safety-first approach** - fail gracefully if connections not established
-5. **Automatic fallback** to default therapy if minimum requirements met
+4. **Never give up on the peer** - keep advertising/scanning until it appears
+5. **Automatic fallback** to default therapy if no phone connects within 30 seconds of pairing
 
 ### Key Design Principles
 
-- **Time-bounded**: 30-second maximum boot window
-- **Safety-critical**: SECONDARY connection is required; phone is optional
+- **Time-bounded auto-start**: 30-second phone window (`STARTUP_WINDOW_MS`), started when the SECONDARY connects
+- **Phone optional**: the gloves run therapy on their own
 - **User-friendly**: Clear LED indicators at each stage
-- **Fail-safe**: Therapy only begins when bilateral sync is confirmed
+- **Sync-gated start**: with the SECONDARY connected, therapy start waits for clock sync, falling back to a degraded start after ~10 seconds
 - **Graceful degradation**: Default therapy if phone not connected
 
 ---
@@ -51,25 +51,25 @@ The BlueBuzzah boot sequence establishes the necessary BLE connections between P
 ### Minimum Requirements
 
 **For PRIMARY Device:**
-- Must establish connection with SECONDARY device
+- Advertises until the SECONDARY connects (no timeout)
 - Phone connection is optional
 
 **For SECONDARY Device:**
-- Must establish connection with PRIMARY device
+- Scans until it finds and connects to the PRIMARY (no timeout)
 
 **For System:**
-- PRIMARY-SECONDARY connection required for therapy
-- Sub-10ms bilateral synchronization after boot
-- 30-second timeout enforced strictly
+- Auto-start requires the SECONDARY to be connected when the 30-second window expires
+- A phone `SESSION_START` works with or without the SECONDARY. While the SECONDARY is connected it is refused with `Sync not ready` until clock sync is valid, or until 10 seconds (`SYNC_START_FALLBACK_MS`) after the SECONDARY connected
+- Clock sync needs 5 valid PING/PONG samples (~350ms) after connecting, or 3 on a warm start
 
 ### Success Criteria
 
-| Scenario | PRIMARY | SECONDARY | Phone | Result |
-|----------|---------|-----------|-------|--------|
-| Full Success | ✓ | ✓ | ✓ | App control + default therapy available |
-| Partial Success | ✓ | ✓ | ✗ | Automatic default therapy starts |
-| PRIMARY Failure | ? | ✗ | ? | Boot fails (slow red LED) |
-| SECONDARY Failure | ✗ | ? | ✗ | Boot fails (slow red LED) |
+| Scenario | SECONDARY | Phone | Result |
+|----------|-----------|-------|--------|
+| Full Success | ✓ | ✓ (within 30 s of pairing) | App control; no auto-start |
+| Partial Success | ✓ | ✗ | Automatic default therapy starts 30 s after pairing |
+| No SECONDARY | ✗ | ? | PRIMARY stays IDLE (breathing blue) and keeps advertising; a phone can still start a PRIMARY-only session |
+| No PRIMARY | ✗ | - | SECONDARY stays IDLE (breathing blue) and keeps scanning |
 
 ---
 
@@ -97,7 +97,7 @@ the probe never runs at boot; it is available on demand via the
 
 ## PRIMARY Device Boot Sequence
 
-The PRIMARY device acts as the central coordinator, advertising its presence and waiting for connections from both SECONDARY and phone.
+The PRIMARY device acts as the central coordinator, advertising its presence and waiting for connections from both SECONDARY and phone. A new connection is classified as the SECONDARY when it sends `IDENTIFY:SECONDARY` within 1 second (`IDENTIFY_TIMEOUT_MS`); otherwise it is treated as a phone.
 
 ### State Diagram
 
@@ -126,94 +126,107 @@ The PRIMARY device acts as the central coordinator, advertising its presence and
 stateDiagram-v2
     [*] --> Initializing: Power On
 
-    Initializing --> Advertising: BLE Init Complete
-    note right of Advertising: LED: Breathing Blue
+    Initializing --> Unconfigured: No stored role
+    note right of Unconfigured: Orange slow blink until SET_ROLE, then reboot
 
-    Advertising --> WaitingForDevices: Start Advertisement
-    note right of WaitingForDevices: Timeout: 30 seconds
+    Initializing --> BLEFailed: BLE init failed
+    note right of BLEFailed: Red slow blink
 
-    WaitingForDevices --> SecondaryConnected: SECONDARY Connects
-    note right of SecondaryConnected: LED: Solid Green
+    Initializing --> IDLE: BLE Init Complete
+    note right of IDLE: Breathing blue, advertising with no timeout
 
-    SecondaryConnected --> WaitingForPhone: No Phone Yet
-    note right of WaitingForPhone: LED: Solid Green
+    IDLE --> READY: SECONDARY Connects
+    note right of READY: Solid green, 30s phone window starts
 
-    WaitingForPhone --> BothConnected: Phone Connects
-    WaitingForPhone --> TherapyMode: 30s Timeout
+    READY --> WaitingForApp: Phone connects within 30s
+    note right of WaitingForApp: Stays READY, window cancelled
 
-    SecondaryConnected --> BothConnected: Phone Connects
+    READY --> RUNNING: 30s expire with no phone (auto-start)
+    note right of RUNNING: Pulsing green
 
-    BothConnected --> Ready: All Connected
-    TherapyMode --> Ready: Therapy Ready
-    note right of Ready: LED: Solid Green
-
-    WaitingForDevices --> Failed: 30s Timeout\n(no SECONDARY)
-    note right of Failed: LED: Slow Red Flash
-
-    Failed --> [*]: Halt
-    Ready --> ExecutingTherapy: Start Therapy
+    WaitingForApp --> RUNNING: SESSION_START from app
 ```
 
 ### Detailed Steps
 
 #### 1. Initialization Phase
 
-**Duration**: 1-2 seconds
+**Duration**: 1-2 seconds, plus up to 3 seconds waiting for a USB serial host (skipped once a host opens the port) and, on v3, the motor presence probe
 
 ```cpp
-// src/main.cpp
+// src/main.cpp - setup() (trimmed)
 
-BootResult primaryBootSequence() {
-    Serial.println(F("[PRIMARY] Starting boot sequence"));
-
-    // Initialize LED
+if (led.begin())
+{
     led.setPattern(Colors::BLUE, LEDPattern::BLINK_CONNECT);
+}
 
-    // Initialize BLE
-    if (!bleManager.begin(deviceConfig)) {
-        led.setPattern(Colors::RED, LEDPattern::BLINK_SLOW); // boot failure
-        return BootResult::FAILED;
-    }
+profiles.begin();
+if (!profiles.hasStoredRole())
+{
+    waitForRoleConfiguration();   // orange slow blink; reboots after SET_ROLE
+}
+deviceRole = determineRole();
 
-    // Start advertising
-    bleManager.startAdvertising();
-    // ...
+hardwareReady = initializeHardware();
+if (hardwareReady)
+{
+    led.setPattern(Colors::CYAN, LEDPattern::BLINK_CONNECT);
+}
+else
+{
+    led.setPattern(Colors::RED, LEDPattern::BLINK_SLOW);
+}
+
+bleReady = initializeBLE();   // PRIMARY starts advertising inside ble.begin()
+if (bleReady)
+{
+    // Start in IDLE state with breathing blue LED
+    led.setPattern(Colors::BLUE, LEDPattern::BREATHE_SLOW);
+}
+else
+{
+    led.setPattern(Colors::RED, LEDPattern::BLINK_SLOW);
 }
 ```
 
-**LED Indicator**: breathing blue (IDLE, 2s cycle)
+**LED Indicator**: blue connect-blink, then cyan connect-blink, then breathing blue (IDLE, 2s cycle)
 **Purpose**: Initialize BLE stack and begin advertising
 
 ---
 
 #### 2. Connection Wait Phase
 
-**Duration**: 0-30 seconds (depends on connection timing)
+**Duration**: unbounded (advertising runs until the SECONDARY connects)
 
 ```cpp
-// src/main.cpp
+// src/main.cpp - onBLEConnect() (trimmed)
 
-uint32_t startTime = millis();
-bool secondaryConnected = false;
-bool phoneConnected = false;
+if ((deviceRole == DeviceRole::PRIMARY && type == ConnectionType::SECONDARY) ||
+    (deviceRole == DeviceRole::SECONDARY && type == ConnectionType::PRIMARY))
+{
+    stateMachine.transition(StateTrigger::CONNECTED);   // IDLE -> READY (solid green)
+}
 
-while (millis() - startTime < CONNECTION_TIMEOUT_MS) {
-    // Check for new connections (handled via callbacks)
-    if (bleManager.hasSecondaryConnection() && !secondaryConnected) {
-        secondaryConnected = true;
-        led.setPattern(Colors::GREEN, LEDPattern::SOLID); // pair connected -> READY
-
-        if (!phoneConnected) {
-            // (no distinct LED; device stays in IDLE/READY)
+if (deviceRole == DeviceRole::PRIMARY)
+{
+    if (type == ConnectionType::SECONDARY)
+    {
+        if (!autoStartTriggered)
+        {
+            // SECONDARY connected - start 30-second boot window for phone
+            bootWindowStart = millis();
+            bootWindowActive = true;
         }
-    }
 
-    if (bleManager.hasPhoneConnection() && !phoneConnected) {
-        phoneConnected = true;
+        syncProtocol.resetClockSync();
+        syncProtocol.tryWarmStart();   // warm start if the sync cache is < 15 s old
     }
-
-    // Small delay to prevent busy loop
-    delay(10);
+    else if (type == ConnectionType::PHONE && bootWindowActive)
+    {
+        // Phone connected within boot window - cancel auto-start
+        bootWindowActive = false;
+    }
 }
 ```
 
@@ -222,32 +235,43 @@ while (millis() - startTime < CONNECTION_TIMEOUT_MS) {
 - **SECONDARY connects**: solid green (READY)
 - **Waiting for phone**: solid green (READY, phone has no distinct LED)
 
-**Purpose**: Accept connections from SECONDARY and phone within timeout window
+**Purpose**: Accept connections from SECONDARY and phone; start the 30-second phone window once the SECONDARY is connected
 
 ---
 
 #### 3. Timeout Evaluation
 
-**At 30 seconds**: Evaluate connection status and determine outcome
+**At 30 seconds after the SECONDARY connected**: `loop()` checks the window
 
 ```cpp
-// Check if timeout reached
-if (millis() - startTime >= CONNECTION_TIMEOUT_MS) {
-    if (!secondaryConnected) {
-        // CRITICAL FAILURE: No SECONDARY
-        Serial.println(F("[PRIMARY] ERROR: SECONDARY not connected"));
-        led.setPattern(Colors::RED, LEDPattern::BLINK_SLOW); // boot failure
-        return BootResult::FAILED;
-    }
+// src/main.cpp - loop()
 
-    // SECONDARY connected, proceed with or without phone
+if (deviceRole == DeviceRole::PRIMARY && bootWindowActive && !autoStartTriggered)
+{
+    uint32_t startSnapshot = bootWindowStart;
+    uint32_t elapsed = millis() - startSnapshot;
+
+    if (elapsed >= STARTUP_WINDOW_MS)
+    {
+        if (ble.isSecondaryConnected() && !ble.isPhoneConnected())
+        {
+            bootWindowActive = false;
+            autoStartTriggered = true;
+            autoStartTherapy();
+        }
+        else
+        {
+            // SECONDARY disconnected during window, cancel
+            bootWindowActive = false;
+        }
+    }
 }
 ```
 
 **Outcomes**:
-- **No SECONDARY**: FAILED (slow red LED, halt)
-- **SECONDARY only**: SUCCESS_NO_PHONE (proceed to default therapy)
-- **SECONDARY + phone**: SUCCESS_WITH_PHONE (wait for app commands)
+- **Phone connected within the window**: window cancelled; PRIMARY stays READY and waits for app commands
+- **SECONDARY connected, no phone**: therapy auto-starts (`[BOOT] 30s window expired ... - auto-starting therapy`)
+- **SECONDARY disconnected during the window**: window cancelled; it restarts when the SECONDARY reconnects (until auto-start has fired once)
 
 ---
 
@@ -255,17 +279,12 @@ if (millis() - startTime >= CONNECTION_TIMEOUT_MS) {
 
 **Final LED**: Solid green
 
-```cpp
-// Determine final state
-led.setPattern(Colors::GREEN, LEDPattern::SOLID); // READY
+The LED follows the state machine from here on (`onStateChange()` in `src/main.cpp`):
 
-if (secondaryConnected && phoneConnected) {
-    Serial.println(F("[PRIMARY] All connections established"));
-    return BootResult::SUCCESS_WITH_PHONE;
-} else if (secondaryConnected) {
-    Serial.println(F("[PRIMARY] SECONDARY connected, no phone"));
-    return BootResult::SUCCESS_NO_PHONE;
-}
+```cpp
+case TherapyState::READY:
+    led.setPattern(Colors::GREEN, LEDPattern::SOLID);
+    break;
 ```
 
 **Purpose**: Signal that device is ready to begin therapy
@@ -274,34 +293,34 @@ if (secondaryConnected && phoneConnected) {
 
 ### PRIMARY Timeline Example
 
+Times are illustrative. A battery boot with no USB serial host spends the first 3 seconds in the serial wait.
+
 ```
 Time  | State                | LED                    | Connections
 ------|----------------------|------------------------|------------------
-0.0s  | Initializing         | Breathing Blue       | None
-1.0s  | Advertising          | Breathing Blue       | None
-3.5s  | SECONDARY Connected  | Solid Green         | SECONDARY
-4.0s  | Waiting for Phone    | Solid Green        | SECONDARY
-15.0s | Phone Connected      | (transition)           | SECONDARY + Phone
-15.5s | Ready                | Solid Green            | SECONDARY + Phone
+0.0s  | Initializing         | Blue Connect-Blink     | None
+3.5s  | Hardware Init OK     | Cyan Connect-Blink     | None
+4.0s  | IDLE (advertising)   | Breathing Blue         | None
+6.0s  | READY                | Solid Green            | SECONDARY (30s window starts)
+15.0s | Phone Connected      | Solid Green            | SECONDARY + Phone (window cancelled)
 ```
 
 **Alternative Scenario** (No Phone):
 ```
 Time  | State                | LED                    | Connections
 ------|----------------------|------------------------|------------------
-0.0s  | Initializing         | Breathing Blue       | None
-1.0s  | Advertising          | Breathing Blue       | None
-3.5s  | SECONDARY Connected  | Solid Green         | SECONDARY
-4.0s  | Waiting for Phone    | Solid Green        | SECONDARY
-30.0s | Timeout (no phone)   | (transition)           | SECONDARY
-30.5s | Ready                | Solid Green            | SECONDARY
+0.0s  | Initializing         | Blue Connect-Blink     | None
+3.5s  | Hardware Init OK     | Cyan Connect-Blink     | None
+4.0s  | IDLE (advertising)   | Breathing Blue         | None
+6.0s  | READY                | Solid Green            | SECONDARY (30s window starts)
+36.0s | RUNNING (auto-start) | Pulsing Green          | SECONDARY
 ```
 
 ---
 
 ## SECONDARY Device Boot Sequence
 
-The SECONDARY device actively scans for and connects to the PRIMARY device advertising as "BlueBuzzah".
+The SECONDARY device actively scans for and connects to the PRIMARY device, matching its advert (Nordic UART service + BlueBuzzah manufacturer data) or, as a fallback, its "BlueBuzzah" name.
 
 ### State Diagram
 
@@ -330,44 +349,39 @@ The SECONDARY device actively scans for and connects to the PRIMARY device adver
 stateDiagram-v2
     [*] --> Initializing: Power On
 
-    Initializing --> Scanning: BLE Init Complete
-    note right of Scanning: LED: Breathing Blue\nTimeout: 30 seconds
+    Initializing --> IDLE: BLE Init Complete
+    note right of IDLE: Breathing blue, scanning with no timeout
 
-    Scanning --> Connected: Found PRIMARY
-    note right of Connected: LED: Solid Green
+    IDLE --> READY: Connected to PRIMARY
+    note right of READY: Solid green, sends the IDENTIFY handshake
 
-    Connected --> Ready: Connection Confirmed
-    note right of Ready: LED: Solid Green
+    READY --> RUNNING: START_SESSION from PRIMARY
+    READY --> CONNECTION_LOST: Link drop or 6s without PRIMARY traffic
+    note right of CONNECTION_LOST: Purple blink, scanning restarts
 
-    Scanning --> Failed: 30s Timeout\n(PRIMARY not found)
-    note right of Failed: LED: Slow Red Flash
-
-    Failed --> [*]: Halt
-    Ready --> AwaitingCommands: Wait for PRIMARY
+    CONNECTION_LOST --> READY: Reconnected
+    CONNECTION_LOST --> IDLE: 30s without PRIMARY
 ```
 
 ### Detailed Steps
 
 #### 1. Initialization Phase
 
-**Duration**: 1-2 seconds
+**Duration**: 1-2 seconds (same `setup()` path and LED sequence as the PRIMARY)
+
+`initializeBLE()` starts scanning for the SECONDARY role:
 
 ```cpp
-// src/main.cpp
+// src/main.cpp - initializeBLE()
 
-BootResult secondaryBootSequence() {
-    Serial.println(F("[SECONDARY] Starting boot sequence"));
-
-    // Initialize LED
-    led.setPattern(Colors::BLUE, LEDPattern::BLINK_CONNECT);
-
-    // Initialize BLE
-    if (!bleManager.begin(deviceConfig)) {
-        led.setPattern(Colors::RED, LEDPattern::BLINK_SLOW); // boot failure
-        return BootResult::FAILED;
+if (deviceRole == DeviceRole::SECONDARY)
+{
+    if (!ble.startScanning(BLE_NAME))
+    {
+        Serial.println(F("[ERROR] Failed to start scanning"));
+        return false;
     }
-
-    // ...
+    Serial.println(F("[BLE] Scanning started"));
 }
 ```
 
@@ -378,30 +392,9 @@ BootResult secondaryBootSequence() {
 
 #### 2. Scanning Phase
 
-**Duration**: 0-30 seconds (until PRIMARY found or timeout)
+**Duration**: unbounded (until PRIMARY found)
 
-```cpp
-uint32_t startTime = millis();
-bool connected = false;
-
-while (millis() - startTime < CONNECTION_TIMEOUT_MS) {
-    // Scan for PRIMARY device
-    if (bleManager.scanAndConnect("BlueBuzzah", 1000)) {
-        connected = true;
-
-        // Success indicators
-        led.setPattern(Colors::GREEN, LEDPattern::SOLID); // pair connected -> READY
-        delay(500);
-        led.setPattern(Colors::GREEN, LEDPattern::SOLID); // READY
-
-        Serial.println(F("[SECONDARY] Connected to PRIMARY"));
-        return BootResult::SUCCESS;
-    }
-
-    // Small delay between scan attempts
-    delay(100);
-}
-```
+The scanner runs with no timeout (`start(0)`); its scan callback connects as soon as it sees a matching PRIMARY advert. See [BLE Scanning Parameters](#ble-scanning-parameters-secondary).
 
 **LED Indicator**: breathing blue (IDLE) while scanning
 **Purpose**: Find and connect to PRIMARY device
@@ -415,31 +408,27 @@ while (millis() - startTime < CONNECTION_TIMEOUT_MS) {
 **LED**: on connecting to PRIMARY the state goes directly to READY — solid green.
 
 ```cpp
-if (connected) {
-    led.setPattern(Colors::GREEN, LEDPattern::SOLID); // pair connected -> READY
-    delay(500);
-    led.setPattern(Colors::GREEN, LEDPattern::SOLID); // READY
-    return BootResult::SUCCESS;
+// src/main.cpp - onBLEConnect()
+
+if (deviceRole == DeviceRole::SECONDARY && type == ConnectionType::PRIMARY)
+{
+    Serial.println(F("[SECONDARY] Sending IDENTIFY:SECONDARY to PRIMARY"));
+    ble.sendToPrimary("IDENTIFY:SECONDARY");
+    // Start keepalive timeout tracking
+    lastKeepaliveReceived = millis();
 }
+// ...then stateMachine.transition(StateTrigger::CONNECTED): IDLE -> READY
 ```
 
-**Purpose**: Confirm connection establishment to user
+**Purpose**: Identify itself to the PRIMARY and confirm connection establishment to user
 
 ---
 
-#### 4. Timeout Failure
+#### 4. No Boot Timeout
 
-**At 30 seconds**: If PRIMARY not found
+If the PRIMARY is never found, the SECONDARY stays in IDLE (breathing blue) and keeps scanning; there is no failure state.
 
-```cpp
-// Timeout - connection failed
-Serial.println(F("[SECONDARY] ERROR: PRIMARY not found within timeout"));
-led.setPattern(Colors::RED, LEDPattern::BLINK_SLOW); // boot failure
-return BootResult::FAILED;
-```
-
-**LED Indicator**: Slow red flash (1Hz)
-**Purpose**: Indicate boot failure, require restart
+Once connected, 6 seconds without a PING or macrocycle from the PRIMARY (`KEEPALIVE_TIMEOUT_MS`) runs `handleKeepaliveTimeout()`: motors stop, the state goes to CONNECTION_LOST (purple blink) and scanning restarts.
 
 ---
 
@@ -449,22 +438,20 @@ return BootResult::FAILED;
 ```
 Time  | State                | LED                    | Status
 ------|----------------------|------------------------|------------------
-0.0s  | Initializing         | Breathing Blue       | BLE init
-1.0s  | Scanning             | Breathing Blue       | Looking for PRIMARY
-3.5s  | Found PRIMARY        | Breathing Blue       | Attempting connection
-4.0s  | Connected            | Solid Green         | Connection success
-4.5s  | Ready                | Solid Green            | Awaiting commands
+0.0s  | Initializing         | Blue Connect-Blink     | BLE init
+3.5s  | Hardware Init OK     | Cyan Connect-Blink     | Hardware ready
+4.0s  | IDLE (scanning)      | Breathing Blue         | Looking for PRIMARY
+5.5s  | READY                | Solid Green            | Connected, awaiting commands
 ```
 
-**Failed Boot** (PRIMARY not found):
+**PRIMARY not found**:
 ```
 Time  | State                | LED                    | Status
 ------|----------------------|------------------------|------------------
-0.0s  | Initializing         | Breathing Blue       | BLE init
-1.0s  | Scanning             | Breathing Blue       | Looking for PRIMARY
-...   | Scanning             | Breathing Blue       | Still searching
-30.0s | Timeout              | (transition)           | PRIMARY not found
-30.5s | Failed               | Slow Red Flash         | Boot failed
+0.0s  | Initializing         | Blue Connect-Blink     | BLE init
+3.5s  | Hardware Init OK     | Cyan Connect-Blink     | Hardware ready
+4.0s  | IDLE (scanning)      | Breathing Blue         | Looking for PRIMARY
+...   | IDLE (scanning)      | Breathing Blue         | Still searching (no timeout)
 ```
 
 ---
@@ -479,19 +466,17 @@ full pattern-timing table.
 
 | Boot phase | Color | Pattern | Timing | Meaning |
 |-------|-------|---------|-----------|---------|
-| **No role configured** | Orange | Slow blink | 1 s on/off | `SET_ROLE` not yet run |
 | **LED initialized** | Blue | Connect blink | 250 ms on/off | early boot, LED up |
+| **No role configured** | Orange | Slow blink | 1 s on/off | `SET_ROLE` not yet run |
+| **Missing/Failed Motor(s)** | Red | Double blink | 2 blinks/pause, shown 5 s | v3 boot probe found fewer than 4 motors |
 | **Hardware init success** | Cyan | Connect blink | 250 ms on/off | motors/mux/battery OK |
-| **Hardware init failed** | Red | Slow blink | 1 s on/off | a hardware subsystem failed |
-| **Missing/Failed Motor(s)** | Red | Double blink | 2 blinks/pause, shown 5 s | boot probe found fewer than 4 motors |
+| **Hardware init failed** | Red | Slow blink | 1 s on/off | a hardware subsystem failed (replaced by blue breathe if BLE then starts) |
 | **BLE ready (enters IDLE)** | Blue | Breathe | 2 s cycle | BLE up, waiting to pair/connect |
 | **BLE init failed** | Red | Slow blink | 1 s on/off | BLE stack failed to start |
 | **Ready** | Green | Solid | - | glove pair connected, ready for therapy |
 
-> Note: earlier revisions of this doc listed a green "5x flash" on
-> PRIMARY↔SECONDARY connect and a separate "waiting for phone" blink. The shipping
-> firmware does not do those — on pairing the state goes directly to **READY (solid
-> green)**, and phone presence is not shown with a distinct LED.
+> Note: on pairing the state goes directly to **READY (solid green)**; there is no
+> separate connect flash, and phone presence is not shown with a distinct LED.
 
 ### LED Pattern Details
 
@@ -508,8 +493,9 @@ are defined in `include/config.h` (see `docs/API_REFERENCE.md#led-controller`).
   On session start this changes to green `PULSE_SLOW` (or off, if "LED off during
   therapy" is enabled).
 - **Red slow blink** (`Colors::RED, BLINK_SLOW`, 1 s) — a boot step failed
-  (hardware or BLE init). Requires restart.
-- **Red double-blink** (`Colors::RED, DOUBLE_BLINK`, 5 s) — boot motor probe found
+  (hardware or BLE init). Boot continues either way; after a hardware failure the
+  LED switches to blue breathe once BLE starts, so only a BLE failure stays red.
+- **Red double-blink** (`Colors::RED, DOUBLE_BLINK`, 5 s) — v3 boot motor probe found
   fewer than 4 motors, then boot continues.
 - **Orange slow blink** (`Colors::ORANGE, BLINK_SLOW`, 1 s) — no role configured
   yet (run `SET_ROLE`).
@@ -518,14 +504,15 @@ are defined in `include/config.h` (see `docs/API_REFERENCE.md#led-controller`).
 
 ```
 Boot (both roles), success:
-[orange slow blink]  no role set (until SET_ROLE)
-      -> [blue connect-blink]   LED init
-      -> [cyan connect-blink]   hardware init OK   (red double-blink 5s here if <4 motors)
+[blue connect-blink]   LED init
+      -> [orange slow blink]    no role set (until SET_ROLE, then reboot)
+      -> [red double-blink 5s]  v3 only, if the motor probe found <4 motors
+      -> [cyan connect-blink]   hardware init OK
       -> [blue breathe]         BLE ready, IDLE (waiting to pair)
       -> [SOLID GREEN]          glove pair connected, READY
 
 Boot, failure:
-      -> [red slow blink]       hardware or BLE init failed (until restart)
+      -> [red slow blink]       hardware init failed (until BLE starts) or BLE init failed (until restart)
 ```
 
 ## Connection Requirements
@@ -533,74 +520,98 @@ Boot, failure:
 ### BLE Advertisement Parameters (PRIMARY)
 
 ```cpp
-// src/ble_manager.cpp
+// src/ble_manager_nrf52.cpp (nRF52 backend shown; the NimBLE backend uses the same intervals)
 
-void BLEManager::startAdvertising() {
+void BLEManager::setupAdvertising() {
     Bluefruit.Advertising.addFlags(BLE_GAP_ADV_FLAGS_LE_ONLY_GENERAL_DISC_MODE);
     Bluefruit.Advertising.addTxPower();
-    Bluefruit.Advertising.addService(_bleuart);
-    Bluefruit.Advertising.addName();
+    Bluefruit.Advertising.addService(_uartService);
+    static const uint8_t mfgData[] = BLE_MFG_DATA_INIT;
+    Bluefruit.Advertising.addManufacturerData(mfgData, sizeof(mfgData));
+    Bluefruit.ScanResponse.addName();
 
-    Bluefruit.Advertising.setInterval(800, 800);  // 500ms interval (in 0.625ms units)
-    Bluefruit.Advertising.setFastTimeout(30);     // Advertise for 30 seconds
-    Bluefruit.Advertising.start(30);              // 30 second timeout
+    Bluefruit.Advertising.restartOnDisconnect(true);
+    Bluefruit.Advertising.setInterval(BLE_ADV_FAST_MIN_UNITS, BLE_ADV_FAST_MAX_UNITS);  // 20ms - 152.5ms
+    Bluefruit.Advertising.setFastTimeout(30);    // Fast mode for 30 seconds
+    Bluefruit.Advertising.start(0);              // 0 = Don't stop advertising
+}
+
+void BLEManager::updateAdvertisingInterval() {
+    if (isSecondaryConnected()) {
+        Bluefruit.Advertising.setInterval(BLE_ADV_SLOW_UNITS, BLE_ADV_SLOW_UNITS);  // 500ms
+    } else {
+        Bluefruit.Advertising.setInterval(BLE_ADV_FAST_MIN_UNITS, BLE_ADV_FAST_MAX_UNITS);
+    }
+    // restarts advertising if running so the new interval applies
 }
 ```
 
 **Rationale**:
-- 500ms interval balances discoverability and power consumption
-- Advertises for full 30-second boot window
-- Name "BlueBuzzah" identifies device to SECONDARY and phone
+- Fast 20-152.5ms advertising while the SECONDARY slot is free, so the SECONDARY (re)connects quickly
+- Slow 500ms advertising once the SECONDARY is connected: only the phone slot is left, and fast adverts would take airtime from the sync link
+- Advertising restarts whenever a peripheral link drops (nRF52: `_onPeriphDisconnect` restarts it if stopped, since Bluefruit's `restartOnDisconnect` only fires once no links remain; NimBLE: `advertiseOnDisconnect`)
+- Advertises without a timeout (`start(0)`), so the SECONDARY can connect whenever it powers on, and on every reconnect
+- Name "BlueBuzzah" (scan response) identifies the device; the SECONDARY can match earlier on the service UUID + manufacturer data in the main advert
 
 ---
 
 ### BLE Scanning Parameters (SECONDARY)
 
 ```cpp
-// src/ble_manager.cpp
+// src/ble_manager_nrf52.cpp (nRF52 backend shown; the NimBLE backend uses the same timing)
 
-bool BLEManager::scanAndConnect(const char* targetName, uint32_t timeoutMs) {
-    Bluefruit.Scanner.setRxCallback(scanCallback);
-    Bluefruit.Scanner.filterRssi(-80);
-    Bluefruit.Scanner.setInterval(160, 80);  // 100ms interval, 50ms window
-    Bluefruit.Scanner.start(timeoutMs / 1000);
-
-    // Wait for callback or timeout
-    // ...
+bool BLEManager::startScanning(const char* targetName) {
+    Bluefruit.Scanner.setRxCallback(_onScanCallback);
+    Bluefruit.Scanner.filterRssi(-90);
+    if (getConnectionCount() == 0) {
+        Bluefruit.Scanner.setInterval(160, 160);  // 100ms interval, 100ms window
+    } else {
+        Bluefruit.Scanner.setInterval(320, 60);   // 200ms interval, 37.5ms window (19% duty)
+    }
+    Bluefruit.Scanner.useActiveScan(true);   // Request scan response for name
+    return Bluefruit.Scanner.start(0);       // 0 = Don't stop
 }
 ```
 
 **Rationale**:
-- 1-second scan periods provide good discovery rate
-- 100ms interval between scans avoids excessive power use
-- Active scanning gets additional device information
-- 30-second timeout matches boot window
+- Continuous scanning (100ms window every 100ms) while disconnected keeps reconnects fast
+- The 19% duty cycle applies only when a false keepalive timeout restarts scanning with the link still up, so the scan doesn't crowd out sync traffic
+- A PRIMARY matches on the Nordic UART service plus the BlueBuzzah manufacturer data in its main advert; the "BlueBuzzah" name (scan response, via active scanning) is the fallback
+- Scans without a timeout (`start(0)`) until the PRIMARY is found
 
 ---
 
 ### Connection Validation
 
-Both devices validate connections after establishment:
+The SECONDARY (the BLE central) checks that the PRIMARY exposes the UART service before it reports the connection, and drops the link if it doesn't:
 
 ```cpp
-// src/ble_manager.cpp
+// src/ble_manager_nrf52.cpp - SECONDARY central connect callback (trimmed)
 
-bool BLEManager::validateConnection(uint16_t connHandle) {
-    BLEConnection* conn = Bluefruit.Connection(connHandle);
+if (g_bleManager->_clientUart.discover(connHandle)) {
+    Serial.println(F("[BLE] UART service discovered, enabling notifications"));
+    g_bleManager->_clientUart.enableTXD();
+} else {
+    Serial.println(F("[BLE] ERROR: UART service not found on PRIMARY"));
+    Bluefruit.disconnect(connHandle);
+    return;
+}
+```
 
-    // Check connection parameters
-    uint16_t intervalMs = conn->getConnectionInterval() * 1.25;
-    if (intervalMs > 10) {
-        Serial.printf("[WARN] High connection interval (%dms)\n", intervalMs);
-    }
+Connection parameters are never grounds for rejecting a link. Both roles query and log the negotiated interval, warning when it exceeds `BLE_INTERVAL_WARNING_THRESHOLD_MS` (12ms):
 
-    // Verify service discovery
-    if (!_bleuart.discover(connHandle)) {
-        Serial.println(F("[ERROR] UART service not found"));
-        return false;
-    }
+```cpp
+// src/ble_manager_nrf52.cpp - queryConnectionInterval() (trimmed)
 
-    return true;
+float intervalMs = intervalUnits * 1.25f;
+
+if (intervalMs > BLE_INTERVAL_WARNING_THRESHOLD_MS) {
+    Serial.printf("[BLE] WARN: %s interval %.1fms exceeds target (%.1f-%.1fms)\n",
+                  typeName, intervalMs,
+                  static_cast<double>(BLE_INTERVAL_MIN_MS),
+                  static_cast<double>(BLE_INTERVAL_MAX_MS));
+} else {
+    Serial.printf("[BLE] %s connection interval: %.1fms\n", typeName, intervalMs);
 }
 ```
 
@@ -618,7 +629,7 @@ PRIMARY                              SECONDARY
    |--- T1: Send PING:seq|T1 --------->  |
    |                                  T2: Receive PING
    |                                  T3: Send PONG
-   |  <-------- PONG:seq|0|T2|T3 --------|
+   |  <-- PONG:seq|tx_micros|T2|T3 ------|
 T4: Receive PONG                         |
    |                                     |
 
@@ -628,7 +639,9 @@ RTT = (T4 - T1) - (T3 - T2)
 
 **Configuration (from config.h):**
 ```cpp
-#define KEEPALIVE_INTERVAL_MS 1000   // PING/PONG every 1 second
+#define SYNC_ACQUIRE_INTERVAL_MS 70  // PING/PONG every 70ms until sync is valid (cold or warm start)
+#define SYNC_ACTIVE_INTERVAL_MS 250  // PING/PONG every 250ms during therapy
+#define KEEPALIVE_INTERVAL_MS 1000   // PING/PONG every 1 second when idle
 #define SYNC_MIN_VALID_SAMPLES 5     // Minimum samples before sync valid
 #define SYNC_RTT_QUALITY_THRESHOLD_US 60000  // Reject samples with RTT > 60ms
 #define SYNC_OFFSET_EMA_ALPHA_NUM 1  // EMA smoothing α = 1/10 = 0.1
@@ -636,7 +649,7 @@ RTT = (T4 - T1) - (T3 - T2)
 ```
 
 **Synchronization Quality:**
-- Clock synchronization is continuously maintained via PING/PONG (every 1 second)
+- Clock synchronization is continuously maintained via PING/PONG (every 70ms until sync is valid, so 5 samples take ~350ms; then 250ms during therapy, 1 second idle)
 - EMA (Exponential Moving Average) smooths offset measurements
 - Outlier rejection filters samples with high RTT (>60ms)
 - Drift rate tracking compensates for crystal oscillator differences
@@ -646,7 +659,7 @@ RTT = (T4 - T1) - (T3 - T2)
 After brief disconnects (<15 seconds), sync state is cached and recovery is faster:
 ```cpp
 #define SYNC_WARM_START_VALIDITY_MS 15000  // Cache valid for 15 seconds
-#define SYNC_WARM_START_MIN_SAMPLES 3      // Only 3 confirmatory samples needed
+#define SYNC_WARM_START_MIN_SAMPLES 3      // Only 3 confirmatory samples needed (~210ms at the acquire cadence)
 ```
 
 This ensures sub-millisecond bilateral synchronization during therapy.
@@ -657,17 +670,14 @@ This ensures sub-millisecond bilateral synchronization during therapy.
 
 ### 30-Second Boot Window
 
-The 30-second boot window is **strictly enforced** and begins immediately after BLE initialization completes.
+The 30-second window is **PRIMARY-only** and begins when the SECONDARY connects, not at power-on. It exists to give a phone time to connect before therapy auto-starts. It runs once per boot: after auto-start has fired, later SECONDARY reconnects don't restart it.
 
 ```cpp
-uint32_t startTime = millis();
-const uint32_t CONNECTION_TIMEOUT_MS = 30000;
-
-while (millis() - startTime < CONNECTION_TIMEOUT_MS) {
-    // Connection attempts
-    // ...
-}
+// include/config.h
+#define STARTUP_WINDOW_MS 30000      // 30 seconds boot timeout
 ```
+
+Advertising (PRIMARY) and scanning (SECONDARY) have no timeout of their own.
 
 ---
 
@@ -677,36 +687,24 @@ while (millis() - startTime < CONNECTION_TIMEOUT_MS) {
 
 | Scenario | Connections | Timeout Action | LED | Result |
 |----------|-------------|----------------|-----|--------|
-| No devices | None | Fail | Slow Red | FAILED |
-| SECONDARY only | SECONDARY | Proceed | Solid Green | SUCCESS_NO_PHONE |
-| SECONDARY + Phone | Both | Proceed | Solid Green | SUCCESS_WITH_PHONE |
-
-**Code**:
-```cpp
-if (timeoutReached) {
-    if (!secondaryConnected) {
-        led.setPattern(Colors::RED, LEDPattern::BLINK_SLOW); // boot failure
-        return BootResult::FAILED;
-    } else {
-        led.setPattern(Colors::GREEN, LEDPattern::SOLID); // READY
-        return phoneConnected ? BootResult::SUCCESS_WITH_PHONE
-                              : BootResult::SUCCESS_NO_PHONE;
-    }
-}
-```
+| No devices | None | None (window never starts) | Breathing Blue | IDLE, still advertising |
+| SECONDARY only | SECONDARY | Auto-start therapy | Pulsing Green | RUNNING |
+| SECONDARY + Phone | Both | Window cancelled when the phone connected | Solid Green | READY, waits for app commands |
+| SECONDARY drops during window | None | Window cancelled | Purple Blink | CONNECTION_LOST; window restarts on reconnect |
 
 #### Auto-Start Therapy (No Phone)
 
-When boot completes with `SUCCESS_NO_PHONE`, the system automatically starts default therapy:
+When the window expires with the SECONDARY connected and no phone, `autoStartTherapy()` starts a session:
 
-1. **Default Profile**: Uses the saved default therapy profile (or built-in fallback)
-2. **Duration**: Default 15-minute session
-3. **Pattern**: Standard bilateral alternating pattern
-4. **No User Intervention**: Therapy begins automatically ~5 seconds after boot complete
+1. **Default Profile**: Uses the current (saved) therapy profile; if none is loaded, the built-in `noisy_vcr` profile
+2. **Duration**: The profile's session duration (120 minutes for the built-in vCR profiles)
+3. **Pattern**: The profile's pattern type, timing, jitter and mirroring
+4. **Sync gate**: If clock sync isn't valid yet it retries every second; after 10 retries it starts anyway (`[AUTO] Sync not valid after 10s - starting therapy (timing may be degraded)`)
+5. **No User Intervention**: Therapy begins automatically when the 30-second window expires without a phone connection
 
-This "auto-start" behavior allows the system to function as a standalone therapy device without requiring a phone app. Users can simply power on both devices and therapy will begin after the 30-second boot window.
+This "auto-start" behavior allows the system to function as a standalone therapy device without requiring a phone app. Users can simply power on both devices and therapy will begin about 30 seconds after the gloves pair.
 
-**To override auto-start**: Connect phone app before the 30-second boot timeout expires.
+**To override auto-start**: Connect phone app within 30 seconds of the gloves pairing.
 
 ---
 
@@ -714,29 +712,18 @@ This "auto-start" behavior allows the system to function as a standalone therapy
 
 | Scenario | Connection | Timeout Action | LED | Result |
 |----------|------------|----------------|-----|--------|
-| PRIMARY found | Connected | N/A (success before timeout) | Solid Green | SUCCESS |
-| PRIMARY not found | None | Fail | Slow Red | FAILED |
-
-**Code**:
-```cpp
-if (timeoutReached) {
-    if (!connected) {
-        led.setPattern(Colors::RED, LEDPattern::BLINK_SLOW); // boot failure
-        return BootResult::FAILED;
-    }
-}
-```
+| PRIMARY found | Connected | N/A | Solid Green | READY |
+| PRIMARY not found | None | None (keeps scanning) | Breathing Blue | IDLE |
 
 ---
 
 ### Timeout Extension
 
-**The boot window is NOT extended** even if connections are partially established. This ensures predictable boot behavior.
+**The boot window is NOT extended** while the SECONDARY stays connected, even if a phone is expected. If the SECONDARY disconnects, the window is cancelled and starts over when it reconnects (until auto-start has fired once).
 
 **Rationale**:
 - Predictable user experience
 - Prevents indefinite waiting
-- Encourages reliable hardware placement
 - Allows automatic default therapy if phone not available
 
 ---
@@ -747,7 +734,7 @@ if (timeoutReached) {
 
 #### 1. No SECONDARY Connection (PRIMARY)
 
-**Symptom**: PRIMARY times out with no SECONDARY connection
+**Symptom**: PRIMARY stays breathing blue (IDLE); there is no boot failure state
 
 **Causes**:
 - SECONDARY not powered on
@@ -755,24 +742,15 @@ if (timeoutReached) {
 - BLE interference
 - Hardware failure
 
-**LED**: Slow red flash
+**LED**: Breathing blue
 
-**Recovery**: Power cycle both devices
-
-```cpp
-if (!secondaryConnected) {
-    Serial.println(F("[PRIMARY] CRITICAL: SECONDARY not connected"));
-    Serial.println(F("[PRIMARY] Cannot proceed without bilateral synchronization"));
-    led.setPattern(Colors::RED, LEDPattern::BLINK_SLOW); // boot failure
-    return BootResult::FAILED;
-}
-```
+**Recovery**: Power on the SECONDARY or bring it in range; the PRIMARY keeps advertising and accepts it whenever it connects
 
 ---
 
 #### 2. No PRIMARY Found (SECONDARY)
 
-**Symptom**: SECONDARY times out without finding PRIMARY
+**Symptom**: SECONDARY stays breathing blue (IDLE) and keeps scanning
 
 **Causes**:
 - PRIMARY not powered on
@@ -780,18 +758,9 @@ if (!secondaryConnected) {
 - BLE interference
 - Hardware failure
 
-**LED**: Slow red flash
+**LED**: Breathing blue
 
-**Recovery**: Power cycle both devices
-
-```cpp
-if (!connected) {
-    Serial.println(F("[SECONDARY] CRITICAL: PRIMARY not found"));
-    Serial.println(F("[SECONDARY] Ensure PRIMARY is powered on and in range"));
-    led.setPattern(Colors::RED, LEDPattern::BLINK_SLOW); // boot failure
-    return BootResult::FAILED;
-}
-```
+**Recovery**: Power on the PRIMARY or bring it in range; the SECONDARY connects as soon as it sees the advert
 
 ---
 
@@ -807,48 +776,38 @@ if (!connected) {
 
 **Detection**:
 ```cpp
-void monitorConnectionDuringBoot() {
-    if (!bleManager.isSecondaryConnected()) {
-        Serial.println(F("[PRIMARY] WARNING: SECONDARY connection lost during boot"));
-        led.setPattern(Colors::RED, LEDPattern::BLINK_SLOW); // boot failure
-        return BootResult::FAILED;
+// src/main.cpp - onBLEDisconnect() (trimmed)
+
+if ((deviceRole == DeviceRole::PRIMARY && type == ConnectionType::SECONDARY) ||
+    (deviceRole == DeviceRole::SECONDARY && type == ConnectionType::PRIMARY))
+{
+    stateMachine.transition(StateTrigger::DISCONNECTED);   // READY -> CONNECTION_LOST
+
+    if (deviceRole == DeviceRole::PRIMARY && bootWindowActive)
+    {
+        bootWindowActive = false;
+        Serial.println(F("[BOOT] SECONDARY disconnected - boot window cancelled"));
     }
 }
 ```
 
-**Recovery**: Power cycle both devices
+**LED**: Purple fast blink (CONNECTION_LOST) for up to 30 seconds (`CONNECTION_LOST_TIMEOUT_MS`), then breathing blue (IDLE)
+
+**Recovery**: Automatic. The PRIMARY keeps advertising and the SECONDARY rescans; on reconnect the state returns to READY and, if auto-start hasn't run yet, the 30-second window starts again
 
 ---
 
-#### 4. Invalid Connection Parameters
+#### 4. High Connection Interval
 
-**Symptom**: Connection established but parameters not suitable for therapy
+**Symptom**: Connection established but the negotiated interval is above the 7.5-10ms target
 
 **Causes**:
 - BLE negotiation failure
 - Incompatible BLE settings
-- Firmware version mismatch
 
-**Detection**:
-```cpp
-bool validateConnectionParams(BLEConnection* conn) {
-    uint16_t interval = conn->getConnectionInterval();
-    uint16_t latency = conn->getSlaveLatency();
-    uint16_t timeout = conn->getSupervisionTimeout();
-
-    if (interval > 8) {  // Need < 10ms for sub-10ms sync (interval in 1.25ms units)
-        Serial.printf("[ERROR] Connection interval too high (%dms)\n",
-                      (int)(interval * 1.25));
-        return false;
-    }
-
-    if (latency > 0) {  // Need zero latency for real-time sync
-        Serial.printf("[ERROR] Slave latency not zero (%d)\n", latency);
-        return false;
-    }
-
-    return true;
-}
+**Detection**: logged only, never rejected (see [Connection Validation](#connection-validation)):
+```
+[BLE] WARN: SECONDARY interval 15.0ms exceeds target (7.5-10.0ms)
 ```
 
 **Recovery**: Retry connection or power cycle
@@ -857,80 +816,54 @@ bool validateConnectionParams(BLEConnection* conn) {
 
 ### Error Logging
 
-All boot errors are logged with detailed context:
+Boot errors are printed to serial as they happen; there is no separate error log. Typical lines:
 
-```cpp
-void logBootError(const char* errorType, uint32_t timestamp) {
-    Serial.printf("[BOOT ERROR] %.2fs - %s\n",
-                  timestamp / 1000.0f, errorType);
-
-    BatteryStatus battery = hardware.getBatteryStatus();
-    Serial.printf("  battery_voltage: %.2fV\n", battery.voltage);
-    Serial.printf("  firmware_version: %s\n", FIRMWARE_VERSION);
-}
 ```
-
-**Example Log**:
-```
-[BOOT ERROR] 30.15s - SECONDARY_NOT_FOUND
-  timeout: 30.0s
-  battery_voltage: 3.7V
-  firmware_version: 2.0.0
+[ERROR] Haptic controller initialization failed
+[ERROR] Battery monitor initialization failed
+[WARNING] Some hardware initialization failed
+[ERROR] Missing/failed motor(s): 3/5 detected (minimum 4) - check JST connections
+[ERROR] BLE begin() failed
+[FAILURE] BLE initialization failed
+[ERROR] Failed to start scanning
 ```
 
 ---
 
 ## Timing Analysis
 
-### Boot Sequence Performance Targets
+### Boot Sequence Fixed Waits
 
-| Metric | Target | Typical | Maximum |
-|--------|--------|---------|---------|
-| BLE Init | < 2s | 1.5s | 3s |
-| Connection Time | < 5s | 3s | 30s |
-| Initial Sync | < 1s | 0.5s | 2s |
-| Total Boot (success) | < 10s | 5s | 30s |
-| Total Boot (failure) | 30s | 30s | 30s |
+| Step | Time | Source |
+|------|------|--------|
+| USB serial wait | Up to 3s (ends as soon as a serial host opens the port) | `setup()` |
+| Post-role delay | 500ms | `setup()` |
+| Motor presence probe (v3 only) | ~0.5s per motor (~2-5s) | `initializeHardware()` |
+| Missing-motor indication (v3, < 4 motors) | 5s | `initializeHardware()` |
+| SECONDARY identification | Up to 1s (`IDENTIFY_TIMEOUT_MS`) | BLE manager |
+| Initial clock sync | ~350ms cold (5 samples at 70ms), ~210ms warm (3 samples) | `config.h` |
+| Phone window before auto-start | 30s after the SECONDARY connects | `STARTUP_WINDOW_MS` |
+| Auto-start sync wait | Up to 10 retries, 1s apart | `autoStartTherapy()` |
 
 ---
 
 ### Typical Boot Timeline (Success)
 
-```
-Event                          | Time    | Duration | Cumulative
--------------------------------|---------|----------|------------
-Power On                       | 0.0s    | -        | 0.0s
-Arduino Boot                   | 0.0s    | 0.3s     | 0.3s
-BLE Stack Init                 | 0.3s    | 1.0s     | 1.3s
-Start Advertising/Scanning     | 1.3s    | 0.1s     | 1.4s
-Device Discovery               | 1.4s    | 1.5s     | 2.9s
-Connection Establishment       | 2.9s    | 0.5s     | 3.4s
-Service Discovery              | 3.4s    | 0.3s     | 3.7s
-Initial Sync                   | 3.7s    | 0.5s     | 4.2s
-LED Success Indicators         | 4.2s    | 1.0s     | 5.2s
-Boot Complete                  | 5.2s    | -        | 5.2s
-```
-
-**Total Boot Time (Typical Success)**: ~5.2 seconds
-
----
-
-### Worst-Case Boot Timeline (Failure)
+Illustrative, for a battery boot with no USB serial host:
 
 ```
 Event                          | Time    | Duration | Cumulative
 -------------------------------|---------|----------|------------
 Power On                       | 0.0s    | -        | 0.0s
-Arduino Boot                   | 0.0s    | 0.3s     | 0.3s
-BLE Stack Init                 | 0.3s    | 2.0s     | 2.3s
-Start Advertising/Scanning     | 2.3s    | 0.1s     | 2.4s
-Scanning (no device found)     | 2.4s    | 27.6s    | 30.0s
-Timeout Reached                | 30.0s   | -        | 30.0s
-LED Failure Indication         | 30.0s   | 0.5s     | 30.5s
-Boot Failed                    | 30.5s   | -        | 30.5s
+USB Serial Wait (no host)      | 0.0s    | 3.0s     | 3.0s
+Post-Role Delay                | 3.0s    | 0.5s     | 3.5s
+Hardware + BLE Init            | 3.5s    | ~0.5s    | ~4.0s
+Advertising/Scanning           | ~4.0s   | varies   | -
+Connection + IDENTIFY          | -       | < 1s     | -
+Initial Sync                   | -       | ~0.35s   | -
 ```
 
-**Total Boot Time (Failure)**: 30.5 seconds
+On v3 the motor presence probe adds ~2-5s to hardware init.
 
 ---
 
@@ -942,7 +875,11 @@ Boot Failed                    | 30.5s   | -        | 30.5s
 #define BLE_INTERVAL_MAX_MS 10       // Maximum connection interval
 #define BLE_TIMEOUT_MS 6000          // Supervision timeout (6 seconds)
 #define BLE_INTERVAL_WARNING_THRESHOLD_MS 12.0f  // Warn if > 12ms
+#define BLE_PHONE_INTERVAL_MIN_UNITS 24  // 30ms phone link interval (1.25ms units)
+#define BLE_PHONE_INTERVAL_MAX_UNITS 40  // 50ms
 ```
+
+The 7.5-10ms range applies to the glove link. The phone link is requested at 30-50ms with no peripheral latency, so command traffic doesn't take radio time from the sync link.
 
 **Effective Latency**:
 - Minimum: 7.5ms (one connection interval)
@@ -951,16 +888,16 @@ Boot Failed                    | 30.5s   | -        | 30.5s
 - Warning threshold: 12ms (firmware logs warning if exceeded)
 
 **Sub-millisecond Synchronization**: Achieved through:
-1. 7.5-10ms BLE connection interval
+1. 7.5-10ms glove-link BLE connection interval
 2. IEEE 1588 PTP-style clock offset calculation
 3. EMA-smoothed offset tracking with drift compensation
-4. Periodic PING/PONG keepalive (every 1 second)
+4. Periodic PING/PONG keepalive (every 70ms until clock sync is valid, 250ms during therapy, 1 second idle)
 
 ---
 
 ## Troubleshooting
 
-### Problem: Devices Stuck on Blue Flashing LED
+### Problem: Devices Stuck on Breathing Blue LED
 
 **Symptoms**:
 - LED continues breathing blue (IDLE) indefinitely
@@ -971,13 +908,13 @@ Boot Failed                    | 30.5s   | -        | 30.5s
 1. Devices out of range (> 1-2 meters)
 2. BLE interference (Wi-Fi, other devices)
 3. One device not actually powered on
-4. Settings file missing or corrupt
+4. Both devices configured with the same role
 5. Hardware failure
 
 **Solutions**:
 
 1. **Verify Both Devices Powered On**:
-   - Check that both LEDs are flashing blue
+   - Check that both LEDs are breathing blue
    - Verify battery voltage (> 3.4V)
    - Check USB connections if using USB power
 
@@ -987,8 +924,8 @@ Boot Failed                    | 30.5s   | -        | 30.5s
    - Avoid metal surfaces
 
 3. **Check Settings Files**:
-   - Use serial monitor to verify device role is correct
-   - Check that settings.json exists in LittleFS
+   - Use serial monitor to verify device role is correct (`[ROLE] Device configured as: ...`)
+   - The role is stored in `/settings.bin` (InternalFS on nRF52, LittleFS on ESP32-S3); a device without a stored role blinks orange instead
 
 4. **Reduce BLE Interference**:
    - Move away from Wi-Fi routers
@@ -998,63 +935,37 @@ Boot Failed                    | 30.5s   | -        | 30.5s
 5. **Power Cycle Both Devices**:
    - Turn off both devices
    - Wait 5 seconds
-   - Power on simultaneously
+   - Power on both devices
 
 ---
 
-### Problem: Devices Show Red Flashing LED After 30 Seconds
+### Problem: Device Shows Slow Red Blink After Boot
 
 **Symptoms**:
-- LED shows slow red flash after timeout
-- Boot sequence failed
-- Devices not communicating
+- LED shows slow red blink after boot instead of breathing blue
+- Device never pairs
 
 **Possible Causes**:
-1. PRIMARY and SECONDARY roles not configured correctly
-2. Devices not powered on simultaneously
-3. Critical BLE hardware failure
-4. Severe BLE interference
+1. BLE stack failed to start (`[FAILURE] BLE initialization failed`)
+2. SECONDARY could not start scanning (`[ERROR] Failed to start scanning`)
+
+A hardware init failure also shows a slow red blink, but only until BLE starts; check serial for `[ERROR]` lines even when the LED looks normal.
 
 **Solutions**:
 
 1. **Verify Device Roles**:
    - Check serial monitor for device role output
-   - PRIMARY should show `[PRIMARY]` tag
-   - SECONDARY should show `[SECONDARY]` tag
+   - PRIMARY should show `[ROLE] Device configured as: PRIMARY`
+   - SECONDARY should show `[ROLE] Device configured as: SECONDARY`
 
 2. **Reflash Firmware**:
    ```bash
-   pio run -t upload
+   pio run -e <env> -t upload
    ```
 
 3. **Test Hardware**:
    - Check serial monitor for I2C errors
    - Verify BLE initialization succeeds
-
----
-
-### Problem: PRIMARY Shows Green, SECONDARY Shows Red
-
-**Symptoms**:
-- PRIMARY LED is solid green
-- SECONDARY LED is slow red flash
-- Unilateral connection (one-way)
-
-**Possible Causes**:
-1. SECONDARY powered on late (after PRIMARY timeout)
-2. Connection established but immediately dropped
-3. Asymmetric hardware failure
-
-**Solutions**:
-
-1. **Synchronize Power-On**:
-   - Turn off both devices
-   - Power on both simultaneously
-   - PRIMARY should see SECONDARY within 5 seconds
-
-2. **Check SECONDARY BLE**:
-   - Check serial monitor for scan results
-   - Verify "BlueBuzzah" device is found
 
 ---
 
@@ -1070,11 +981,12 @@ Boot Failed                    | 30.5s   | -        | 30.5s
 2. I2C communication failure
 3. Bilateral synchronization lost
 4. Initial sync failed
+5. Running on USB power only: motors run from the battery (`[POWER] USB power detected - motors still require a charged battery`)
 
 **Solutions**:
 
 1. **Test Haptic Hardware**:
-   - Enter calibration mode
+   - Enter calibration mode (`CALIBRATE_START`, then `CALIBRATE_BUZZ`)
    - Test each finger individually
 
 2. **Verify I2C Communication**:
@@ -1109,9 +1021,6 @@ Boot Failed                    | 30.5s   | -        | 30.5s
 2. **Enable Debug Logging**:
    - Add Serial.print statements to track boot progress
 
-3. **Increase Boot Timeout** (temporary diagnostic):
-   - Modify CONNECTION_TIMEOUT_MS in config.h
-
 ---
 
 ## Implementation Details
@@ -1121,43 +1030,41 @@ Boot Failed                    | 30.5s   | -        | 30.5s
 The boot sequence is orchestrated in `main.cpp`:
 
 ```cpp
-// src/main.cpp
+// src/main.cpp (trimmed)
 
-void setup() {
+void setup()
+{
     Serial.begin(115200);
-    while (!Serial) delay(10);
 
-    // 1. Initialize filesystem
-    if (!LittleFS.begin()) {
-        Serial.println(F("[ERROR] LittleFS mount failed"));
+    // Wait for serial with timeout
+    uint32_t serialWaitStart = millis();
+    while (!Serial && (millis() - serialWaitStart < 3000))
+    {
+        delay(10);
     }
 
-    // 2. Load configuration
-    deviceConfig = loadDeviceConfig();
-    Serial.printf("[INFO] Role: %s\n", deviceConfig.deviceTag);
+    power.begin();      // Penta: peripheral 3V3 rail (no-op on nRF)
+    led.begin();        // blue connect-blink
 
-    // 3. Initialize hardware
-    if (!hardware.begin()) {
-        led.setPattern(Colors::RED, LEDPattern::BLINK_SLOW); // boot failure
-        while (true) { delay(1000); }
+    // 1. Role (blocks with orange blink until SET_ROLE if none is stored)
+    profiles.begin();
+    if (!profiles.hasStoredRole())
+    {
+        waitForRoleConfiguration();   // never returns - reboots after SET_ROLE
     }
+    deviceRole = determineRole();
+    delay(500);
 
-    ledController.begin();
+    // 2. Hardware, then BLE - boot continues even if either fails
+    hardwareReady = initializeHardware();   // cyan blink, or red slow blink
+    bleReady = initializeBLE();             // breathing blue, or red slow blink
 
-    // 4. Execute boot sequence based on role
-    if (deviceConfig.role == DeviceRole::PRIMARY) {
-        bootResult = primaryBootSequence();
-    } else {
-        bootResult = secondaryBootSequence();
-    }
-
-    if (bootResult == BootResult::FAILED) {
-        led.setPattern(Colors::RED, LEDPattern::BLINK_SLOW); // boot failure
-        while (true) { delay(1000); }
-    }
-
-    led.setPattern(Colors::GREEN, LEDPattern::SOLID); // READY
-    Serial.println(F("[INFO] Boot complete, entering main loop"));
+    // 3. Therapy engine, state machine (LED follows state from here on), menu
+    initializeTherapy();
+    stateMachine.begin(TherapyState::IDLE);
+    stateMachine.onStateChange(onStateChange);
+    menu.begin(&therapy, &battery, &haptic, &stateMachine, &profiles, &ble);
+    deferredQueue.setExecutor(executeDeferredWork);
 }
 ```
 
@@ -1198,7 +1105,7 @@ Example (from the boot sequence): `led.setPattern(Colors::BLUE, LEDPattern::BREA
 
 ### For Reliable Boot
 
-1. **Power on devices simultaneously** (within 1-2 seconds)
+1. **Power on both devices** (order doesn't matter; they pair whenever both are up)
 2. **Keep devices close** (< 1 meter) during boot
 3. **Ensure good battery charge** (> 3.5V)
 4. **Avoid BLE interference** (Wi-Fi routers, other Bluetooth devices)
@@ -1227,17 +1134,18 @@ Example (from the boot sequence): `led.setPattern(Colors::BLUE, LEDPattern::BREA
 
 The BlueBuzzah boot sequence is a **safety-critical** operation that establishes bilateral synchronization between PRIMARY and SECONDARY devices. Key points:
 
-- **30-second timeout** strictly enforced
+- **No boot timeout** - devices advertise/scan until the pair connects
+- **30-second phone window** after pairing, then auto-start
 - **Clear LED feedback** at every stage
-- **Fail-safe design** - therapy only starts with confirmed bilateral sync
+- **Sync-gated start** - therapy waits for clock sync, with a degraded-mode fallback after ~10 seconds
 - **Graceful degradation** - default therapy if phone not connected
 - **Comprehensive error handling** with recovery guidance
 
-The boot sequence ensures that therapy can only begin when:
-1. PRIMARY and SECONDARY are connected
-2. Bilateral time synchronization is established
-3. All hardware is initialized and validated
-4. User has clear visual confirmation of system readiness
+Auto-start therapy begins only when:
+1. The SECONDARY is connected when the 30-second window expires
+2. No phone connected during the window
+3. Bilateral time synchronization is established, or 10 one-second retries have passed
+4. Auto-start has not already run since boot
 
 ---
 

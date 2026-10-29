@@ -8,7 +8,7 @@ The latency metrics system provides runtime-toggleable instrumentation to measur
 
 1. **Execution Drift** - How accurately each device hits its scheduled buzz time
 2. **Ongoing RTT** - BLE round-trip time during therapy sessions (PRIMARY only)
-3. **Sync Quality** - Clock synchronization confidence from initial RTT probing
+3. **Sync Quality** - Report section for initial RTT probing; not populated by current firmware (see below)
 
 All metrics are collected via software instrumentation with minimal overhead when disabled.
 
@@ -19,7 +19,7 @@ All metrics are collected via software instrumentation with minimal overhead whe
 
 | Command | Description |
 |---------|-------------|
-| `LATENCY_ON` | Enable metrics collection (aggregated stats, auto-report every 30s) |
+| `LATENCY_ON` | Enable metrics collection (aggregated stats, auto-report every 30s while therapy runs) |
 | `LATENCY_ON_VERBOSE` | Enable with per-buzz logging to Serial |
 | `LATENCY_OFF` | Disable metrics collection (prints final report) |
 | `GET_LATENCY` | Print current metrics report |
@@ -54,12 +54,7 @@ Status: ENABLED (verbose: OFF)
 Buzzes: 150
 -------------------------------------
 SYNC QUALITY (initial probing):
-  Probes:     10
-  Min RTT:    14,230 us (one-way: 7,115 us)
-  Max RTT:    23,100 us
-  Spread:     8,870 us
-  Offset:     +45,678 us
-  Confidence: HIGH
+  (no sync probing data)
 -------------------------------------
 EXECUTION DRIFT:
   Last:    +89 us
@@ -82,7 +77,7 @@ ONGOING RTT (PRIMARY only):
 
 ### Execution Drift
 
-Measures the difference between scheduled execution time and actual execution time in microseconds.
+Measures the difference between scheduled execution time and actual execution time in microseconds. Each motor event counts as one buzz in the report: activations (on enabled motors) and deactivations are both recorded.
 
 ```
 drift = actualExecutionTime - scheduledExecutionTime
@@ -103,7 +98,9 @@ drift = actualExecutionTime - scheduledExecutionTime
 
 ### Sync Quality (RTT Probing)
 
-During initial connection, PRIMARY sends multiple RTT probes to measure BLE latency and calculate clock offset. This section shows the results.
+**Not populated by current firmware.** `LatencyMetrics::recordSyncProbe()` and `finalizeSyncProbing()` exist, but nothing calls them: clock sync uses the unified PING/PONG exchange (see [Configuration Constants](#configuration-constants)), not a separate probing phase. The report always prints `(no sync probing data)` here. Use the `GET_SYNC_STATS` serial command for clock sync status (offset, drift, RTT, adaptive lead time).
+
+The fields below describe what the section would show if probes were recorded.
 
 | Field | Description |
 |-------|-------------|
@@ -124,7 +121,7 @@ During initial connection, PRIMARY sends multiple RTT probes to measure BLE late
 
 ### Ongoing RTT (PRIMARY Only)
 
-Tracks BLE round-trip time continuously via PING/PONG exchanges (every 1 second).
+Tracks BLE round-trip time continuously via PING/PONG exchanges (every 70ms until clock sync is valid, then 250ms during therapy and 1 second idle).
 
 - Monitors BLE latency changes over time
 - High variance may indicate degrading sync quality
@@ -146,12 +143,10 @@ To estimate inter-device synchronization:
 PRIMARY average drift:   +127 us
 SECONDARY average drift: +342 us
 ───────────────────────────────────
-Estimated sync error:    ~215 us (SECONDARY later)
+Execution-latency difference: ~215 us (SECONDARY later)
 ```
 
-**Important:** This comparison is limited by clock synchronization accuracy:
-- With RTT probing (HIGH confidence): ±2-3ms uncertainty
-- Without RTT probing: ±10-15ms uncertainty
+**Important:** Each device measures drift against its own scheduled time, so clock-offset error between the gloves does not show up in either number. Use GPIO ground truth ([SYNC_VALIDATION.md](SYNC_VALIDATION.md)) to measure true bilateral skew.
 
 ### What Good Results Look Like
 
@@ -160,18 +155,15 @@ Estimated sync error:    ~215 us (SECONDARY later)
 | Average Drift | < 500 us | < 2000 us | > 5000 us |
 | Jitter | < 1000 us | < 3000 us | > 5000 us |
 | Late % | < 1% | < 5% | > 10% |
-| RTT Spread | < 10ms | < 20ms | > 30ms |
-| Confidence | HIGH | MEDIUM | LOW |
 
 ### Troubleshooting
 
 | Symptom | Possible Cause | Solution |
 |---------|----------------|----------|
-| No sync probing data | Devices connected before firmware update | Power cycle both devices |
-| SECONDARY shows 0 buzzes | `isClockSyncValid()` returning false | Wait ~5s for sync samples |
+| No sync probing data | Expected: the section is never populated | Use `GET_SYNC_STATS` for clock sync status |
+| SECONDARY shows 0 buzzes | Metrics not enabled on SECONDARY (they are per-device) | Send `LATENCY_ON` to each glove's serial port |
 | High jitter | System interrupts, BLE callbacks | Check for blocking operations |
 | HIGH drift values | Missed scheduled times | Verify lead time calculation |
-| LOW confidence | BLE interference | Move devices closer, reduce interference |
 
 ## Technical Details
 
@@ -185,27 +177,24 @@ Estimated sync error:    ~215 us (SECONDARY later)
 │    └─► Enqueue events to ActivationQueue                    │
 │                                                             │
 │  FreeRTOS Motor Task (Priority 4)                           │
-│    └─► Sleep until ~2ms before event                        │
+│    └─► Sleep until ~1ms before event                        │
 │    └─► Busy-wait for sub-ms precision                       │
 │    └─► executeMotorEvent()                                  │
 │    └─► latencyMetrics.recordExecution(drift)                │
 │                                                             │
 │  onBLEMessage(PONG)                                         │
 │    └─► latencyMetrics.recordRtt(rtt)                        │
-│                                                             │
-│  RTT Probing (on connection)                                │
-│    └─► latencyMetrics.recordSyncProbe(rtt)                  │
 └─────────────────────────────────────────────────────────────┘
 
 ┌─────────────────────────────────────────────────────────────┐
 │                       SECONDARY                              │
 ├─────────────────────────────────────────────────────────────┤
 │  onBLEMessage(MACROCYCLE)                                   │
-│    └─► syncProtocol.toLocalTime(executeAt)                  │
+│    └─► localBaseTime = mc.baseTime + mc.clockOffset         │
 │    └─► Enqueue events to ActivationQueue                    │
 │                                                             │
 │  FreeRTOS Motor Task (Priority 4)                           │
-│    └─► Sleep until ~2ms before event                        │
+│    └─► Sleep until ~1ms before event                        │
 │    └─► Busy-wait for sub-ms precision                       │
 │    └─► executeMotorEvent()                                  │
 │    └─► latencyMetrics.recordExecution(drift)                │
@@ -215,21 +204,25 @@ Estimated sync error:    ~215 us (SECONDARY later)
 ### Scheduled Execution Flow
 
 1. PRIMARY calculates `executeAt = now + adaptiveLeadTime`
-2. PRIMARY sends MACROCYCLE with 12 batched events to SECONDARY
+2. PRIMARY sends MACROCYCLE with all of the macrocycle's events batched (3 patterns × fingers: 12 on v2, 15 on v3) to SECONDARY
 3. Both devices enqueue events to ActivationQueue
 4. FreeRTOS motor task (Priority 4) processes queue:
-   - Sleeps until ~2ms before event (non-blocking)
-   - Busy-waits final 2ms for sub-millisecond precision
+   - Sleeps until ~1ms before event when it is more than 2ms away (non-blocking)
+   - Busy-waits the final stretch (under 2ms) for sub-millisecond precision
    - Uses I2C pre-selection for ~100μs activation latency
 5. Both devices record drift after execution
 
 ### Clock Synchronization
 
-SECONDARY converts PRIMARY's scheduled time to local time:
+PRIMARY stamps its clock offset into every macrocycle, and SECONDARY converts PRIMARY's base time to local time with it:
 
 ```cpp
-localExecTime = syncProtocol.toLocalTime(executeAt);
-// Internally: return executeAt + _currentOffset;
+// PRIMARY (onSendMacrocycle)
+mcCopy.clockOffset = syncProtocol.getCorrectedOffset();
+
+// SECONDARY (onBLEMessage, MC: handler)
+int64_t offset = mc.clockOffset;
+uint64_t localBaseTime = static_cast<uint64_t>(static_cast<int64_t>(mc.baseTime) + offset);
 ```
 
 The offset is calculated using PTP 4-timestamp protocol via PING/PONG exchanges:
@@ -250,6 +243,7 @@ Defined in `include/config.h`:
 
 // Clock sync uses unified PING/PONG keepalive (not separate probing):
 #define KEEPALIVE_INTERVAL_MS 1000        // PING/PONG every 1 second
+#define SYNC_ACQUIRE_INTERVAL_MS 70       // PING/PONG every 70ms until sync valid
 #define SYNC_MIN_VALID_SAMPLES 5          // Minimum samples before sync valid
 #define SYNC_RTT_QUALITY_THRESHOLD_US 60000  // Reject samples with RTT > 60ms
 ```
@@ -257,7 +251,7 @@ Defined in `include/config.h`:
 ### Memory Usage
 
 - `LatencyMetrics` struct: ~100 bytes (static allocation)
-- Clock sync uses EMA (exponential moving average), not sample arrays
+- Clock sync collects offsets in a 10-sample buffer (median) until valid, then maintains them with an EMA (exponential moving average)
 - Zero heap allocation
 
 ### Performance Impact
@@ -279,7 +273,7 @@ Defined in `include/config.h`:
 
 ### Accuracy Bounds
 
-The system achieves sub-millisecond bilateral synchronization through:
+The system is designed for sub-millisecond bilateral synchronization through:
 
 - PTP-style clock synchronization with outlier rejection
 - FreeRTOS motor task with hybrid sleep/busy-wait
@@ -315,5 +309,5 @@ The execution-drift numbers in `docs/TIMING_BASELINE.md` (December 2025 baseline
 ## Related Documentation
 
 - [SYNCHRONIZATION_PROTOCOL.md](SYNCHRONIZATION_PROTOCOL.md) - Clock sync protocol details
-- [BLE_PROTOCOL.md](BLE_PROTOCOL.md) - BLE message format
+- [BLE-Protocol (wiki)](https://github.com/BlueBuzzah/BlueBuzzah-Firmware/wiki/BLE-Protocol) - BLE message format
 - [THERAPY_ENGINE.md](THERAPY_ENGINE.md) - Buzz scheduling logic

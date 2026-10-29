@@ -4,7 +4,7 @@
 
 **→ [BLE-Protocol (firmware wiki)](https://github.com/BlueBuzzah/BlueBuzzah-Firmware/wiki/BLE-Protocol)**
 
-The wiki page documents every command, exact response format, parameter range, error string, and known protocol defect, verified against the implementation (`src/menu_controller.cpp`, `src/ble_manager.cpp`, `src/profile_manager.cpp`).
+The wiki page documents every command, exact response format, parameter range, error string, and known protocol defect, verified against the implementation (`src/menu_controller.cpp`, `src/ble_manager_nrf52.cpp` / `src/ble_manager_esp32.cpp`, `src/profile_manager.cpp`).
 
 > Any firmware change to a command, response, error string, or parameter range must update the wiki page in the same PR — and the BuzzahBuddy app's `MockBluetoothService` must be updated to match byte-for-byte.
 

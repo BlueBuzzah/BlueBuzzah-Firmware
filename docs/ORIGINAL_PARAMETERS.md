@@ -213,8 +213,8 @@ ACTUATOR_FREQUENCY = 250  # Hz
 
 **Random Frequency** (Custom only):
 ```python
-ACTUATOR_FREQUENCY = random.randrange(210, 260, 5)  # 210, 215, 220, ..., 255, 260 Hz
-# 11 possible values in 5 Hz increments
+ACTUATOR_FREQUENCY = random.randrange(210, 260, 5)  # 210, 215, 220, ..., 255 Hz (stop is exclusive)
+# 10 possible values in 5 Hz increments
 ```
 
 ### Amplitude Control
@@ -431,7 +431,7 @@ Complete reference for all presets:
 ### Pattern Sequencing
 
 1. Execute **3 patterns per macrocycle**, not 1 or 2
-2. Each pattern is a **complete 4-finger sequence**
+2. Each pattern is a **complete sequence over every finger** (4; 5 on BlueBuzzah v3)
 3. Randomization uses **permutation selection**, not random finger picking
 4. Mirroring means **both gloves execute same pattern sequence**
 
@@ -448,6 +448,8 @@ Complete reference for all presets:
 2. Slave applies **21 ms BLE latency compensation**
 3. Both gloves must use **shared random seed** for identical patterns
 4. LED flash indicates successful sync point
+
+V2 replaces all four mechanisms: see [Synchronization Changes](#synchronization-changes) below.
 
 ---
 
@@ -472,9 +474,9 @@ This section maps original V1 CircuitPython concepts to V2 C++ implementation.
 |--------------|---------------|----------|------------|-------|
 | `TIME_ON` | `timeOnMs` | 100ms | 100ms | Unchanged |
 | `TIME_OFF` | `timeOffMs` | 67ms | 67ms | Unchanged |
-| `TIME_RELAX` | `relaxTimeMs` | 668ms | 668ms | Unchanged |
-| `TIME_SESSION` | `durationSec/60` | 120min | 120min | V2 uses seconds |
-| `JITTER` | `jitterPercent` | 23.5% | 24% | Rounded for integer storage |
+| `TIME_RELAX` | `Pattern::interBurstIntervalMs` | 668ms | 668ms | `numFingers × (TIME_ON + TIME_OFF)`; the double relax is `calculateRelaxIntervalMs()` (1336ms at 4 fingers) |
+| `TIME_SESSION` | `sessionDurationMin` | 120min | 120min | Engine takes `durationSec` (minutes × 60) |
+| `JITTER` | `jitterPercent` | 23.5% | 23.5% | Stored as `float` |
 | `21ms BLE compensation` | Adaptive lead time | Fixed | 70-150ms | V2 uses measured RTT |
 
 ### Synchronization Changes
@@ -484,14 +486,14 @@ This section maps original V1 CircuitPython concepts to V2 C++ implementation.
 | Clock sync method | Single timestamp + fixed 21ms offset | IEEE 1588 PTP 4-timestamp |
 | Sync accuracy | ~20-50ms estimated | <2ms measured |
 | Drift compensation | None | EMA smoothing + drift rate tracking |
-| Sync frequency | Per-macrocycle | Continuous (1s keepalive) |
+| Sync frequency | Per-macrocycle | Continuous PING/PONG (1s idle, 250ms during therapy, 70ms until sync converges) |
 | Warm-start recovery | None | 15s cache validity |
 
 ### Motor Control Mapping
 
 | V1 | V2 | Change |
 |----|----|----|
-| `drivers[finger].realtime_value = X` | `hapticController.activate(finger, X)` | Abstracted I/O |
+| `drivers[finger].realtime_value = X` | `HapticController::activate(finger, X)` | Abstracted I/O; X is 0-100%, scaled to 0-127 |
 | Direct delay (`time.sleep()`) | FreeRTOS scheduled events | Non-blocking |
 | Blocking motor execution | Callback-driven + ActivationQueue | Concurrent BLE |
 | I2C per-call mux selection | I2C pre-selection optimization | -400μs latency |
@@ -501,9 +503,9 @@ This section maps original V1 CircuitPython concepts to V2 C++ implementation.
 | V1 File | V2 File | Purpose |
 |---------|---------|---------|
 | `defaults.py` | `include/config.h` | Hardware constants, timing defaults |
-| `defaults_*.py` (presets) | `ProfileManager` + LittleFS | Profile storage |
-| `AMPLITUDE_MIN/MAX` | `TherapyConfig.amplitude` | Single value (per-finger planned) |
-| `RANDOM_FREQ` + `ACTUATOR_FREQ*` | `randomFreq`, `freqLow`, `freqHigh` | Same parameters |
+| `defaults_*.py` (presets) | `ProfileManager` built-in profiles + `fs_backend` (InternalFS on nRF52840, LittleFS on ESP32-S3) | Profile storage |
+| `AMPLITUDE_MIN/MAX` | `TherapyProfile.amplitudeMin/amplitudeMax` | Random per event when they differ (per-finger planned) |
+| `RANDOM_FREQ` + `ACTUATOR_FREQ*` | `frequencyRandomization`, `frequencyMin`, `frequencyMax` | Stored per profile but not applied: nothing calls `TherapyEngine::setFrequencyRandomization()`, so all profiles run at 250 Hz |
 
 ### Architecture Differences
 
@@ -511,10 +513,10 @@ This section maps original V1 CircuitPython concepts to V2 C++ implementation.
 |---------|----|----|
 | Language | CircuitPython | Arduino C++ |
 | RTOS | None (single-threaded) | FreeRTOS (multi-task) |
-| BLE stack | CircuitPython BLE | Bluefruit/SoftDevice |
+| BLE stack | CircuitPython BLE | Bluefruit/SoftDevice (nRF52840), NimBLE (ESP32-S3) |
 | Motor timing | Main loop delays | Dedicated FreeRTOS task |
-| Pattern generation | Runtime random | Pre-computed permutation table |
-| Message format | String-based | Binary-efficient with V5 MACROCYCLE |
+| Pattern generation | Runtime random | Runtime Fisher-Yates shuffle on PRIMARY, sent to SECONDARY as explicit events |
+| Message format | String-based | Compact text `MC:` MACROCYCLE format (V5) carrying every event |
 
 ---
 
