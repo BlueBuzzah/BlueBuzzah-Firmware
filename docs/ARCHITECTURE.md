@@ -5,7 +5,7 @@ This document provides a detailed explanation of the BlueBuzzah v2 system archit
 **Platforms**: Arduino C++ on Adafruit Feather nRF52840 Express (BlueBuzzah v2, 4 motors) and Seeed XIAO ESP32-S3 (BlueBuzzah v3, 5 motors)
 **Build System**: PlatformIO — one codebase, two device environments (`adafruit_feather_nrf52840`, `pentabuzzer_esp32s3`) selected by board macro
 
-Platform-specific code is isolated behind compile-time seams: `board_config.h` (pins, `MAX_ACTUATORS`, battery availability), `platform.h` (critical sections, memory barrier, system reset, RTOS headers), a split `BLEManager` backend (`ble_manager_nrf52.cpp` Bluefruit / `ble_manager_esp32.cpp` NimBLE — identical Nordic-UART protocol, MTU 200, 7.5-10 ms connection interval, 0 dBm TX, 2M PHY), an `fs_backend` filesystem shim, and a `build_src_filter`-selected `PowerController` (BlueBuzzah v3 power switch + deep sleep; no-op on nRF). Everything below the seams — therapy engine, sync protocol, state machine, menus, profiles — is shared and platform-neutral.
+Platform-specific code is isolated behind compile-time seams: `board_config.h` (pins, `MAX_ACTUATORS`, battery availability), `platform.h` (critical sections, memory barrier, system reset, RTOS headers), a split `BLEManager` backend (`ble_manager_nrf52.cpp` Bluefruit / `ble_manager_esp32.cpp` NimBLE — identical Nordic-UART protocol, MTU 200, 7.5-10 ms glove-link connection interval (30-50 ms requested for the phone link), 0 dBm TX, 2M PHY), an `fs_backend` filesystem shim, and a `build_src_filter`-selected `PowerController` (BlueBuzzah v3 power switch + deep sleep; no-op on nRF). Everything below the seams — therapy engine, sync protocol, state machine, menus, profiles — is shared and platform-neutral.
 
 **BlueBuzzah v3 power topology** (verified against the V2.2 PCB netlist): the ESP32-S3, TCA9548A mux, and IMU (an LSM6DS3 on SPI — present on the board but unused by firmware) run from the XIAO's onboard 3V3 LDO; the five DRV2605 drivers and the WS2812 LED run **directly from VBat**. There is no switched power rail. **Motors cannot run on USB alone** — without a battery, VBat is only the XIAO charger's current-limited output, and any LRA drive browns the drivers out to power-on defaults (standby → silent motors while I2C still works). GPIO1 is the shared DRV2605 EN + mux reset: a LOW→HIGH toggle resets every DRV2605 register, so any runtime toggle must be followed by full haptic reconfiguration. Motor JST ports are silk-labeled 1–5 in reverse of firmware channels (finger N ↔ port 5−N, `MOTOR_SILK_PORT()`). Serial QA commands `MOTOR_DIAG` (buzz every channel + supply-reset canary), `MOTOR_TEST:<n>` (single channel, 2 s), and `MOTOR_PRESENT` (per-port open-load probe via LRA auto-calibration) validate assembly. The presence probe also runs at every boot and feeds the therapy engine's active-finger map, so macrocycles skip motor ports found empty on the PRIMARY glove; fewer than 4 detected motors is signaled by a red double-blink LED at boot.
 
@@ -369,8 +369,8 @@ PRIMARY supports **simultaneous connections** to:
 1. **Advertise** as BLE peripheral ("BlueBuzzah")
 2. **Accept connections** from smartphone + SECONDARY
 3. **Execute boot sequence**: Wait for SECONDARY, optionally phone
-4. **Orchestrate therapy**: Send MACROCYCLE batches (12 events every ~2s)
-5. **Send PING/PONG** for keepalive + clock sync (every 1s, all states)
+4. **Orchestrate therapy**: Send MACROCYCLE batches (12 events on v2, 15 on v3, every ~3.3s)
+5. **Send PING/PONG** for keepalive + clock sync (every 70ms until clock sync is valid, 250ms during therapy, 1s idle)
 6. **Broadcast parameters** to SECONDARY on profile changes
 7. **Process smartphone commands** via MenuController
 
@@ -383,7 +383,7 @@ PRIMARY supports **simultaneous connections** to:
 
 ### SECONDARY Responsibilities
 
-1. **Scan** for "BlueBuzzah" BLE advertisement
+1. **Scan** for the PRIMARY's BLE advertisement (Nordic UART service + BlueBuzzah manufacturer data; name "BlueBuzzah" as fallback)
 2. **Connect** to PRIMARY during boot sequence
 3. **Receive SYNC commands**: START_SESSION, MACROCYCLE, PING
 4. **Execute synchronized motor events** from macrocycle batches
@@ -1032,11 +1032,10 @@ Connection monitoring uses a unified PING/PONG mechanism that provides both keep
 
 | Parameter         | Value     | Description                           |
 | ----------------- | --------- | ------------------------------------- |
-| Interval          | 1 second  | PING/PONG every 1s (all states)       |
-| Timeout (SECONDARY) | 6 seconds | 6 missed PINGs = connection lost    |
-| Timeout (PRIMARY)   | 4 seconds | During therapy (emergency shutdown) |
-| Recovery attempts | 3         | Number of reconnection attempts       |
-| Recovery delay    | 2 seconds | Delay between reconnection attempts   |
+| Interval          | 70ms / 250ms / 1s | Until clock sync is valid (cold or warm start) / during therapy / idle |
+| Timeout (SECONDARY) | 6 seconds | No PING for 6s = connection lost    |
+| Timeout (PRIMARY)   | 6 seconds | No PONG for 6s during therapy (emergency shutdown) |
+| Connection-lost window | 30 seconds | Purple LED, then IDLE; scanning/advertising continue throughout |
 
 **Unified Mechanism:**
 - **PING** (PRIMARY → SECONDARY): Proves PRIMARY alive + carries T1 timestamp
@@ -1083,13 +1082,20 @@ stateDiagram-v2
 
 ```cpp
 // include/config.h
-#define KEEPALIVE_INTERVAL_MS 1000  // PING every 1 second (unified keepalive + sync)
+#define SYNC_ACQUIRE_INTERVAL_MS 70  // PING cadence until clock sync is valid (cold or warm start)
+#define SYNC_ACTIVE_INTERVAL_MS 250  // PING cadence while therapy is running
+#define KEEPALIVE_INTERVAL_MS 1000  // PING cadence when idle (unified keepalive + sync)
 #define KEEPALIVE_TIMEOUT_MS 6000   // SECONDARY: 6 missed = connection lost
 
 // src/main.cpp - PRIMARY keepalive (unified mechanism)
+uint32_t pingIntervalMs = therapy.isRunning() ? SYNC_ACTIVE_INTERVAL_MS : KEEPALIVE_INTERVAL_MS;
+if (!syncProtocol.isClockSyncValid() || syncProtocol.isWarmStartMode())
+{
+    pingIntervalMs = SYNC_ACQUIRE_INTERVAL_MS;
+}
 if (deviceRole == DeviceRole::PRIMARY &&
     isConnected &&
-    (now - lastKeepalive >= KEEPALIVE_INTERVAL_MS))
+    (now - lastKeepalive >= pingIntervalMs))
 {
     lastKeepalive = now;
     sendPing();  // PING provides both keepalive and clock sync
@@ -1149,7 +1155,7 @@ SYNC:<command>:<key1>|<value1>|<key2>|<value2>...<EOT>
 SYNC:START_SESSION:profile|noisy_vcr|duration|7200<EOT>
 MC:42|5000000|12|100,0,100,100,235|67,1,100,100,235|...
 PING:1|1234567890
-PONG:1|0|1234567900|1234567950
+PONG:1|1234567925|1234567900|1234567950
 MC_ACK:42
 SYNC:ACK:command|START_SESSION<EOT>
 ```
@@ -1604,6 +1610,9 @@ bool recoverableError(const char* context) {
 - Invalid command -> `ERROR:Unknown command`
 - Invalid parameter -> `ERROR:Value out of range`
 - Command during session -> `ERROR:Cannot modify during active session`
+- `SESSION_START` while the SECONDARY is connected but clock sync is not yet valid -> `ERROR:Sync not ready` (accepted with degraded timing once the SECONDARY has been connected for `SYNC_START_FALLBACK_MS`, 10s)
+
+Every menu reply, success or error, begins with a `CMD:<command>` line naming the command it answers. Only `ERROR:Invalid command format` has no `CMD:` line, since the command was never parsed.
 
 ```cpp
 void sendErrorResponse(const char* error) {
@@ -1617,9 +1626,9 @@ void sendErrorResponse(const char* error) {
 
 | Operation            | Timeout      | Failure Action    | Location            |
 | -------------------- | ------------ | ----------------- | ------------------- |
-| Boot sequence        | 30s          | Red LED, halt     | `main.cpp`          |
-| BLE scan (SECONDARY) | 30s          | Red LED, halt     | `ble_manager.cpp`   |
-| Keepalive (PING/PONG)| 6s           | Reconnect attempt | `main.cpp`          |
+| Boot window          | 30s          | Auto-start therapy if SECONDARY connected and no phone | `main.cpp` |
+| BLE scan (SECONDARY) | None         | Scans until the PRIMARY is found | `ble_manager_nrf52.cpp` / `ble_manager_esp32.cpp` |
+| Keepalive (PING/PONG)| 6s           | Connection lost (purple LED), keep scanning/advertising | `main.cpp` |
 | SYNC command         | 10s          | Log warning       | `sync_protocol.cpp` |
 | BLE receive          | Non-blocking | Callback-based    | `ble_manager.cpp`   |
 
@@ -2126,10 +2135,10 @@ The architecture enables confident refactoring, easy testing, and straightforwar
 | Constant | Value | Description |
 |----------|-------|-------------|
 | Boot timeout | 30s | Max boot sequence time |
-| Keepalive interval | 1s | PING/PONG (unified keepalive + sync) |
-| Keepalive timeout | 6s | SECONDARY: 6 missed PINGs |
-| BLE connection interval | 8-12ms | Low-latency (6-9 BLE units) |
-| BLE supervision timeout | 4s | Disconnect detection |
+| Keepalive interval | 1s | Idle PING/PONG (unified keepalive + sync); 70ms until clock sync is valid, 250ms during therapy |
+| Keepalive timeout | 6s | No PING (SECONDARY) or PONG (PRIMARY) for 6s |
+| BLE connection interval | 7.5-10ms glove link, 30-50ms phone link | Glove link low-latency (6-8 BLE units); phone link 24-40 units, no peripheral latency |
+| BLE supervision timeout | 6s | Disconnect detection (`BLE_TIMEOUT_MS`) |
 | Therapy default ON | 100ms | Burst duration |
 | Therapy default OFF | 67ms | Inter-burst interval |
 | Default jitter | 23.5% | Noisy vCR timing variation |

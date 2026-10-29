@@ -253,7 +253,7 @@ The +473µs / +500µs average execution drift figures recorded in the December 2
 | Area | Change |
 |------|--------|
 | **Hardware timebase** | NRF_TIMER4 configured as 1MHz free-running counter clocked from the HFXO crystal. `getMicros()` now reads this counter; falls back to the tick clock if TIMER4 init fails at boot. |
-| **HFXO watchdog** | `loop()` checks the oscillator each iteration; logs a warning if the HFXO is lost. |
+| **HFXO watchdog** | `loop()` re-requests the HFCLK every 1s (TinyUSB can release it on USB suspend); logs only if the request fails. |
 | **Late TX stamping** | PING T1 / PONG T3 are now stamped at SoftDevice handoff (deferred-stamp TX entries) instead of at message construction, removing main-loop queuing latency from PTP samples. |
 | **PONG sequence matching** | Stale / sequence-mismatched PONGs are discarded without clearing in-flight state or consuming keepalive credit. |
 | **RTT hard ceiling** | Samples with RTT > 60ms are discarded (unchanged value, now correctly measurable). |

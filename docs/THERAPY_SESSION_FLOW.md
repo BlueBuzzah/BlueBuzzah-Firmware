@@ -63,8 +63,8 @@ stateDiagram-v2
 
     CRITICAL_BATTERY --> IDLE: Forced shutdown
 
-    CONNECTION_LOST --> READY: RECONNECTED\n(3 retry attempts,\n2s between)
-    CONNECTION_LOST --> IDLE: RECONNECT_FAILED\n(all retries exhausted)
+    CONNECTION_LOST --> READY: Peer traffic resumes
+    CONNECTION_LOST --> IDLE: RECONNECT_FAILED\n(30s without peer)
 
     ERROR --> IDLE: RESET
 
@@ -135,25 +135,25 @@ sequenceDiagram
     S->>P: BLE Connect
     S->>P: READY message
     P->>P: STATE: IDLE → READY
-    P->>P: Start keepalive (PING/PONG every 1s)
+    P->>P: Start keepalive (PING/PONG every 70ms until sync valid, then 1s)
 
-    Note over P,S: PHASE 2: Clock Synchronization (5+ seconds)
-    loop Every 1 second (keepalive)
+    Note over P,S: PHASE 2: Clock Synchronization (~350ms)
+    loop Every 70ms until sync valid (keepalive)
         P->>S: PING:seq|T1 (T1=PRIMARY time)
         Note over S: Record T2 (receive time)
         S->>S: Record T3 (send time)
-        S->>P: PONG:seq|0|T2|T3
+        S->>P: PONG:seq|tx_micros|T2|T3
         Note over P: Record T4 (receive time)<br/>Calculate offset = ((T2-T1)+(T3-T4))/2
         P->>P: Collect offset samples (EMA smoothing)
     end
-    Note over P: After 5 valid samples (~5s):<br/>Clock sync ready
+    Note over P: After 5 valid samples (~350ms):<br/>Clock sync ready
 
     Note over APP,P: PHASE 3: User Commands
     APP->>P: PROFILE_LOAD or PROFILE_CUSTOM
     P->>S: PARAM_UPDATE:... (broadcast params)
 
     APP->>P: SESSION_START
-    Note over P: Check: SECONDARY connected? Battery OK?
+    Note over P: Check: Battery OK?<br/>SECONDARY connected → clock sync valid?<br/>(else Sync not ready error until 10s after connect)
     P->>S: START_SESSION:seq|ts
     P->>P: STATE: READY → RUNNING
     S->>S: STATE: READY → RUNNING
@@ -284,7 +284,7 @@ sequenceDiagram
         Note over S: T2 = getMicros()<br/>(receive time on SECONDARY)
         Note over S: Process & prepare response
         Note over S: T3 = getMicros()<br/>(send time on SECONDARY)
-        S->>P: PONG:42|0|T2|T3
+        S->>P: PONG:42|tx_micros|T2|T3
     end
 
     rect rgba(5, 33, 45, 0.5)
@@ -297,7 +297,7 @@ sequenceDiagram
 
     Note over P,S: After 5+ valid samples:<br/>Clock sync ready ✓
 
-    Note over P,S: During therapy:<br/>Refresh offset every 1s<br/>(EMA smoothing for drift)
+    Note over P,S: During therapy:<br/>Refresh offset every 250ms<br/>(EMA smoothing for drift)
 ```
 
 **Offset Calculation Formula:**
@@ -310,10 +310,10 @@ RTT = (T4 - T1) - (T3 - T2)
 **Synchronization Parameters:**
 
 - **Target accuracy**: <2ms bilateral sync
-- **Confidence threshold**: RTT < 80ms
+- **Confidence threshold**: RTT < 60ms
 - **Minimum samples**: 5 for sync ready
-- **Smoothing**: Exponential moving average (α = 0.2)
-- **Update frequency**: Every 1 second (with keepalive)
+- **Smoothing**: Exponential moving average (α = 0.1)
+- **Update frequency**: Every PING/PONG (70ms until sync valid, 250ms during therapy, 1s idle)
 
 ### Warm-Start Sync Recovery
 
@@ -365,8 +365,8 @@ sequenceDiagram
     end
 
     P->>S: PING:seq|T1 (1st keepalive)
-    S->>P: PONG:seq|0|T2|T3
-    Note over P: Single sample + cached state<br/>= sync ready (~3s vs 5+s)
+    S->>P: PONG:seq|tx_micros|T2|T3
+    Note over P: 3 confirmatory samples + cached state<br/>= sync ready (~210ms vs ~350ms)
 
     P->>P: STATE: READY → can resume
 ```
@@ -384,8 +384,8 @@ sequenceDiagram
 
 | Start Type | Required Samples | Time to Sync Ready |
 |------------|:----------------:|:------------------:|
-| Cold-Start | 5+ samples | ~5+ seconds |
-| Warm-Start | 1-2 samples | ~2-3 seconds |
+| Cold-Start | 5+ samples | ~350ms |
+| Warm-Start | 3 samples | ~210ms |
 
 **Sync Cache Contents:**
 
@@ -491,8 +491,8 @@ graph TD
     B --> B3["RESUME_SESSION:seq|ts"]
     B --> B4["STOP_SESSION:seq|ts"]
 
-    C --> C1["PING:seq|T1<br/>(every 1s, all states)"]
-    C --> C2["PONG:seq|0|T2|T3<br/>(response)"]
+    C --> C1["PING:seq|T1<br/>(70ms acquiring, 250ms therapy, 1s idle)"]
+    C --> C2["PONG:seq|tx_micros|T2|T3<br/>(response)"]
 
     D --> D2["MACROCYCLE:seq|baseTime|12|events<br/>(batched, 3 patterns)"]
     D --> D3["MACROCYCLE_ACK:seq<br/>(acknowledgment)"]
@@ -520,7 +520,7 @@ graph TD
 
 - **Phone → PRIMARY**: BLE UART service (Nordic UART Service)
 - **PRIMARY → SECONDARY**: Custom sync protocol over BLE UART
-- **Keepalive**: PING/PONG every 1s in all connected states
+- **Keepalive**: PING/PONG in all connected states: every 70ms until clock sync is valid, 250ms during therapy, 1s idle
 
 ---
 
@@ -668,9 +668,9 @@ stateDiagram-v2
 
 **Connection Loss Handling:**
 
-- **Detection**: 6 seconds without PONG response (3 missed keepalives)
-- **Reconnection**: 3 attempts with 2s intervals
-- **Timeout**: Return to IDLE after all retries exhausted
+- **Detection**: 6 seconds without PONG response (6 missed at the 1s idle cadence)
+- **Reconnection**: Scanning/advertising continue; the peer can reconnect at any time
+- **Timeout**: Return to IDLE (LED back to breathing blue) after 30s without peer traffic
 
 ---
 
@@ -772,7 +772,7 @@ sequenceDiagram
     participant S as SECONDARY
 
     Ph->>P: SESSION_START
-    P->>P: Validate (battery, SECONDARY connected)
+    P->>P: Validate (battery, clock sync if SECONDARY connected)
 
     P->>P: Load profile settings
     P->>S: PARAM_UPDATE:ON:0.100:OFF:0.067:...
@@ -784,13 +784,13 @@ sequenceDiagram
 
     P->>Ph: SESSION_STATUS:RUNNING
 
-    loop Every 1 second (keepalive + clock sync)
+    loop Every 250ms (keepalive + clock sync)
         P->>S: PING:seq|T1
-        S->>P: PONG:seq|0|T2|T3
+        S->>P: PONG:seq|tx_micros|T2|T3
         P->>P: Compute clock offset, EMA update
     end
 
-    loop Every ~200ms (pattern execution)
+    loop Every ~3.3s (pattern execution)
         alt Batching Mode
             P->>S: MACROCYCLE:seq|baseTime|12|...
             S->>P: MACROCYCLE_ACK:seq
@@ -867,10 +867,9 @@ sequenceDiagram
 | Pattern duration      | ~668ms  | 4 events × (TIME_ON + TIME_OFF + jitter)  |
 | Macrocycle duration   | ~3.3s   | 3 patterns + inter-macrocycle relaxation  |
 | Relaxation period     | ~1336ms | 2× pattern duration (between macrocycles) |
-| PING/PONG frequency   | 1s      | Keepalive and clock sync refresh rate     |
-| Connection timeout    | 6s      | 3 missed PING/PONGs triggers reconnection |
-| Reconnection interval | 2s      | Delay between reconnection attempts       |
-| Reconnection attempts | 3       | Maximum retries before returning to IDLE  |
+| PING/PONG frequency   | 70ms / 250ms / 1s | Keepalive and clock sync refresh rate (acquiring / therapy / idle) |
+| Connection timeout    | 6s      | No PING/PONG for 6s triggers connection lost |
+| Connection-lost window | 30s    | Purple LED before returning to IDLE (reconnect still possible) |
 
 ### Synchronization Accuracy
 
@@ -878,10 +877,10 @@ sequenceDiagram
 | ---------------------- | ------------------------- | --------------------------------------- |
 | Target accuracy        | <2ms                      | Bilateral synchronization (both gloves) |
 | Synchronization method | IEEE 1588 PTP 4-timestamp | Clock offset calculation                |
-| Confidence threshold   | RTT < 80ms                | For accepting offset samples            |
+| Confidence threshold   | RTT < 60ms                | For accepting offset samples            |
 | Minimum samples        | 5                         | Before declaring sync ready             |
-| Smoothing algorithm    | EMA (α = 0.2)             | Exponential moving average              |
-| Update frequency       | 1 Hz                      | Every PING/PONG cycle                   |
+| Smoothing algorithm    | EMA (α = 0.1)             | Exponential moving average              |
+| Update frequency       | ~14 Hz / 4 Hz / 1 Hz      | Every PING/PONG cycle (acquiring / therapy / idle) |
 
 ### Message Efficiency
 

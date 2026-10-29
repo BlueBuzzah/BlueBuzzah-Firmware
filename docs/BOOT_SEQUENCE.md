@@ -301,7 +301,7 @@ Time  | State                | LED                    | Connections
 
 ## SECONDARY Device Boot Sequence
 
-The SECONDARY device actively scans for and connects to the PRIMARY device advertising as "BlueBuzzah".
+The SECONDARY device actively scans for and connects to the PRIMARY device, matching its advert (Nordic UART service + BlueBuzzah manufacturer data) or, as a fallback, its "BlueBuzzah" name.
 
 ### State Diagram
 
@@ -533,48 +533,64 @@ Boot, failure:
 ### BLE Advertisement Parameters (PRIMARY)
 
 ```cpp
-// src/ble_manager.cpp
+// src/ble_manager_nrf52.cpp (nRF52 backend shown; the NimBLE backend uses the same intervals)
 
-void BLEManager::startAdvertising() {
+void BLEManager::setupAdvertising() {
     Bluefruit.Advertising.addFlags(BLE_GAP_ADV_FLAGS_LE_ONLY_GENERAL_DISC_MODE);
     Bluefruit.Advertising.addTxPower();
-    Bluefruit.Advertising.addService(_bleuart);
-    Bluefruit.Advertising.addName();
+    Bluefruit.Advertising.addService(_uartService);
+    static const uint8_t mfgData[] = BLE_MFG_DATA_INIT;
+    Bluefruit.Advertising.addManufacturerData(mfgData, sizeof(mfgData));
+    Bluefruit.ScanResponse.addName();
 
-    Bluefruit.Advertising.setInterval(800, 800);  // 500ms interval (in 0.625ms units)
-    Bluefruit.Advertising.setFastTimeout(30);     // Advertise for 30 seconds
-    Bluefruit.Advertising.start(30);              // 30 second timeout
+    Bluefruit.Advertising.restartOnDisconnect(true);
+    Bluefruit.Advertising.setInterval(BLE_ADV_FAST_MIN_UNITS, BLE_ADV_FAST_MAX_UNITS);  // 20ms - 152.5ms
+    Bluefruit.Advertising.setFastTimeout(30);    // Fast mode for 30 seconds
+    Bluefruit.Advertising.start(0);              // 0 = Don't stop advertising
+}
+
+void BLEManager::updateAdvertisingInterval() {
+    if (isSecondaryConnected()) {
+        Bluefruit.Advertising.setInterval(BLE_ADV_SLOW_UNITS, BLE_ADV_SLOW_UNITS);  // 500ms
+    } else {
+        Bluefruit.Advertising.setInterval(BLE_ADV_FAST_MIN_UNITS, BLE_ADV_FAST_MAX_UNITS);
+    }
+    // restarts advertising if running so the new interval applies
 }
 ```
 
 **Rationale**:
-- 500ms interval balances discoverability and power consumption
-- Advertises for full 30-second boot window
-- Name "BlueBuzzah" identifies device to SECONDARY and phone
+- Fast 20-152.5ms advertising while the SECONDARY slot is free, so the SECONDARY (re)connects quickly
+- Slow 500ms advertising once the SECONDARY is connected: only the phone slot is left, and fast adverts would take airtime from the sync link
+- Advertising restarts whenever a peripheral link drops (nRF52: `_onPeriphDisconnect` restarts it if stopped, since Bluefruit's `restartOnDisconnect` only fires once no links remain; NimBLE: `advertiseOnDisconnect`)
+- Advertises without a timeout (`start(0)`), covering the 30-second boot window and every reconnect
+- Name "BlueBuzzah" (scan response) identifies the device; the SECONDARY can match earlier on the service UUID + manufacturer data in the main advert
 
 ---
 
 ### BLE Scanning Parameters (SECONDARY)
 
 ```cpp
-// src/ble_manager.cpp
+// src/ble_manager_nrf52.cpp (nRF52 backend shown; the NimBLE backend uses the same timing)
 
-bool BLEManager::scanAndConnect(const char* targetName, uint32_t timeoutMs) {
-    Bluefruit.Scanner.setRxCallback(scanCallback);
-    Bluefruit.Scanner.filterRssi(-80);
-    Bluefruit.Scanner.setInterval(160, 80);  // 100ms interval, 50ms window
-    Bluefruit.Scanner.start(timeoutMs / 1000);
-
-    // Wait for callback or timeout
-    // ...
+bool BLEManager::startScanning(const char* targetName) {
+    Bluefruit.Scanner.setRxCallback(_onScanCallback);
+    Bluefruit.Scanner.filterRssi(-90);
+    if (getConnectionCount() == 0) {
+        Bluefruit.Scanner.setInterval(160, 160);  // 100ms interval, 100ms window
+    } else {
+        Bluefruit.Scanner.setInterval(320, 60);   // 200ms interval, 37.5ms window (19% duty)
+    }
+    Bluefruit.Scanner.useActiveScan(true);   // Request scan response for name
+    return Bluefruit.Scanner.start(0);       // 0 = Don't stop
 }
 ```
 
 **Rationale**:
-- 1-second scan periods provide good discovery rate
-- 100ms interval between scans avoids excessive power use
-- Active scanning gets additional device information
-- 30-second timeout matches boot window
+- Continuous scanning (100ms window every 100ms) while disconnected keeps reconnects fast
+- The 19% duty cycle applies only when a false keepalive timeout restarts scanning with the link still up, so the scan doesn't crowd out sync traffic
+- A PRIMARY matches on the Nordic UART service plus the BlueBuzzah manufacturer data in its main advert; the "BlueBuzzah" name (scan response, via active scanning) is the fallback
+- Scans without a timeout (`start(0)`) until the PRIMARY is found
 
 ---
 
@@ -618,7 +634,7 @@ PRIMARY                              SECONDARY
    |--- T1: Send PING:seq|T1 --------->  |
    |                                  T2: Receive PING
    |                                  T3: Send PONG
-   |  <-------- PONG:seq|0|T2|T3 --------|
+   |  <-- PONG:seq|tx_micros|T2|T3 ------|
 T4: Receive PONG                         |
    |                                     |
 
@@ -628,7 +644,9 @@ RTT = (T4 - T1) - (T3 - T2)
 
 **Configuration (from config.h):**
 ```cpp
-#define KEEPALIVE_INTERVAL_MS 1000   // PING/PONG every 1 second
+#define SYNC_ACQUIRE_INTERVAL_MS 70  // PING/PONG every 70ms until sync is valid (cold or warm start)
+#define SYNC_ACTIVE_INTERVAL_MS 250  // PING/PONG every 250ms during therapy
+#define KEEPALIVE_INTERVAL_MS 1000   // PING/PONG every 1 second when idle
 #define SYNC_MIN_VALID_SAMPLES 5     // Minimum samples before sync valid
 #define SYNC_RTT_QUALITY_THRESHOLD_US 60000  // Reject samples with RTT > 60ms
 #define SYNC_OFFSET_EMA_ALPHA_NUM 1  // EMA smoothing α = 1/10 = 0.1
@@ -636,7 +654,7 @@ RTT = (T4 - T1) - (T3 - T2)
 ```
 
 **Synchronization Quality:**
-- Clock synchronization is continuously maintained via PING/PONG (every 1 second)
+- Clock synchronization is continuously maintained via PING/PONG (every 70ms until sync is valid, so 5 samples take ~350ms; then 250ms during therapy, 1 second idle)
 - EMA (Exponential Moving Average) smooths offset measurements
 - Outlier rejection filters samples with high RTT (>60ms)
 - Drift rate tracking compensates for crystal oscillator differences
@@ -646,7 +664,7 @@ RTT = (T4 - T1) - (T3 - T2)
 After brief disconnects (<15 seconds), sync state is cached and recovery is faster:
 ```cpp
 #define SYNC_WARM_START_VALIDITY_MS 15000  // Cache valid for 15 seconds
-#define SYNC_WARM_START_MIN_SAMPLES 3      // Only 3 confirmatory samples needed
+#define SYNC_WARM_START_MIN_SAMPLES 3      // Only 3 confirmatory samples needed (~210ms at the acquire cadence)
 ```
 
 This ensures sub-millisecond bilateral synchronization during therapy.
@@ -702,7 +720,7 @@ When boot completes with `SUCCESS_NO_PHONE`, the system automatically starts def
 1. **Default Profile**: Uses the saved default therapy profile (or built-in fallback)
 2. **Duration**: Default 15-minute session
 3. **Pattern**: Standard bilateral alternating pattern
-4. **No User Intervention**: Therapy begins automatically ~5 seconds after boot complete
+4. **No User Intervention**: Therapy begins automatically when the 30-second boot window expires without a phone connection
 
 This "auto-start" behavior allows the system to function as a standalone therapy device without requiring a phone app. Users can simply power on both devices and therapy will begin after the 30-second boot window.
 
@@ -942,7 +960,11 @@ Boot Failed                    | 30.5s   | -        | 30.5s
 #define BLE_INTERVAL_MAX_MS 10       // Maximum connection interval
 #define BLE_TIMEOUT_MS 6000          // Supervision timeout (6 seconds)
 #define BLE_INTERVAL_WARNING_THRESHOLD_MS 12.0f  // Warn if > 12ms
+#define BLE_PHONE_INTERVAL_MIN_UNITS 24  // 30ms phone link interval (1.25ms units)
+#define BLE_PHONE_INTERVAL_MAX_UNITS 40  // 50ms
 ```
+
+The 7.5-10ms range applies to the glove link. The phone link is requested at 30-50ms with no peripheral latency, so command traffic doesn't take radio time from the sync link.
 
 **Effective Latency**:
 - Minimum: 7.5ms (one connection interval)
@@ -951,10 +973,10 @@ Boot Failed                    | 30.5s   | -        | 30.5s
 - Warning threshold: 12ms (firmware logs warning if exceeded)
 
 **Sub-millisecond Synchronization**: Achieved through:
-1. 7.5-10ms BLE connection interval
+1. 7.5-10ms glove-link BLE connection interval
 2. IEEE 1588 PTP-style clock offset calculation
 3. EMA-smoothed offset tracking with drift compensation
-4. Periodic PING/PONG keepalive (every 1 second)
+4. Periodic PING/PONG keepalive (every 70ms until clock sync is valid, 250ms during therapy, 1 second idle)
 
 ---
 

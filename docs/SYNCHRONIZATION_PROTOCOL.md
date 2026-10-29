@@ -68,7 +68,7 @@ sequenceDiagram
 
     rect rgba(5, 33, 45, 0.5)
         Note over P,S: Phase 2: Idle Clock Synchronization
-        loop Every 1s (keepalive)
+        loop Every 70ms until sync valid, then 1s (keepalive)
             P->>S: PING (T1)
             S->>P: PONG (T2, T3)
             Note over P: Compute clock offset
@@ -79,8 +79,8 @@ sequenceDiagram
     rect rgba(5, 33, 45, 0.5)
         Note over P,S: Phase 3: Therapy Session
         P->>S: START_SESSION
-        loop Every ~2s
-            P->>S: MACROCYCLE (batch of 12 events)
+        loop Every ~3.3s
+            P->>S: MACROCYCLE (batch of 12 events, 15 on v3)
             S->>P: MACROCYCLE_ACK
             Note over P,S: Both gloves execute 12 events with <2ms sync
         end
@@ -201,7 +201,7 @@ T1 (PING sent) and T3 (PONG sent) are stamped at **SoftDevice handoff** rather t
 
 ### Filtering and Maintenance
 
-- **Initial sync:** Idle keepalive (1s) accumulates samples, median offset selected
+- **Initial sync:** Acquire-rate PINGs (70ms) accumulate samples, median offset selected
 - **Minimum valid:** At least 5 good samples required (~350ms after connect: PINGs run every 70ms, `SYNC_ACQUIRE_INTERVAL_MS`, until sync is valid)
 - **Drift compensation:** Ongoing sync at 4Hz during therapy / 1Hz idle corrects for crystal drift
 - **Smoothing:** Exponential moving average prevents sudden jumps
@@ -262,7 +262,7 @@ Brief BLE disconnections (interference, range limits) can recover quickly using 
 | Scenario | Samples Required | Recovery Time |
 |----------|------------------|---------------|
 | Cold start (first connect) | 5 | ~350ms |
-| Warm start (<15s disconnect) | 3 confirmatory | ~210ms (macrocycles carry the projected offset meanwhile) |
+| Warm start (<15s disconnect) | 3 confirmatory | ~210ms (macrocycles carry the projected offset once the first confirmatory sample agrees) |
 | Long disconnect (>15s) | 5 | ~350ms |
 
 **Warm-start process:**
@@ -274,7 +274,7 @@ Brief BLE disconnections (interference, range limits) can recover quickly using 
    - Require 3 confirmatory samples within 5ms of projection
 4. If samples diverge >5ms, abort to cold start (safety fallback)
 
-This reduces user-perceived disruption from 6-10+ seconds to ~3 seconds for brief BLE interference events.
+This shortens re-sync after brief BLE interference events from ~350ms (cold start) to ~210ms.
 
 ---
 
@@ -448,18 +448,12 @@ stateDiagram-v2
     Normal --> ConnectionLost: Keepalive timeout
 
     ConnectionLost --> EmergencyStop: Immediate
-    EmergencyStop --> Reconnect1: Motors safe
+    EmergencyStop --> Reconnecting: Motors safe (purple LED)
 
-    Reconnect1 --> Normal: Success
-    Reconnect1 --> Reconnect2: Failed (wait 2s)
+    Reconnecting --> Normal: Peer traffic resumes
+    Reconnecting --> Idle: 30s without peer
 
-    Reconnect2 --> Normal: Success
-    Reconnect2 --> Reconnect3: Failed (wait 2s)
-
-    Reconnect3 --> Normal: Success
-    Reconnect3 --> Idle: Failed
-
-    Idle --> [*]: Manual restart required
+    Idle --> Normal: Peer reconnects (scanning/advertising continue)
 ```
 
 ### Timeout Behavior
@@ -513,6 +507,7 @@ The protocol uses a single unified mechanism for both keepalive and clock synchr
 
 | State | Mechanism | Interval | Purpose |
 |-------|-----------|----------|---------|
+| Acquiring (sync not yet valid, or warm start) | PING/PONG | 70ms | Fast initial clock sync + keepalive |
 | Idle / no session | PING/PONG | 1 second | Clock sync + keepalive (unified) |
 | Therapy active | PING/PONG | 250ms (4Hz) | Higher-cadence sync during therapy |
 
@@ -618,7 +613,7 @@ The `SYNC_RTT_QUALITY_THRESHOLD_US` (60ms) balances sample acceptance vs quality
 | 15ms | Medium | Medium drain | Idle monitoring |
 | 30ms | Higher | Lower drain | Background connection |
 
-Current setting: 7.5-10ms for maximum sync accuracy during therapy.
+Current setting: 7.5-10ms on the glove link for maximum sync accuracy during therapy; the phone link requests 30-50ms.
 
 ### Outlier Threshold
 
@@ -736,7 +731,7 @@ Sync state variables are accessed from both main loop and BLE callbacks. Key con
 | Max drift rate (measurement) (`SYNC_MAX_DRIFT_RATE_US_PER_MS`) | ±150 ppm | Measurement cap for plausibility |
 | Max drift rate (applied) (`SYNC_MAX_APPLIED_DRIFT_RATE_US_PER_MS`) | ±100 ppm | Conservative correction limit |
 | Warm-start validity | 15s | Cache valid after disconnect |
-| BLE connection interval | 7.5-10ms | Low-latency communication (6-8 BLE units) |
+| BLE connection interval (glove link) | 7.5-10ms | Low-latency communication (6-8 BLE units); phone link requests 30-50ms |
 | Lucky-packet RTT margin (`SYNC_LUCKY_RTT_MARGIN_US`) | 10ms | Accept only RTT ≤ minRTT + 10ms |
 | Minimum RTT decay (`SYNC_MIN_RTT_DECAY_US`) | 200µs/sample | Per-sample upward creep of tracked minRTT |
 | Innovation gate (`SYNC_INNOVATION_GATE_US`) | 5ms | Reject offset jumps larger than this threshold |

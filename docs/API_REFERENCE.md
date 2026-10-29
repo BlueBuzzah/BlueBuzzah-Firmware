@@ -306,9 +306,11 @@ System-wide constants for timing, hardware, battery thresholds, and more.
 ```cpp
 // include/config.h
 
+#ifndef FIRMWARE_VERSION
 #define FIRMWARE_VERSION "2.0.0"
+#endif
 ```
-Current firmware version following semantic versioning.
+Firmware version following semantic versioning. The `config.h` value is a default that local builds report; release builds (`.github/workflows/release.yml`) override it with the release tag (leading `v` stripped) via `-DFIRMWARE_VERSION`, and pass the same value as `BLUEBUZZAH_VERSION` for the v3 package manifest.
 
 ---
 
@@ -317,24 +319,32 @@ Current firmware version following semantic versioning.
 ```cpp
 // include/config.h
 
-#define STARTUP_WINDOW_SEC 30
-// Boot sequence connection window in seconds
+#define STARTUP_WINDOW_MS 30000
+// Boot sequence connection window in milliseconds
 
-#define CONNECTION_TIMEOUT_SEC 30
-// BLE connection establishment timeout in seconds
+#define CONNECTION_TIMEOUT_MS 30000
+// BLE connection establishment timeout in milliseconds
 
-#define BLE_INTERVAL_MIN_MS 8
-#define BLE_INTERVAL_MAX_MS 12
-// BLE connection interval range (6-9 BLE units, 8-12ms)
+#define BLE_INTERVAL_MIN_MS 7.5f
+#define BLE_INTERVAL_MAX_MS 10
+// BLE connection interval range (6-8 BLE units, 7.5-10ms)
 
-#define SYNC_INTERVAL_MS 1000
-// Periodic synchronization interval in milliseconds (SYNC_ADJ messages)
+#define BLE_PHONE_INTERVAL_MIN_UNITS 24
+#define BLE_PHONE_INTERVAL_MAX_UNITS 40
+// Phone link connection interval request (1.25ms units, 30-50ms, no peripheral latency);
+// the glove link keeps the BLE_INTERVAL_MIN_MS/MAX_MS range
 
 #define COMMAND_TIMEOUT_MS 5000
 // General BLE command timeout in milliseconds
 
 #define KEEPALIVE_INTERVAL_MS 1000
-// PING/PONG interval in milliseconds (unified keepalive + clock sync, all states)
+// Idle PING/PONG interval in milliseconds (unified keepalive + clock sync)
+
+#define SYNC_ACTIVE_INTERVAL_MS 250
+// PING/PONG interval while therapy is running
+
+#define SYNC_ACQUIRE_INTERVAL_MS 70
+// PING/PONG interval until clock sync is valid (cold or warm start); overrides the two above
 
 #define KEEPALIVE_TIMEOUT_MS 6000
 // SECONDARY keepalive timeout (6 missed PINGs = connection lost)
@@ -854,6 +864,8 @@ public:
     bool sendToPhone(const char* data);
     bool sendToSecondary(const char* data);  // PRIMARY only
     bool sendToPrimary(const char* data);    // SECONDARY only
+    bool hasPendingTx() const;               // True while either TX lane still holds a queued message
+    void processPeerTx();                    // Send queued peer-glove traffic now, without waiting for update()
 
     // Callback registration
     typedef void (*ConnectCallback)(uint16_t connHandle);
@@ -1196,7 +1208,7 @@ SYNC:<command>:<key1>|<val1>|<key2>|<val2>|...
 START_SESSION:1|1234567890
 MC:42|5000000|12|100,0,100,100,235|67,1,100,100,235|...
 PING:1|1234567890
-PONG:1|0|1234567900|1234567950
+PONG:1|1234567925|1234567900|1234567950
 MC_ACK:42
 ```
 
@@ -1217,7 +1229,8 @@ sync.setCommandCallback(onSyncCommand);
 // Send execute command (PRIMARY)
 sync.sendBuzz(2, 100);  // Finger 2, amplitude 100
 
-// Send PING for keepalive + clock sync (PRIMARY, call every 1 second)
+// Send PING for keepalive + clock sync (PRIMARY: every 70ms until clock sync
+// is valid, 250ms during therapy, 1s idle)
 sync.sendPing();
 
 // Check keepalive timeout (SECONDARY)
@@ -1321,6 +1334,7 @@ struct StagedMotorEvent {
     uint16_t durationMs;       // Duration in milliseconds
     uint16_t frequencyHz;      // Frequency in Hz
     bool isMacrocycleLast;     // True if last event in macrocycle batch
+    bool isMacrocycleFirst;    // True if first event after beginMacrocycle()
     volatile bool valid;       // Marks slot as ready
 };
 
@@ -1360,11 +1374,11 @@ motorEventBuffer.beginMacrocycle();
 motorEventBuffer.stage(timeUs, finger, amp, dur, freq, isLast);
 
 // In main loop:
-if (motorEventBuffer.isMacrocyclePending()) {
-    activationQueue.clear();  // New macrocycle replaces old events
-}
 StagedMotorEvent event;
 while (motorEventBuffer.unstage(event)) {
+    if (event.isMacrocycleFirst) {
+        activationQueue.clear();  // New macrocycle replaces old events
+    }
     activationQueue.enqueue(event.activateTimeUs, event.finger,
                             event.amplitude, event.durationMs, event.frequencyHz);
 }
@@ -1531,6 +1545,9 @@ public:
 
     // Process incoming command, returns response string
     void processCommand(const char* command, char* response, size_t responseSize);
+
+    // Set callback that gates SESSION_START on bilateral clock sync
+    void setSyncReadyCallback(SyncReadyCallback callback);
 
 private:
     TherapyEngine* _therapyEngine;
@@ -1731,8 +1748,14 @@ void runPrimaryLoop() {
     // Update therapy engine (REQUIRED for therapy to progress)
     therapyEngine.update();
 
-    // Send unified keepalive + clock sync PING (every 1s, all states)
-    if (millis() - lastPing >= KEEPALIVE_INTERVAL_MS) {
+    // Send unified keepalive + clock sync PING
+    // (70ms until clock sync is valid, 250ms during therapy, 1s idle)
+    uint32_t pingIntervalMs = therapyEngine.isRunning() ? SYNC_ACTIVE_INTERVAL_MS
+                                                        : KEEPALIVE_INTERVAL_MS;
+    if (!syncProtocol.isClockSyncValid() || syncProtocol.isWarmStartMode()) {
+        pingIntervalMs = SYNC_ACQUIRE_INTERVAL_MS;
+    }
+    if (millis() - lastPing >= pingIntervalMs) {
         syncProtocol.sendPing();  // PING provides both keepalive and clock sync
         lastPing = millis();
     }
@@ -1911,6 +1934,8 @@ void sendErrorResponse(const char* error) {
     bleManager.sendToPhone(response);
 }
 ```
+
+Menu replies, errors included, begin with a `CMD:<command>` line naming the command they answer (`MenuController::beginResponse()`). Only `ERROR:Invalid command format` has no `CMD:` line, since the command was never parsed.
 
 ---
 

@@ -124,7 +124,7 @@ During initial connection, PRIMARY sends multiple RTT probes to measure BLE late
 
 ### Ongoing RTT (PRIMARY Only)
 
-Tracks BLE round-trip time continuously via PING/PONG exchanges (every 1 second).
+Tracks BLE round-trip time continuously via PING/PONG exchanges (every 70ms until clock sync is valid, then 250ms during therapy and 1 second idle).
 
 - Monitors BLE latency changes over time
 - High variance may indicate degrading sync quality
@@ -168,7 +168,7 @@ Estimated sync error:    ~215 us (SECONDARY later)
 | Symptom | Possible Cause | Solution |
 |---------|----------------|----------|
 | No sync probing data | Devices connected before firmware update | Power cycle both devices |
-| SECONDARY shows 0 buzzes | `isClockSyncValid()` returning false | Wait ~5s for sync samples |
+| SECONDARY shows 0 buzzes | `isClockSyncValid()` returning false | Wait ~350ms for sync samples |
 | High jitter | System interrupts, BLE callbacks | Check for blocking operations |
 | HIGH drift values | Missed scheduled times | Verify lead time calculation |
 | LOW confidence | BLE interference | Move devices closer, reduce interference |
@@ -250,6 +250,7 @@ Defined in `include/config.h`:
 
 // Clock sync uses unified PING/PONG keepalive (not separate probing):
 #define KEEPALIVE_INTERVAL_MS 1000        // PING/PONG every 1 second
+#define SYNC_ACQUIRE_INTERVAL_MS 70       // PING/PONG every 70ms until sync valid
 #define SYNC_MIN_VALID_SAMPLES 5          // Minimum samples before sync valid
 #define SYNC_RTT_QUALITY_THRESHOLD_US 60000  // Reject samples with RTT > 60ms
 ```
