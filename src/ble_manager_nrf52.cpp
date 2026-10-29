@@ -1192,6 +1192,13 @@ void BLEManager::_onPeriphDisconnect(uint16_t connHandle, uint8_t reason) {
         if (type == ConnectionType::SECONDARY) {
             g_bleManager->updateAdvertisingInterval();
         }
+        // Bluefruit's restartOnDisconnect only fires once no peripheral links
+        // remain, so a phone (or SECONDARY) dropping while the other stayed
+        // attached left the freed slot unadvertised until a reboot.
+        if (!Bluefruit.Advertising.isRunning()) {
+            Serial.println(F("[BLE] Slot freed - restarting advertising"));
+            Bluefruit.Advertising.start(0);
+        }
 
         // Notify callback
         if (g_bleManager->_disconnectCallback) {
