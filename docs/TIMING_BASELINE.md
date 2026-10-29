@@ -5,7 +5,7 @@
 **Test Duration**: ~5 minutes
 **Environment**: Indoor, typical usage distance
 
-> **Note**: This baseline was established before the `feat/sync-fault-correction` branch which implements IEEE 1588 PTP clock synchronization, warm-start recovery, path asymmetry tracking, and microsecond precision timestamps. Most optimization phases have been completed. Current bilateral sync accuracy is <1ms average.
+> **Note**: This baseline was established before the `feat/sync-fault-correction` branch which implements IEEE 1588 PTP clock synchronization, warm-start recovery, path asymmetry tracking, and microsecond precision timestamps. Most optimization phases have been completed. Current bilateral sync accuracy is pending re-validation on the 1MHz hardware timebase (see the 2026-06-10 section below).
 
 ---
 
@@ -120,7 +120,7 @@ ONGOING RTT (PRIMARY only):
 
 **RTT Metrics:** "(no RTT data)" on PRIMARY
 - **Issue**: PONG message RTT calculation wasn't being recorded to `latencyMetrics`
-- **Fix Applied**: Added `latencyMetrics.recordRtt()` call in PONG handler (main.cpp:1542)
+- **Fix Applied**: Added `latencyMetrics.recordRtt()` call in the PONG handler (`main.cpp`)
 - **Next Test**: Re-run with RTT recording to measure network timing
 
 **Sync Probing:** "(no sync probing data)"
@@ -255,10 +255,10 @@ The +473µs / +500µs average execution drift figures recorded in the December 2
 | **Hardware timebase** | NRF_TIMER4 configured as 1MHz free-running counter clocked from the HFXO crystal. `getMicros()` now reads this counter; falls back to the tick clock if TIMER4 init fails at boot. |
 | **HFXO watchdog** | `loop()` re-requests the HFCLK every 1s (TinyUSB can release it on USB suspend); logs only if the request fails. |
 | **Late TX stamping** | PING T1 / PONG T3 are now stamped at SoftDevice handoff (deferred-stamp TX entries) instead of at message construction, removing main-loop queuing latency from PTP samples. |
-| **PONG sequence matching** | Stale / sequence-mismatched PONGs are discarded without clearing in-flight state or consuming keepalive credit. |
+| **PONG sequence matching** | Stale / sequence-mismatched PONGs are excluded from the offset calculation without clearing the in-flight T1 (any PONG still refreshes the PRIMARY's keepalive timer). |
 | **RTT hard ceiling** | Samples with RTT > 60ms are discarded (unchanged value, now correctly measurable). |
 | **Lucky-packet gate** | Only exchanges within `SYNC_LUCKY_RTT_MARGIN_US` (10ms) of the tracked minimum RTT are accepted; minimum decays upward at `SYNC_MIN_RTT_DECAY_US` (200µs/sample). |
-| **Innovation gate** | Offset jumps > `SYNC_INNOVATION_GATE_US` (5ms) are rejected; if the same direction persists across `SYNC_INNOVATION_REJECT_LIMIT` (5) samples the protocol hard re-anchors instead of EMA-blending. |
+| **Innovation gate** | Offset jumps > `SYNC_INNOVATION_GATE_US` (5ms) are rejected; after `SYNC_INNOVATION_REJECT_LIMIT` (5) such rejections with no accepted sample in between, the next jumping sample hard re-anchors the offset instead of EMA-blending. |
 | **Drift anchor** | A dedicated anchor pair measures drift over windows ≥ `SYNC_MIN_DRIFT_INTERVAL_MS` (500ms), preventing 4Hz cadence from stalling drift estimation. |
 | **4Hz therapy cadence** | `SYNC_ACTIVE_INTERVAL_MS` = 250ms (was 1s for all states). |
 | **Motor path** | First macrocycle event gets I2C pre-selection in the motor task idle window; removed blocking serial read and critical-path `[LEADTIME]` printf from the therapy loop. |

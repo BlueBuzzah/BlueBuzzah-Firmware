@@ -1,6 +1,6 @@
-# BlueBuzzah v2 Architecture
+# BlueBuzzah Firmware Architecture
 
-This document provides a detailed explanation of the BlueBuzzah v2 system architecture, design patterns, and component interactions.
+This document provides a detailed explanation of the BlueBuzzah firmware architecture, design patterns, and component interactions. One codebase runs on both BlueBuzzah v2 and BlueBuzzah v3 hardware.
 
 **Platforms**: Arduino C++ on Adafruit Feather nRF52840 Express (BlueBuzzah v2, 4 motors) and Seeed XIAO ESP32-S3 (BlueBuzzah v3, 5 motors)
 **Build System**: PlatformIO — one codebase, two device environments (`adafruit_feather_nrf52840`, `pentabuzzer_esp32s3`) selected by board macro
@@ -29,7 +29,7 @@ Platform-specific code is isolated behind compile-time seams: `board_config.h` (
 
 ## Overview
 
-BlueBuzzah v2 is built using Clean Architecture principles, separating concerns into distinct layers with clear boundaries and dependencies flowing inward.
+The BlueBuzzah firmware is built using Clean Architecture principles, separating concerns into distinct layers with clear boundaries and dependencies flowing inward.
 
 ### Architecture Goals
 
@@ -59,28 +59,27 @@ BlueBuzzah v2 is built using Clean Architecture principles, separating concerns 
 }}}%%
 flowchart TB
     subgraph PRES["Presentation Layer"]
-        P1["BLE Command Handler"]
-        P2["Response Formatter"]
-        P3["LED UI"]
+        P1["MenuController (commands + responses)"]
+        P3["LEDController"]
     end
     subgraph APP["Application Layer"]
-        A1["Session Manager"]
-        A2["Profile Manager"]
-        A3["Command Processor"]
+        A1["TherapyEngine (session lifecycle)"]
+        A2["ProfileManager"]
+        A3["main.cpp callbacks"]
     end
     subgraph DOMAIN["Domain Layer"]
-        D1["Therapy Engine"]
-        D2["Pattern Generator"]
-        D3["Sync Protocol"]
+        D2["Pattern generators"]
+        D3["SimpleSyncProtocol"]
+        D4["TherapyStateMachine"]
     end
     subgraph INFRA["Infrastructure Layer"]
-        I1["BLE Service"]
-        I2["Haptic Driver"]
-        I3["Storage"]
-        I4["Battery Monitor"]
+        I1["BLEManager"]
+        I2["HapticController + ActivationQueue"]
+        I3["fs_backend"]
+        I4["BatteryMonitor"]
     end
     subgraph HW["Hardware Layer"]
-        H1["nRF52840"]
+        H1["nRF52840 (v2) / ESP32-S3 (v3)"]
         H2["DRV2605"]
         H3["TCA9548A"]
         H4["LRA Motors"]
@@ -113,76 +112,78 @@ flowchart TB
 
 ```cpp
 // Each class has one responsibility
-class TherapyEngine {
-    // Responsible ONLY for executing therapy patterns
-};
-
-class PatternGenerator {
-    // Responsible ONLY for generating patterns
-};
-
-class HapticController {
-    // Responsible ONLY for controlling motors
-};
+class TherapyEngine;        // Generates patterns and macrocycles, schedules activations
+class HapticController;     // Drives the DRV2605s through the TCA9548A mux
+class TherapyStateMachine;  // Owns the therapy state and its transitions
+class BLEManager;           // BLE radio, connections, EOT message framing
 ```
 
 **Open/Closed**: Open for extension, closed for modification
 
 ```cpp
-// include/pattern_generator.h
+// include/therapy_engine.h
 
-// Base pattern generator - extend by creating new generators
-class PatternGenerator {
-public:
-    virtual ~PatternGenerator() = default;
-    virtual Pattern generate(const PatternConfig& config) = 0;
+// Pattern generators are free functions selected by PatternType
+enum class PatternType {
+    RNDP = 0,
+    SEQUENTIAL = 1,
+    MIRRORED  = 2,
 };
 
-// Concrete implementation - extends without modifying base
-class RandomPermutationGenerator : public PatternGenerator {
-public:
-    Pattern generate(const PatternConfig& config) override {
-        // Implementation here
-    }
-};
+Pattern generateRandomPermutation(uint8_t numFingers, float timeOnMs, float timeOffMs,
+                                  float jitterPercent, bool mirrorPattern);
+Pattern generateSequentialPattern(uint8_t numFingers, float timeOnMs, float timeOffMs,
+                                  float jitterPercent, bool mirrorPattern, bool reverse);
+Pattern generateMirroredPattern(uint8_t numFingers, float timeOnMs, float timeOffMs,
+                                float jitterPercent, bool randomize);
 ```
+
+A new pattern is a new generator function, a new `PatternType` value, and a new case in `TherapyEngine::generateMacrocycle()`. Existing generators stay untouched.
 
 **Liskov Substitution**: Subtypes must be substitutable
 
+Platform implementations are substituted at build time: `build_src_filter` compiles exactly one implementation of each platform seam.
+
 ```cpp
-// Any HapticController implementation can be used interchangeably
-HapticController* haptic = new DRV2605Controller(...);
-HapticController* haptic = new MockHapticController();  // For testing
+// include/fs_backend.h - one declaration, three implementations
+namespace fsb {
+bool begin();
+bool readFile(const char* path, uint8_t* buf, size_t cap, size_t& outLen);
+bool writeFile(const char* path, const uint8_t* buf, size_t len);
+}
+// fs_backend_nrf52.cpp (InternalFS), fs_backend_esp32.cpp (LittleFS),
+// fs_backend_mock.cpp (in-memory, native tests)
 ```
 
 **Interface Segregation**: Clients shouldn't depend on unused interfaces
 
 ```cpp
-// Small, focused interfaces
-class HapticInterface {
-public:
-    virtual void activate(uint8_t finger, uint8_t amplitude) = 0;
-    virtual void deactivate(uint8_t finger) = 0;
-};
+// include/therapy_engine.h - one small callback type per concern
+typedef void (*ActivateCallback)(uint8_t finger, uint8_t amplitude);
+typedef void (*DeactivateCallback)(uint8_t finger);
+typedef void (*SendMacrocycleCallback)(const Macrocycle& macrocycle);
+typedef void (*ScheduleActivationCallback)(uint64_t activateTimeUs, uint8_t finger,
+                                           uint8_t amplitude, uint16_t durationMs, uint16_t frequencyHz);
 
 // Not one massive "DeviceController" interface
 ```
 
 **Dependency Inversion**: Depend on abstractions, not concretions
 
-```cpp
-class TherapyEngine {
-public:
-    // Depends on interfaces, not concrete implementations
-    TherapyEngine(PatternGenerator& patternGen, HapticInterface& haptic)
-        : _patternGenerator(patternGen)
-        , _haptic(haptic)
-    {}
+`TherapyEngine` never includes `hardware.h` or `ble_manager.h`. `main.cpp` wires it to the hardware and the radio through callbacks:
 
-private:
-    PatternGenerator& _patternGenerator;
-    HapticInterface& _haptic;
-};
+```cpp
+// src/main.cpp - initializeTherapy()
+therapy.setActivateCallback(onActivate);
+therapy.setDeactivateCallback(onDeactivate);
+therapy.setCycleCompleteCallback(onCycleComplete);
+
+if (deviceRole == DeviceRole::PRIMARY)
+{
+    therapy.setSendMacrocycleCallback(onSendMacrocycle);
+    therapy.setSchedulingCallbacks(onScheduleActivation, onStartScheduling, onIsSchedulingComplete);
+    therapy.setGetLeadTimeCallback(onGetLeadTime);
+}
 ```
 
 ### 3. Domain-Driven Design
@@ -190,9 +191,9 @@ private:
 **Ubiquitous Language**: Common terminology
 
 - **Session**: A therapy session from start to completion
-- **Cycle**: One complete pattern repetition
-- **Burst**: Three rapid buzzes on a finger
-- **Macrocycle**: Collection of bursts with pauses
+- **Cycle**: One pattern: every active finger buzzed once in the generated order (one CR period). `TherapyEngine`'s cycle counter counts macrocycles
+- **Burst**: One finger activation lasting TIME_ON (default 100ms), followed by TIME_OFF (default 67ms, plus jitter)
+- **Macrocycle**: Three patterns sent to the SECONDARY as one batch (12 events on v2, 15 on v3), followed by a relax interval of two CR periods (`calculateRelaxIntervalMs()`)
 - **Profile**: Configuration for a therapy protocol
 
 **Bounded Contexts**:
@@ -208,61 +209,80 @@ private:
 
 ```text
 BlueBuzzah-Firmware/
-├── platformio.ini                    # Build configuration
+├── platformio.ini                    # Build configuration (device + native test envs)
+├── partitions_penta.csv              # ESP32-S3 flash partition table (v3)
 ├── include/
-│   ├── config.h                      # Pin definitions, constants
-│   ├── types.h                       # Enums, structs (DeviceRole, TherapyState)
-│   ├── hardware.h                    # HapticController, LEDController classes
-│   ├── ble_manager.h                 # BLE management class
-│   ├── therapy_engine.h              # Therapy execution class
-│   ├── sync_protocol.h               # Sync command handling
+│   ├── board_config.h                # Per-board pins, MAX_ACTUATORS, battery availability
+│   ├── platform.h                    # Critical sections, memory barrier, system reset, RTOS headers
+│   ├── config.h                      # Shared constants, BLE parameters, PARAM_* bounds
+│   ├── types.h                       # Enums, structs (DeviceRole, TherapyState, Macrocycle)
+│   ├── internal_messages.h           # Device-to-device prefixes the menu must ignore
+│   ├── hardware.h                    # HapticController, BatteryMonitor, LEDController classes
+│   ├── vbat_estimator.h              # DRV2605 VBAT burst/median/EMA estimator
+│   ├── ble_manager.h                 # BLE management class (both backends)
+│   ├── therapy_engine.h              # Therapy execution class, pattern generators
+│   ├── sync_protocol.h               # Sync command serialization, PTP clock sync
 │   ├── state_machine.h               # Therapy state machine
 │   ├── menu_controller.h             # Command processing
 │   ├── profile_manager.h             # Profile handling
+│   ├── fs_backend.h                  # Filesystem shim
+│   ├── power_controller.h            # Power switch + deep sleep (v3)
+│   ├── hires_clock.h                 # 1MHz sync timebase
+│   ├── radio_anchor.h                # BLE radio-event timestamps (nRF)
 │   ├── activation_queue.h            # Motor event scheduling queue
-│   ├── motor_event_buffer.h          # Motor event ring buffer
+│   ├── motor_event_buffer.h          # Motor event staging buffer
 │   ├── deferred_queue.h              # ISR-safe work queue
 │   └── latency_metrics.h             # Performance tracking
-├── src/
-│   ├── main.cpp                      # Entry point: setup() + loop()
-│   ├── hardware.cpp                  # HapticController, LEDController implementations
-│   ├── ble_manager.cpp               # BLE implementations
-│   ├── therapy_engine.cpp            # Therapy implementations
-│   ├── sync_protocol.cpp             # Sync implementations
-│   ├── state_machine.cpp             # State machine implementations
-│   ├── menu_controller.cpp           # Menu implementations
-│   ├── profile_manager.cpp           # Profile implementations
-│   ├── activation_queue.cpp          # Motor event queue implementations
-│   ├── motor_event_buffer.cpp        # Motor event buffer implementations
-│   ├── deferred_queue.cpp            # ISR-safe work queue implementations
-│   └── latency_metrics.cpp           # Performance tracking implementations
-└── data/
-    └── settings.json                 # Device configuration (uploaded via LittleFS)
+└── src/
+    ├── main.cpp                      # Entry point: setup() + loop(), BLE/therapy callbacks
+    ├── hardware.cpp                  # HapticController, BatteryMonitor, LEDController implementations
+    ├── vbat_estimator.cpp            # VBAT estimator implementation
+    ├── ble_manager_nrf52.cpp         # BLEManager backend: Bluefruit (v2)
+    ├── ble_manager_esp32.cpp         # BLEManager backend: NimBLE (v3)
+    ├── therapy_engine.cpp            # Therapy implementations
+    ├── sync_protocol.cpp             # Sync implementations
+    ├── state_machine.cpp             # State machine implementations
+    ├── menu_controller.cpp           # Menu implementations
+    ├── profile_manager.cpp           # Profile implementations
+    ├── fs_backend_nrf52.cpp          # InternalFS (v2)
+    ├── fs_backend_esp32.cpp          # LittleFS (v3)
+    ├── fs_backend_mock.cpp           # In-memory filesystem (native tests)
+    ├── power_controller_nrf52.cpp    # No-op (v2)
+    ├── power_controller_esp32.cpp    # Power switch + deep sleep (v3)
+    ├── hires_clock.cpp               # NRF_TIMER4 (v2) / esp_timer (v3)
+    ├── radio_anchor.cpp              # SoftDevice radio notifications (v2); stubs elsewhere
+    ├── activation_queue.cpp          # Motor event queue implementations
+    ├── motor_event_buffer.cpp        # Motor event buffer implementations
+    ├── deferred_queue.cpp            # ISR-safe work queue implementations
+    └── latency_metrics.cpp           # Performance tracking implementations
 ```
+
+Settings are stored as packed binary files on the board's flash filesystem (`/settings.bin` and `/custom.bin`, written through `fs_backend`); there is no uploaded filesystem image.
 
 ### Module Responsibilities
 
 | Module                          | Responsibility                              | Depends On                      |
 | ------------------------------- | ------------------------------------------- | ------------------------------- |
-| `main.cpp`                      | Entry point (setup/loop)                    | All modules                     |
-| `ble_manager.h/.cpp`            | BLE radio, connection management            | `bluefruit.h`                   |
-| `therapy_engine.h/.cpp`         | Therapy execution, pattern gen              | `hardware.h`, `sync_protocol.h` |
-| `hardware.h/.cpp`               | HapticController, LEDController, battery    | DRV2605, TCA9548A, NeoPixel     |
-| `menu_controller.h/.cpp`        | BLE command processing                      | `profile_manager.h`             |
-| `sync_protocol.h/.cpp`          | PRIMARY-SECONDARY messaging                 | `ble_manager.h`                 |
-| `profile_manager.h/.cpp`        | Therapy parameter management                | ArduinoJson                     |
+| `main.cpp`                      | Entry point (setup/loop), callback wiring   | All modules                     |
+| `ble_manager_nrf52.cpp` / `ble_manager_esp32.cpp` | BLE radio, connection management, EOT framing | `bluefruit.h` (v2) / `NimBLEDevice.h` (v3) |
+| `therapy_engine.h/.cpp`         | Therapy execution, pattern gen              | `config.h`, `types.h`, `sync_protocol.h` (`getMicros()`); callbacks to `main.cpp` |
+| `hardware.h/.cpp`               | HapticController, LEDController, battery    | DRV2605, TCA9548A, NeoPixel, `vbat_estimator.h` |
+| `menu_controller.h/.cpp`        | Phone/serial command processing             | `therapy_engine.h`, `profile_manager.h`, `state_machine.h`, `ble_manager.h`, `internal_messages.h` |
+| `sync_protocol.h/.cpp`          | PRIMARY-SECONDARY messaging, clock sync     | `types.h`, `hires_clock.h`      |
+| `profile_manager.h/.cpp`        | Therapy parameter management                | `fs_backend.h`                  |
 | `state_machine.h/.cpp`          | Therapy state machine                       | `types.h`                       |
-| `activation_queue.h/.cpp`       | FreeRTOS motor event scheduling             | `types.h`, FreeRTOS             |
-| `motor_event_buffer.h/.cpp`     | Lock-free ring buffer (BLE→main thread)     | `types.h`                       |
-| `deferred_queue.h/.cpp`         | ISR-safe work queue for blocking ops        | FreeRTOS                        |
-| `latency_metrics.h/.cpp`        | Performance tracking, RTT measurement       | `types.h`                       |
+| `power_controller_*.cpp`        | Power switch + deep sleep (v3); no-op (v2)  | `hardware.h`                    |
+| `activation_queue.h/.cpp`       | FreeRTOS motor event scheduling             | `hardware.h`, FreeRTOS          |
+| `motor_event_buffer.h/.cpp`     | Lock-free staging buffer (BLE→main loop)    | `platform.h`                    |
+| `deferred_queue.h/.cpp`         | ISR-safe work queue for blocking ops        | `platform.h`                    |
+| `latency_metrics.h/.cpp`        | Performance tracking, RTT measurement       | `config.h`                      |
 
 ### Architecture Layers
 
 - **Presentation**: `LEDController` (in hardware.h), `menu_controller` (BLE command interface)
 - **Application**: `therapy_engine` (session orchestration via callbacks)
 - **Domain**: `therapy_engine`, `sync_protocol`, `state_machine`
-- **Infrastructure**: `ble_manager`, `HapticController`, `profile_manager`
+- **Infrastructure**: `ble_manager_*`, `HapticController`, `BatteryMonitor`, `profile_manager`, `fs_backend_*`
 
 ## Role-Based Architecture
 
@@ -270,132 +290,108 @@ BlueBuzzah implements a **PRIMARY-SECONDARY architecture** for bilateral haptic 
 
 ### Unified Codebase
 
-Both gloves run identical firmware with role-aware behavior controlled by `config.h` and `settings.json`:
+Both gloves run identical firmware. The role is stored in the binary settings file (`/settings.bin`, `SettingsData.role`) and is set over USB serial with `SET_ROLE:PRIMARY` or `SET_ROLE:SECONDARY`, which saves the role and restarts the device:
 
 ```cpp
-// config.h - Role detection from settings.json (LittleFS)
-#include <LittleFS.h>
-#include <ArduinoJson.h>
+// src/main.cpp - setup()
+profiles.begin();
 
-enum class DeviceRole { PRIMARY, SECONDARY };
-
-struct DeviceConfig {
-    DeviceRole role;
-    const char* bleName;
-    const char* deviceTag;
-};
-
-DeviceConfig loadDeviceConfig() {
-    DeviceConfig config;
-    File file = LittleFS.open("/settings.json", "r");
-
-    if (!file) {
-        // Default to PRIMARY if no settings
-        config.role = DeviceRole::PRIMARY;
-        config.bleName = "BlueBuzzah";
-        config.deviceTag = "[PRIMARY]";
-        return config;
-    }
-
-    JsonDocument doc;
-    deserializeJson(doc, file);
-    file.close();
-
-    const char* roleStr = doc["deviceRole"] | "Primary";
-    config.role = (strcmp(roleStr, "Primary") == 0)
-        ? DeviceRole::PRIMARY
-        : DeviceRole::SECONDARY;
-    config.bleName = "BlueBuzzah";
-    config.deviceTag = (config.role == DeviceRole::PRIMARY)
-        ? "[PRIMARY]" : "[SECONDARY]";
-
-    return config;
+// Check if device has a configured role
+if (!profiles.hasStoredRole())
+{
+    // Block and wait for role configuration via Serial
+    waitForRoleConfiguration();   // orange slow blink; accepts only SET_ROLE:
 }
 
-// settings.json for PRIMARY device
-// {"deviceRole": "Primary"}
-
-// settings.json for SECONDARY device
-// {"deviceRole": "Secondary"}
+// Determine device role (from settings or button override)
+deviceRole = determineRole();
 ```
+
+`determineRole()` returns the stored role, except that on v2 hardware holding the USER button at boot forces SECONDARY. v3 hardware has no user button.
 
 ### Role Polymorphism
 
-Modules adapt behavior based on `deviceConfig.role`:
+Modules adapt behavior based on `deviceRole`:
 
 ```cpp
-// BLE Connection
-if (deviceConfig.role == DeviceRole::PRIMARY) {
-    primaryAdvertiseAndWait();
-} else {
-    secondaryScanAndConnect();
+// BLE Connection - src/main.cpp, initializeBLE()
+// PRIMARY advertising starts inside ble.begin()
+ble.begin(deviceRole, BLE_NAME);
+if (deviceRole == DeviceRole::SECONDARY)
+{
+    ble.startScanning(BLE_NAME);
 }
 
-// Therapy Engine
-if (deviceConfig.role == DeviceRole::PRIMARY) {
-    syncProtocol.sendBuzz(finger, amplitude);
-    haptic.buzzSequence(pattern);
-} else {
-    uint8_t finger = syncProtocol.receiveBuzz();  // Blocking
-    haptic.buzzSequence(pattern);
+// Therapy Engine - src/main.cpp, initializeTherapy()
+// Only the PRIMARY generates macrocycles and sends them to the SECONDARY
+if (deviceRole == DeviceRole::PRIMARY)
+{
+    therapy.setSendMacrocycleCallback(onSendMacrocycle);
+    therapy.setSchedulingCallbacks(onScheduleActivation, onStartScheduling, onIsSchedulingComplete);
 }
 ```
+
+The SECONDARY never generates patterns during a session. It schedules the events it receives in each macrocycle message (`onBLEMessage()`, `MC:` branch).
 
 ### Command-Driven Synchronization
 
-PRIMARY explicitly commands SECONDARY for every action using SYNC protocol:
+PRIMARY explicitly commands SECONDARY for every action using the sync protocol:
 
 ```
-PRIMARY -> SECONDARY: MACROCYCLE:seq:baseTime:12|events...
-PRIMARY: <enqueues all 12 events to motor task>
-SECONDARY: <receives macrocycle, enqueues all 12 events, both execute synchronized>
+PRIMARY -> SECONDARY: MC:seq|baseHigh|baseLow|offHigh|offLow|dur|count|d,f,a[,fo]|...
+PRIMARY: <enqueues all events to its ActivationQueue>
+SECONDARY: <receives macrocycle, converts baseTime to its own clock, enqueues all events>
+SECONDARY -> PRIMARY: MC_ACK:seq
 ```
 
 Benefits:
 
-- Eliminates clock drift over 2-hour sessions
-- Guarantees bilateral synchronization (+/-7.5ms BLE latency)
-- Simplifies error recovery (SECONDARY halts if PRIMARY disconnects)
+- Eliminates clock drift over 2-hour sessions: every macrocycle carries the current PTP clock offset
+- Absorbs BLE latency: events are scheduled at an absolute `baseTime` one adaptive lead time (70-150ms, `SYNC_MIN_LEAD_TIME_US`/`SYNC_MAX_LEAD_TIME_US`) in the future
+- Simplifies error recovery (SECONDARY stops its motors if PRIMARY disconnects or its keepalive times out)
 
 ### Multi-Connection Support (PRIMARY Only)
 
-PRIMARY supports **simultaneous connections** to:
+PRIMARY supports **simultaneous connections** (`MAX_CONNECTIONS` = 2) to:
 
-1. **Smartphone** (phoneConnHandle) - Configuration, monitoring, control
-2. **SECONDARY glove** (secondaryConnHandle) - Bilateral therapy coordination
+1. **Smartphone** (`ConnectionType::PHONE`) - Configuration, monitoring, control
+2. **SECONDARY glove** (`ConnectionType::SECONDARY`) - Bilateral therapy coordination
+
+Each connection is classified by the `IDENTIFY:PHONE` / `IDENTIFY:SECONDARY` handshake it sends after connecting (`BLEManager::deliverMessage()`).
 
 ### PRIMARY Responsibilities
 
 1. **Advertise** as BLE peripheral ("BlueBuzzah")
 2. **Accept connections** from smartphone + SECONDARY
-3. **Execute boot sequence**: Wait for SECONDARY, optionally phone
+3. **Run the boot window**: after the SECONDARY connects, wait up to 30s (`STARTUP_WINDOW_MS`) for a phone; if none connects, auto-start therapy
 4. **Orchestrate therapy**: Send MACROCYCLE batches (12 events on v2, 15 on v3, every ~3.3s)
 5. **Send PING/PONG** for keepalive + clock sync (every 70ms until clock sync is valid, 250ms during therapy, 1s idle)
-6. **Broadcast parameters** to SECONDARY on profile changes
+6. **Relay settings** to SECONDARY: therapy LED (`LED_OFF_SYNC:`), debug mode (`DEBUG_SYNC:`), calibration buzzes (`CALIB_BUZZ:`/`CALIB_STOP`). Profile parameters travel inside each macrocycle
 7. **Process smartphone commands** via MenuController
 
 | Function                         | Location              | Description                       |
 | -------------------------------- | --------------------- | --------------------------------- |
-| `primaryBootSequence()`          | `main.cpp`            | Boot and connection establishment |
-| `runPrimaryLoop()`               | `main.cpp`            | Main therapy loop                 |
-| `TherapyEngine::startSession()`  | `therapy_engine.cpp`  | Initiates therapy, sends SYNC     |
-| `TherapyEngine::update()`        | `therapy_engine.cpp`  | Pattern generation and motor ctrl |
+| `onBLEConnect()`                 | `main.cpp`            | Starts the boot window and clock sync when the SECONDARY connects |
+| `autoStartTherapy()`             | `main.cpp`            | Starts therapy when the boot window expires without a phone |
+| `sendPing()`                     | `main.cpp`            | PING for keepalive + clock sync   |
+| `TherapyEngine::startSession()`  | `therapy_engine.cpp`  | Initiates therapy, generates first pattern |
+| `TherapyEngine::update()`        | `therapy_engine.cpp`  | Macrocycle generation and scheduling (`executeMacrocycleStep()`) |
 
 ### SECONDARY Responsibilities
 
 1. **Scan** for the PRIMARY's BLE advertisement (Nordic UART service + BlueBuzzah manufacturer data; name "BlueBuzzah" as fallback)
-2. **Connect** to PRIMARY during boot sequence
-3. **Receive SYNC commands**: START_SESSION, MACROCYCLE, PING
+2. **Connect** to PRIMARY and send `IDENTIFY:SECONDARY`
+3. **Receive sync commands**: START_SESSION, PAUSE_SESSION, RESUME_SESSION, STOP_SESSION, MC (macrocycle), PING
 4. **Execute synchronized motor events** from macrocycle batches
 5. **Respond to PING with PONG** for keepalive + clock sync
 6. **Monitor keepalive timeout** (6 seconds without PING/MACROCYCLE)
-7. **Safety halt** if PRIMARY disconnects or keepalive times out
+7. **Safety stop** if PRIMARY disconnects or keepalive times out
 
 | Function                   | Location            | Description                 |
 | -------------------------- | ------------------- | --------------------------- |
-| `secondaryBootSequence()`  | `main.cpp`          | Scan and connect to PRIMARY |
-| `runSecondaryLoop()`       | `main.cpp`          | Wait for SYNC commands      |
-| `handleSyncCommand()`      | `sync_protocol.cpp` | Process SYNC messages       |
+| `initializeBLE()`          | `main.cpp`          | Starts scanning for PRIMARY |
+| `onBLEMessage()`           | `main.cpp`          | Process sync messages       |
+| `SyncCommand::deserialize()` / `deserializeMacrocycle()` | `sync_protocol.cpp` | Parse sync messages |
 | `handleKeepaliveTimeout()` | `main.cpp`          | Connection recovery         |
 
 ## Entry Point Flow
@@ -408,79 +404,55 @@ Arduino uses two entry functions:
 - `loop()` - Called repeatedly forever
 
 ```cpp
-// main.cpp
-
-#include <Arduino.h>
-#include <LittleFS.h>
-#include "config.h"
-#include "types.h"
-#include "hardware.h"
-#include "ble_manager.h"
-#include "therapy_engine.h"
-#include "state_machine.h"
-#include "hardware.h"
+// src/main.cpp (trimmed - logging, LED feedback and error branches omitted)
 
 // Global instances
-DeviceConfig deviceConfig;
-TherapyConfig therapyConfig;
 HapticController haptic;
-BLEManager bleManager;
-TherapyEngine therapyEngine;
-StateMachine stateMachine;
-LEDController ledController;
-BootResult bootResult;
+BatteryMonitor battery;
+LEDController led;
+PowerController power;
+BLEManager ble;
+TherapyEngine therapy;
+TherapyStateMachine stateMachine;
+MenuController menu;
+ProfileManager profiles;
+SimpleSyncProtocol syncProtocol;
 
-void setup() {
-    Serial.begin(115200);
-    while (!Serial) delay(10);  // Wait for serial (optional)
+void setup()
+{
+    Serial.begin(115200);               // waits up to 3s for USB serial
 
-    // 1. Initialize filesystem
-    if (!LittleFS.begin()) {
-        Serial.println(F("[ERROR] LittleFS mount failed"));
+    power.begin();                      // v3 power path; no-op on v2
+    led.begin();
+
+    profiles.begin();                   // loads /settings.bin
+    if (!profiles.hasStoredRole())
+    {
+        waitForRoleConfiguration();     // never returns: SET_ROLE saves and restarts
     }
+    deviceRole = determineRole();
 
-    // 2. Load configuration from settings.json
-    deviceConfig = loadDeviceConfig();
-    therapyConfig = loadTherapyConfig();
+    hardwareReady = initializeHardware();   // DRV2605s, motor task, battery monitor
+    bleReady = initializeBLE();             // advertise (PRIMARY) or scan (SECONDARY)
+    initializeTherapy();                    // therapy engine callbacks
 
-    Serial.printf("[INFO] Role: %s\n", deviceConfig.deviceTag);
+    stateMachine.begin(TherapyState::IDLE);
+    stateMachine.onStateChange(onStateChange);   // LED follows the state
 
-    // 3. Initialize hardware
-    if (!haptic.begin()) {
-        led.setPattern(Colors::RED, LEDPattern::BLINK_SLOW); // boot failure
-        while (true) { delay(1000); }  // Halt
-    }
-
-    // 4. Initialize BLE
-    bleManager.begin(deviceConfig);
-
-    // 5. Execute boot sequence (role-specific)
-    #ifdef SKIP_BOOT_SEQUENCE
-        bootResult = BootResult::SUCCESS_NO_PHONE;
-    #else
-        bootResult = executeBootSequence();
-    #endif
-
-    if (bootResult == BootResult::FAILED) {
-        led.setPattern(Colors::RED, LEDPattern::BLINK_SLOW); // boot failure
-        while (true) { delay(1000); }  // Halt
-    }
-
-    // 6. Switch to therapy LED mode
-    ledController.switchToTherapyMode();
-
-    Serial.println(F("[INFO] Boot complete, entering main loop"));
+    menu.begin(&therapy, &battery, &haptic, &stateMachine, &profiles, &ble);
+    deferredQueue.setExecutor(executeDeferredWork);
 }
 
-void loop() {
-    // Role-specific main loop
-    if (deviceConfig.role == DeviceRole::PRIMARY) {
-        runPrimaryLoop();
-    } else {
-        runSecondaryLoop();
-    }
+void loop()
+{
+    // Safety shutdown requested by a BLE callback, motor event forwarding,
+    // deferred work, one queued menu command, LED animation, BLE TX queue,
+    // serial commands, therapy.update(), keepalive checks, boot window,
+    // PING scheduling (PRIMARY) - the same loop runs on both roles
 }
 ```
+
+An initialization failure sets the LED to red slow blink and boot continues; `setup()` never halts. After a hardware failure, a successful BLE init replaces the red blink with breathing blue.
 
 ### Boot Sequence
 
@@ -488,21 +460,21 @@ void loop() {
 
 1. Initialize BLE and advertise as "BlueBuzzah"
 2. LED: breathing blue (IDLE) while waiting to pair
-3. Wait for SECONDARY connection (required)
-4. Success: solid green LED (READY)
+3. SECONDARY connects (`IDENTIFY:SECONDARY`): solid green LED (READY), clock sync starts, 30s boot window starts
+4. If no phone connects within the window, therapy auto-starts
 
 **SECONDARY:**
 
-1. Initialize BLE and scan for "BlueBuzzah"
+1. Initialize BLE and scan for the PRIMARY
 2. LED: breathing blue (IDLE) while scanning
-3. Connect to PRIMARY within timeout
+3. Connect to PRIMARY (scanning has no timeout)
 4. Success: solid green LED (READY)
 
 ### Timing Breakdown
 
-- Boot sequence: 0-30s (configurable via `BOOT_TIMEOUT_MS`)
-- Connection handshake: 2-15s
-- Therapy execution: 2-180 minutes
+- Boot window: 30s after the SECONDARY connects (`STARTUP_WINDOW_MS`)
+- Clock sync: at best ~350ms cold start (5 samples at 70ms), ~210ms warm start (3 samples); samples must pass RTT quality gates
+- Therapy execution: 1-240 minutes (`PARAM_MIN_SESSION_MIN`-`PARAM_MAX_SESSION_MIN`), 120 minutes in the vCR profiles
 - Shutdown: <1s
 
 ## Layer Architecture
@@ -513,7 +485,7 @@ void loop() {
 
 **Components**:
 
-- `menu_controller.h/.cpp`: Parse and validate BLE commands
+- `menu_controller.h/.cpp`: Parse and validate BLE and serial commands
 - `hardware.h` (`LEDController`): visual status feedback
 
 **Characteristics**:
@@ -525,30 +497,40 @@ void loop() {
 **Example**:
 
 ```cpp
-// src/menu_controller.cpp
+// src/menu_controller.cpp (trimmed)
 
-void MenuController::processCommand(const char* command,
-                                     char* response,
-                                     size_t responseSize) {
-    // Parse command
-    char cmdType[32];
-    parseCommandType(command, cmdType, sizeof(cmdType));
+bool MenuController::handleCommand(const char* message, bool allowInternal) {
+    // Device-to-device traffic (INTERNAL_MESSAGES[]) is never a command
+    if (!allowInternal && isInternalMessage(message)) {
+        return false;
+    }
+
+    char command[32];
+    char params[MAX_COMMAND_PARAMS][PARAM_BUFFER_SIZE];
+    uint8_t paramCount = 0;
+
+    // COMMAND:param1:param2... (command upper-cased)
+    if (!parseCommand(message, command, params, paramCount)) {
+        _currentCommand[0] = '\0';
+        sendError("Invalid command format");
+        return false;
+    }
+    strncpy(_currentCommand, command, sizeof(_currentCommand) - 1);  // echoed as CMD:<command>
 
     // Route to application layer
-    if (strcmp(cmdType, "SESSION_START") == 0) {
-        char profile[32];
-        uint32_t duration;
-        parseSessionParams(command, profile, &duration);
-
-        if (_session.startSession(profile, duration)) {
-            snprintf(response, responseSize, "OK:Session started\n\x04");
-        } else {
-            snprintf(response, responseSize, "ERROR:Cannot start session\n\x04");
-        }
+    if (strcmp(command, "SESSION_START") == 0) {
+        handleSessionStart();
+    } else if (strcmp(command, "SESSION_STATUS") == 0) {
+        handleSessionStatus();
     }
-    else if (strcmp(cmdType, "SESSION_STATUS") == 0) {
-        _session.getStatus(response, responseSize);
+    // ... INFO, BATTERY, PROFILE_*, PARAM_SET, CALIBRATE_*, etc.
+    else {
+        char errorMsg[64];
+        snprintf(errorMsg, sizeof(errorMsg), "Unknown command: %s", command);
+        sendError(errorMsg);
+        return false;
     }
+    return true;
 }
 ```
 
@@ -571,26 +553,39 @@ void MenuController::processCommand(const char* command,
 **Example**:
 
 ```cpp
-// src/therapy_engine.cpp - callback-driven session start
+// src/therapy_engine.cpp - callback-driven session start (trimmed)
 
-void TherapyEngine::startSession(uint32_t durationSec, PatternType patternType,
-                                  float timeOnMs, float timeOffMs, float jitterPercent,
-                                  uint8_t amplitude, bool mirrorPattern, uint16_t frequencyHz) {
+void TherapyEngine::startSession(
+    uint32_t durationSec,
+    PatternType patternType,
+    float timeOnMs,
+    float timeOffMs,
+    float jitterPercent,
+    uint8_t numFingers,
+    bool mirrorPattern,
+    uint8_t amplitudeMin,
+    uint8_t amplitudeMax,
+    bool isTestMode
+) {
+    // Reset session state
+    _isRunning = true;
+    _isPaused = false;
+    _cyclesCompleted = 0;
+
     // Store session parameters
-    _durationSec = durationSec;
+    _sessionStartTime = millis();
+    _sessionDurationSec = durationSec;
     _patternType = patternType;
-    _timeOnMs = timeOnMs;
-    _timeOffMs = timeOffMs;
+    // Never more fingers than the active (physically present) set
+    _numFingers = (numFingers < _fingerMapCount) ? numFingers : _fingerMapCount;
     // ... additional parameters
 
-    // Reset session state
-    _sessionActive = true;
-    _sessionStartTime = millis();
-    _cycleCount = 0;
+    // Generate first pattern
+    generateNextPattern();
 
-    // Trigger macrocycle start callback (notifies sync_protocol)
+    // Notify macrocycle start (first macrocycle)
     if (_macrocycleStartCallback) {
-        _macrocycleStartCallback();
+        _macrocycleStartCallback(_cyclesCompleted);
     }
 }
 ```
@@ -615,36 +610,33 @@ void TherapyEngine::startSession(uint32_t durationSec, PatternType patternType,
 **Example**:
 
 ```cpp
-// src/therapy_engine.cpp
+// src/therapy_engine.cpp - executeMacrocycleStep(), IDLE case (trimmed)
 
-void TherapyEngine::executeCycle() {
-    // Generate pattern (domain logic)
-    generatePattern();
+// Generate pattern (domain logic)
+_currentMacrocycle = generateMacrocycle();   // 3 patterns x numFingers events
 
-    // Execute with precise timing
-    for (uint8_t i = 0; i < _config.burstsPerCycle; i++) {
-        uint8_t primaryFinger = _primarySequence[i];
-        uint8_t secondaryFinger = _secondarySequence[i];
+// Schedule against an absolute time one adaptive lead time ahead
+uint32_t leadTimeUs = _getLeadTimeCallback ? _getLeadTimeCallback() : 50000;
+_macrocycleBaseTime = getMicros() + leadTimeUs;
+_currentMacrocycle.baseTime = _macrocycleBaseTime;
 
-        // Bilateral activation (infrastructure call through interface)
-        activateBilateral(primaryFinger, secondaryFinger, _config.amplitudePercent);
-
-        // Timing control (domain logic)
-        delay(_config.burstDurationMs);
-
-        deactivateBilateral(primaryFinger, secondaryFinger);
-
-        // Apply jitter if configured
-        uint16_t interval = _config.interBurstIntervalMs;
-        if (_config.jitterPercent > 0) {
-            interval += calculateJitter();
-        }
-        delay(interval);
-    }
-
-    _cycleCount++;
+// Send macrocycle to SECONDARY (infrastructure call through a callback)
+if (_sendMacrocycleCallback) {
+    _sendMacrocycleCallback(_currentMacrocycle);
 }
+
+// Schedule all PRIMARY activations locally; the motor task does the timing
+for (uint8_t i = 0; i < _currentMacrocycle.eventCount; i++) {
+    const MacrocycleEvent& evt = _currentMacrocycle.events[i];
+    uint64_t activateTime = _macrocycleBaseTime + (evt.deltaTimeMs * 1000ULL);
+    _scheduleActivationCallback(activateTime, evt.primaryFinger, evt.amplitude,
+                                evt.durationMs, evt.getFrequencyHz());
+}
+
+_buzzFlowState = BuzzFlowState::ACTIVE;   // then WAITING_RELAX (2x relax interval)
 ```
+
+The engine never blocks: `update()` advances this state machine on each `loop()` pass.
 
 ### Infrastructure Layer
 
@@ -652,9 +644,9 @@ void TherapyEngine::executeCycle() {
 
 **Components**:
 
-- `ble_manager.h/.cpp`: BLE communication
+- `ble_manager.h` + `ble_manager_nrf52.cpp` / `ble_manager_esp32.cpp`: BLE communication
 - `hardware.h/.cpp`: HapticController (DRV2605), LEDController, battery
-- `profile_manager.h/.cpp`: LittleFS profile storage
+- `profile_manager.h/.cpp`: profile storage through `fs_backend` (InternalFS on v2, LittleFS on v3)
 
 **Characteristics**:
 
@@ -666,23 +658,29 @@ void TherapyEngine::executeCycle() {
 **Example**:
 
 ```cpp
-// src/hardware.cpp
+// src/hardware.cpp (trimmed)
 
-void HapticController::activate(uint8_t finger, uint8_t amplitude) {
-    // Infrastructure-level details
-    _tca.select(finger);
+Result HapticController::activate(uint8_t finger, uint8_t amplitude) {
+    if (finger >= MAX_ACTUATORS) {
+        return Result::ERROR_INVALID_PARAM;
+    }
+    if (!_fingerEnabled[finger]) {
+        return Result::ERROR_DISABLED;
+    }
 
-    // Hardware-specific protocol
-    uint8_t registerValue = (amplitude * 127) / 100;
-    _drv[finger].setRealtimeValue(registerValue);
+    // Infrastructure-level details: shared I2C bus
+    I2CMutexLock lock(_i2cMutex);
+    if (!lock.acquired()) {
+        return Result::ERROR_BUSY;
+    }
+    selectChannel(finger);                       // TCA9548A channel
 
-    _motorActive[finger] = true;
-}
+    // Hardware-specific protocol: 0-100% -> RTP 0-127
+    _drv[finger].setRealtimeValue(amplitudeToRTP(amplitude));
+    closeChannels();
 
-void HapticController::deactivate(uint8_t finger) {
-    _tca.select(finger);
-    _drv[finger].setRealtimeValue(0);
-    _motorActive[finger] = false;
+    _fingerActive[finger] = (amplitude > 0);
+    return Result::OK;
 }
 ```
 
@@ -693,45 +691,63 @@ void HapticController::deactivate(uint8_t finger) {
 A dedicated FreeRTOS task handles motor activation with sub-millisecond precision:
 
 ```cpp
-// Motor task runs at Priority 4 (above normal, below BLE)
-void motorTaskFunction(void* pvParameters) {
-    while (true) {
+// src/main.cpp (trimmed)
+// Motor task runs at Priority 4 (TASK_PRIO_HIGHEST), preempting the loop task (Priority 1)
+static void motorTask(void* pvParameters) {
+    ulTaskNotifyTake(pdTRUE, portMAX_DELAY);   // wait until activationQueue.begin() ran
+
+    for (;;) {
         MotorEvent event;
-        if (activationQueue.getNextEvent(event)) {
-            uint64_t now = getMicros();
-            int64_t delayUs = event.timeUs - now;
-
-            // Hybrid sleep + busy-wait for precision
-            if (delayUs > 2000) {
-                // Sleep until ~2ms before event
-                vTaskDelay(pdMS_TO_TICKS((delayUs - 2000) / 1000));
-            }
-
-            // Busy-wait for final precision
-            while (getMicros() < event.timeUs) { /* spin */ }
-
-            // Execute motor event
-            executeMotorEvent(event);
+        if (!activationQueue.peekNextEvent(event)) {
+            ulTaskNotifyTake(pdTRUE, portMAX_DELAY);   // sleep until an event is enqueued
+            continue;
         }
-        vTaskDelay(1);  // Yield if queue empty
+
+        int64_t delayUs = static_cast<int64_t>(event.timeUs - getMicros());
+        if (delayUs <= 0) {
+            if (activationQueue.dequeueNextEvent(event)) executeMotorEvent(event);
+            continue;
+        }
+
+        // Hybrid sleep + busy-wait for precision
+        if (delayUs > 2000) {
+            // (pre-selects the next activation's mux channel here when idle)
+            TickType_t ticks = pdMS_TO_TICKS((delayUs - 1000) / 1000);
+            if (ticks > 0) {
+                ulTaskNotifyTake(pdTRUE, ticks);   // wakes early if an earlier event arrives
+                continue;
+            }
+        }
+
+        // Busy-wait for final precision
+        while (getMicros() < event.timeUs) {
+            taskYIELD();
+        }
+
+        if (activationQueue.dequeueNextEvent(event)) {
+            executeMotorEvent(event);   // ACTIVATE or DEACTIVATE
+        }
     }
 }
 ```
 
 **Key Features:**
 - **Non-blocking**: Allows BLE callbacks to process during sleep
-- **Sub-millisecond precision**: Busy-waits only the final 2ms
+- **Sub-millisecond precision**: Sleeps until ~1ms before the event, then busy-waits
 - **I2C pre-selection**: Moves mux selection off critical path (~100μs vs ~500μs)
-- **Queue-based**: Events scheduled via ActivationQueue
+- **Queue-based**: Events scheduled via ActivationQueue; each activation auto-enqueues its deactivation
 
 **I2C Pre-Selection Optimization:**
 
 ```cpp
+// src/main.cpp - executeMotorEvent()
 // Fast path when channel is pre-selected
-if (haptic.getPreSelectedFinger() == event.finger) {
+if (haptic.getPreSelectedFinger() == static_cast<int8_t>(event.finger)) {
     haptic.activatePreSelected(event.finger, event.amplitude);  // ~100μs
+    haptic.closeAllChannels();
 } else {
-    haptic.activate(event.finger, event.amplitude);  // ~500μs
+    haptic.setFrequency(event.finger, event.frequencyHz);
+    haptic.activate(event.finger, event.amplitude);             // ~500μs
 }
 ```
 
@@ -764,99 +780,114 @@ The system has 11 distinct states to handle all operational scenarios:
 stateDiagram-v2
     [*] --> IDLE
 
-    IDLE --> CONNECTING: POWER_ON/CONNECT
+    IDLE --> READY: CONNECTED
+    IDLE --> RUNNING: START_SESSION
     CONNECTING --> READY: CONNECTED
-    CONNECTING --> ERROR: ERROR_OCCURRED
-    CONNECTING --> IDLE: DISCONNECTED
 
     READY --> RUNNING: START_SESSION
-    READY --> ERROR: ERROR_OCCURRED
     READY --> CONNECTION_LOST: DISCONNECTED
+    READY --> PHONE_DISCONNECTED: PHONE_LOST
 
     RUNNING --> PAUSED: PAUSE_SESSION
     RUNNING --> STOPPING: STOP_SESSION
-    RUNNING --> STOPPING: SESSION_COMPLETE
+    RUNNING --> IDLE: SESSION_COMPLETE / STOPPED
     RUNNING --> LOW_BATTERY: BATTERY_WARNING
     RUNNING --> CONNECTION_LOST: DISCONNECTED
     RUNNING --> PHONE_DISCONNECTED: PHONE_LOST
-    RUNNING --> ERROR: ERROR/EMERGENCY_STOP
+    RUNNING --> ERROR: EMERGENCY_STOP
 
     PAUSED --> RUNNING: RESUME_SESSION
     PAUSED --> STOPPING: STOP_SESSION
     PAUSED --> CONNECTION_LOST: DISCONNECTED
+    PAUSED --> ERROR: EMERGENCY_STOP
 
     LOW_BATTERY --> RUNNING: BATTERY_OK
     LOW_BATTERY --> CRITICAL_BATTERY: BATTERY_CRITICAL
-    LOW_BATTERY --> STOPPING: STOP_SESSION
+    LOW_BATTERY --> ERROR: EMERGENCY_STOP
 
-    CRITICAL_BATTERY --> IDLE: FORCED_SHUTDOWN
+    CRITICAL_BATTERY --> IDLE: FORCED_SHUTDOWN / RESET
 
-    CONNECTION_LOST --> READY: RECONNECTED
+    CONNECTION_LOST --> READY: CONNECTED / RECONNECTED
     CONNECTION_LOST --> IDLE: RECONNECT_FAILED
 
-    PHONE_DISCONNECTED --> RUNNING: PHONE_RECONNECTED
-    PHONE_DISCONNECTED --> IDLE: PHONE_TIMEOUT
+    PHONE_DISCONNECTED --> READY: PHONE_RECONNECTED / PHONE_TIMEOUT (previous state)
+    PHONE_DISCONNECTED --> RUNNING: PHONE_RECONNECTED / PHONE_TIMEOUT (previous state)
 
-    STOPPING --> READY: STOPPED
-    STOPPING --> IDLE: DISCONNECTED
+    STOPPING --> IDLE: STOPPED / SESSION_COMPLETE
 
     ERROR --> IDLE: RESET
-    ERROR --> IDLE: DISCONNECTED
 ```
+
+`BATTERY_CRITICAL` and `ERROR_OCCURRED` lead to `CRITICAL_BATTERY` and `ERROR` from any state, and `RESET` / `FORCED_SHUTDOWN` return any state to `IDLE` (`determineNextState()` in `src/state_machine.cpp`). A trigger that is not valid in the current state is ignored.
+
+After a session stops, the FSM lands in `IDLE`; `loop()` promotes it to `READY` while the peer glove's keepalive traffic is live.
+
+Current firmware fires only `CONNECTED`, `DISCONNECTED`, `START_SESSION`, `PAUSE_SESSION`, `RESUME_SESSION`, `STOP_SESSION`, `STOPPED`, `RECONNECT_FAILED`, `PHONE_LOST`, and `PHONE_RECONNECTED`. `CONNECTING`, `LOW_BATTERY`, `CRITICAL_BATTERY`, and `ERROR` are defined but never entered.
 
 **State Descriptions**:
 
 | State                | Value | Description                                |
 | -------------------- | ----- | ------------------------------------------ |
-| `IDLE`               | 0     | No active session, system ready            |
-| `CONNECTING`         | 1     | Establishing BLE connection                |
+| `IDLE`               | 0     | No active session; not paired with the peer glove |
+| `CONNECTING`         | 1     | Establishing BLE connection (never entered) |
 | `READY`              | 2     | Connected, ready for therapy               |
 | `RUNNING`            | 3     | Active therapy session                     |
 | `PAUSED`             | 4     | Session paused, can resume                 |
 | `STOPPING`           | 5     | Session ending, cleanup                    |
-| `ERROR`              | 6     | Error condition, motors stopped            |
-| `LOW_BATTERY`        | 7     | Battery < 20%, session can continue        |
-| `CRITICAL_BATTERY`   | 8     | Battery < 5%, forced shutdown              |
-| `CONNECTION_LOST`    | 9     | Inter-device BLE lost, attempting recovery |
-| `PHONE_DISCONNECTED` | 10    | Phone BLE lost (PRIMARY only)              |
+| `ERROR`              | 6     | Error condition, motors stopped (never entered) |
+| `LOW_BATTERY`        | 7     | Low battery, session can continue (never entered) |
+| `CRITICAL_BATTERY`   | 8     | Critical battery, motors stopped (never entered) |
+| `CONNECTION_LOST`    | 9     | Inter-device BLE lost; purple LED for 30s, then IDLE |
+| `PHONE_DISCONNECTED` | 10    | Phone BLE lost (PRIMARY only, informational) |
 
 **Implementation**:
 
 ```cpp
 // src/state_machine.cpp
 
-bool StateMachine::transition(StateTrigger trigger) {
-    TherapyState nextState;
+bool TherapyStateMachine::transition(StateTrigger trigger) {
+    TherapyState expected = _currentState.load(std::memory_order_acquire);
+    TherapyState newState = determineNextState(expected, trigger);
 
-    switch (_currentState) {
-        case TherapyState::IDLE:
-            if (trigger == StateTrigger::CONNECTED) {
-                nextState = TherapyState::READY;
-            } else {
-                return false;  // Invalid transition
+    if (newState == expected) {
+        return false;  // Invalid transition
+    }
+
+    // Atomic: a concurrent transition from another task wins, this one is dropped
+    if (!_currentState.compare_exchange_strong(expected, newState,
+                                               std::memory_order_acq_rel,
+                                               std::memory_order_acquire)) {
+        return false;
+    }
+
+    _previousState.store(expected, std::memory_order_release);
+
+    // Notify registered callbacks
+    StateTransition trans(expected, newState, trigger);
+    notifyCallbacks(trans);
+
+    return true;
+}
+
+TherapyState TherapyStateMachine::determineNextState(TherapyState current, StateTrigger trigger) {
+    switch (trigger) {
+        case StateTrigger::START_SESSION:
+            if (current == TherapyState::READY || current == TherapyState::IDLE) {
+                return TherapyState::RUNNING;
             }
             break;
 
-        case TherapyState::READY:
-            if (trigger == StateTrigger::START_SESSION) {
-                nextState = TherapyState::RUNNING;
-            } else if (trigger == StateTrigger::DISCONNECTED) {
-                nextState = TherapyState::CONNECTION_LOST;
-            } else {
-                return false;
+        case StateTrigger::DISCONNECTED:
+            if (current == TherapyState::RUNNING ||
+                current == TherapyState::PAUSED ||
+                current == TherapyState::READY) {
+                return TherapyState::CONNECTION_LOST;
             }
             break;
 
         // ... additional state transitions
     }
-
-    // Notify callback if registered
-    if (_callback) {
-        _callback(_currentState, nextState);
-    }
-
-    _currentState = nextState;
-    return true;
+    return current;
 }
 ```
 
@@ -872,85 +903,70 @@ The `mirrorPattern` parameter controls whether both hands receive the same finge
 **Implementation**:
 
 ```cpp
-// src/therapy_engine.cpp
+// src/therapy_engine.cpp - generateRandomPermutation() (trimmed)
 
-void TherapyEngine::generatePattern() {
-    // Generate PRIMARY device sequence using Fisher-Yates shuffle
-    for (uint8_t i = 0; i < 4; i++) {
-        _primarySequence[i] = i;
-    }
-    for (uint8_t i = 3; i > 0; i--) {
-        uint8_t j = random(0, i + 1);
-        uint8_t temp = _primarySequence[i];
-        _primarySequence[i] = _primarySequence[j];
-        _primarySequence[j] = temp;
-    }
+// Generate PRIMARY device sequence (random permutation)
+for (uint8_t i = 0; i < numFingers; i++) {
+    pattern.primarySequence[i] = i;
+}
+shuffleArray(pattern.primarySequence);   // Fisher-Yates
 
-    // Generate SECONDARY device sequence based on mirror setting
-    if (_config.mirrorPattern) {
-        // Mirrored: same finger on both devices (noisy vCR)
-        memcpy(_secondarySequence, _primarySequence, sizeof(_primarySequence));
-    } else {
-        // Non-mirrored: independent random sequence (regular vCR)
-        for (uint8_t i = 0; i < 4; i++) {
-            _secondarySequence[i] = i;
-        }
-        for (uint8_t i = 3; i > 0; i--) {
-            uint8_t j = random(0, i + 1);
-            uint8_t temp = _secondarySequence[i];
-            _secondarySequence[i] = _secondarySequence[j];
-            _secondarySequence[j] = temp;
-        }
+// Generate SECONDARY device sequence based on mirror setting
+if (mirrorPattern) {
+    // Mirrored: same finger on both devices (noisy vCR)
+    for (uint8_t i = 0; i < numFingers; i++) {
+        pattern.secondarySequence[i] = pattern.primarySequence[i];
     }
+} else {
+    // Non-mirrored: independent random sequence (regular vCR)
+    for (uint8_t i = 0; i < numFingers; i++) {
+        pattern.secondarySequence[i] = i;
+    }
+    shuffleArray(pattern.secondarySequence);
 }
 ```
 
-**Hardware Note**: Both gloves use identical channel-to-finger mapping (channel 0 = index on both gloves). The `mirrorPattern` setting controls whether the same channel number is sent to both devices (mirrored) or different channels (non-mirrored).
+`numFingers` is 4 on v2 and 5 on v3 by default (or fewer with the `FINGERS` parameter). `remapPatternFingers()` then maps these slots onto the physically present motors.
+
+**Hardware Note**: Both gloves use identical channel-to-finger mapping (channel 0 = index on both gloves; channel 4 = thumb on v3). Each macrocycle event carries both indices: `finger` (sent to the SECONDARY) and `primaryFinger` (used locally, never serialized). In mirrored mode they are equal.
 
 ### Configuration System
 
 **Layered Configuration**:
 
-1. **Device Configuration** (`settings.json`): Device role
-2. **Therapy Configuration** (profiles): Profile settings
-3. **Runtime Configuration**: Dynamic adjustments
+1. **Device Configuration** (`/settings.bin`): Device role, selected profile, profile overrides, therapy LED and debug flags
+2. **Therapy Configuration** (profiles): Built-in profiles in `ProfileManager`; Custom profile edits in `/custom.bin`
+3. **Runtime Configuration**: `PARAM_SET` / `PROFILE_CUSTOM` adjustments, validated against the `PARAM_*` bounds in `config.h`
 
 **Loading Hierarchy**:
 
 ```cpp
-// src/main.cpp
+// src/profile_manager.cpp - loadSettings() (trimmed)
 
-DeviceConfig loadDeviceConfig() {
-    DeviceConfig config;
-
-    if (!LittleFS.begin()) {
-        config.role = DeviceRole::PRIMARY;
-        config.bleName = "BlueBuzzah";
-        config.deviceTag = "[PRIMARY]";
-        return config;
+bool ProfileManager::loadSettings() {
+    if (!fsb::exists(SETTINGS_FILE)) {          // "/settings.bin"
+        return false;                           // no role: setup() waits for SET_ROLE
     }
 
-    File file = LittleFS.open("/settings.json", "r");
-    if (!file) {
-        config.role = DeviceRole::PRIMARY;
-        config.bleName = "BlueBuzzah";
-        config.deviceTag = "[PRIMARY]";
-        return config;
+    SettingsData data;
+    size_t bytesRead = 0;
+    if (!fsb::readFile(SETTINGS_FILE, (uint8_t*)&data, sizeof(data), bytesRead)) {
+        return false;
+    }
+    if (bytesRead != sizeof(data) || data.magic != SETTINGS_MAGIC) {
+        return false;
     }
 
-    JsonDocument doc;
-    deserializeJson(doc, file);
-    file.close();
+    // Load device role
+    _deviceRole = (data.role == 1) ? DeviceRole::SECONDARY : DeviceRole::PRIMARY;
+    _roleFromSettings = true;
 
-    const char* roleStr = doc["deviceRole"] | "Primary";
-    config.role = (strcmp(roleStr, "Primary") == 0)
-        ? DeviceRole::PRIMARY
-        : DeviceRole::SECONDARY;
-    config.bleName = "BlueBuzzah";
-    config.deviceTag = (config.role == DeviceRole::PRIMARY)
-        ? "[PRIMARY]" : "[SECONDARY]";
-
-    return config;
+    // Load profile, then apply saved values that pass the PARAM_* bounds
+    if (data.profileId > 0 && data.profileId <= _profileCount) {
+        _currentProfile = _builtInProfiles[data.profileId - 1];
+        // ...
+    }
+    // ...
 }
 ```
 
@@ -988,25 +1004,24 @@ sequenceDiagram
     participant P as PRIMARY
     participant S as SECONDARY
 
-    Note over P,S: Boot Sequence
-    P->>S: FIRST_SYNC (establish time offset)
-    S->>P: ACK_FIRST_SYNC (with timestamp)
+    Note over P,S: Connection
+    S->>P: IDENTIFY:SECONDARY
+    loop Every 70ms until clock sync is valid (5 samples cold, 3 warm)
+        P->>S: PING (T1)
+        S->>P: PONG (T2, T3)
+    end
 
     Note over P,S: Therapy Execution
-    loop Every Macrocycle
-        P->>S: SYNC_ADJ (periodic resync)
-        S->>P: ACK_SYNC_ADJ
-
-        loop Each Macrocycle (~2s)
-            P->>S: MACROCYCLE(12 events, base_time)
-            S->>P: MACROCYCLE_ACK
-            par
-              P->>P: Execute 12 events (left hand)
-            and
-              S->>S: Execute 12 events synchronized (right hand)
-            end
+    loop Each Macrocycle (~3.3s)
+        P->>S: MC (12 or 15 events, baseTime, clock offset)
+        S->>P: MC_ACK
+        par
+          P->>P: Execute events (PRIMARY hand)
+        and
+          S->>S: Execute events synchronized (SECONDARY hand)
         end
     end
+    Note over P,S: PING/PONG continues every 250ms during therapy (1s idle)
 ```
 
 **Time Synchronization**:
@@ -1014,17 +1029,21 @@ sequenceDiagram
 ```cpp
 // src/sync_protocol.cpp
 
-int32_t SyncProtocol::calculateOffset(uint32_t primaryTime, uint32_t secondaryTime) {
-    // Offset = (T_primary - T_secondary) / 2
-    // This compensates for message transmission time and ensures
-    // sub-10ms synchronization accuracy.
-    return (int32_t)(primaryTime - secondaryTime) / 2;
-}
+int64_t SimpleSyncProtocol::calculatePTPOffset(uint64_t t1, uint64_t t2, uint64_t t3, uint64_t t4) {
+    // IEEE 1588 PTP clock offset formula:
+    // offset = ((T2 - T1) + (T3 - T4)) / 2
+    // Positive offset means SECONDARY clock is ahead of PRIMARY.
+    int64_t term1 = (int64_t)t2 - (int64_t)t1;  // Forward delay + offset
+    int64_t term2 = (int64_t)t3 - (int64_t)t4;  // Reverse delay - offset
 
-uint32_t SyncProtocol::applyCompensation(uint32_t timestamp, int32_t offset) {
-    return timestamp + offset;
+    int64_t offset = (term1 + term2) / 2;
+
+    _lastSyncTime = syncNowMs();
+    return offset;
 }
 ```
+
+T1 is the PRIMARY's PING send time, T2 and T3 are the SECONDARY's receive and PONG send times, and T4 is the PRIMARY's PONG receive time. Samples pass RTT quality gates (`addOffsetSampleWithQuality()`) before they update the offset. Clock sync is valid after 5 samples (`SYNC_MIN_VALID_SAMPLES`), or 3 confirmatory samples on a warm start. The PRIMARY puts the current offset in every macrocycle, and the SECONDARY adds it to `baseTime` to get its local schedule.
 
 ### Keepalive Protocol (PING/PONG)
 
@@ -1033,8 +1052,8 @@ Connection monitoring uses a unified PING/PONG mechanism that provides both keep
 | Parameter         | Value     | Description                           |
 | ----------------- | --------- | ------------------------------------- |
 | Interval          | 70ms / 250ms / 1s | Until clock sync is valid (cold or warm start) / during therapy / idle |
-| Timeout (SECONDARY) | 6 seconds | No PING for 6s = connection lost    |
-| Timeout (PRIMARY)   | 6 seconds | No PONG for 6s during therapy (emergency shutdown) |
+| Timeout (SECONDARY) | 6 seconds | No PING or MC for 6s = connection lost |
+| Timeout (PRIMARY)   | 6 seconds | No PONG or MC_ACK for 6s during therapy (therapy stopped, STOP_SESSION sent) |
 | Connection-lost window | 30 seconds | Purple LED, then IDLE; scanning/advertising continue throughout |
 
 **Unified Mechanism:**
@@ -1069,14 +1088,15 @@ Connection monitoring uses a unified PING/PONG mechanism that provides both keep
 }}}%%
 stateDiagram-v2
     [*] --> Connected
-    Connected --> KeepaliveMissed: No PONG response
-    KeepaliveMissed --> Connected: PONG received
-    KeepaliveMissed --> ConnectionLost: Timeout (4-6s)
-    ConnectionLost --> Reconnecting: Start recovery
-    Reconnecting --> Connected: Success
-    Reconnecting --> Failed: 3 attempts failed
-    Failed --> [*]: Emergency stop
+    Connected --> ConnectionLost: BLE disconnect, or SECONDARY sees no PING/MC for 6s
+    Connected --> TherapyStopped: PRIMARY sees no PONG/MC_ACK for 6s during therapy
+    ConnectionLost --> Connected: Peer traffic resumes or peer reconnects (READY)
+    ConnectionLost --> Idle: No peer traffic for 30s
+    TherapyStopped --> Idle: Session stopped
+    Idle --> Connected: Peer keepalive traffic live (READY)
 ```
+
+Motors stop on every path out of `Connected`. Scanning (SECONDARY) and advertising (PRIMARY) continue throughout; there is no retry limit.
 
 **Implementation**:
 
@@ -1085,7 +1105,7 @@ stateDiagram-v2
 #define SYNC_ACQUIRE_INTERVAL_MS 70  // PING cadence until clock sync is valid (cold or warm start)
 #define SYNC_ACTIVE_INTERVAL_MS 250  // PING cadence while therapy is running
 #define KEEPALIVE_INTERVAL_MS 1000  // PING cadence when idle (unified keepalive + sync)
-#define KEEPALIVE_TIMEOUT_MS 6000   // SECONDARY: 6 missed = connection lost
+#define KEEPALIVE_TIMEOUT_MS 6000   // SECONDARY: no PING/MC for 6s = connection lost
 
 // src/main.cpp - PRIMARY keepalive (unified mechanism)
 uint32_t pingIntervalMs = therapy.isRunning() ? SYNC_ACTIVE_INTERVAL_MS : KEEPALIVE_INTERVAL_MS;
@@ -1101,13 +1121,14 @@ if (deviceRole == DeviceRole::PRIMARY &&
     sendPing();  // PING provides both keepalive and clock sync
 }
 
-// src/main.cpp - SECONDARY timeout detection
-void checkKeepalive() {
-    // PING and MACROCYCLE both update lastKeepaliveReceived
-    uint32_t elapsed = millis() - lastKeepaliveReceived;
-
-    if (elapsed > KEEPALIVE_TIMEOUT_MS) {
-        handleKeepaliveTimeout();
+// src/main.cpp - SECONDARY timeout detection (in loop())
+// PING and MACROCYCLE both update lastKeepaliveReceived
+if (deviceRole == DeviceRole::SECONDARY && ble.isPrimaryConnected())
+{
+    uint32_t lastKA = lastKeepaliveReceived;
+    if (lastKA > 0 && (millis() - lastKA > KEEPALIVE_TIMEOUT_MS))
+    {
+        handleKeepaliveTimeout();  // stop motors, CONNECTION_LOST, restart scanning
     }
 }
 ```
@@ -1119,45 +1140,51 @@ Inter-device communication uses a structured message format:
 **Format**:
 
 ```
-SYNC:<command>:<key1>|<value1>|<key2>|<value2>...<EOT>
+<COMMAND>:<sequence_id>|<timestamp_us>[|<value1>|<value2>...]<EOT>
 ```
 
 **Components**:
 
-- `SYNC:` - Message prefix identifier
-- `<command>` - Command type (see table below)
-- `:` - Field separator
-- `<key>|<value>` - Key-value pairs separated by pipe
-- `<EOT>` - End of transmission marker (ASCII 0x04)
+- `<COMMAND>` - Command type (see table below)
+- `:` - Separates the command from its fields
+- `<sequence_id>` - Sequence number (`SequenceGenerator`)
+- `<timestamp_us>` - Sender's clock in microseconds at creation
+- `|<value>` - Positional values separated by pipe (keys are not serialized)
+- `<EOT>` - End of transmission marker (ASCII 0x04), appended by `BLEManager` when the message is queued
 
-**Command Reference**:
+Macrocycles use their own compact format (`SyncCommand::serializeMacrocycle()`):
 
-| Command              | Direction | Description                  |
-| -------------------- | --------- | ---------------------------- |
-| `CONNECTED`          | P->S      | Connection established       |
-| `START_SESSION`      | P->S      | Begin therapy session        |
-| `PAUSE_SESSION`      | P->S      | Pause current session        |
-| `RESUME_SESSION`     | P->S      | Resume paused session        |
-| `STOP_SESSION`       | P->S      | Stop and end session         |
-| `STOPPED`            | S->P      | Session stopped confirmation |
-| `MACROCYCLE`         | P->S      | Batch of 12 motor events     |
-| `MACROCYCLE_ACK`     | S->P      | Macrocycle acknowledgment    |
-| `PING`               | P->S      | Keepalive + clock sync       |
-| `PONG`               | S->P      | Keepalive + clock sync       |
-| `EMERGENCY_STOP`     | P<->S     | Immediate motor shutoff      |
-| `PHONE_DISCONNECTED` | P->S      | Phone app disconnected       |
-| `ACK`                | S->P      | Acknowledgment               |
-| `ERROR`              | P<->S     | Error notification           |
+```
+MC:<seq>|<baseHigh>|<baseLow>|<offHigh>|<offLow>|<durationMs>|<count>|<delta>,<finger>,<amplitude>[,<freqOffset>]|...
+```
 
-**Example Messages**:
+**Command Reference** (`SyncCommandType`):
+
+| Command              | Wire name        | Direction | Description                  |
+| -------------------- | ---------------- | --------- | ---------------------------- |
+| `START_SESSION`      | `START_SESSION`  | P->S      | Begin therapy session        |
+| `PAUSE_SESSION`      | `PAUSE_SESSION`  | P->S      | Pause current session        |
+| `RESUME_SESSION`     | `RESUME_SESSION` | P->S      | Resume paused session        |
+| `STOP_SESSION`       | `STOP_SESSION`   | P->S      | Stop and end session         |
+| `MACROCYCLE`         | `MC`             | P->S      | Batch of motor events (12 on v2, 15 on v3) |
+| `MACROCYCLE_ACK`     | `MC_ACK`         | S->P      | Macrocycle acknowledgment    |
+| `PING`               | `PING`           | P->S      | Keepalive + clock sync (T1)  |
+| `PONG`               | `PONG`           | S->P      | Keepalive + clock sync (T2, T3) |
+| `DEBUG_FLASH`        | `DEBUG_FLASH`    | P->S      | Synchronized LED flash (debug mode) |
+| `BUZZ`               | `BUZZ`           | P->S      | Deprecated; the SECONDARY logs a warning and ignores it |
+| `DEACTIVATE`         | `DEACTIVATE`     | P->S      | Defined but not sent         |
+
+Other device-to-device messages are plain strings: `IDENTIFY:SECONDARY` (S->P, on connect), `GET_BATTERY` / `BATRESPONSE:<volts>` (battery query), `LED_OFF_SYNC:<0|1>`, `DEBUG_SYNC:<0|1>`, `CALIB_BUZZ:<finger>:<intensity>:<ms>`, and `CALIB_STOP` (all P->S except `BATRESPONSE`). Every prefix the menu must ignore is listed in `INTERNAL_MESSAGES[]` (`include/internal_messages.h`).
+
+**Example Messages** (EOT not shown):
 
 ```text
-SYNC:START_SESSION:profile|noisy_vcr|duration|7200<EOT>
-MC:42|5000000|12|100,0,100,100,235|67,1,100,100,235|...
+START_SESSION:7|81234567
+MC:42|0|5000000|0|1250|100|12|0,2,100|167,0,100|334,3,100|...
 PING:1|1234567890
 PONG:1|1234567925|1234567900|1234567950
-MC_ACK:42
-SYNC:ACK:command|START_SESSION<EOT>
+MC_ACK:42|5070210
+IDENTIFY:SECONDARY
 ```
 
 ## Hardware Abstraction
@@ -1171,71 +1198,68 @@ SYNC:ACK:command|START_SESSION<EOT>
             ├── Port 0: DRV2605 (Index)   @ 0x5A
             ├── Port 1: DRV2605 (Middle)  @ 0x5A
             ├── Port 2: DRV2605 (Ring)    @ 0x5A
-            └── Port 3: DRV2605 (Pinky)   @ 0x5A
+            ├── Port 3: DRV2605 (Pinky)   @ 0x5A
+            └── Port 4: DRV2605 (Thumb)   @ 0x5A   (v3 only)
 ```
 
 ### I2C Initialization
 
 ```cpp
-// hardware.cpp
-
-#include <Wire.h>
-#include <Adafruit_TCA9548A.h>
-#include <Adafruit_DRV2605.h>
-
-Adafruit_TCA9548A tca;
-Adafruit_DRV2605 drv[4];
+// src/hardware.cpp (trimmed)
 
 bool HapticController::begin() {
+    _i2cMutex = xSemaphoreCreateMutex();   // shared by loop and motor task
+
+#if defined(BOARD_PENTABUZZER_ESP32S3)
+    Wire.begin(SDA_PIN_OVERRIDE, SCL_PIN_OVERRIDE);
+#else
     Wire.begin();
-    Wire.setClock(400000);  // 400kHz I2C
+#endif
+    Wire.setClock(I2C_FREQUENCY);  // 400kHz I2C
 
-    // Initialize multiplexer
-    if (!tca.begin()) {
-        Serial.println(F("[CRITICAL] TCA9548A not found"));
-        return false;
-    }
+    // Initialize multiplexer (TCA9548A library)
+    _tca.begin(Wire);
+    _tca.closeAll();
 
-    // Initialize each DRV2605
-    for (uint8_t i = 0; i < 4; i++) {
-        tca.select(i);
-        delay(5);
-
-        if (!drv[i].begin()) {
-            Serial.printf("[ERROR] DRV2605 on channel %d failed\n", i);
-            return false;
+    // Initialize each DRV2605 (MAX_ACTUATORS: 4 on v2, 5 on v3)
+    uint8_t successCount = 0;
+    for (uint8_t finger = 0; finger < MAX_ACTUATORS; finger++) {
+        if (initializeFinger(finger)) {   // select channel, drv.begin(), configure; 3 retries
+            successCount++;
         }
-
-        configureDRV2605(drv[i]);
-        Serial.printf("[INFO] DRV2605 channel %d initialized\n", i);
     }
 
-    return true;
+    // Boot continues with the fingers that initialized; failed ones stay disabled
+    _initialized = (successCount > 0);
+    return _initialized;
 }
 ```
 
 ### DRV2605 Configuration
 
 ```cpp
-void HapticController::configureDRV2605(Adafruit_DRV2605& driver) {
+void HapticController::configureDRV2605(Adafruit_DRV2605& drv) {
+    // 0. Read STATUS (register 0x00)
+    drv.readRegister8(DRV2605_REG_STATUS);
+
     // 1. Set actuator type (LRA - Linear Resonant Actuator)
-    driver.useLRA();
+    drv.useLRA();
 
     // 2. Enable open-loop mode (bypass auto-resonance)
-    uint8_t control3 = driver.readRegister8(0x1D);
-    driver.writeRegister8(0x1D, control3 | 0x21);  // Set bits 5 and 0
+    uint8_t control3 = drv.readRegister8(0x1D);
+    drv.writeRegister8(0x1D, control3 | 0x21);  // Set bits 5 and 0
 
-    // 3. Set peak voltage (register 0x17)
-    // Formula: voltage / 0.02122
-    driver.writeRegister8(0x17, (uint8_t)(ACTUATOR_VOLTAGE / 0.02122));
+    // 3. Set peak voltage to 2.50V (register 0x17)
+    // Formula: voltage / 0.02122 = 118
+    drv.writeRegister8(0x17, 118);
 
-    // 4. Set driving frequency (register 0x20)
-    // Formula: 1 / (frequency * 0.00009849)
-    driver.writeRegister8(0x20, (uint8_t)(1.0 / (ACTUATOR_FREQUENCY * 0.00009849)));
+    // 4. Set driving frequency to 250Hz (register 0x20)
+    // Formula: 1 / (frequency * 0.00009849) = 40
+    drv.writeRegister8(0x20, 40);
 
-    // 5. Activate Real-Time Playback (RTP) mode
-    driver.setRealtimeValue(0);
-    driver.setMode(DRV2605_MODE_REALTIME);
+    // 5. Activate Real-Time Playback (RTP) mode, motor off
+    drv.setMode(DRV2605_MODE_REALTIME);
+    drv.setRealtimeValue(0);
 }
 ```
 
@@ -1246,39 +1270,36 @@ void HapticController::configureDRV2605(Adafruit_DRV2605& driver) {
 | `0x1D`   | Control3   | Open-loop enable, N/ERM+ mode          |
 | `0x17`   | OD_CLAMP   | Peak voltage clamping (0-255 = 0-5.6V) |
 | `0x20`   | LRA_PERIOD | Driving period for LRA resonance       |
-| `0x00`   | STATUS     | Go bit (trigger playback)              |
+| `0x00`   | STATUS     | Device status (read at configuration)  |
+| `0x1A`   | FEEDBACK   | LRA mode bit, doubles as reset canary  |
+| `0x21`   | VBAT       | Supply voltage monitor (v3 battery)    |
 
 ### Battery Monitor
 
-Battery sensing has two backends selected by the `BATTERY_SENSE_ADC` build flag, one per board. Both feed the same LiPo discharge curve, the same thresholds (3.4V low / 3.3V critical), and the same reporting paths (serial log, BLE `BATP`/`BATS`, state machine).
+Battery sensing has two backends selected by the `BATTERY_SENSE_ADC` build flag, one per board. Both feed the same LiPo discharge curve, the same thresholds (3.4V low / 3.3V critical), and the same reporting paths (serial log, BLE `BATP`/`BATS`, the `SESSION_START` critical-battery check).
 
-#### ADC (BlueBuzzah, nRF52840)
+#### ADC (v2, nRF52840)
 
 The VBAT divider is sampled directly via `analogRead`:
 
 ```cpp
-class BatteryMonitor {
-public:
-    float getVoltage() {
-        // nRF52840: 3.6V reference, 14-bit ADC
-        uint16_t raw = analogRead(BATTERY_PIN);
-        float voltage = (raw / 16383.0f) * 3.6f * 2.0f;  // Voltage divider
-        return voltage;
-    }
+// src/hardware.cpp - BatteryMonitor::readVoltage(), BATTERY_SENSE_ADC branch
+uint32_t total = 0;
+for (uint8_t i = 0; i < BATTERY_SAMPLE_COUNT; i++) {   // 10 samples
+    total += analogRead(BATTERY_PIN);
+    delay(1);
+}
+float average = (float)total / BATTERY_SAMPLE_COUNT;
 
-    uint8_t getPercentage() {
-        float v = getVoltage();
-        // LiPo: 4.2V = 100%, 3.2V = 0%
-        if (v >= 4.2f) return 100;
-        if (v <= 3.2f) return 0;
-        return (uint8_t)((v - 3.2f) / 1.0f * 100.0f);
-    }
-};
+// nRF52840: 3.6V reference, 14-bit ADC, 2:1 voltage divider
+float voltage = (average / (float)ADC_MAX_VALUE) * ADC_REFERENCE_VOLTAGE * BATTERY_VOLTAGE_DIVIDER;
 ```
 
-#### DRV2605 VBAT Register (PentaBuzzer, ESP32-S3)
+Percentage is interpolated from a 21-point LiPo discharge curve (`VOLTAGE_CURVE`: 4.20V = 100%, 3.27V = 0%).
 
-PentaBuzzer has no battery ADC. All five DRV2605 drivers run directly off the VBat rail, so each chip's VBAT monitor register (`0x21`, `VDD = raw * 5.6V / 255`, ~22 mV resolution) doubles as the battery voltmeter — no extra hardware required.
+#### DRV2605 VBAT Register (v3, ESP32-S3)
+
+BlueBuzzah v3 has no battery ADC. All five DRV2605 drivers run directly off the VBat rail, so each chip's VBAT monitor register (`0x21`, `VDD = raw * 5.6V / 255`, ~22 mV resolution) doubles as the battery voltmeter — no extra hardware required.
 
 - **Sampled only while idle.** An LRA pulse sags VBat by hundreds of millivolts, so the register is only read when `anyMotorActive()` is false; the last idle estimate is held during therapy.
 - **Burst + median + EMA.** Each read is a 9-sample burst (`VBAT_BURST_SAMPLES`) reduced by median to reject sag/noise outliers, then folded into an EMA across bursts for a stable running estimate.
@@ -1292,65 +1313,44 @@ PentaBuzzer has no battery ADC. All five DRV2605 drivers run directly off the VB
 **Purpose**: Pluggable algorithms for pattern generation
 
 ```cpp
-// include/pattern_generator.h
+// src/therapy_engine.cpp - generateMacrocycle()
 
-class PatternGenerator {
-public:
-    virtual ~PatternGenerator() = default;
-    virtual Pattern generate(const PatternConfig& config) = 0;
-};
-
-class RandomPermutationGenerator : public PatternGenerator {
-public:
-    Pattern generate(const PatternConfig& config) override {
-        // Generate random permutation
-        uint8_t sequence[4] = {0, 1, 2, 3};
-        shuffleArray(sequence, 4);
-        return Pattern(sequence, sequence, config);
-    }
-};
-
-class SequentialGenerator : public PatternGenerator {
-public:
-    Pattern generate(const PatternConfig& config) override {
-        uint8_t sequence[4] = {0, 1, 2, 3};  // Fixed order
-        return Pattern(sequence, sequence, config);
-    }
-};
-
-// Usage - strategy is interchangeable
-PatternGenerator* generator = new RandomPermutationGenerator();
-Pattern pattern = generator->generate(config);
+Pattern pattern;
+switch (_patternType) {
+    case PatternType::RNDP:
+        pattern = generateRandomPermutation(_numFingers, _timeOnMs, _timeOffMs, _jitterPercent, _mirrorPattern);
+        break;
+    case PatternType::SEQUENTIAL:
+        pattern = generateSequentialPattern(_numFingers, _timeOnMs, _timeOffMs, _jitterPercent, _mirrorPattern, false);
+        break;
+    case PatternType::MIRRORED:
+        pattern = generateMirroredPattern(_numFingers, _timeOnMs, _timeOffMs, _jitterPercent, true);
+        break;
+    default:
+        pattern = generateRandomPermutation(_numFingers, _timeOnMs, _timeOffMs, _jitterPercent, _mirrorPattern);
+        break;
+}
 ```
+
+The profile's `patternType` string (`"rndp"`, `"sequential"`, `"mirrored"`) selects the `PatternType` when a session starts.
 
 ### 2. Repository Pattern (Hardware Abstraction)
 
 **Purpose**: Abstract data/hardware access
 
+Board differences live behind build-time seams rather than virtual interfaces:
+
+| Seam | v2 (nRF52840) | v3 (ESP32-S3) | Native tests |
+| ---- | ------------- | ------------- | ------------ |
+| `BLEManager` (`ble_manager.h`) | `ble_manager_nrf52.cpp` (Bluefruit) | `ble_manager_esp32.cpp` (NimBLE) | not compiled |
+| `fsb::` (`fs_backend.h`) | `fs_backend_nrf52.cpp` (InternalFS) | `fs_backend_esp32.cpp` (LittleFS) | `fs_backend_mock.cpp` (in-memory) |
+| `PowerController` (`power_controller.h`) | `power_controller_nrf52.cpp` (no-op) | `power_controller_esp32.cpp` | — |
+| Pins, `MAX_ACTUATORS`, battery sensing | `board_config.h` | `board_config.h` | `board_config.h` |
+
 ```cpp
-// include/haptic_interface.h
-
-class HapticInterface {
-public:
-    virtual ~HapticInterface() = default;
-    virtual void activate(uint8_t finger, uint8_t amplitude) = 0;
-    virtual void deactivate(uint8_t finger) = 0;
-    virtual void stopAll() = 0;
-};
-
-// Concrete implementation: Real hardware
-class DRV2605Controller : public HapticInterface {
-    // ... implementation
-};
-
-// Concrete implementation: Mock for testing
-class MockHapticController : public HapticInterface {
-    // ... test implementation
-};
-
-// Application code doesn't know which implementation
-void executeTherapy(HapticInterface& haptic) {
-    haptic.activate(0, 75);
+// Application code doesn't know which implementation it was built with
+if (!fsb::readFile(SETTINGS_FILE, (uint8_t*)&data, sizeof(data), bytesRead)) {
+    return false;
 }
 ```
 
@@ -1359,30 +1359,16 @@ void executeTherapy(HapticInterface& haptic) {
 **Purpose**: Invert dependencies for testability
 
 ```cpp
-class TherapyEngine {
-public:
-    // Dependencies injected through constructor
-    TherapyEngine(HapticController& hardware,
-                  StateMachine& stateMachine)
-        : _hardware(hardware)
-        , _stateMachine(stateMachine)
-    {}
+// src/main.cpp - dependencies injected through begin() and callback setters
+menu.begin(&therapy, &battery, &haptic, &stateMachine, &profiles, &ble);
+menu.setSendCallback(onMenuSendResponse);
+menu.setSendToSecondaryCallback(onMenuSendToSecondary);
 
-private:
-    HapticController& _hardware;
-    StateMachine& _stateMachine;
-};
-
-// Production setup
-HapticController hardware;
-StateMachine stateMachine;
-TherapyEngine engine(hardware, stateMachine);
-
-// Test setup
-MockHapticController mockHardware;
-StateMachine stateMachine;
-TherapyEngine engine(mockHardware, stateMachine);
+activationQueue.begin(&haptic, motorTaskHandle);
+battery.attachHaptic(&haptic);   // DRV2605 VBAT voltmeter on v3
 ```
+
+Native unit tests exercise `TherapyEngine`, `SimpleSyncProtocol`, `TherapyStateMachine`, and `ProfileManager` without hardware by registering test callbacks or using the mock filesystem.
 
 ### 4. Observer Pattern (State Changes)
 
@@ -1391,79 +1377,67 @@ TherapyEngine engine(mockHardware, stateMachine);
 ```cpp
 // include/state_machine.h
 
-class StateMachine {
+typedef void (*StateChangeCallback)(const StateTransition& transition);
+
+class TherapyStateMachine {
 public:
-    typedef void (*StateChangeCallback)(TherapyState from, TherapyState to);
-
-    void setCallback(StateChangeCallback callback) {
-        _callback = callback;
-    }
-
-    bool transition(StateTrigger trigger) {
-        TherapyState oldState = _currentState;
-        // ... perform transition logic ...
-
-        if (_callback) {
-            _callback(oldState, _currentState);
-        }
-        return true;
-    }
-
+    bool transition(StateTrigger trigger);
+    bool onStateChange(StateChangeCallback callback);  // up to MAX_STATE_CALLBACKS
+    // ...
 private:
-    TherapyState _currentState = TherapyState::IDLE;
-    StateChangeCallback _callback = nullptr;
+    std::atomic<TherapyState> _currentState;
+    StateChangeCallback _callbacks[MAX_STATE_CALLBACKS];
 };
 
-// Usage
-void onStateChange(TherapyState from, TherapyState to) {
-    Serial.printf("State: %d -> %d\n", (int)from, (int)to);
-    // LED reflects the new state via onStateChange() — see LED Controller
+// src/main.cpp - usage
+void onStateChange(const StateTransition &transition)
+{
+    switch (transition.toState)
+    {
+    case TherapyState::READY:
+        led.setPattern(Colors::GREEN, LEDPattern::SOLID);
+        break;
+    // ... LED pattern for every state
+    }
 }
 
-stateMachine.setCallback(onStateChange);
+stateMachine.onStateChange(onStateChange);
 ```
 
 ### 5. Factory Pattern (Object Creation)
 
 **Purpose**: Encapsulate object creation logic
 
+Built-in profiles are created once in `ProfileManager` (`src/profile_manager.cpp`) and loaded by ID or name:
+
 ```cpp
-// include/profile_factory.h
-
-class ProfileFactory {
-public:
-    static TherapyConfig createProfile(const char* profileType) {
-        TherapyConfig config;
-
-        if (strcmp(profileType, "regular_vcr") == 0) {
-            strncpy(config.profileName, "Regular vCR", sizeof(config.profileName));
-            config.burstDurationMs = 100;
-            config.interBurstIntervalMs = 668;
-            strncpy(config.patternType, "sequential", sizeof(config.patternType));
-            config.mirrorPattern = false;
-        }
-        else if (strcmp(profileType, "noisy_vcr") == 0) {
-            strncpy(config.profileName, "Noisy vCR", sizeof(config.profileName));
-            config.burstDurationMs = 100;
-            config.interBurstIntervalMs = 668;
-            strncpy(config.patternType, "random", sizeof(config.patternType));
-            config.mirrorPattern = true;
-        }
-        else if (strcmp(profileType, "hybrid_vcr") == 0) {
-            strncpy(config.profileName, "Hybrid vCR", sizeof(config.profileName));
-            config.burstDurationMs = 100;
-            config.interBurstIntervalMs = 668;
-            strncpy(config.patternType, "mirrored", sizeof(config.patternType));
-            config.mirrorPattern = false;
-        }
-
-        return config;
-    }
-};
+// src/profile_manager.cpp - initBuiltInProfiles() (trimmed)
+TherapyProfile& noisy = _builtInProfiles[_profileCount];
+strcpy(noisy.name, "noisy_vcr");
+strcpy(noisy.description, "Noisy vCR - mirrored with 23.5% jitter");
+noisy.frequencyHz = 250;
+noisy.timeOnMs = 100.0f;
+noisy.timeOffMs = 67.0f;
+noisy.jitterPercent = 23.5f;
+noisy.amplitudeMin = 100;
+noisy.amplitudeMax = 100;
+strcpy(noisy.patternType, "rndp");
+noisy.mirrorPattern = true;
 
 // Usage
-TherapyConfig profile = ProfileFactory::createProfile("noisy_vcr");
+profiles.loadProfileByName("noisy_vcr");
 ```
+
+| ID | Name | Pattern | Mirror | Jitter | Amplitude |
+| -- | ---- | ------- | ------ | ------ | --------- |
+| 1 | `regular_vcr` | `rndp` | no | 0% | 100% |
+| 2 | `noisy_vcr` | `rndp` | yes | 23.5% | 100% |
+| 3 | `hybrid_vcr` | `rndp` | no | 23.5% | 100% |
+| 4 | `custom_vcr` | `rndp` | no | 23.5% | 70-100% |
+| 5 | `gentle` | `sequential` | yes | 15% | 30-70% |
+| 6 | `quick_test` | `rndp` | yes | 23.5% | 50-100% |
+
+`SyncCommand`'s static factory methods (`createStartSession()`, `createPingWithT1()`, `createMacrocycleAck()`, ...) build every sync message.
 
 ## Data Flow
 
@@ -1497,30 +1471,30 @@ TherapyConfig profile = ProfileFactory::createProfile("noisy_vcr");
 }}}%%
 sequenceDiagram
     participant U as User/App
-    participant P as Protocol Handler
-    participant SM as Session Manager
+    participant B as BLEManager
+    participant L as main.cpp loop
+    participant M as MenuController
     participant TE as Therapy Engine
-    participant H as Haptic Controller
+    participant Q as ActivationQueue + motor task
 
-    U->>P: START_SESSION(profile, duration)
-    P->>SM: startSession(profile, duration)
-    SM->>SM: Load profile configuration
-    SM->>TE: startSession(config, duration)
+    U->>B: SESSION_START + EOT
+    B->>L: onBLEMessage() queues the menu command
+    L->>M: handleCommand("SESSION_START")
+    M->>M: Check battery and clock sync, read current profile
+    M->>TE: startSession(duration, pattern, timing, fingers, mirror, amplitude range)
+    M->>B: START_SESSION to SECONDARY
+    M->>U: CMD:SESSION_START, SESSION_STATUS:RUNNING, ELAPSED, TOTAL
 
-    loop Until Session Complete
-        TE->>TE: Generate pattern
-        loop For each finger pair
-            TE->>H: activate(finger, amplitude)
-            TE->>TE: Wait burst_duration
-            TE->>H: deactivate(finger)
-            TE->>TE: Wait inter_burst_interval
-        end
-        TE->>SM: Cycle complete
+    loop Until Session Complete (therapy.update() each loop pass)
+        TE->>TE: Generate macrocycle (3 patterns)
+        TE->>B: MC to SECONDARY
+        TE->>Q: Schedule activations at baseTime + delta
+        Q->>Q: Activate and deactivate each motor on time
+        TE->>TE: Wait for queue to drain, then relax interval
     end
 
-    TE->>SM: Session complete
-    SM->>P: SessionInfo
-    P->>U: SUCCESS response
+    TE->>L: Session time elapsed, isRunning() false
+    L->>L: STOP_SESSION + STOPPED (state machine)
 ```
 
 ### Bilateral Synchronization Flow
@@ -1557,18 +1531,21 @@ sequenceDiagram
     participant SS as SECONDARY Sync
     participant SE as SECONDARY Engine
 
-    PE->>PS: Start macrocycle
-    PS->>SS: SYNC_ADJ (timestamp)
-    SS->>PS: ACK_SYNC_ADJ
-    SS->>SS: Calculate time offset
+    loop PING/PONG (70ms until valid, then 250ms during therapy)
+        PS->>SS: PING (T1)
+        SS->>PS: PONG (T2, T3)
+        PS->>PS: Calculate PTP clock offset
+    end
 
-    loop Each macrocycle (~2s)
-        PS->>SS: MACROCYCLE(12 events, base_time)
-        SS->>PS: MACROCYCLE_ACK
+    loop Each macrocycle (~3.3s)
+        PE->>PS: Macrocycle (baseTime = now + lead time)
+        PS->>SS: MC (events, baseTime, clock offset)
+        SS->>PS: MC_ACK
+        SS->>SE: Events at baseTime + offset (local clock)
         par
-            PE->>PE: Execute 12 events (left)
+            PE->>PE: Execute events (PRIMARY hand)
         and
-            SE->>SE: Execute 12 events synchronized (right)
+            SE->>SE: Execute events synchronized (SECONDARY hand)
         end
     end
 ```
@@ -1577,48 +1554,49 @@ sequenceDiagram
 
 ### Hierarchical Error Responses
 
-**Level 1: Fatal Errors** (Halt with LED indicator)
+**Level 1: Safety Stops** (Motors off, keep running)
 
-- Boot sequence failure -> Red LED flash, halt
-- I2C initialization failure -> Diagnostic message + halt
-- Keepalive timeout -> Emergency stop motors, attempt reconnect
+- Hardware initialization failure -> Diagnostic message and red slow-blink LED (until BLE init succeeds); boot continues with the fingers that initialized
+- No stored role -> Orange slow-blink LED; boot waits for `SET_ROLE:` over serial
+- Peer disconnect or keepalive timeout -> Stop therapy and motors, CONNECTION_LOST (purple LED), keep scanning/advertising
+- v3: fewer than 4 motors detected at boot -> Red double-blink LED for 5s
 
 ```cpp
-void fatalError(const char* message) {
-    Serial.printf("[FATAL] %s\n", message);
-    hardware.stopAllMotors();
-    led.setPattern(Colors::RED, LEDPattern::BLINK_SLOW); // boot failure
-    while (true) { delay(1000); }  // Halt forever
+// src/main.cpp - centralized safe motor shutdown
+void safeMotorShutdown()
+{
+    therapy.stop();            // 1. no new activations
+    deferredQueue.clear();     // 2. no queued haptic work
+    activationQueue.clear();   // 3. no scheduled macrocycle events
+    haptic.emergencyStop();    // 4. all motors off
 }
 ```
+
+BLE callbacks never touch I2C. A disconnect callback signals `safetyShutdownSema`, and `loop()` runs `safeMotorShutdown()` at the top of its next pass.
 
 **Level 2: Recoverable Errors** (Log + Continue)
 
-- SYNC command timeout -> Log warning, proceed
-- Battery query timeout -> Return default value
-- File read failure -> Return error code
-
-```cpp
-bool recoverableError(const char* context) {
-    Serial.printf("[WARN] %s - continuing\n", context);
-    return false;  // Indicate failure
-}
-```
+- Macrocycle with an implausible `baseTime` (>5s from now) -> Log `[ERROR]`, still send `MC_ACK`, skip it
+- Macrocycle that cannot be queued for the SECONDARY -> Skipped on both gloves
+- SECONDARY battery query unanswered within 1s -> Reply with `BATS:0.00`
+- DRV2605 reset by a supply brownout -> Detected by `verifyAndHeal()`, all drivers reconfigured
+- Settings file read failure -> Profile falls back to `regular_vcr` (a missing role still blocks boot at `waitForRoleConfiguration()`)
 
 **Level 3: User Errors** (BLE Error Response)
 
-- Invalid command -> `ERROR:Unknown command`
-- Invalid parameter -> `ERROR:Value out of range`
-- Command during session -> `ERROR:Cannot modify during active session`
+- Invalid command -> `ERROR:Unknown command: <COMMAND>`
+- Invalid parameter -> `ERROR:Invalid parameter name or value out of range`
+- Command during session -> `ERROR:Cannot modify parameters during active session`
 - `SESSION_START` while the SECONDARY is connected but clock sync is not yet valid -> `ERROR:Sync not ready` (accepted with degraded timing once the SECONDARY has been connected for `SYNC_START_FALLBACK_MS`, 10s)
 
 Every menu reply, success or error, begins with a `CMD:<command>` line naming the command it answers. Only `ERROR:Invalid command format` has no `CMD:` line, since the command was never parsed.
 
 ```cpp
-void sendErrorResponse(const char* error) {
-    char response[64];
-    snprintf(response, sizeof(response), "ERROR:%s\n\x04", error);
-    bleManager.sendToPhone(response);
+// src/menu_controller.cpp
+void MenuController::sendError(const char* message) {
+    beginResponse();                    // CMD:<command> line
+    addResponseLine("ERROR", message);  // ERROR:<message>
+    sendResponse();                     // append EOT, send, log [MENU-TX]
 }
 ```
 
@@ -1629,27 +1607,32 @@ void sendErrorResponse(const char* error) {
 | Boot window          | 30s          | Auto-start therapy if SECONDARY connected and no phone | `main.cpp` |
 | BLE scan (SECONDARY) | None         | Scans until the PRIMARY is found | `ble_manager_nrf52.cpp` / `ble_manager_esp32.cpp` |
 | Keepalive (PING/PONG)| 6s           | Connection lost (purple LED), keep scanning/advertising | `main.cpp` |
-| SYNC command         | 10s          | Log warning       | `sync_protocol.cpp` |
-| BLE receive          | Non-blocking | Callback-based    | `ble_manager.cpp`   |
+| Connection lost      | 30s          | Return to IDLE    | `main.cpp`          |
+| Phone `SESSION_START` before clock sync | 10s after SECONDARY connects | Start with degraded timing | `main.cpp` (`phoneStartSyncReady()`) |
+| SECONDARY battery query | 1s        | Reply `BATS:0.00` | `menu_controller.cpp` |
+| BLE receive          | Non-blocking | Callback-based    | `ble_manager_nrf52.cpp` / `ble_manager_esp32.cpp` |
 
 ### Return Code Pattern
 
 ```cpp
+// include/types.h
 enum class Result : uint8_t {
-    OK,
+    OK = 0,
     ERROR_TIMEOUT,
     ERROR_INVALID_PARAM,
     ERROR_NOT_CONNECTED,
-    ERROR_HARDWARE
+    ERROR_HARDWARE,
+    ERROR_NOT_INITIALIZED,
+    ERROR_BUSY,
+    ERROR_DISABLED
 };
 
+// src/hardware.cpp
 Result HapticController::activate(uint8_t finger, uint8_t amplitude) {
-    if (finger > 4) return Result::ERROR_INVALID_PARAM;
-    if (amplitude > 127) return Result::ERROR_INVALID_PARAM;
-
-    tca.select(finger);
-    drv[finger].setRealtimeValue(amplitude);
-
+    if (finger >= MAX_ACTUATORS) return Result::ERROR_INVALID_PARAM;
+    if (!_fingerEnabled[finger]) return Result::ERROR_DISABLED;
+    if (amplitude > MAX_AMPLITUDE) amplitude = MAX_AMPLITUDE;   // clamp, not reject
+    // ... I2C mutex (ERROR_BUSY), channel select, RTP write
     return Result::OK;
 }
 ```
@@ -1710,20 +1693,24 @@ snprintf(msg, sizeof(msg), "SYNC:%lu", timestamp);
 **Use fixed-size buffers:**
 
 ```cpp
-// GOOD: Fixed buffer for BLE messages
-static char rxBuffer[256];
-static uint16_t rxBufferIndex = 0;
-
-void rxCallback(uint16_t conn_handle) {
-    while (bleuart.available()) {
-        char c = bleuart.read();
-        if (c == 0x04 || rxBufferIndex >= sizeof(rxBuffer) - 1) {
-            rxBuffer[rxBufferIndex] = '\0';
-            processMessage(rxBuffer);
-            rxBufferIndex = 0;
-        } else {
-            rxBuffer[rxBufferIndex++] = c;
+// GOOD: Fixed per-connection buffer for BLE messages
+// src/ble_manager_nrf52.cpp - BLEManager::processIncomingData() (trimmed)
+for (uint16_t i = 0; i < len; i++) {
+    uint8_t c = data[i];
+    if (c == EOT_CHAR) {
+        conn->rxBuffer[conn->rxIndex] = '\0';
+        if (conn->rxIndex > 0) {
+            deliverMessage(conn, connHandleParam);
         }
+        conn->rxIndex = 0;
+        conn->rxDiscard = false;
+    } else if (conn->rxDiscard) {
+        // Rest of an overflowed frame: drop it up to its EOT
+    } else if (conn->rxIndex >= RX_BUFFER_SIZE - 1) {
+        conn->rxIndex = 0;
+        conn->rxDiscard = true;
+    } else {
+        conn->rxBuffer[conn->rxIndex++] = c;
     }
 }
 ```
@@ -1745,12 +1732,13 @@ Memory management is deterministic:
 **Command Structure** (string-based):
 
 ```text
-COMMAND_NAME:ARG1:ARG2:...\n
+COMMAND_NAME:ARG1:ARG2:...<EOT>     (BLE; serial commands end with a newline)
 ```
 
 **Response Structure**:
 
 ```text
+CMD:COMMAND_NAME\n
 KEY1:VALUE1\n
 KEY2:VALUE2\n
 \x04
@@ -1763,111 +1751,113 @@ KEY2:VALUE2\n
 ```cpp
 // src/hardware.cpp
 
-void HapticController::selectChannel(uint8_t channel) {
-    if (channel > 7) return;
+bool HapticController::selectChannel(uint8_t finger) {
+    if (finger >= MAX_ACTUATORS) {
+        return false;
+    }
 
-    // TCA9548A: Write channel bitmask to control register
-    uint8_t mask = 1 << channel;
-    Wire.beginTransmission(I2C_MULTIPLEXER_ADDR);
-    Wire.write(mask);
-    Wire.endTransmission();
+    // TCA9548A: open this finger's channel (TCA9548A library)
+    _tca.openChannel(finger);
+    return true;
 }
 
-void HapticController::activate(uint8_t finger, uint8_t amplitude) {
-    // Select multiplexer channel for this finger
-    selectChannel(finger);
-
-    // Write to DRV2605 RTP register
-    uint8_t registerValue = (amplitude * 127) / 100;
-    _drv[finger].setRealtimeValue(registerValue);
+uint8_t HapticController::amplitudeToRTP(uint8_t amplitude) const {
+    if (amplitude > MAX_AMPLITUDE) {
+        amplitude = MAX_AMPLITUDE;
+    }
+    // Convert 0-100% to the DRV2605 RTP range 0-127
+    return (uint8_t)((amplitude * DRV2605_MAX_RTP) / MAX_AMPLITUDE);
 }
 ```
+
+`activate()` wraps both in the I2C mutex (see [Infrastructure Layer](#infrastructure-layer)).
 
 ## Scalability and Extensibility
 
 ### Adding New Pattern Generators
 
-1. Create class that inherits from `PatternGenerator`
-2. Implement `generate()` method
+1. Add a generator function returning `Pattern` in `therapy_engine.h/.cpp`
+2. Add a `PatternType` value and a case in `TherapyEngine::generateMacrocycle()`
+3. Map a profile `patternType` string to it in `MenuController::handleSessionStart()` (and `startTherapyTest()` / `autoStartTherapy()` in `main.cpp`)
 
 ```cpp
-class CustomPatternGenerator : public PatternGenerator {
-public:
-    Pattern generate(const PatternConfig& config) override {
-        // Implement custom algorithm
-        uint8_t sequence[4];
-        customAlgorithm(sequence);
-        return Pattern(sequence, sequence, config);
-    }
-};
+Pattern generateCustomPattern(uint8_t numFingers, float timeOnMs, float timeOffMs,
+                              float jitterPercent, bool mirrorPattern) {
+    Pattern pattern(numFingers);
+    pattern.burstDurationMs = timeOnMs;
+    // Fill pattern.primarySequence / secondarySequence with slot indices
+    // 0..numFingers-1 and pattern.timeOffMs[] for each step
+    return pattern;
+}
 ```
 
 ### Adding New Therapy Profiles
 
-1. Define profile parameters
-2. Add to profile factory or LittleFS storage
+1. Define profile parameters in `ProfileManager::initBuiltInProfiles()` (`MAX_PROFILES` is 8)
+2. Keep every value inside the `PARAM_*` bounds in `config.h`
 
 ```cpp
-TherapyConfig createCustomProfile() {
-    TherapyConfig config;
-    strncpy(config.profileName, "Custom Research Profile", sizeof(config.profileName));
-    config.burstDurationMs = 150;
-    config.interBurstIntervalMs = 500;
-    config.burstsPerCycle = 4;
-    strncpy(config.patternType, "random", sizeof(config.patternType));
-    config.mirrorPattern = true;
-    config.frequencyHz = 175;
-    config.amplitudePercent = 80;
-    return config;
-}
+TherapyProfile& research = _builtInProfiles[_profileCount];
+strcpy(research.name, "research_vcr");
+strcpy(research.description, "Custom research profile");
+research.frequencyHz = 250;
+research.timeOnMs = 150.0f;
+research.timeOffMs = 50.0f;
+research.jitterPercent = 0.0f;
+research.amplitudeMin = 80;
+research.amplitudeMax = 80;
+research.sessionDurationMin = 120;
+strcpy(research.patternType, "rndp");
+research.mirrorPattern = true;
+research.numFingers = MAX_ACTUATORS;
+_profileNames[_profileCount] = _builtInProfiles[_profileCount].name;
+_profileCount++;
 ```
+
+Users edit their own parameters on the built-in Custom profile (ID 4) with `PROFILE_CUSTOM`; those edits are stored in `/custom.bin`.
 
 ### Adding New Hardware Platforms
 
-1. Create class implementing `HapticInterface`
-2. Create battery monitor class
-3. Update board configuration
+1. Add a board macro and its block in `board_config.h` (pins, `MAX_ACTUATORS`, battery sensing)
+2. Add platform primitives to `platform.h`
+3. Provide `BLEManager`, `fs_backend`, and `PowerController` implementations (or reuse an existing one)
+4. Add a PlatformIO environment whose `build_src_filter` excludes the other boards' implementations, and exclude the new files from the native test environments
 
 ```cpp
-class NewHapticDriver : public HapticInterface {
-public:
-    void activate(uint8_t finger, uint8_t amplitude) override {
-        // Platform-specific implementation
-    }
-
-    void deactivate(uint8_t finger) override {
-        // Platform-specific implementation
-    }
-
-    void stopAll() override {
-        // Platform-specific implementation
-    }
-};
+// include/board_config.h
+#elif defined(BOARD_NEW_BOARD)
+  #define MAX_ACTUATORS            4
+  #define HW_VERSION               4
+  #define HW_VERSION_STRING        "v4"
+  #define NEOPIXEL_PIN_OVERRIDE    /* pin */
+  #define USER_BUTTON_ENABLED      0
+  #define BATTERY_SENSE_ENABLED    1
+  #define BATTERY_SENSE_ADC        1
+  // ...
 ```
 
 ### Adding New BLE Commands
 
-1. Add handler in `MenuController`
+1. Add a handler in `MenuController` and a branch in `handleCommand()`
 2. Update application layer logic
+3. Mirror the change in `TestMenuController` (`test/test_menu_controller`), the wiki `BLE-Protocol.md`, and BuzzahBuddy's `MockBluetoothService`
+4. Never add the command's prefix to `INTERNAL_MESSAGES[]`: that hides it from the menu
 
 ```cpp
-void MenuController::processCommand(const char* command,
-                                     char* response,
-                                     size_t responseSize) {
-    char cmdType[32];
-    parseCommandType(command, cmdType, sizeof(cmdType));
-
-    if (strcmp(cmdType, "NEW_FEATURE") == 0) {
-        handleNewFeature(command, response, responseSize);
-    }
-    // ... existing handlers
+// src/menu_controller.cpp
+} else if (strcmp(command, "NEW_FEATURE") == 0) {
+    handleNewFeature(params, paramCount);
 }
 
-void MenuController::handleNewFeature(const char* params,
-                                       char* response,
-                                       size_t size) {
+void MenuController::handleNewFeature(const char params[][PARAM_BUFFER_SIZE], uint8_t paramCount) {
+    if (paramCount < 1) {
+        sendError("Value required");
+        return;
+    }
     // Implementation
-    snprintf(response, size, "OK:New feature executed\n\x04");
+    beginResponse();                     // CMD:NEW_FEATURE
+    addResponseLine("STATUS", "OK");
+    sendResponse();                      // EOT + [MENU-TX] log
 }
 ```
 
@@ -1876,15 +1866,18 @@ void MenuController::handleNewFeature(const char* params,
 ### Role-Aware Code Patterns
 
 ```cpp
-// Clear role branching using enum class
-if (deviceConfig.role == DeviceRole::PRIMARY) {
-    runPrimaryLoop();
-} else {
-    runSecondaryLoop();
+// Clear role branching using enum class (one setup()/loop() for both roles)
+if (deviceRole == DeviceRole::PRIMARY)
+{
+    therapy.setSendMacrocycleCallback(onSendMacrocycle);
+}
+else
+{
+    ble.startScanning(BLE_NAME);
 }
 
-// Role configured via settings.json
-// settings.json: {"deviceRole": "Primary"}
+// Role configured over USB serial, stored in /settings.bin:
+// SET_ROLE:PRIMARY  or  SET_ROLE:SECONDARY
 ```
 
 ### BLE Message Protocol
@@ -1892,12 +1885,13 @@ if (deviceConfig.role == DeviceRole::PRIMARY) {
 **Phone -> PRIMARY Commands:**
 
 ```text
-COMMAND_NAME:ARG1:ARG2:...\n
+COMMAND_NAME:ARG1:ARG2:...<EOT>
 ```
 
 **PRIMARY -> Phone Responses:**
 
 ```text
+CMD:COMMAND_NAME\n
 KEY1:VALUE1\n
 KEY2:VALUE2\n
 \x04
@@ -1906,56 +1900,51 @@ KEY2:VALUE2\n
 **PRIMARY <-> SECONDARY SYNC Messages:**
 
 ```text
-SYNC:<command>:<key1>|<val1>|<key2>|<val2>
+<COMMAND>:<seq>|<timestamp_us>[|<val1>|<val2>...]<EOT>
 ```
 
 ### BLE Callback Pattern (Bluefruit)
 
+Bluefruit takes plain C function pointers, so `ble_manager_nrf52.cpp` registers static members and bridges to the instance through the global `g_bleManager`:
+
 ```cpp
-// Setup callbacks in setup()
-void setup() {
-    Bluefruit.Periph.setConnectCallback(connectCallback);
-    Bluefruit.Periph.setDisconnectCallback(disconnectCallback);
-    bleuart.setRxCallback(rxCallback);
-}
+// src/ble_manager_nrf52.cpp (trimmed)
+BLEManager* g_bleManager = nullptr;   // set in the constructor
 
-// Connection callback
-void connectCallback(uint16_t connHandle) {
-    Serial.printf("[BLE] Connected: %d\n", connHandle);
-    // Identify connection type, update state
-}
-
-// Disconnect callback
-void disconnectCallback(uint16_t connHandle, uint8_t reason) {
-    Serial.printf("[BLE] Disconnected: %d, reason: 0x%02X\n", connHandle, reason);
-    // Handle disconnection, trigger recovery if needed
-}
+// Setup callbacks (setupPrimaryMode; setupSecondaryMode registers the Central equivalents)
+Bluefruit.Periph.setConnectCallback(_onPeriphConnect);
+Bluefruit.Periph.setDisconnectCallback(_onPeriphDisconnect);
+_uartService.setRxCallback(_onUartRx);
 
 // RX callback - called when data received
-void rxCallback(uint16_t connHandle) {
-    while (bleuart.available()) {
-        char c = bleuart.read();
-        if (c == 0x04) {
-            processMessage(rxBuffer);
-            rxBufferIndex = 0;
-        } else if (rxBufferIndex < sizeof(rxBuffer) - 1) {
-            rxBuffer[rxBufferIndex++] = c;
-        }
+void BLEManager::_onUartRx(uint16_t connHandle) {
+    if (!g_bleManager) return;
+
+    // Capture timestamp immediately for sync calculations
+    uint64_t rxTimestamp = getMicros();
+
+    uint8_t buf[64];
+    int len;
+    while ((len = g_bleManager->_uartService.read(buf, sizeof(buf))) > 0) {
+        g_bleManager->processIncomingData(connHandle, buf, static_cast<uint16_t>(len), rxTimestamp);
     }
 }
 ```
+
+`processIncomingData()` frames messages on EOT and hands each complete one to `main.cpp` through the `BLEMessageCallback` (`onBLEMessage()`). The ESP32 backend does the same from NimBLE callback classes (`BBServerCallbacks`, `BBRxCharCallbacks`, `BBClientCallbacks`, `BBScanCallbacks`). Callbacks run in SoftDevice/ISR context on v2 and in the NimBLE host task on v3: no I2C there.
 
 ### Testing Checklist
 
 Before committing changes:
 
-- [ ] **Build succeeds**: `pio run`
-- [ ] **Upload succeeds**: `pio run -t upload`
-- [ ] **Both roles tested**: Test with settings.json set to Primary and Secondary
+- [ ] **Tests pass**: `pio test -e native` (and `pio test -e native_penta` for anything touching `MAX_ACTUATORS`)
+- [ ] **Build succeeds**: `pio run -e adafruit_feather_nrf52840` and `pio run -e pentabuzzer_esp32s3`
+- [ ] **Upload succeeds**: `pio run -e <env> -t upload`
+- [ ] **Both roles tested**: Test with `SET_ROLE:PRIMARY` and `SET_ROLE:SECONDARY`
 - [ ] **BLE commands verified**: Test phone commands via nRF Connect app
 - [ ] **Memory stable**: No crashes during 5-minute test
 - [ ] **Synchronization accurate**: PRIMARY/SECONDARY buzz within 20ms (serial logs)
-- [ ] **Keepalive working**: Verify 1s PING/PONG, 6s timeout detection
+- [ ] **Keepalive working**: Verify PING/PONG (1s idle, 250ms during therapy), 6s timeout detection
 - [ ] **Error handling**: Test disconnection, invalid commands, low battery
 
 ### C++ Embedded Best Practices
@@ -1991,7 +1980,7 @@ uint32_t remaining = (elapsed < duration) ? (duration - elapsed) : 0;
 **Use appropriate integer types:**
 
 ```cpp
-uint8_t fingerIndex;      // 0-3 (finger index)
+uint8_t fingerIndex;      // 0 to MAX_ACTUATORS-1 (finger index)
 uint16_t connHandle;      // BLE connection handles
 uint32_t timestamp;       // millis()/micros() values
 int32_t signedValue;      // When negative values possible
@@ -2023,32 +2012,34 @@ Serial.printf("State: %s at %lu\n", stateName, millis());
 ### Build Commands
 
 ```bash
-# Build firmware
-pio run
+# Build firmware (v2 / v3)
+pio run -e adafruit_feather_nrf52840
+pio run -e pentabuzzer_esp32s3
 
 # Upload to device
-pio run -t upload
+pio run -e <env> -t upload
 
-# Upload LittleFS filesystem (settings.json)
-pio run -t uploadfs
+# Run native unit tests (4-actuator / 5-actuator)
+pio test -e native
+pio test -e native_penta
 
 # Serial monitor
 pio device monitor
 
 # Clean build
-pio run -t clean
+pio run -e <env> -t clean
 ```
 
 ## Summary
 
-BlueBuzzah v2 architecture provides:
+The BlueBuzzah firmware architecture provides:
 
 1. **Clean separation of concerns** through layered architecture
 2. **High testability** via dependency injection and abstractions
 3. **Maintainability** through SOLID principles and clear boundaries
 4. **Extensibility** via strategy pattern and factory methods
 5. **Reliability** through explicit state management and error handling
-6. **Portability** through hardware abstraction layer
+6. **Portability** through build-time platform seams (one codebase for v2 and v3 hardware)
 
 The architecture enables confident refactoring, easy testing, and straightforward feature additions while maintaining code quality and system reliability.
 
@@ -2056,22 +2047,22 @@ The architecture enables confident refactoring, easy testing, and straightforwar
 
 ## Appendix: Hardware Reference
 
-### Microcontroller (nRF52840)
+### Microcontroller
 
-| Specification | Value | Notes |
+| Specification | v2: nRF52840 (Feather nRF52840 Express) | v3: ESP32-S3 (XIAO ESP32-S3) |
 |---------------|-------|-------|
-| **CPU** | ARM Cortex-M4F @ 64 MHz | 32-bit with FPU |
-| **Flash** | 1 MB | ~800 KB available after bootloader |
-| **RAM** | 256 KB | ~240 KB available to application |
-| **Bluetooth** | BLE 5.0 | 2.4 GHz radio |
-| **I2C** | 2x hardware I2C | Using primary I2C bus @ 400kHz |
-| **ADC** | 14-bit | For battery monitoring |
+| **CPU** | ARM Cortex-M4F @ 64 MHz | Dual-core Xtensa LX7 @ 240 MHz |
+| **Flash** | 1 MB | 8 MB (6 MB app partition, `partitions_penta.csv`) |
+| **RAM** | 256 KB | 512 KB SRAM + PSRAM |
+| **Bluetooth** | BLE 5.0 (Bluefruit/SoftDevice) | BLE 5.0 (NimBLE) |
+| **I2C** | Hardware I2C @ 400kHz | Hardware I2C @ 400kHz |
+| **Battery sensing** | 14-bit ADC on VBAT divider | DRV2605 VBAT register (no battery ADC) |
 
 ### DRV2605 Motor Driver
 
 | Specification | Value |
 |---------------|-------|
-| **Quantity** | 4 per glove (index through pinky) |
+| **Quantity** | 4 per glove on v2 (index through pinky), 5 on v3 (adds thumb) |
 | **I2C Address** | 0x5A (fixed, requires multiplexer) |
 | **I2C Speed** | 400 kHz |
 | **RTP Mode** | 0-127 amplitude |
@@ -2081,20 +2072,21 @@ The architecture enables confident refactoring, easy testing, and straightforwar
 
 | Address | Name | Function | Notes |
 |---------|------|----------|-------|
-| 0x00 | STATUS | Status/Go bit | Bit 0: Trigger playback |
+| 0x00 | STATUS | Status | Read at configuration |
 | 0x01 | MODE | Operating mode | 0x05 = RTP mode |
 | 0x02 | RTP_INPUT | RTP amplitude | 0-127 (7-bit) |
 | 0x17 | OD_CLAMP | Overdrive clamp | Peak voltage limit |
 | 0x1A | FEEDBACK_CTRL | Feedback control | N_ERM/LRA select |
 | 0x1D | CONTROL3 | Advanced | Open-loop enable |
 | 0x20 | LRA_RESONANCE_PERIOD | LRA period | Frequency setting |
+| 0x21 | VBAT | Supply voltage monitor | v3 battery voltmeter (`VDD = raw * 5.6V / 255`) |
 
 ### TCA9548A I2C Multiplexer
 
 | Specification | Value |
 |---------------|-------|
 | **I2C Address** | 0x70 |
-| **Channels** | 4 used (one per finger) |
+| **Channels** | 4 used on v2, 5 on v3 (one per finger) |
 | **I2C Speed** | 400 kHz |
 
 ### I2C Address Map
@@ -2102,47 +2094,51 @@ The architecture enables confident refactoring, easy testing, and straightforwar
 | Device | Address | Notes |
 |--------|---------|-------|
 | TCA9548A Mux | 0x70 | Default address |
-| DRV2605 (Ch 0-3) | 0x5A | Via multiplexer ports |
+| DRV2605 (Ch 0-3 v2, 0-4 v3) | 0x5A | Via multiplexer ports |
 
 ### Pin Assignments
 
-| Function | Pin | Notes |
-|----------|-----|-------|
-| I2C SDA | 26 | I2C data line |
-| I2C SCL | 27 | I2C clock line |
-| Battery ADC | A6 | Via voltage divider |
-| NeoPixel | D8 | Onboard RGB LED |
+| Function | v2 Pin | v3 Pin | Notes |
+|----------|--------|--------|-------|
+| I2C SDA | 22 (`PIN_WIRE_SDA`) | GPIO5 | I2C data line |
+| I2C SCL | 23 (`PIN_WIRE_SCL`) | GPIO6 | I2C clock line |
+| Battery ADC | A6 (`PIN_VBAT`) | — | v2: via voltage divider |
+| RGB LED | D8 (`PIN_NEOPIXEL`) | GPIO4 | v2: onboard NeoPixel; v3: WS2812 |
+| USER button | 7 | — | v2: held at boot forces SECONDARY |
+| DRV2605 EN + mux reset | — | GPIO1 | Shared by all drivers |
+| Power switch | — | GPIO3 | Strapping pin, sampled after boot |
+| USB power detect | — | GPIO2 | |
 
 ### LRA Actuators
 
 | Specification | Value |
 |---------------|-------|
-| Resonance Frequency | 175 Hz (default) |
-| Operating Voltage | 2.0-3.0V RMS |
+| Drive Frequency | 250 Hz open loop (`DEFAULT_FREQUENCY_HZ`) |
+| Peak Drive Voltage | 2.5V (OD_CLAMP = 118) |
 | Response Time | 15-25 ms rise time |
 
 ### Battery Thresholds
 
 | Voltage | Status | Action |
 |---------|--------|--------|
-| >3.6V | Good | Full operation |
-| 3.4-3.6V | Low | Warning (LOW_BATTERY state) |
-| <3.4V | Critical | Therapy blocked (CRITICAL_BATTERY) |
-| <3.0V | Dead | Charge immediately |
+| ≥3.4V | OK | Full operation |
+| <3.4V | Low | Reported as `LOW` (`BATTERY_LOW_VOLTAGE`) |
+| <3.3V | Critical | `SESSION_START` refused with `ERROR:Battery too low` (`BATTERY_CRITICAL_VOLTAGE`) |
+| ≤3.27V | Empty | Reported as 0% (`BATTERY_EMPTY_VOLTAGE`) |
 
 ### Timing Constants
 
 | Constant | Value | Description |
 |----------|-------|-------------|
-| Boot timeout | 30s | Max boot sequence time |
+| Boot window | 30s | Phone wait after the SECONDARY connects, then auto-start (`STARTUP_WINDOW_MS`) |
 | Keepalive interval | 1s | Idle PING/PONG (unified keepalive + sync); 70ms until clock sync is valid, 250ms during therapy |
 | Keepalive timeout | 6s | No PING (SECONDARY) or PONG (PRIMARY) for 6s |
 | BLE connection interval | 7.5-10ms glove link, 30-50ms phone link | Glove link low-latency (6-8 BLE units); phone link 24-40 units, no peripheral latency |
 | BLE supervision timeout | 6s | Disconnect detection (`BLE_TIMEOUT_MS`) |
 | Therapy default ON | 100ms | Burst duration |
-| Therapy default OFF | 67ms | Inter-burst interval |
-| Default jitter | 23.5% | Noisy vCR timing variation |
-| Default session | 7200s | 2 hours |
+| Therapy default OFF | 67ms | TIME_OFF between bursts |
+| Jitter | 0% / 23.5% | Regular vCR / Noisy, Hybrid and Custom vCR |
+| Default session | 7200s | 2 hours (vCR profiles) |
 
 ### Memory Budget
 
@@ -2166,4 +2162,4 @@ The architecture enables confident refactoring, easy testing, and straightforwar
 ---
 
 **Platform**: Arduino C++ with PlatformIO
-**Last Updated**: 2025-12-01
+**Last Updated**: 2026-10-29

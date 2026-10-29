@@ -2,7 +2,7 @@
 **Version:** 2.0.0
 **Date:** 2025-01-23
 **Platform:** Arduino C++ / PlatformIO
-**Module**: CalibrationMode (src/menu_controller.cpp)
+**Module**: MenuController calibration commands (src/menu_controller.cpp)
 
 ---
 
@@ -26,7 +26,7 @@ This document uses the following device role terminology:
 - **PRIMARY**: Initiates calibration, controls phone connection
 - **SECONDARY**: Receives relayed commands via PRIMARY
 
-Both devices run identical firmware and advertise as "BlueBuzzah". Role is determined by `settings.json` configuration.
+Both devices run identical firmware and advertise as "BlueBuzzah". Role is stored in `/settings.bin` (set over serial with `SET_ROLE:PRIMARY` / `SET_ROLE:SECONDARY`). The calibration commands are handled only by the PRIMARY: the phone (or a USB serial terminal) talks to the PRIMARY, which relays SECONDARY buzzes.
 
 > **Motor counts:** the examples in this guide use the 4-finger BlueBuzzah
 > (8 motors per pair, finger indices 0–7). The 5-finger BlueBuzzah v3 adds a
@@ -65,23 +65,25 @@ Calibration mode allows individual finger motor testing for:
 
 Calibration functionality is integrated into the MenuController class in the Arduino C++ implementation.
 
-**State Variables** (menu_controller.h):
+**State Variables** (`include/menu_controller.h`):
 
 ```cpp
 class MenuController {
 private:
-    Hardware& hardware_;
-    BLEManager& ble_;
-    DeviceRole role_;
-    bool calibrationMode_;  // Calibration state flag
+    bool _isCalibrating;              // Calibration state flag
+    uint32_t _calibrationStartTime;
 
-public:
-    MenuController(Hardware& hw, BLEManager& ble, DeviceRole role)
-        : hardware_(hw)
-        , ble_(ble)
-        , role_(role)
-        , calibrationMode_(false)
-    {}
+    // Active one-shot calibration buzz. Touched ONLY from loop() context
+    // (via updateCalibrationBuzz()) so these stay plain fields.
+    int8_t _calibBuzzFinger;      // -1 = none
+    uint32_t _calibBuzzOffTime;   // millis() deadline to deactivate
+
+    // Pending calibration-buzz handoff, consumed from loop() context
+    volatile int8_t _calibBuzzPendingFinger;
+    volatile uint8_t _calibBuzzPendingIntensity;
+    volatile uint16_t _calibBuzzPendingDuration;
+    volatile bool _calibBuzzCancelPending;
+    volatile bool _calibBuzzRequestPending;  // publish flag: set last
 };
 ```
 
@@ -90,35 +92,47 @@ public:
 **Enter Calibration** (menu_controller.cpp):
 
 ```cpp
-void MenuController::cmdCalibrateStart() {
-    /**
-     * Enter calibration mode.
-     *
-     * Validates session state before enabling calibration.
-     */
-    if (stateMachine_ && stateMachine_->isSessionActive()) {
-        sendError("Cannot enter calibration during active session");
+void MenuController::handleCalibrateStart() {
+    if (_therapy && _therapy->isRunning()) {
+        sendError("Cannot calibrate during active session");
         return;
     }
 
-    calibrationMode_ = true;
-    ble_.sendToPhone("MODE:CALIBRATION\n\x04");
+    _isCalibrating = true;
+    _calibrationStartTime = millis();
+
+    beginResponse();
+    addResponseLine("MODE", "CALIBRATION");
+    sendResponse();
 }
 ```
 
 **Exit Calibration** (menu_controller.cpp):
 
 ```cpp
-void MenuController::cmdCalibrateStop() {
-    /**
-     * Exit calibration mode.
-     *
-     * Disables calibration state and returns to normal operation.
-     */
-    calibrationMode_ = false;
-    ble_.sendToPhone("MODE:NORMAL\n\x04");
+void MenuController::handleCalibrateStop() {
+    _isCalibrating = false;
+
+    // Cancel any pending/in-flight one-shot so it cannot reactivate a motor
+    cancelCalibrationBuzz();
+
+    // Stop any relayed buzz still running on the SECONDARY glove
+    if (_sendToSecondaryCallback && _ble && _ble->isSecondaryConnected()) {
+        _sendToSecondaryCallback("CALIB_STOP");
+    }
+
+    // A stop must take effect immediately, not one loop iteration later
+    if (_haptic) {
+        _haptic->emergencyStop();
+    }
+
+    beginResponse();
+    addResponseLine("MODE", "NORMAL");
+    sendResponse();
 }
 ```
+
+Every reply starts with a `CMD:<COMMAND>` line and ends with EOT (`\x04`), for example `CMD:CALIBRATE_START\nMODE:CALIBRATION\n\x04`. The examples below omit the `CMD` line, as the [BLE Protocol](https://github.com/BlueBuzzah/BlueBuzzah-Firmware/wiki/BLE-Protocol) does.
 
 ---
 
@@ -151,11 +165,11 @@ PRIMARY GLOVE:                  SECONDARY GLOVE:
 
 **Motor Channel Calculation**:
 ```cpp
-// PRIMARY (fingers 0-3)
-uint8_t motorChannel = fingerIndex;  // 0→0, 1→1, 2→2, 3→3
+// PRIMARY (fingers 0 .. MAX_ACTUATORS-1)
+uint8_t motorChannel = finger;                  // 0→0, 1→1, 2→2, 3→3
 
-// SECONDARY (fingers 4-7)
-uint8_t motorChannel = fingerIndex - 4;  // 4→0, 5→1, 6→2, 7→3
+// SECONDARY (fingers MAX_ACTUATORS .. 2*MAX_ACTUATORS-1)
+uint8_t motorChannel = finger - MAX_ACTUATORS;  // 4→0, 5→1, 6→2, 7→3 (v2)
 ```
 
 ---
@@ -168,161 +182,156 @@ uint8_t motorChannel = fingerIndex - 4;  // 4→0, 5→1, 6→2, 7→3
 
 ```text
 1. Phone → PRIMARY: CALIBRATE_START\x04
-2. PRIMARY → Phone: MODE:CALIBRATION\x04
+2. PRIMARY → Phone: MODE:CALIBRATION\n\x04
 
 3. Phone → PRIMARY: CALIBRATE_BUZZ:0:50:500\x04
-4. PRIMARY: <tests local index finger at 50% for 500ms>
-5. PRIMARY → Phone: FINGER:0\nINTENSITY:50\nDURATION:500\x04
+4. PRIMARY → Phone: FINGER:0\nINTENSITY:50\nDURATION:500\n\x04  (sent immediately)
+5. PRIMARY: <buzzes local index finger at 50% for 500ms>
 
 6. Phone → PRIMARY: CALIBRATE_BUZZ:4:75:500\x04
-7. PRIMARY → SECONDARY: CALIBRATE_BUZZ:4:75:500
-8. SECONDARY: <tests local index finger at 75% for 500ms>
-9. PRIMARY → Phone: FINGER:4\nINTENSITY:75\nDURATION:500\x04
+7. PRIMARY → SECONDARY: CALIB_BUZZ:0:75:500
+8. PRIMARY → Phone: FINGER:4\nINTENSITY:75\nDURATION:500\n\x04  (sent immediately)
+9. SECONDARY: <buzzes local index finger at 75% for 500ms>
 
 ... (repeat for all 8 fingers)
 
 10. Phone → PRIMARY: CALIBRATE_STOP\x04
-11. PRIMARY → Phone: MODE:NORMAL\x04
+11. PRIMARY → SECONDARY: CALIB_STOP
+12. PRIMARY → Phone: MODE:NORMAL\n\x04
 ```
+
+The response does not wait for the buzz to finish. Wait at least the buzz duration before sending the next `CALIBRATE_BUZZ`; a new buzz on the same glove replaces one still running.
 
 ### Main Buzz Method
 
 **Entry Point** (menu_controller.cpp):
 
 ```cpp
-void MenuController::cmdCalibrateBuzz(uint8_t finger, uint8_t intensity, uint16_t durationMs) {
-    /**
-     * Test individual finger motor.
-     *
-     * Args:
-     *     finger: 0-7 (0-3=PRIMARY, 4-7=SECONDARY)
-     *     intensity: 0-100 (percentage)
-     *     durationMs: 50-2000 (milliseconds)
-     */
-    if (!calibrationMode_) {
+void MenuController::handleCalibrateBuzz(const char params[][PARAM_BUFFER_SIZE], uint8_t paramCount) {
+    if (!_isCalibrating) {
         sendError("Not in calibration mode");
         return;
     }
 
-    // Validate parameters
-    if (finger > 7) {
-        sendError("Invalid finger index (must be 0-7)");
+    if (paramCount < 3) {
+        sendError("Finger, intensity, and duration required");
         return;
     }
 
-    if (intensity > 100) {
-        sendError("Invalid intensity (must be 0-100)");
+    int finger = atoi(params[0]);
+    int intensity = atoi(params[1]);
+    int duration = atoi(params[2]);
+
+    // Validate ranges. Indices 0..MAX_ACTUATORS-1 are local; the rest map to
+    // the SECONDARY glove (4-finger boards: 0-7, 5-finger boards: 0-9).
+    constexpr int maxFingerIndex = 2 * MAX_ACTUATORS - 1;
+    if (finger < 0 || finger > maxFingerIndex) {
+        char msg[40];
+        snprintf(msg, sizeof(msg), "Invalid finger index (0-%d)", maxFingerIndex);
+        sendError(msg);
+        return;
+    }
+    if (intensity < 0 || intensity > 100) {
+        sendError("Intensity out of range (0-100)");
+        return;
+    }
+    if (duration < 50 || duration > 2000) {
+        sendError("Duration out of range (50-2000ms)");
         return;
     }
 
-    if (durationMs < 50 || durationMs > 2000) {
-        sendError("Invalid duration (must be 50-2000ms)");
-        return;
-    }
-
-    // Determine if motor is local or remote
-    bool isLocal = (finger < 4 && role_ == DeviceRole::PRIMARY) ||
-                   (finger >= 4 && role_ == DeviceRole::SECONDARY);
-
-    if (isLocal) {
-        // Test local motor directly
-        buzzLocalFinger(finger, intensity, durationMs);
-    } else if (role_ == DeviceRole::PRIMARY) {
-        // Relay to remote glove (PRIMARY only)
-        buzzRemoteFinger(finger, intensity, durationMs);
+    if (finger < MAX_ACTUATORS) {
+        if (!calibrationBuzz(static_cast<uint8_t>(finger),
+                             static_cast<uint8_t>(intensity),
+                             static_cast<uint16_t>(duration))) {
+            sendError("Motor disabled");
+            return;
+        }
     } else {
-        sendError("SECONDARY cannot control PRIMARY fingers");
-        return;
+        // Relay to the SECONDARY glove (its local index = finger - MAX_ACTUATORS)
+        if (!_sendToSecondaryCallback || !_ble || !_ble->isSecondaryConnected()) {
+            sendError("Secondary glove not connected");
+            return;
+        }
+        char relay[48];
+        snprintf(relay, sizeof(relay), "CALIB_BUZZ:%d:%d:%d",
+                 finger - MAX_ACTUATORS, intensity, duration);
+        _sendToSecondaryCallback(relay);
     }
 
-    // Send success response
-    String response = "FINGER:";
-    response += String(finger);
-    response += "\nINTENSITY:";
-    response += String(intensity);
-    response += "\nDURATION:";
-    response += String(durationMs);
-    response += "\n\x04";
-    ble_.sendToPhone(response);
+    beginResponse();
+    addResponseLine("FINGER", (int32_t)finger);
+    addResponseLine("INTENSITY", (int32_t)intensity);
+    addResponseLine("DURATION", (int32_t)duration);
+    sendResponse();
 }
 ```
 
-**Routing Logic**:
+**Routing Logic** (PRIMARY; menu commands are not dispatched on a SECONDARY):
 
-| Role | Finger | Action |
-|------|--------|--------|
-| PRIMARY | 0-3 | `buzzLocalFinger()` - Direct motor control |
-| PRIMARY | 4-7 | `buzzRemoteFinger()` - BLE relay to SECONDARY |
-| SECONDARY | 0-3 | Error (SECONDARY can't control PRIMARY) |
-| SECONDARY | 4-7 | `buzzLocalFinger()` - Direct motor control |
+| Finger | Action |
+|--------|--------|
+| 0-3 (`< MAX_ACTUATORS`) | `calibrationBuzz()` - local motor; `ERROR:Motor disabled` if that DRV2605 failed to initialize |
+| 4-7 (`>= MAX_ACTUATORS`) | Relay `CALIB_BUZZ:<finger - MAX_ACTUATORS>:<intensity>:<duration>` to SECONDARY; `ERROR:Secondary glove not connected` if no SECONDARY |
 
 ---
 
 ### Local Motor Control
 
-**Implementation** (hardware.cpp):
+**Implementation** (menu_controller.cpp):
+
+`calibrationBuzz()` only records the request. The main loop calls `updateCalibrationBuzz()` on every iteration, which turns the motor on and turns it off once the duration has passed, so nothing blocks while the motor runs.
 
 ```cpp
-void MenuController::buzzLocalFinger(uint8_t finger, uint8_t intensity, uint16_t durationMs) {
-    /**
-     * Test local motor.
-     *
-     * Args:
-     *     finger: 0-3 for PRIMARY, 4-7 for SECONDARY
-     *     intensity: 0-100%
-     *     durationMs: Duration in milliseconds
-     */
-    // 1. Convert finger index to motor channel (0-3)
-    uint8_t motorChannel;
-    if (role_ == DeviceRole::PRIMARY) {
-        motorChannel = finger;  // 0-3 directly
-    } else {
-        motorChannel = finger - 4;  // 4-7 → 0-3
+bool MenuController::calibrationBuzz(uint8_t finger, uint8_t intensity, uint16_t durationMs) {
+    if (!_haptic || finger >= MAX_ACTUATORS || !_haptic->isEnabled(finger)) {
+        return false;
     }
 
-    if (motorChannel > 3) {
-        Serial.printf("[CalibrationMode] Invalid motor channel: %d\n", motorChannel);
-        return;
+    // Only record the pending request. The haptic hardware is driven
+    // exclusively from loop() via updateCalibrationBuzz().
+    {
+        PLATFORM_CRITICAL_ENTER();
+        _calibBuzzPendingFinger = static_cast<int8_t>(finger);
+        _calibBuzzPendingIntensity = intensity;
+        _calibBuzzPendingDuration = durationMs;
+        _calibBuzzCancelPending = false;
+        _calibBuzzRequestPending = true;  // publish flag: set last
+        PLATFORM_CRITICAL_EXIT();
     }
-
-    // 2. Convert intensity percentage to DRV2605 value (0-127)
-    uint8_t drvIntensity = (intensity * 127) / 100;
-    drvIntensity = constrain(drvIntensity, 0, 127);
-
-    Serial.printf("[CalibrationMode] Buzzing finger %d (motor %d) at %d%% for %dms\n",
-                  finger, motorChannel, intensity, durationMs);
-
-    // 3. Use Hardware class to buzz the finger
-    hardware_.buzzFinger(motorChannel, drvIntensity, durationMs);
+    return true;
 }
 
-// Hardware class implementation (hardware.cpp)
-void Hardware::buzzFinger(uint8_t channel, uint8_t amplitude, uint16_t durationMs) {
-    // 1. Select motor via I2C multiplexer
-    mux_.selectChannel(channel);
+// Called from loop() (abridged)
+void MenuController::updateCalibrationBuzz() {
+    // ... take the pending request/cancel under a critical section
 
-    // 2. Configure DRV2605 for Real-Time Playback mode
-    const uint8_t MODE_RTP = 0x05;
-    drv_.setMode(MODE_RTP);
+    if (requestPending) {
+        if (_calibBuzzFinger >= 0 && _haptic) {
+            _haptic->deactivate(static_cast<uint8_t>(_calibBuzzFinger));
+        }
+        if (_haptic) {
+            _haptic->activate(pendingFinger, pendingIntensity);
+        }
+        _calibBuzzFinger = pendingFinger;
+        _calibBuzzOffTime = millis() + pendingDuration;
+    }
 
-    // 3. Set amplitude and trigger
-    drv_.setRealtimeValue(amplitude);
-    drv_.go();
-
-    // 4. Wait for duration
-    delay(durationMs);
-
-    // 5. Stop motor
-    drv_.setRealtimeValue(0);
-    drv_.stop();
+    if (_calibBuzzFinger >= 0 &&
+        static_cast<int32_t>(millis() - _calibBuzzOffTime) >= 0) {
+        if (_haptic) {
+            _haptic->deactivate(static_cast<uint8_t>(_calibBuzzFinger));
+        }
+        _calibBuzzFinger = -1;
+    }
 }
 ```
 
 **DRV2605 Configuration**:
-- **Mode**: Real-Time Playback (0x05)
-- **Amplitude**: 0-127 (7-bit value)
-- **Waveform**: Strong Click (effect #1) for consistent testing
-- **Control**: Direct `realtime_value` register write
+- **Mode**: Real-Time Playback (0x05), set once at boot by `configureDRV2605()`
+- **Amplitude**: 0-127 (7-bit value), from intensity via `amplitudeToRTP()`
+- **Waveform**: None; RTP drives the LRA directly at the configured 250 Hz
+- **Control**: Direct `setRealtimeValue()` register write (`HapticController::activate()` / `deactivate()`)
 
 ---
 
@@ -330,46 +339,7 @@ void Hardware::buzzFinger(uint8_t channel, uint8_t amplitude, uint16_t durationM
 
 ### Remote Motor Control
 
-**PRIMARY Relay** (menu_controller.cpp):
-
-```cpp
-void MenuController::buzzRemoteFinger(uint8_t finger, uint8_t intensity, uint16_t durationMs) {
-    /**
-     * Relay buzz command to remote glove (PRIMARY → SECONDARY only).
-     *
-     * Args:
-     *     finger: 4-7 (SECONDARY fingers)
-     *     intensity: 0-100%
-     *     durationMs: Duration in milliseconds
-     */
-    if (role_ != DeviceRole::PRIMARY) {
-        Serial.println("[CalibrationMode] Only PRIMARY can relay to SECONDARY");
-        return;
-    }
-
-    if (!ble_.isSecondaryConnected()) {
-        Serial.println("[CalibrationMode] SECONDARY not connected");
-        return;
-    }
-
-    // 1. Send calibration command to SECONDARY
-    String cmd = "CALIBRATE_BUZZ:";
-    cmd += String(finger);
-    cmd += ":";
-    cmd += String(intensity);
-    cmd += ":";
-    cmd += String(durationMs);
-
-    ble_.sendToSecondary(cmd);
-    Serial.printf("[CalibrationMode] Sent buzz command to SECONDARY: %s", cmd.c_str());
-
-    // 2. Wait for duration + overhead
-    delay(durationMs + 100);
-
-    // 3. SECONDARY will acknowledge completion
-    Serial.printf("[CalibrationMode] Relayed buzz to SECONDARY finger %d\n", finger);
-}
-```
+**PRIMARY Relay** (`handleCalibrateBuzz()`, above): for a finger `>= MAX_ACTUATORS` the PRIMARY sends the internal message `CALIB_BUZZ:<localFinger>:<intensity>:<duration>` to the SECONDARY, where `localFinger = finger - MAX_ACTUATORS`, and replies to the phone straight away. `CALIBRATE_STOP` sends `CALIB_STOP`.
 
 **Message Flow**:
 
@@ -405,53 +375,50 @@ sequenceDiagram
     participant SECONDARY
 
     Phone->>PRIMARY: CALIBRATE_BUZZ:5:80:500
-    Note over PRIMARY: Finger 5 = SECONDARY Index
+    Note over PRIMARY: Finger 5 = SECONDARY Middle<br/>(local finger 5 - 4 = 1)
 
-    PRIMARY->>SECONDARY: CALIBRATE_BUZZ:5:80:500
-    Note over SECONDARY: Auto-enter calibration<br/>if not active
-
-    SECONDARY->>SECONDARY: Execute motor 1 (Index)<br/>at 80% for 500ms
-
-    Note over PRIMARY: Wait 600ms (duration + overhead)
-
+    PRIMARY->>SECONDARY: CALIB_BUZZ:1:80:500
     PRIMARY->>Phone: FINGER:5<br/>INTENSITY:80<br/>DURATION:500<br/>\x04
+
+    Note over SECONDARY: No calibration mode needed
+    SECONDARY->>SECONDARY: Buzz motor 1 (Middle)<br/>at 80% for 500ms
 ```
 
 ### SECONDARY Handler
 
-**SECONDARY Receives Remote Request** (menu_controller.cpp):
+**SECONDARY Receives Remote Request** (`onBLEMessage()` in main.cpp):
 
 ```cpp
-void MenuController::handleRemoteBuzzRequest(uint8_t finger, uint8_t intensity, uint16_t durationMs) {
-    /**
-     * Handle buzz request from PRIMARY (SECONDARY only).
-     *
-     * This is called when SECONDARY receives CALIBRATE_BUZZ from PRIMARY.
-     *
-     * Args:
-     *     finger: 4-7 (should be for this glove)
-     *     intensity: 0-100%
-     *     durationMs: Duration in milliseconds
-     */
-    if (role_ != DeviceRole::SECONDARY) {
-        Serial.println("[CalibrationMode] Only SECONDARY can handle remote requests");
-        return;
+// Handle CALIB_BUZZ from PRIMARY (SECONDARY only)
+if (deviceRole == DeviceRole::SECONDARY && strncmp(message, "CALIB_BUZZ:", 11) == 0)
+{
+    int finger, intensity, duration;
+    if (sscanf(message + 11, "%d:%d:%d", &finger, &intensity, &duration) == 3 &&
+        finger >= 0 && finger < MAX_ACTUATORS &&
+        intensity >= 0 && intensity <= 100 &&
+        duration >= 50 && duration <= 2000)
+    {
+        menu.calibrationBuzz(static_cast<uint8_t>(finger),
+                             static_cast<uint8_t>(intensity),
+                             static_cast<uint16_t>(duration));
     }
+    return;
+}
 
-    if (!calibrationMode_) {
-        // Auto-enter calibration mode for remote requests
-        calibrationMode_ = true;
-        Serial.println("[CalibrationMode] Auto-entered calibration mode for remote request");
-    }
-
-    // Execute local buzz
-    buzzLocalFinger(finger, intensity, durationMs);
+// Handle CALIB_STOP from PRIMARY (SECONDARY only): cancel any relayed
+// one-shot buzz; hardware deactivation happens in loop()
+if (deviceRole == DeviceRole::SECONDARY && strcmp(message, "CALIB_STOP") == 0)
+{
+    menu.cancelCalibrationBuzz();
+    return;
 }
 ```
 
-**Key Feature**: SECONDARY **automatically enters** calibration mode when receiving remote requests.
+**Key Feature**: The SECONDARY has no calibration mode of its own. It calls `calibrationBuzz()` directly, so the phone never has to put the SECONDARY into calibration.
 
 **Why?** Phone workflow is simpler - no need to send separate CALIBRATE_START to SECONDARY.
+
+The SECONDARY sends no reply. A relayed buzz with invalid values, or for a SECONDARY motor whose DRV2605 failed to initialize, is ignored silently.
 
 ---
 
@@ -462,9 +429,11 @@ void MenuController::handleRemoteBuzzRequest(uint8_t finger, uint8_t intensity, 
 **Conversion Formula**:
 
 ```cpp
-// User intensity (0-100%) → DRV2605 amplitude (0-127)
-uint8_t drvAmplitude = (userIntensity * 127) / 100;
-drvAmplitude = constrain(drvAmplitude, 0, 127);  // Clamp to 0-127
+// HapticController::amplitudeToRTP() - intensity (0-100%) → DRV2605 RTP value (0-127)
+if (amplitude > MAX_AMPLITUDE) {
+    amplitude = MAX_AMPLITUDE;
+}
+return (uint8_t)((amplitude * DRV2605_MAX_RTP) / MAX_AMPLITUDE);  // integer division
 ```
 
 **Lookup Table**:
@@ -472,8 +441,8 @@ drvAmplitude = constrain(drvAmplitude, 0, 127);  // Clamp to 0-127
 | User % | DRV Value | Sensation | Clinical Use |
 |--------|-----------|-----------|--------------|
 | 0% | 0 | None | Motor off |
-| 10% | 13 | Barely perceptible | Detection threshold testing |
-| 25% | 32 | Light tap | Minimum therapeutic |
+| 10% | 12 | Barely perceptible | Detection threshold testing |
+| 25% | 31 | Light tap | Minimum therapeutic |
 | 50% | 63 | Moderate buzz | Typical therapy level |
 | 75% | 95 | Strong vibration | Higher therapeutic |
 | 100% | 127 | Maximum output | Intensity verification |
@@ -486,8 +455,8 @@ drvAmplitude = constrain(drvAmplitude, 0, 127);  // Clamp to 0-127
 Comfort Level          | Intensity Range | DRV Range
 -----------------------|-----------------|------------
 Sub-threshold          | 0-15%           | 0-19
-Detection threshold    | 15-25%          | 19-32
-Therapeutic minimum    | 25-50%          | 32-63
+Detection threshold    | 15-25%          | 19-31
+Therapeutic minimum    | 25-50%          | 31-63
 Optimal therapeutic    | 50-75%          | 63-95
 Maximum therapeutic    | 75-90%          | 95-114
 Above comfort          | 90-100%         | 114-127
@@ -502,24 +471,25 @@ Above comfort          | 90-100%         | 114-127
 
 **Voltage Impact**:
 ```cpp
-// Peak voltage affects maximum intensity
-const float ACTUATOR_VOLTAGE = 2.50f;  // Default
+// Peak voltage limits maximum intensity. Fixed at 2.50 V in
+// HapticController::configureDRV2605() (not a profile setting):
+drv.writeRegister8(0x17, 118);  // OD_CLAMP: 2.50V / 0.02122 ≈ 118
 
-// Effective intensity = drvAmplitude * (voltage / 2.50)
-// Lower voltage → weaker sensation at same drvAmplitude
+// Lower voltage → weaker sensation at same RTP value
 ```
 
 **Frequency Impact**:
 ```cpp
-// LRAs are resonant devices
-const uint16_t ACTUATOR_FREQUENCY = 250;  // Hz (resonance frequency)
+// LRAs are resonant devices. Driving frequency is fixed at 250 Hz in
+// HapticController::configureDRV2605() (not a profile setting):
+drv.writeRegister8(0x20, 40);  // OL_LRA_PERIOD: 1 / (250 * 0.00009849) ≈ 40
 
 // On-resonance (250 Hz): Maximum efficiency
 // Off-resonance (±50 Hz): ~50% reduced intensity
 // Far off-resonance (±100 Hz): ~80% reduced intensity
 ```
 
-**Recommendation**: Always calibrate at therapy frequency (250 Hz) for accurate intensity tuning.
+**Recommendation**: Calibration and therapy use the same 250 Hz driver configuration, so intensities found here carry over to therapy directly.
 
 ---
 
@@ -573,18 +543,15 @@ For each finger (0-7):
 ```
 
 **Record in Patient Profile**:
-```cpp
-// Via BLE command:
-// PROFILE_CUSTOM:AMPMIN:45:AMPMAX:45\n
-
-// Or in TherapyParams struct:
-TherapyParams profile;
-profile.amplitudeMin = 45;  // Therapeutic intensity
-profile.amplitudeMax = 45;  // Fixed intensity (no variation)
-// Or allow ±10% variation:
-// profile.amplitudeMin = 40;
-// profile.amplitudeMax = 50;
 ```
+// Via BLE commands (only the Custom profile, ID 4, is editable):
+PROFILE_LOAD:4\x04                     // Glove saves and reboots
+PROFILE_CUSTOM:AMPMIN:45:AMPMAX:45\x04  // Fixed intensity (no variation)
+// Or allow ±5% variation:
+// PROFILE_CUSTOM:AMPMIN:40:AMPMAX:50\x04
+```
+
+Therapy amplitude is bounded to 20-100% (`PARAM_MIN_AMPLITUDE_PCT` in `config.h`), so a threshold found below 20% cannot be used as a profile amplitude. `AMPMIN` must not exceed the current `AMPMAX` (and vice versa); keys apply left to right. The values are saved to `/custom.bin` and survive loading other profiles.
 
 ### Inter-Finger Balancing
 
@@ -596,7 +563,7 @@ profile.amplitudeMax = 45;  // Fixed intensity (no variation)
 ```
 1. Calibrate all 8 fingers
 2. Find finger with HIGHEST detection threshold (least sensitive)
-3. Set AMPLITUDE_MIN/MAX based on that finger
+3. Set AMPMIN/AMPMAX based on that finger
 4. All fingers will be above detection for that patient
 5. Some fingers may be stronger, but therapy still effective
 ```
@@ -614,8 +581,8 @@ Detection Thresholds:
     Finger 7 (SECONDARY Pinky):   19%
 
 Set therapeutic intensity based on Finger 1 (20%):
-    AMPLITUDE_MIN = 20 + 30 = 50%
-    AMPLITUDE_MAX = 50%
+    AMPMIN = 20 + 30 = 50%
+    AMPMAX = 50%
 
 Result: All fingers above detection, Finger 1 has optimal intensity
 ```
@@ -641,31 +608,34 @@ Result: All fingers above detection, Finger 1 has optimal intensity
 
 1. **Check voltage setting**:
    ```cpp
-   // In TherapyParams or profile
-   const float ACTUATOR_VOLTAGE = 2.50f;  // Should be 2.0-3.0V
+   // Fixed in HapticController::configureDRV2605(), not configurable at runtime
+   drv.writeRegister8(0x17, 118);  // OD_CLAMP: 2.50V peak
    ```
-   **Fix**: Increase voltage if <2.0V
+   **Fix**: None needed at runtime; a weak buzz on every channel points at the battery (see Inconsistent Intensity)
 
 2. **Check frequency**:
    ```cpp
-   // In TherapyParams or profile
-   const uint16_t ACTUATOR_FREQUENCY = 250;  // Should match LRA resonance
+   // Fixed in HapticController::configureDRV2605(), not configurable at runtime
+   drv.writeRegister8(0x20, 40);  // OL_LRA_PERIOD: 250 Hz
    ```
    **Fix**: Verify LRA specification (typically 200-300 Hz)
 
 3. **Check intensity**:
    ```
-   // Test at maximum intensity first via BLE command:
+   // Test at maximum intensity first via BLE command (after CALIBRATE_START):
    CALIBRATE_BUZZ:0:100:1000
    ```
    **Fix**: If still no sensation, hardware issue
 
 4. **Check I2C connection**:
    ```
-   // Serial console should show:
-   [PRIMARY] Secondary i2c Channel 0: 0x5A
+   // Serial console at boot should show:
+   [INFO] TCA9548A multiplexer initialized at 0x70
+   [INFO] DRV2605 finger 0 initialized
+   // A failed driver shows:
+   [ERROR] DRV2605 finger 0 initialization failed
    ```
-   **Fix**: If empty, check wiring to multiplexer
+   **Fix**: If a finger failed, check wiring to multiplexer (CALIBRATE_BUZZ on it returns `ERROR:Motor disabled`)
 
    **Note**: The firmware uses different I2C timing for different channels:
    ```cpp
@@ -675,7 +645,7 @@ Result: All fingers above detection, Finger 1 has optimal intensity
    #define I2C_RETRY_COUNT 3         // Max retries for DRV2605 initialization
    #define I2C_RETRY_DELAY_MS 50     // Delay between retries
    ```
-   Channel 4 (SECONDARY index finger) may need longer initialization due to longer I2C traces on the PCB
+   Channel 4 (the thumb on BlueBuzzah v3) gets the longer initialization delay because of its longer I2C trace on the PCB
 
 5. **Check motor wiring**:
    - Measure motor terminals with multimeter
@@ -697,27 +667,21 @@ Result: All fingers above detection, Finger 1 has optimal intensity
    // Response should include:
    // BATS:3.68  ← SECONDARY is connected
    ```
-   **Fix**: If BATS:N/A, reconnect SECONDARY glove
+   **Fix**: If `BATS:0.00` or `CALIBRATE_BUZZ` returns `ERROR:Secondary glove not connected`, reconnect SECONDARY glove
 
-2. **Check SECONDARY UART**:
+2. **Check SECONDARY motor initialization**:
    ```
-   // In PRIMARY serial console:
-   [PRIMARY] [SYNC] Broadcast X parameter(s) to SECONDARY
+   // SECONDARY serial console at boot:
+   [ERROR] DRV2605 finger 1 initialization failed
    ```
-   **Fix**: If no sync messages, secondary UART not initialized
+   **Fix**: A relayed buzz to a disabled SECONDARY motor is ignored silently (the PRIMARY still replies with FINGER/INTENSITY/DURATION), so check the SECONDARY's boot log for failed drivers
 
-3. **Check SECONDARY calibration mode**:
+3. **Manual SECONDARY testing**:
    ```
-   // SECONDARY serial console should show:
-   [SECONDARY] [CalibrationMode] Auto-entered calibration mode
-   ```
-   **Fix**: If not shown, SECONDARY not receiving CALIBRATE_BUZZ
-
-4. **Manual SECONDARY testing**:
-   ```
-   // Connect terminal to SECONDARY glove directly
-   // Send: CALIBRATE_START
-   // Send: CALIBRATE_BUZZ:4:80:500
+   // Connect terminal to SECONDARY glove directly (115200 baud).
+   // CALIBRATE_* commands are PRIMARY-only, so use:
+   // Send: MOTOR_TEST:1          (drives local channel 1 for 2s)
+   // or:   CALIB_BUZZ:1:80:500   (the same message the PRIMARY relays)
    // If works: BLE relay issue
    // If fails: SECONDARY hardware issue
    ```
@@ -738,20 +702,12 @@ Result: All fingers above detection, Finger 1 has optimal intensity
    ```
    **Fix**: Charge gloves to >3.7V before calibration
 
-2. **Frequency mismatch**:
-   ```
-   // Verify frequency hasn't changed
-   PROFILE_GET
-   // FREQ should be 250
-   ```
-   **Fix**: Reload profile if changed
-
-3. **Skin contact**:
+2. **Skin contact**:
    - Ensure motors pressed against skin
    - Check glove fit (should be snug)
    - Clean motor surfaces (oil/sweat reduces sensation)
 
-4. **Temperature effects**:
+3. **Temperature effects**:
    - LRAs perform differently when warm
    - First test may feel weaker (motor cold)
    **Fix**: Run 5-second warm-up buzz at 50% before calibration
@@ -760,67 +716,28 @@ Result: All fingers above detection, Finger 1 has optimal intensity
 
 ### Helper Methods
 
-**Test All Fingers** (menu_controller.cpp):
-
-```cpp
-void MenuController::testAllFingers(uint8_t intensity, uint16_t durationMs) {
-    /**
-     * Test all 8 fingers in sequence (quick verification).
-     *
-     * Args:
-     *     intensity: Default 50%
-     *     durationMs: Default 200ms
-     */
-    if (!calibrationMode_) {
-        Serial.println("[CalibrationMode] Not in calibration mode");
-        return;
-    }
-
-    for (uint8_t finger = 0; finger < 8; finger++) {
-        cmdCalibrateBuzz(finger, intensity, durationMs);
-        delay(100);  // Small gap between fingers
-    }
-}
-```
+The firmware has no "test all fingers" command; the phone loops over `CALIBRATE_BUZZ`.
 
 **Usage via BLE**:
 ```cpp
-// Phone can automate full calibration:
-// for (int finger = 0; finger < 8; finger++) {
+// Phone can automate full calibration (2 * MOTORS fingers, MOTORS from INFO):
+// sendCommand("CALIBRATE_START");
+// for (int finger = 0; finger < 2 * motors; finger++) {
 //     sendCommand("CALIBRATE_BUZZ:" + String(finger) + ":50:200");
 //     waitForResponse();
-//     delay(100);
+//     delay(200 + 100);  // Response comes back before the buzz ends
 // }
+// sendCommand("CALIBRATE_STOP");
 ```
 
-**Get Finger Name** (menu_controller.cpp):
+**Finger Names** (main.cpp, indexed by local finger):
 
 ```cpp
-const char* MenuController::getFingerName(uint8_t fingerIndex) {
-    /**
-     * Get human-readable finger name.
-     *
-     * Args:
-     *     fingerIndex: 0-7
-     *
-     * Returns:
-     *     const char*: Finger name (e.g., "PRIMARY Index", "SECONDARY Middle")
-     */
-    static const char* fingerNames[] = {
-        "PRIMARY Index", "PRIMARY Middle", "PRIMARY Ring", "PRIMARY Pinky",
-        "SECONDARY Index", "SECONDARY Middle", "SECONDARY Ring", "SECONDARY Pinky"
-    };
-
-    if (fingerIndex > 7) return "Unknown";
-    return fingerNames[fingerIndex];
-}
+// Finger names for display, indexed by finger id (thumb only used at 5 actuators)
+const char *FINGER_NAMES[] = {"Index", "Middle", "Ring", "Pinky", "Thumb"};
 ```
 
-**Example**:
-```cpp
-getFingerName(0);  // "PRIMARY Index"
-getFingerName(5);  // "SECONDARY Middle"
-```
+For a `CALIBRATE_BUZZ` index, the glove is PRIMARY when `finger < MAX_ACTUATORS` and SECONDARY otherwise; the name is `FINGER_NAMES[finger % MAX_ACTUATORS]` (index 5 on v2 → SECONDARY Middle).
 
 ---
 
@@ -832,8 +749,8 @@ getFingerName(5);  // "SECONDARY Middle"
 
 **Proposed Enhancement**:
 ```cpp
-// In TherapyParams struct
-struct TherapyParams {
+// In TherapyProfile struct
+struct TherapyProfile {
     // ... existing fields ...
     uint8_t amplitudeFingerMap[8];  // Per-finger intensity (0-100%)
 };
@@ -937,7 +854,7 @@ void saveCalibrationLog(const CalibrationLog& log) {
 - **[THERAPY_ENGINE.md](THERAPY_ENGINE.md)** - Motor control and therapy pattern generation
 - **[BLE_PROTOCOL.md](BLE_PROTOCOL.md)** - Calibration commands (CALIBRATE_START, CALIBRATE_BUZZ, CALIBRATE_STOP)
 - **[ARCHITECTURE.md](ARCHITECTURE.md)** - Hardware reference and DRV2605 register map
-- **[API_REFERENCE.md](API_REFERENCE.md)** - Hardware module API (setMotorIntensity, buzzFinger)
+- **[API_REFERENCE.md](API_REFERENCE.md)** - Hardware module API (HapticController::activate, deactivate)
 
 ---
 
@@ -960,7 +877,7 @@ assembled glove. Stop any running session first (they do it automatically).
 
 | Command | Effect |
 | --- | --- |
-| `MOTOR_DIAG` | Buzzes every channel alone (800 ms, full amplitude) and checks a per-chip reset canary afterward. `*** CHIP RESET` means the supply dipped mid-drive — check the battery (missing, discharged, or miswired). |
+| `MOTOR_DIAG` | Buzzes every channel alone (600 ms, full amplitude) and checks a per-chip reset canary afterward. `*** CHIP RESET` means the supply dipped mid-drive — check the battery (missing, discharged, or miswired). |
 | `MOTOR_TEST:<n>` | Drives one channel (`0`–`4`) for 2 s. Use to map a specific connector. |
 | `MOTOR_PRESENT` | Open-load probe: runs LRA auto-calibration per channel (each present motor buzzes ~0.5 s) and prints `MOTOR PRESENT` / `NO MOTOR` per port. Also refreshes the therapy engine's active-finger map. Runs automatically at every boot; needs battery power (`SUPPLY DIP` output means the results were discarded). |
 

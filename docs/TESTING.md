@@ -1,6 +1,6 @@
-# BlueBuzzah v2 Testing Guide
+# BlueBuzzah Testing Guide
 
-**Testing guide for BlueBuzzah v2 firmware**
+**Testing guide for BlueBuzzah firmware**
 
 Version: 2.0.0
 Last Updated: 2026-01-19
@@ -25,10 +25,10 @@ Last Updated: 2026-01-19
 
 ## Overview
 
-BlueBuzzah v2 uses a **dual testing approach**:
+BlueBuzzah firmware uses a **dual testing approach**:
 
 1. **PlatformIO Native Unit Tests** - Automated tests that run on the host computer with mocked Arduino APIs
-2. **Hardware Integration Tests** - Manual tests that run on actual Feather nRF52840 devices
+2. **Hardware Integration Tests** - Manual tests that run on actual devices (Feather nRF52840 or XIAO ESP32-S3)
 
 ### What This Testing Does
 
@@ -38,12 +38,12 @@ BlueBuzzah v2 uses a **dual testing approach**:
 ✓ Verifies synchronization protocol logic
 ✓ Tests motor event buffer thread safety
 ✓ Validates profile management
-✓ Code coverage reporting (via `native_coverage` environment)
+✓ Code coverage reporting (via `native_coverage` / `native_coverage_gcc` environments)
 
 ### Testing Limitations
 
 - Hardware-in-the-loop tests require manual setup
-- No automated CI/CD integration yet
+- CI (`.github/workflows/test.yml`) runs only `native_coverage_gcc` (4-actuator config); run `native_penta` locally for 5-actuator coverage
 - BLE communication testing requires real hardware
 
 ---
@@ -54,7 +54,8 @@ BlueBuzzah v2 uses a **dual testing approach**:
 
 | Environment | Purpose | Command |
 |-------------|---------|---------|
-| `native` | Fast unit tests (no coverage) | `pio test -e native` |
+| `native` | Fast unit tests (no coverage, 4-actuator config) | `pio test -e native` |
+| `native_penta` | Fast unit tests (5-actuator PentaBuzzer config) | `pio test -e native_penta` |
 | `native_coverage` | Unit tests + coverage (macOS/clang) | `pio test -e native_coverage` |
 | `native_coverage_gcc` | Unit tests + coverage (Linux/GCC) | `pio test -e native_coverage_gcc` |
 
@@ -62,14 +63,18 @@ BlueBuzzah v2 uses a **dual testing approach**:
 
 | Test Suite | Module Tested | Purpose |
 |------------|---------------|---------|
+| `test_fs_backend` | `fs_backend_mock.cpp` | Filesystem shim write/read/remove round-trips |
 | `test_latency_metrics` | `latency_metrics.cpp` | RTT tracking, drift calculation |
 | `test_profile_manager` | `profile_manager.cpp` | Profile load/save, validation |
 | `test_types` | `types.h` | Struct packing, enum values |
-| `test_menu_controller` | `menu_controller.cpp` | Command parsing, response format |
+| `test_menu_controller` | `TestMenuController` (hand-maintained mirror of `menu_controller.cpp`) + `internal_messages.h` | Command parsing, response format, `INTERNAL_MESSAGES[]` routing |
 | `test_motor_event_buffer` | `motor_event_buffer.cpp` | Lock-free buffer, thread safety |
 | `test_state_machine` | `state_machine.cpp` | Therapy FSM transitions |
 | `test_therapy_engine` | `therapy_engine.cpp` | Pattern generation, callbacks |
 | `test_sync_protocol` | `sync_protocol.cpp` | PTP clock sync, offset calculation |
+| `test_vbat_estimator` | `vbat_estimator.cpp` | DRV2605 VBAT conversion, median-of-burst + EMA |
+
+`test_menu_controller` does not compile `menu_controller.cpp`: behavior changes in `MenuController` need the mirror updated or they go untested.
 
 ### Mock Infrastructure
 
@@ -77,12 +82,12 @@ The `test/mocks/` directory provides Arduino API mocks:
 
 ```
 test/mocks/
-├── include/
-│   ├── Arduino.h       # millis(), micros(), delay(), Serial
-│   ├── bluefruit.h     # BLE stubs
-│   └── ...
+├── library.json              # ArduinoMock library (native platform)
 └── src/
-    └── Arduino.cpp     # Mock implementations
+    ├── Arduino.h             # millis(), micros(), delay(), MockSerial, mockAdvanceMicros()
+    ├── Arduino.cpp           # Mock implementations
+    ├── Adafruit_LittleFS.h   # Filesystem stubs
+    └── InternalFileSystem.h
 ```
 
 ---
@@ -119,25 +124,35 @@ pio test -e native -f test_therapy_engine
 **Expected output (success):**
 
 ```
-test/test_sync_protocol/test_sync_protocol.cpp:217:test_initial_state:PASS
-test/test_sync_protocol/test_sync_protocol.cpp:218:test_ping_pong_sequence:PASS
-test/test_sync_protocol/test_sync_protocol.cpp:219:test_offset_calculation:PASS
+test/test_sync_protocol/test_sync_protocol.cpp:2271: test_SyncCommand_default_constructor	[PASSED]
+test/test_sync_protocol/test_sync_protocol.cpp:2272: test_SyncCommand_parameterized_constructor	[PASSED]
+test/test_sync_protocol/test_sync_protocol.cpp:2273: test_SyncCommand_setType	[PASSED]
 ...
------------------------
-8 Tests 0 Failures 0 Ignored
-OK
+------------- native:test_sync_protocol [PASSED] Took 0.47 seconds -------------
+
+=================================== SUMMARY ===================================
+Environment    Test                Status    Duration
+-------------  ------------------  --------  ------------
+native         test_sync_protocol  PASSED    00:00:00.469
 ```
 
 ### Test Output Locations
 
-Coverage reports are generated in:
+Coverage reports are generated by hand after the test run (commands from the `platformio.ini` comments):
 
+```bash
+# macOS (native_coverage): raw profile is written to ./default.profraw
+xcrun llvm-profdata merge -sparse default.profraw -o default.profdata
+xcrun llvm-cov show .pio/build/native_coverage/program -instr-profile=default.profdata \
+  -ignore-filename-regex='.*/test/.*' -format=html -output-dir=coverage
+
+# Linux (native_coverage_gcc)
+lcov --capture --directory .pio/build/native_coverage_gcc -o coverage.info
+lcov --remove coverage.info '*/test/*' -o coverage_filtered.info
+genhtml coverage_filtered.info -o coverage
 ```
-.pio/test_results/native_coverage/
-├── coverage.info
-└── html/
-    └── index.html  # Open in browser for visual coverage
-```
+
+Open `coverage/index.html` in a browser for visual coverage.
 
 ---
 
@@ -150,11 +165,13 @@ Coverage reports are generated in:
 | `sync_protocol.cpp` | `test_sync_protocol` | PTP offset calculation, drift tracking, warm-start recovery |
 | `therapy_engine.cpp` | `test_therapy_engine` | Pattern generation, callback invocation, session timing |
 | `state_machine.cpp` | `test_state_machine` | FSM transitions, state validation |
-| `menu_controller.cpp` | `test_menu_controller` | Command parsing, response formatting |
+| `menu_controller.cpp` (via `TestMenuController` mirror) | `test_menu_controller` | Command parsing, response formatting |
 | `motor_event_buffer.cpp` | `test_motor_event_buffer` | Lock-free operations, overflow handling |
 | `profile_manager.cpp` | `test_profile_manager` | Profile serialization, validation |
 | `latency_metrics.cpp` | `test_latency_metrics` | RTT calculation, drift statistics |
 | `types.h` | `test_types` | Struct packing, enum values |
+| `fs_backend_mock.cpp` | `test_fs_backend` | Write/read/overwrite/remove round-trips |
+| `vbat_estimator.cpp` | `test_vbat_estimator` | Raw-to-volts conversion, median outlier rejection, EMA |
 
 ### Tested Functionality
 
@@ -186,24 +203,37 @@ Coverage reports are generated in:
 Tests the IEEE 1588 PTP-style clock synchronization:
 
 ```cpp
-void test_offset_calculation() {
-    // Verify 4-timestamp offset calculation
-    // offset = ((T2 - T1) + (T3 - T4)) / 2
-    syncProtocol.handlePingResponse(seq, 0, T2, T3);
-    TEST_ASSERT_INT_WITHIN(100, expectedOffset, syncProtocol.getClockOffset());
+void test_SimpleSyncProtocol_calculatePTPOffset_positive_offset(void) {
+    SimpleSyncProtocol sync;
+    mockSetMillis(100);
+
+    // Offset = ((T2 - T1) + (T3 - T4)) / 2 = ((15000) + (5000)) / 2 = 10000
+    int64_t offset = sync.calculatePTPOffset(1000000, 1015000, 1020000, 1015000);
+    TEST_ASSERT_EQUAL_INT64(10000, offset);
 }
 
-void test_drift_rate_tracking() {
-    // Verify drift compensation over time
-    TEST_ASSERT_FLOAT_WITHIN(0.01f, expectedDrift, syncProtocol.getDriftRate());
-}
+void test_SimpleSyncProtocol_warmStart_validates_confirmatory_samples(void) {
+    SimpleSyncProtocol sync;
 
-void test_warm_start_recovery() {
-    // Verify cached sync state is used after brief disconnect
-    syncProtocol.disconnect();
-    delay(5000);  // Less than SYNC_WARM_START_VALIDITY_MS
-    syncProtocol.reconnect();
-    TEST_ASSERT_TRUE(syncProtocol.isWarmStart());
+    // Establish sync with offset ~10000
+    for (int i = 0; i < 5; i++) {
+        sync.addOffsetSample(10000);
+    }
+    mockSetMillis(100);
+    sync.updateOffsetEMA(10000);
+
+    // Quick reconnect
+    mockSetMillis(2000);
+    sync.resetClockSync();
+    sync.tryWarmStart();
+    TEST_ASSERT_TRUE(sync.isWarmStartMode());
+
+    // 3 confirmatory samples within 5ms of the projection make sync valid
+    sync.addOffsetSample(10050);
+    sync.addOffsetSample(9980);
+    sync.addOffsetSample(10020);
+    TEST_ASSERT_TRUE(sync.isClockSyncValid());
+    TEST_ASSERT_FALSE(sync.isWarmStartMode());
 }
 ```
 
@@ -212,16 +242,25 @@ void test_warm_start_recovery() {
 Tests pattern generation and callback invocation:
 
 ```cpp
-void test_callback_invocation() {
-    bool activateCalled = false;
-    engine.setActivateCallback([&](int finger) { activateCalled = true; });
+void test_TherapyEngine_setSendMacrocycleCallback(void) {
+    TherapyEngine engine;
+    engine.setSendMacrocycleCallback(mockSendMacrocycleCallback);
+
+    g_sendMacrocycleCallCount = 0;
+    mockSetMillis(1000);
+    engine.startSession(100, PatternType::RNDP, 100.0f, 67.0f, 0.0f, 4, true, 100, 100, false);
+
+    // First update should trigger macrocycle generation and send
     engine.update();
-    TEST_ASSERT_TRUE(activateCalled);
+    TEST_ASSERT_TRUE(g_sendMacrocycleCallCount >= 1);
 }
 
-void test_pattern_generation() {
-    // Verify random permutation covers all fingers
-    TEST_ASSERT_EQUAL(8, uniqueFingersActivated);
+void test_generateRandomPermutation_produces_valid_pattern(void) {
+    Pattern p = generateRandomPermutation(4, 100.0f, 67.0f, 0.0f, true);
+
+    TEST_ASSERT_EQUAL_UINT8(4, p.numFingers);
+    TEST_ASSERT_TRUE(isValidPermutation(p.primarySequence));
+    TEST_ASSERT_TRUE(isValidPermutation(p.secondarySequence));
 }
 ```
 
@@ -230,18 +269,16 @@ void test_pattern_generation() {
 Tests lock-free buffer operations:
 
 ```cpp
-void test_overflow_handling() {
-    // Fill buffer beyond capacity
-    for (int i = 0; i < BUFFER_SIZE + 10; i++) {
-        buffer.push(event);
+void test_MotorEventBuffer_buffer_full(void) {
+    // Fill the buffer (MAX_STAGED - 1 because ring buffer wastes one slot)
+    for (uint8_t i = 0; i < MotorEventBuffer::MAX_STAGED - 1; i++) {
+        bool result = buffer.stage(i * 1000, i % 4, 100, 50, 250, false);
+        TEST_ASSERT_TRUE(result);
     }
-    // Verify oldest events dropped, newest preserved
-    TEST_ASSERT_EQUAL(BUFFER_SIZE, buffer.count());
-}
 
-void test_concurrent_access() {
-    // Verify ISR-safe push with main-loop pop
-    // (simulated with interleaved operations)
+    // Next stage should fail: a full buffer rejects new events
+    bool result = buffer.stage(999999, 0, 100, 50, 250, false);
+    TEST_ASSERT_FALSE(result);
 }
 ```
 
@@ -254,9 +291,9 @@ For testing that requires actual hardware, use manual verification:
 ### Hardware Requirements
 
 1. **BlueBuzzah Device(s)**
-   - Adafruit Feather nRF52840 Express
-   - BlueBuzzah v2 firmware installed
-   - Charged battery or USB power
+   - Adafruit Feather nRF52840 Express (v2) or Seeed XIAO ESP32-S3 PentaBuzzer (v3)
+   - BlueBuzzah firmware installed
+   - Charged battery or USB power (v3 motors need a battery: the DRV2605 drivers run from VBat)
 
 2. **Host Computer**
    - USB cable for serial console
@@ -276,7 +313,7 @@ pio device monitor
 # Enter calibration mode
 CALIBRATE_START
 
-# Test each finger (0-7)
+# Test each finger (0-7 on v2, 0-9 on v3; indices past the local motors buzz the SECONDARY)
 CALIBRATE_BUZZ:0:80:500
 CALIBRATE_BUZZ:1:80:500
 # ... verify each motor vibrates
@@ -306,7 +343,7 @@ See [LATENCY_METRICS.md](LATENCY_METRICS.md) for detailed metrics interpretation
 
 ### Command Format
 
-All tests use the BLE Protocol v2.0 format:
+Commands use the BLE protocol format (see the [BLE-Protocol wiki page](https://github.com/BlueBuzzah/BlueBuzzah-Firmware/wiki/BLE-Protocol)):
 
 **Request:**
 ```
@@ -315,28 +352,26 @@ COMMAND_NAME:ARG1:ARG2\x04
 
 **Response:**
 ```
-KEY:VALUE\x04
+CMD:COMMAND_NAME\nKEY:VALUE\n\x04
 ```
 
-The `\x04` (EOT) terminator is **mandatory** for all messages.
+The `\x04` (EOT) terminator is **mandatory** for all messages; over BLE the firmware buffers a command until it sees EOT.
 
 ### Response Validation
 
-Tests validate:
+When checking responses manually, verify:
 1. **Presence of EOT** - Response must contain `\x04`
 2. **Response timing** - Must arrive within timeout (2-5 seconds)
-3. **Format** - Expects `KEY:VALUE` structure
+3. **Format** - `CMD:<COMMAND>` line, then `KEY:VALUE` lines
 4. **Success keywords** - Looks for "OK", "STARTED", "COMPLETE", "STOPPED"
-5. **Error detection** - Checks for "ERROR", "FAIL", "INVALID"
+5. **Error detection** - Errors arrive as `ERROR:<description>`
 
 ### Protocol Timing
 
-Per BLE_PROTOCOL.md specification:
+The protocol defines no timing limits. Firmware facts that affect test timing:
 
-- **Minimum inter-command delay:** 100ms
-- **Command timeout:** 2-5 seconds (depends on command complexity)
-- **Response time:** <1 second for most commands
-- **Session commands:** Up to 5 seconds (involve state changes)
+- Menu commands run one per `loop()` pass from a 4-slot queue; a command that arrives while 4 are queued is dropped with no reply
+- `INFO` and `BATTERY` wait up to 1 second for the SECONDARY's battery reading when a SECONDARY is connected
 
 ---
 
@@ -351,11 +386,11 @@ Per BLE_PROTOCOL.md specification:
 
 ### Memory Monitoring
 
-The memory stress test checks for:
+When monitoring memory over a long session, check for:
 
 1. **Baseline stability** - Memory should stabilize after initialization
 2. **Leak detection** - No continuous downward trend
-3. **Stack overflow** - Monitor stack usage with `dbgMemInfo()`
+3. **Stack overflow** - Monitor stack usage with `dbgMemInfo()` (Adafruit nRF52 core)
 4. **Heap fragmentation** - Check for allocation failures
 
 ### Memory Failure Indicators
@@ -386,24 +421,24 @@ BlueBuzzah uses scheduled execution synchronization (SYNCHRONIZATION_PROTOCOL.md
 
 **Synchronization Flow:**
 ```
-PRIMARY → MACROCYCLE:seq:baseTime:12|events... → SECONDARY
+PRIMARY → MC:seq|baseHigh|baseLow|offHigh|offLow|dur|count|d,f,a[,fo]|... → SECONDARY
 SECONDARY: Execute buzz at scheduled time
 ```
 
 ### Latency Budget
 
-Per protocol specification:
+Rough estimates (not defined by the protocol specification):
 
 | Component | Budget | Typical |
 |-----------|--------|---------|
 | BLE transmission | 5-10 ms | 7.5 ms |
 | Command processing | 1-3 ms | 2 ms |
-| Motor activation | 2-5 ms | 3 ms |
-| **Total one-way** | **8-18 ms** | **12.5 ms** |
+| Motor activation | 0.1-0.5 ms | 0.1 ms (I2C pre-selected) |
+| **Total one-way** | **6-14 ms** | **9.6 ms** |
 
 ### Jitter Analysis
 
-The sync test measures jitter (latency variation):
+Judge jitter (latency variation) as:
 
 - **Good:** <2ms standard deviation
 - **Acceptable:** 2-5ms standard deviation
@@ -419,7 +454,7 @@ The sync test measures jitter (latency variation):
 
 **Solutions:**
 1. Verify device is powered on and advertising
-2. Check LED indicates BLE active (should pulse)
+2. Check the LED shows the device is up (breathing blue while waiting for its peer, solid green once paired)
 3. Restart device (press RESET button)
 4. Ensure device not already connected to another host
 5. Reduce distance to <2 meters
@@ -448,7 +483,6 @@ The sync test measures jitter (latency variation):
 **Root Causes:**
 - Invalid command syntax - verify format matches protocol spec
 - Device not in correct state - check state requirements
-- StateMachine disabled - some commands require it enabled
 - Hardware fault - check serial console for hardware errors
 
 **Problem:** Inconsistent motor activation
@@ -576,8 +610,7 @@ When adding new PlatformIO native unit tests:
 ### Mock Requirements
 
 If your test needs Arduino APIs, ensure they're mocked in `test/mocks/`:
-- Add declarations to `test/mocks/include/`
-- Add implementations to `test/mocks/src/`
+- Add declarations and implementations to `test/mocks/src/`
 
 ---
 
@@ -588,11 +621,10 @@ If your test needs Arduino APIs, ensure they're mocked in `test/mocks/`:
 - ✓ PlatformIO native unit test framework
 - ✓ Arduino API mocks for host testing
 - ✓ Code coverage reporting
+- ✓ CI/CD integration (GitHub Actions `test.yml`: unit tests + coverage on pushes and PRs to `main`/`develop`)
 
 ### Planned
 
-- CI/CD integration (GitHub Actions)
-- Automated regression testing on PRs
 - Hardware-in-the-loop test framework
 - BLE communication mock library
 
@@ -600,7 +632,7 @@ If your test needs Arduino APIs, ensure they're mocked in `test/mocks/`:
 
 ## Related Documentation
 
-- **docs/BLE_PROTOCOL.md** - BLE protocol specification
+- **[BLE-Protocol (wiki)](https://github.com/BlueBuzzah/BlueBuzzah-Firmware/wiki/BLE-Protocol)** - BLE protocol specification
 - **docs/SYNCHRONIZATION_PROTOCOL.md** - Sync protocol details
 - **docs/LATENCY_METRICS.md** - Performance measurement guide
 - **docs/API_REFERENCE.md** - Complete API documentation
@@ -609,4 +641,4 @@ If your test needs Arduino APIs, ensure they're mocked in `test/mocks/`:
 
 **Version:** 2.0.0
 **Last Updated:** 2026-01-19
-**Test Suites:** 8 native unit test suites
+**Test Suites:** 10 native unit test suites
