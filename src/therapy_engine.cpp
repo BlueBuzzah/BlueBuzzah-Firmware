@@ -8,7 +8,11 @@
 #include "therapy_engine.h"
 #include "sync_protocol.h"  // For getMicros() - overflow-safe 64-bit timestamp
 #include "fs_backend.h"
+#include "platform.h"
 #include <span>
+#if defined(NRF52840_XXAA) && !defined(NATIVE_TEST_BUILD)
+#include <nrf_soc.h>
+#endif
 
 using namespace std::literals;
 
@@ -346,6 +350,21 @@ void TherapyEngine::setFrequencyRandomization(bool enabled, uint16_t minHz, uint
 // THERAPY ENGINE - SESSION CONTROL
 // =============================================================================
 
+// Hardware entropy for session ids, which must not repeat across reboots
+static uint32_t sessionEntropy() {
+#if defined(BOARD_PENTABUZZER_ESP32S3) && !defined(NATIVE_TEST_BUILD)
+    return esp_random();  // true RNG while the radio is on
+#elif defined(NRF52840_XXAA) && !defined(NATIVE_TEST_BUILD)
+    uint32_t value = 0;
+    // The SoftDevice pool refills within microseconds; only "empty" is worth a retry
+    while (sd_rand_application_vector_get(reinterpret_cast<uint8_t*>(&value), sizeof(value))
+           == NRF_ERROR_SOC_RAND_NOT_ENOUGH_VALUES) {}
+    return value;
+#else
+    return static_cast<uint32_t>(random(0, 0x7FFFFFFF));
+#endif
+}
+
 void TherapyEngine::startSession(
     uint32_t durationSec,
     PatternType patternType,
@@ -369,10 +388,13 @@ void TherapyEngine::startSession(
 
     // Store session parameters
     _sessionStartTime = millis();
-    // 31 bits so it prints as a positive int32 response value
-    _sessionId = static_cast<uint32_t>(getMicros()) & 0x7FFFFFFF;
-    if (_sessionId == 0) {
-        _sessionId = 1;  // 0 means "no session"
+    // Test sessions are never reported, so they keep the last real id.
+    // 31 bits so it prints as a positive int32 response value.
+    if (!isTestMode) {
+        _sessionId = sessionEntropy() & 0x7FFFFFFF;
+        if (_sessionId == 0) {
+            _sessionId = 1;  // 0 means "no session"
+        }
     }
     _pauseStartTime = 0;
     _pausedMs = 0;
@@ -429,10 +451,9 @@ void TherapyEngine::update() {
         return;
     }
 
-    // Check session timeout
+    // Check session timeout (paused time doesn't count toward the length)
     if (_sessionDurationSec > 0) {
-        auto elapsed = uint32_t((millis() - _sessionStartTime) / 1000);
-        if (elapsed >= _sessionDurationSec) {
+        if (getElapsedSeconds() >= _sessionDurationSec) {
             Serial.println(F("[THERAPY] Session duration reached"));
             stop(SessionEndReason::COMPLETED);
             return;
@@ -470,23 +491,32 @@ void TherapyEngine::resume() {
 }
 
 void TherapyEngine::stop(SessionEndReason reason) {
-    if (_isRunning && !_isTestMode) {
-        uint32_t now = millis();
-        uint32_t pausedMs = _pausedMs + (_isPaused ? now - _pauseStartTime : 0);
-        _lastSession = {
-            LAST_SESSION_MAGIC,
-            _sessionId,
-            (now - _sessionStartTime) / 1000,
-            pausedMs / 1000,
-            _sessionDurationSec,
-            reason
-        };
-        _lastSessionDirty = true;
+    // stop() runs on the BLE task and in loop(): the running check, the record
+    // and the clear must be one step, or two stops can both record
+    uint32_t now = millis();
+    bool recorded = false;
+    {
+        PLATFORM_CRITICAL_ENTER();
+        if (_isRunning && !_isTestMode) {
+            _lastSession = {
+                LAST_SESSION_MAGIC,
+                _sessionId,
+                (now - _sessionStartTime) / 1000,
+                pausedMsAt(now) / 1000,
+                _sessionDurationSec,
+                reason
+            };
+            _lastSessionDirty = true;
+            recorded = true;
+        }
+        _shouldStop = true;
+        _isRunning = false;
+        PLATFORM_CRITICAL_EXIT();
+    }
+    if (recorded) {
         Serial.printf("[THERAPY] Session %lu ended: %s\n",
                       static_cast<unsigned long>(_sessionId), sessionEndReasonToString(reason));
     }
-    _shouldStop = true;
-    _isRunning = false;
 
     // Deactivate any active motors
     if (_motorActive && _deactivateCallback) {
@@ -511,14 +541,31 @@ void TherapyEngine::loadLastSession() {
 }
 
 void TherapyEngine::persistLastSession() {
-    if (!_lastSessionDirty) {
+    if (!_lastSessionDirty
+        || (_persistFailedAt != 0 && millis() - _persistFailedAt < LAST_SESSION_RETRY_MS)) {
         return;
     }
-    _lastSessionDirty = false;
-    LastSessionSummary copy = _lastSession;
-    if (!fsb::writeFile(LAST_SESSION_FILE, reinterpret_cast<const uint8_t*>(&copy), sizeof(copy))) {
+    LastSessionSummary copy;
+    {
+        PLATFORM_CRITICAL_ENTER();
+        copy = _lastSession;
+        _lastSessionDirty = false;
+        PLATFORM_CRITICAL_EXIT();
+    }
+    if (fsb::writeFile(LAST_SESSION_FILE, reinterpret_cast<const uint8_t*>(&copy), sizeof(copy))) {
+        _persistFailedAt = 0;
+    } else {
+        // Retry later; a newer stop in the meantime has already set the flag
+        _lastSessionDirty = true;
+        _persistFailedAt = millis();
         Serial.println(F("[THERAPY] Could not save last session"));
     }
+}
+
+void TherapyEngine::clearLastSession() {
+    _lastSession = {};
+    _lastSessionDirty = false;
+    fsb::removeFile(LAST_SESSION_FILE);
 }
 
 // =============================================================================
@@ -526,10 +573,11 @@ void TherapyEngine::persistLastSession() {
 // =============================================================================
 
 uint32_t TherapyEngine::getElapsedSeconds() const {
-    if (!_isRunning || _sessionStartTime == 0) {
+    if (!_isRunning) {
         return 0;
     }
-    return uint32_t((millis() - _sessionStartTime) / 1000);
+    uint32_t now = millis();
+    return (now - _sessionStartTime - pausedMsAt(now)) / 1000;
 }
 
 uint32_t TherapyEngine::getRemainingSeconds() const {

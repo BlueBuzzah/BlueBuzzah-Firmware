@@ -214,7 +214,7 @@ enum class SessionEndReason : uint8_t {
     STOPPED,            // Stopped by a command (phone, serial, profile change)
     BATTERY,            // Critical battery
     CONNECTION_LOST,    // Glove-to-glove link lost
-    ERROR,              // Firmware error state
+    ERROR,              // Firmware error state (reserved: nothing enters it yet)
     POWER_OFF           // Power switch turned off (PentaBuzzer)
 };
 
@@ -238,7 +238,7 @@ inline const char* sessionEndReasonToString(SessionEndReason reason) {
 struct LastSessionSummary {
     uint32_t magic;          // LAST_SESSION_MAGIC when valid
     uint32_t id;             // SESSION_ID the session reported while active
-    uint32_t elapsedSec;     // Same clock as SESSION_STATUS ELAPSED (runs through pauses)
+    uint32_t elapsedSec;     // Wall time from start to end, pauses included
     uint32_t pausedSec;      // Seconds of elapsedSec spent paused
     uint32_t totalSec;       // Planned length (SESSION_STATUS TOTAL)
     SessionEndReason reason;
@@ -246,6 +246,7 @@ struct LastSessionSummary {
 
 constexpr uint32_t LAST_SESSION_MAGIC = 0x4C535331;  // "LSS1"
 constexpr const char* LAST_SESSION_FILE = "/last_session.bin";
+constexpr uint32_t LAST_SESSION_RETRY_MS = 1000;  // Wait after a failed flash write
 
 // =============================================================================
 // CALLBACK TYPES
@@ -499,7 +500,7 @@ public:
     uint32_t getTotalActivations() const { return _totalActivations; }
 
     /**
-     * @brief Get elapsed session time in seconds
+     * @brief Get elapsed session time in seconds, not counting paused time
      */
     uint32_t getElapsedSeconds() const;
 
@@ -514,9 +515,8 @@ public:
     uint32_t getDurationSeconds() const { return _sessionDurationSec; }
 
     /**
-     * @brief Id of the current (or most recent) session; 0 before the first one.
-     *        The start time in microseconds (31 bits): a repeat needs a start at the
-     *        same microsecond of uptime, mod ~36 minutes.
+     * @brief Id of the current (or most recent) non-test session; 0 before the first one.
+     *        31 random bits from the hardware RNG, so ids don't repeat across reboots.
      */
     uint32_t getSessionId() const { return _sessionId; }
 
@@ -540,6 +540,11 @@ public:
     void persistLastSession();
 
     /**
+     * @brief Forget the summary and delete its file (factory reset)
+     */
+    void clearLastSession();
+
+    /**
      * @brief Get current frequency for a finger
      * @param finger Finger index (0 to MAX_ACTUATORS-1)
      * @return Current frequency in Hz
@@ -561,6 +566,12 @@ private:
     uint32_t _pausedMs = 0;
     LastSessionSummary _lastSession = {};
     volatile bool _lastSessionDirty = false;
+    uint32_t _persistFailedAt = 0;  // millis() of the last failed write; 0 = none
+
+    // Paused time so far, including a pause still in progress
+    uint32_t pausedMsAt(uint32_t now) const {
+        return _pausedMs + (_isPaused ? now - _pauseStartTime : 0);
+    }
 
     // Session parameters
     uint32_t _sessionStartTime;

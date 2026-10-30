@@ -16,6 +16,7 @@ std::map<std::string, std::vector<uint8_t>>& files() {
     return f;
 }
 bool g_beginResult = true;
+bool g_writeResult = true;
 }
 
 namespace fsb {
@@ -37,6 +38,7 @@ bool readFile(const char* path, uint8_t* buf, size_t cap, size_t& outLen) {
 }
 
 bool writeFile(const char* path, const uint8_t* buf, size_t len) {
+    if (!g_writeResult) return false;
     files()[path].assign(buf, buf + len);
     return true;
 }
@@ -49,9 +51,13 @@ namespace mock {
 void reset() {
     files().clear();
     g_beginResult = true;
+    g_writeResult = true;
 }
 void setBeginResult(bool ok) {
     g_beginResult = ok;
+}
+void setWriteResult(bool ok) {
+    g_writeResult = ok;
 }
 }
 

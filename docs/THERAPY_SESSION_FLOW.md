@@ -636,7 +636,7 @@ stateDiagram-v2
 
 - **Low**: <3.4V (`BATTERY_LOW_VOLTAGE`): reported in battery status only
 - **Critical**: <3.3V (`BATTERY_CRITICAL_VOLTAGE`): `SESSION_START` is refused with `Battery too low`
-- Battery is not monitored during a session; the LOW_BATTERY and CRITICAL_BATTERY states are never entered
+- During a session the PRIMARY checks its battery every 60s, between pulses, and stops the session below 3.3V (`LAST_REASON:BATTERY`); the LOW_BATTERY and CRITICAL_BATTERY states are never entered
 
 **Connection Loss Handling:**
 

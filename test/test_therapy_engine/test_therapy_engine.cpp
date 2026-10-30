@@ -1385,6 +1385,37 @@ void test_LastSession_ignores_test_mode(void) {
     engine.stop();
 
     TEST_ASSERT_EQUAL_UINT32(firstId, engine.getLastSession()->id);
+    TEST_ASSERT_EQUAL_UINT32(firstId, engine.getSessionId());  // a test has no id of its own
+}
+
+void test_LastSession_paused_time_does_not_count_toward_length(void) {
+    TherapyEngine engine;
+    startTestSession(engine, 30);
+    mockAdvanceMillis(10000);
+    engine.pause();
+    mockAdvanceMillis(25000);
+    engine.resume();
+    engine.update();
+    TEST_ASSERT_TRUE(engine.isRunning());  // 35 s wall, 10 s delivered
+    TEST_ASSERT_EQUAL_UINT32(10, engine.getElapsedSeconds());
+
+    mockAdvanceMillis(20000);
+    engine.update();
+    const LastSessionSummary* last = engine.getLastSession();
+    TEST_ASSERT_NOT_NULL(last);
+    TEST_ASSERT_EQUAL(SessionEndReason::COMPLETED, last->reason);
+    TEST_ASSERT_EQUAL_UINT32(55, last->elapsedSec);
+    TEST_ASSERT_EQUAL_UINT32(25, last->pausedSec);
+}
+
+void test_LastSession_elapsed_holds_while_paused(void) {
+    TherapyEngine engine;
+    startTestSession(engine, 300);
+    mockAdvanceMillis(40000);
+    engine.pause();
+    mockAdvanceMillis(30000);
+    TEST_ASSERT_EQUAL_UINT32(40, engine.getElapsedSeconds());
+    TEST_ASSERT_EQUAL_UINT32(260, engine.getRemainingSeconds());
 }
 
 void test_LastSession_kept_while_next_session_runs(void) {
@@ -1432,6 +1463,39 @@ void test_LastSession_persist_writes_only_after_an_end(void) {
 
     fsb::removeFile(LAST_SESSION_FILE);
     engine.persistLastSession();  // nothing new ended
+    TEST_ASSERT_FALSE(fsb::exists(LAST_SESSION_FILE));
+}
+
+void test_LastSession_failed_write_is_retried(void) {
+    fsb::mock::reset();
+    TherapyEngine engine;
+    startTestSession(engine, 300);
+    mockAdvanceMillis(61000);
+    engine.stop();
+
+    fsb::mock::setWriteResult(false);
+    engine.persistLastSession();
+    fsb::mock::setWriteResult(true);
+    engine.persistLastSession();  // backing off
+    TEST_ASSERT_FALSE(fsb::exists(LAST_SESSION_FILE));
+
+    mockAdvanceMillis(LAST_SESSION_RETRY_MS);
+    engine.persistLastSession();
+    TEST_ASSERT_TRUE(fsb::exists(LAST_SESSION_FILE));
+}
+
+void test_LastSession_clear_forgets_and_deletes(void) {
+    fsb::mock::reset();
+    TherapyEngine engine;
+    startTestSession(engine, 300);
+    mockAdvanceMillis(61000);
+    engine.stop();
+    engine.persistLastSession();
+
+    engine.clearLastSession();
+    TEST_ASSERT_NULL(engine.getLastSession());
+    TEST_ASSERT_FALSE(fsb::exists(LAST_SESSION_FILE));
+    engine.persistLastSession();
     TEST_ASSERT_FALSE(fsb::exists(LAST_SESSION_FILE));
 }
 
@@ -1582,9 +1646,13 @@ int main(int argc, char **argv) {
     RUN_TEST(test_LastSession_second_stop_keeps_first_reason);
     RUN_TEST(test_LastSession_counts_paused_time);
     RUN_TEST(test_LastSession_ignores_test_mode);
+    RUN_TEST(test_LastSession_paused_time_does_not_count_toward_length);
+    RUN_TEST(test_LastSession_elapsed_holds_while_paused);
     RUN_TEST(test_LastSession_kept_while_next_session_runs);
     RUN_TEST(test_LastSession_persists_across_reboot);
     RUN_TEST(test_LastSession_persist_writes_only_after_an_end);
+    RUN_TEST(test_LastSession_failed_write_is_retried);
+    RUN_TEST(test_LastSession_clear_forgets_and_deletes);
     RUN_TEST(test_LastSession_load_rejects_bad_file);
 
     return UNITY_END();

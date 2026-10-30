@@ -40,6 +40,7 @@ bool removeFile(const char* path);
 namespace mock {
 void reset();                    // clear all files, restore begin() = true
 void setBeginResult(bool ok);    // force begin() to fail (storage unavailable)
+void setWriteResult(bool ok);    // force writeFile() to fail (flash busy / full)
 }
 #endif
 

@@ -889,8 +889,11 @@ void MenuController::handleSessionStatus() {
 
     // While active: the id the app binds its record to. Otherwise: how the most
     // recent session ended, so a phone that wasn't watching records it exactly.
+    // A bench TEST has no id of its own and is never summarized.
     if (_therapy && _therapy->isRunning()) {
-        addResponseLine("SESSION_ID", (int32_t)_therapy->getSessionId());
+        if (!_therapy->isTestMode()) {
+            addResponseLine("SESSION_ID", (int32_t)_therapy->getSessionId());
+        }
     } else if (const LastSessionSummary* last = _therapy ? _therapy->getLastSession() : nullptr) {
         addResponseLine("LAST_ID", (int32_t)last->id);
         addResponseLine("LAST_ELAPSED", (int32_t)last->elapsedSec);

@@ -609,12 +609,11 @@ void TherapyEngine::update() {
         return;
     }
 
-    // Check session timeout
+    // Check session timeout (paused time doesn't count toward the length)
     if (_sessionDurationSec > 0) {
-        auto elapsed = uint32_t((millis() - _sessionStartTime) / 1000);
-        if (elapsed >= _sessionDurationSec) {
+        if (getElapsedSeconds() >= _sessionDurationSec) {
             Serial.println(F("[THERAPY] Session duration reached"));
-            stop();
+            stop(SessionEndReason::COMPLETED);
             return;
         }
     }
@@ -1054,7 +1053,7 @@ All I2C access to the drivers takes the I2C mutex (`I2CMutexLock`), so the motor
 
 ### Safety Features
 
-1. **Battery check**: `SESSION_START` is refused with `ERROR:Battery too low` when the battery is below `BATTERY_CRITICAL_VOLTAGE` (3.3V)
+1. **Battery check**: `SESSION_START` is refused with `ERROR:Battery too low` when the battery is below `BATTERY_CRITICAL_VOLTAGE` (3.3V), and the PRIMARY stops a running session when its 60s battery check (taken between pulses) reads below it
 2. **Keepalive timeout**: Therapy stops if the peer glove's keepalive stops for 6s (`KEEPALIVE_TIMEOUT_MS`)
 3. **Emergency stop**: `emergencyStop()` immediately stops all motors
 4. **Visual feedback**: LED indicators for errors
@@ -1145,11 +1144,11 @@ timeUntilExec should stay positive
 
 **Fix**:
 ```cpp
-// update() ends the session when elapsed seconds reach the duration.
-// Unsigned subtraction keeps this correct across millis() wraparound.
-auto elapsed = uint32_t((millis() - _sessionStartTime) / 1000);
-if (elapsed >= _sessionDurationSec) {
-    stop();
+// update() ends the session when therapy seconds (paused time excluded)
+// reach the duration. Unsigned subtraction keeps this correct across
+// millis() wraparound.
+if (getElapsedSeconds() >= _sessionDurationSec) {
+    stop(SessionEndReason::COMPLETED);
 }
 // durationSec comes from sessionDurationMin * 60 (1-240 minutes)
 ```
