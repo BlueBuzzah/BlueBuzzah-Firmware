@@ -3091,6 +3091,7 @@ void restartAfterTxDrain()
     delay(100); // queued packets go out on the next connection events
     ble.disconnectAll();
     delay(100);
+    therapy.persistLastSession(); // a stop just before a reboot never reaches loop()
     platformSystemReset();
 }
 
@@ -3198,6 +3199,7 @@ void handleSerialCommand(const char *command)
             Serial.println(F("[CONFIG] Role set to PRIMARY - restarting..."));
             Serial.flush();
             delay(100);
+            therapy.persistLastSession();
             platformSystemReset();
         }
         else if (strcasecmp(roleStr, "SECONDARY") == 0)
@@ -3208,6 +3210,7 @@ void handleSerialCommand(const char *command)
             Serial.println(F("[CONFIG] Role set to SECONDARY - restarting..."));
             Serial.flush();
             delay(100);
+            therapy.persistLastSession();
             platformSystemReset();
         }
         else
@@ -3319,6 +3322,7 @@ void handleSerialCommand(const char *command)
             Serial.printf("[CONFIG] Profile set to %s - restarting...\n", profileStr);
             Serial.flush();
             delay(100);
+            therapy.persistLastSession();
             platformSystemReset();
         }
         else
@@ -3488,6 +3492,7 @@ void handleSerialCommand(const char *command)
         Serial.println(F("[CONFIG] Rebooting..."));
         Serial.flush();
         delay(100);
+        therapy.persistLastSession();
         platformSystemReset();
         return;
     }
@@ -3499,6 +3504,7 @@ void handleSerialCommand(const char *command)
         Serial.println(F("[CONFIG] Rebooting..."));
         Serial.flush();
         delay(100);
+        therapy.persistLastSession();
         platformSystemReset();
         return;
     }
