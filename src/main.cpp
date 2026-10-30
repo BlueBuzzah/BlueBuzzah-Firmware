@@ -3124,7 +3124,7 @@ void restartAfterTxDrain()
     resetDevice();
 }
 
-// Every reboot goes through here: a stop just before it never reaches loop()'s save
+// Reboot, saving the summary first: a stop just before a reboot never reaches loop()'s save
 void resetDevice()
 {
     therapy.persistLastSession();
