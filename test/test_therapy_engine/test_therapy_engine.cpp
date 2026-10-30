@@ -1416,6 +1416,15 @@ void test_LastSession_elapsed_holds_while_paused(void) {
     mockAdvanceMillis(30000);
     TEST_ASSERT_EQUAL_UINT32(40, engine.getElapsedSeconds());
     TEST_ASSERT_EQUAL_UINT32(260, engine.getRemainingSeconds());
+    TEST_ASSERT_EQUAL_UINT32(30, engine.getPausedSeconds());
+
+    engine.resume();
+    mockAdvanceMillis(10000);
+    TEST_ASSERT_EQUAL_UINT32(50, engine.getElapsedSeconds());
+    TEST_ASSERT_EQUAL_UINT32(30, engine.getPausedSeconds());
+
+    engine.stop();
+    TEST_ASSERT_EQUAL_UINT32(0, engine.getPausedSeconds());
 }
 
 void test_LastSession_kept_while_next_session_runs(void) {

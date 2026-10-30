@@ -505,6 +505,14 @@ public:
     uint32_t getElapsedSeconds() const;
 
     /**
+     * @brief Seconds the running session has spent paused so far, including a
+     *        pause in progress (0 when no session runs)
+     */
+    uint32_t getPausedSeconds() const {
+        return _isRunning ? pausedMsAt(millis()) / 1000 : 0;
+    }
+
+    /**
      * @brief Get remaining session time in seconds
      */
    uint32_t getRemainingSeconds() const;

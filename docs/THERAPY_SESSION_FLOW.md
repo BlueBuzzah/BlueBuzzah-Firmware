@@ -66,6 +66,8 @@ stateDiagram-v2
     RUNNING --> PHONE_DISCONNECTED: PHONE_LOST
     PHONE_DISCONNECTED --> READY: PHONE_RECONNECTED\n(back to previous state)
     PHONE_DISCONNECTED --> RUNNING: PHONE_RECONNECTED\n(back to previous state)
+    PHONE_DISCONNECTED --> STOPPING: STOP_SESSION\n(session ended while phone away)
+    PHONE_DISCONNECTED --> CONNECTION_LOST: DISCONNECTED
 ```
 
 **State Descriptions:**

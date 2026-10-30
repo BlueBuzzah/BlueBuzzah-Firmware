@@ -893,6 +893,8 @@ void MenuController::handleSessionStatus() {
     if (_therapy && _therapy->isRunning()) {
         if (!_therapy->isTestMode()) {
             addResponseLine("SESSION_ID", (int32_t)_therapy->getSessionId());
+            // ELAPSED excludes pauses; this lets a phone joining mid-session find the start
+            addResponseLine("PAUSED", (int32_t)_therapy->getPausedSeconds());
         }
     } else if (const LastSessionSummary* last = _therapy ? _therapy->getLastSession() : nullptr) {
         addResponseLine("LAST_ID", (int32_t)last->id);

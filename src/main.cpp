@@ -1623,8 +1623,8 @@ void onBLEDisconnect(uint16_t connHandle, ConnectionType type, uint8_t reason)
     if ((deviceRole == DeviceRole::PRIMARY && type == ConnectionType::SECONDARY) ||
         (deviceRole == DeviceRole::SECONDARY && type == ConnectionType::PRIMARY))
     {
-        // Record the reason here: from PHONE_DISCONNECTED the FSM ignores
-        // DISCONNECTED, and the loop's safety shutdown would record STOPPED
+        // Record the reason here, whatever the FSM state: otherwise the loop's
+        // safety shutdown can be first and record STOPPED
         if (therapy.isRunning())
         {
             therapy.stop(SessionEndReason::CONNECTION_LOST);

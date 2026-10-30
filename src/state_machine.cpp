@@ -161,10 +161,12 @@ TherapyState TherapyStateMachine::determineNextState(TherapyState current, State
             break;
 
         case StateTrigger::DISCONNECTED:
-            // Any active state -> CONNECTION_LOST
+            // Any active state -> CONNECTION_LOST (the glove link matters with or
+            // without the phone)
             if (current == TherapyState::RUNNING ||
                 current == TherapyState::PAUSED ||
-                current == TherapyState::READY) {
+                current == TherapyState::READY ||
+                current == TherapyState::PHONE_DISCONNECTED) {
                 return TherapyState::CONNECTION_LOST;
             }
             break;
@@ -203,7 +205,10 @@ TherapyState TherapyStateMachine::determineNextState(TherapyState current, State
             break;
 
         case StateTrigger::STOP_SESSION:
-            if (current == TherapyState::RUNNING || current == TherapyState::PAUSED) {
+            // A session can end while the phone is away; leaving PHONE_DISCONNECTED
+            // here keeps PHONE_RECONNECTED from restoring a RUNNING that is over
+            if (current == TherapyState::RUNNING || current == TherapyState::PAUSED ||
+                current == TherapyState::PHONE_DISCONNECTED) {
                 return TherapyState::STOPPING;
             }
             break;
@@ -213,7 +218,7 @@ TherapyState TherapyStateMachine::determineNextState(TherapyState current, State
             if (current == TherapyState::STOPPING) {
                 return TherapyState::IDLE;
             }
-            if (current == TherapyState::RUNNING) {
+            if (current == TherapyState::RUNNING || current == TherapyState::PHONE_DISCONNECTED) {
                 return TherapyState::IDLE;
             }
             break;
