@@ -356,9 +356,16 @@ static uint32_t sessionEntropy() {
     return esp_random();  // true RNG while the radio is on
 #elif defined(NRF52840_XXAA) && !defined(NATIVE_TEST_BUILD)
     uint32_t value = 0;
+    uint32_t err;
     // The SoftDevice pool refills within microseconds; only "empty" is worth a retry
-    while (sd_rand_application_vector_get(reinterpret_cast<uint8_t*>(&value), sizeof(value))
-           == NRF_ERROR_SOC_RAND_NOT_ENOUGH_VALUES) {}
+    do {
+        err = sd_rand_application_vector_get(reinterpret_cast<uint8_t*>(&value), sizeof(value));
+    } while (err == NRF_ERROR_SOC_RAND_NOT_ENOUGH_VALUES);
+    if (err != NRF_SUCCESS) {
+        // Not random, but the start tap time varies run to run, unlike a fixed fallback
+        Serial.printf("[THERAPY] RNG error 0x%lX, session id from micros()\n", static_cast<unsigned long>(err));
+        return micros();
+    }
     return value;
 #else
     return static_cast<uint32_t>(random(0, 0x7FFFFFFF));
@@ -465,10 +472,16 @@ void TherapyEngine::update() {
 }
 
 void TherapyEngine::pause() {
-    if (!_isPaused) {
-        _pauseStartTime = millis();
+    // Menu commands run on the NimBLE core on ESP32 while update() reads these
+    // on the loop core: set the pair as one step
+    {
+        PLATFORM_CRITICAL_ENTER();
+        if (!_isPaused) {
+            _pauseStartTime = millis();
+        }
+        _isPaused = true;
+        PLATFORM_CRITICAL_EXIT();
     }
-    _isPaused = true;
 
     // Deactivate any active motors
     if (_motorActive && _deactivateCallback) {
@@ -483,20 +496,24 @@ void TherapyEngine::pause() {
 }
 
 void TherapyEngine::resume() {
-    if (_isPaused) {
-        _pausedMs += millis() - _pauseStartTime;
+    {
+        PLATFORM_CRITICAL_ENTER();
+        if (_isPaused) {
+            _pausedMs += millis() - _pauseStartTime;
+        }
+        _isPaused = false;
+        PLATFORM_CRITICAL_EXIT();
     }
-    _isPaused = false;
     Serial.println(F("[THERAPY] Resumed"));
 }
 
 void TherapyEngine::stop(SessionEndReason reason) {
     // stop() runs on the BLE task and in loop(): the running check, the record
     // and the clear must be one step, or two stops can both record
-    uint32_t now = millis();
     bool recorded = false;
     {
         PLATFORM_CRITICAL_ENTER();
+        uint32_t now = millis();
         if (_isRunning && !_isTestMode) {
             _lastSession = {
                 LAST_SESSION_MAGIC,
@@ -511,6 +528,7 @@ void TherapyEngine::stop(SessionEndReason reason) {
         }
         _shouldStop = true;
         _isRunning = false;
+        _isPaused = false;  // a later SESSION_RESUME must not find a dead session paused
         PLATFORM_CRITICAL_EXIT();
     }
     if (recorded) {
@@ -576,8 +594,26 @@ uint32_t TherapyEngine::getElapsedSeconds() const {
     if (!_isRunning) {
         return 0;
     }
-    uint32_t now = millis();
-    return (now - _sessionStartTime - pausedMsAt(now)) / 1000;
+    // Sample the clock under the lock: a pause() after it would start later than now
+    uint32_t now;
+    uint32_t pausedMs;
+    {
+        PLATFORM_CRITICAL_ENTER();
+        now = millis();
+        pausedMs = pausedMsAt(now);
+        PLATFORM_CRITICAL_EXIT();
+    }
+    return (now - _sessionStartTime - pausedMs) / 1000;
+}
+
+uint32_t TherapyEngine::getPausedSeconds() const {
+    if (!_isRunning) {
+        return 0;
+    }
+    PLATFORM_CRITICAL_ENTER();
+    uint32_t pausedMs = pausedMsAt(millis());
+    PLATFORM_CRITICAL_EXIT();
+    return pausedMs / 1000;
 }
 
 uint32_t TherapyEngine::getRemainingSeconds() const {

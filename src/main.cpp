@@ -70,6 +70,7 @@ bool bleReady = false;
 
 // Timing
 uint32_t lastBatteryCheck = 0;
+uint32_t criticalBatteryReadings = 0;  // Consecutive trusted critical readings
 uint32_t lastKeepalive = 0;        // Time of last keepalive PING sent (PRIMARY)
 uint32_t lastStatusPrint = 0;
 
@@ -446,7 +447,8 @@ void onBLEEvent(ble_evt_t* evt);
 void waitForRoleConfiguration();
 
 // Safety shutdown helper (centralized motor stop sequence)
-void safeMotorShutdown();
+void safeMotorShutdown(SessionEndReason reason = SessionEndReason::STOPPED);
+void stopSessionFromPrimary(SessionEndReason reason);
 
 // =============================================================================
 // ROLE CONFIGURATION WAIT
@@ -515,10 +517,11 @@ void waitForRoleConfiguration()
  * 3. Clear activation queue (prevents scheduled macrocycle events)
  * 4. Emergency stop all motors (final safety net)
  */
-void safeMotorShutdown()
+void safeMotorShutdown(SessionEndReason reason)
 {
-    // 1. Stop therapy engine FIRST - prevents new motor activations
-    therapy.stop();
+    // 1. Stop therapy engine FIRST - prevents new motor activations.
+    // Only the first stop of a session records its reason, so callers pass it here.
+    therapy.stop(reason);
 
     // 2. Clear deferred work queue
     deferredQueue.clear();
@@ -528,6 +531,26 @@ void safeMotorShutdown()
 
     // 4. Emergency stop all motors
     haptic.emergencyStop();
+}
+
+/**
+ * @brief PRIMARY ends the session on both gloves (loop-context only).
+ *        loop()'s session-ended check makes the state machine transitions.
+ */
+void stopSessionFromPrimary(SessionEndReason reason)
+{
+    // Gives SECONDARY a chance to stop gracefully if BLE is still connected
+    if (ble.isSecondaryConnected())
+    {
+        char buffer[64];
+        SyncCommand cmd = SyncCommand::createStopSession(g_sequenceGenerator.next());
+        if (cmd.serialize(buffer, sizeof(buffer)))
+        {
+            ble.sendToSecondary(buffer);
+            Serial.println(F("[SYNC] Sent STOP_SESSION"));
+        }
+    }
+    safeMotorShutdown(reason);
 }
 
 // =============================================================================
@@ -815,8 +838,7 @@ void loop()
     // Power-switch shutdown request (PentaBuzzer only; no-op on nRF)
     if (power.powerOffRequested())
     {
-        therapy.stop(SessionEndReason::POWER_OFF);
-        safeMotorShutdown();
+        safeMotorShutdown(SessionEndReason::POWER_OFF);
         therapy.persistLastSession();
         power.enterDeepSleep(led);
     }
@@ -1015,21 +1037,7 @@ void loop()
             Serial.printf("[WARN] SECONDARY keepalive timeout - stopping therapy (lastKA=%lu, now=%lu, elapsed=%lu)\n",
                           (unsigned long)lastKA, (unsigned long)nowMs, (unsigned long)elapsed);
 
-            // Send STOP_SESSION to SECONDARY before shutting down
-            // This gives SECONDARY a chance to stop gracefully if BLE is still connected
-            if (ble.isSecondaryConnected())
-            {
-                char buffer[64];
-                SyncCommand cmd = SyncCommand::createStopSession(g_sequenceGenerator.next());
-                if (cmd.serialize(buffer, sizeof(buffer)))
-                {
-                    ble.sendToSecondary(buffer);
-                    Serial.println(F("[SYNC] Sent STOP_SESSION due to timeout"));
-                }
-            }
-
-            therapy.stop(SessionEndReason::CONNECTION_LOST);
-            safeMotorShutdown();
+            stopSessionFromPrimary(SessionEndReason::CONNECTION_LOST);
             lastSecondaryKeepalive = 0; // Reset to prevent repeated triggers
         }
     }
@@ -1138,25 +1146,21 @@ void loop()
         Serial.printf("[BATTERY] %.2fV | %d%% | Status: %s\n",
                       status.voltage, status.percentage, status.statusString());
 
-        // PRIMARY ends the session at critical battery (0 V = no reading yet).
+        // Skip readings a pulse may have sagged: one that started mid-sample, or
+        // 0 V (no reading yet). The rest must be critical several times running.
+        if (status.voltage > 0.0f && !haptic.anyMotorActive())
+        {
+            criticalBatteryReadings = status.isCritical ? criticalBatteryReadings + 1 : 0;
+        }
+
+        // PRIMARY ends the session at critical battery, never a bench TEST.
         // Not via CRITICAL_BATTERY: nothing leaves that state short of a reboot.
-        if (deviceRole == DeviceRole::PRIMARY && therapy.isRunning() &&
-            status.isCritical && status.voltage > 0.0f)
+        if (deviceRole == DeviceRole::PRIMARY && therapy.isRunning() && !therapy.isTestMode() &&
+            criticalBatteryReadings >= BATTERY_CRITICAL_CONFIRM_READINGS)
         {
             Serial.println(F("[BATTERY] Critical - stopping therapy"));
-            if (ble.isSecondaryConnected())
-            {
-                char buffer[64];
-                SyncCommand cmd = SyncCommand::createStopSession(g_sequenceGenerator.next());
-                if (cmd.serialize(buffer, sizeof(buffer)))
-                {
-                    ble.sendToSecondary(buffer);
-                }
-            }
-            therapy.stop(SessionEndReason::BATTERY);
-            safeMotorShutdown();
-            stateMachine.transition(StateTrigger::STOP_SESSION);
-            stateMachine.transition(StateTrigger::STOPPED);
+            criticalBatteryReadings = 0;
+            stopSessionFromPrimary(SessionEndReason::BATTERY);
         }
     }
 #endif
@@ -3199,8 +3203,7 @@ void handleKeepaliveTimeout()
     Serial.println(F("[WARN] Keepalive timeout - PRIMARY connection lost"));
 
     // 1. Safety first - stop therapy and all motors immediately
-    therapy.stop(SessionEndReason::CONNECTION_LOST);
-    safeMotorShutdown();
+    safeMotorShutdown(SessionEndReason::CONNECTION_LOST);
 
     // 2. Update state machine (LED handled by onStateChange callback)
     stateMachine.transition(StateTrigger::DISCONNECTED);

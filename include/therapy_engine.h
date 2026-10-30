@@ -508,9 +508,7 @@ public:
      * @brief Seconds the running session has spent paused so far, including a
      *        pause in progress (0 when no session runs)
      */
-    uint32_t getPausedSeconds() const {
-        return _isRunning ? pausedMsAt(millis()) / 1000 : 0;
-    }
+    uint32_t getPausedSeconds() const;
 
     /**
      * @brief Get remaining session time in seconds

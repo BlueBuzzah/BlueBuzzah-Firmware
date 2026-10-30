@@ -1372,6 +1372,22 @@ void test_LastSession_counts_paused_time(void) {
     TEST_ASSERT_EQUAL_UINT32(32, last->pausedSec);
 }
 
+void test_LastSession_stop_while_paused_clears_pause(void) {
+    TherapyEngine engine;
+    startTestSession(engine, 300);
+    mockAdvanceMillis(10000);
+    engine.pause();
+    mockAdvanceMillis(5000);
+    engine.stop();
+    TEST_ASSERT_FALSE(engine.isPaused());  // SESSION_RESUME must not find it paused
+
+    // The next session starts unpaused with a fresh pause clock
+    startTestSession(engine, 300);
+    mockAdvanceMillis(20000);
+    TEST_ASSERT_EQUAL_UINT32(20, engine.getElapsedSeconds());
+    TEST_ASSERT_EQUAL_UINT32(0, engine.getPausedSeconds());
+}
+
 void test_LastSession_ignores_test_mode(void) {
     TherapyEngine engine;
     startTestSession(engine, 300);
@@ -1654,6 +1670,7 @@ int main(int argc, char **argv) {
     RUN_TEST(test_LastSession_early_stop_records_reason_and_elapsed);
     RUN_TEST(test_LastSession_second_stop_keeps_first_reason);
     RUN_TEST(test_LastSession_counts_paused_time);
+    RUN_TEST(test_LastSession_stop_while_paused_clears_pause);
     RUN_TEST(test_LastSession_ignores_test_mode);
     RUN_TEST(test_LastSession_paused_time_does_not_count_toward_length);
     RUN_TEST(test_LastSession_elapsed_holds_while_paused);

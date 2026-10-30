@@ -355,6 +355,9 @@ namespace Colors {
 #define BATTERY_CRITICAL_VOLTAGE 3.3f
 // Critical battery voltage (immediate shutdown)
 
+#define BATTERY_CRITICAL_CONFIRM_READINGS 2
+// Consecutive critical readings before the PRIMARY stops a session
+
 #define BATTERY_LOW_VOLTAGE 3.4f
 // Low battery warning voltage (warning, therapy continues)
 
