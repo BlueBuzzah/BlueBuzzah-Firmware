@@ -7,6 +7,7 @@
 
 #include "therapy_engine.h"
 #include "sync_protocol.h"  // For getMicros() - overflow-safe 64-bit timestamp
+#include "fs_backend.h"
 #include <span>
 
 using namespace std::literals;
@@ -368,6 +369,13 @@ void TherapyEngine::startSession(
 
     // Store session parameters
     _sessionStartTime = millis();
+    // 31 bits so it prints as a positive int32 response value
+    _sessionId = static_cast<uint32_t>(getMicros()) & 0x7FFFFFFF;
+    if (_sessionId == 0) {
+        _sessionId = 1;  // 0 means "no session"
+    }
+    _pauseStartTime = 0;
+    _pausedMs = 0;
     _sessionDurationSec = durationSec;
     _patternType = patternType;
     _timeOnMs = timeOnMs;
@@ -426,7 +434,7 @@ void TherapyEngine::update() {
         auto elapsed = uint32_t((millis() - _sessionStartTime) / 1000);
         if (elapsed >= _sessionDurationSec) {
             Serial.println(F("[THERAPY] Session duration reached"));
-            stop();
+            stop(SessionEndReason::COMPLETED);
             return;
         }
     }
@@ -436,6 +444,9 @@ void TherapyEngine::update() {
 }
 
 void TherapyEngine::pause() {
+    if (!_isPaused) {
+        _pauseStartTime = millis();
+    }
     _isPaused = true;
 
     // Deactivate any active motors
@@ -451,11 +462,29 @@ void TherapyEngine::pause() {
 }
 
 void TherapyEngine::resume() {
+    if (_isPaused) {
+        _pausedMs += millis() - _pauseStartTime;
+    }
     _isPaused = false;
     Serial.println(F("[THERAPY] Resumed"));
 }
 
-void TherapyEngine::stop() {
+void TherapyEngine::stop(SessionEndReason reason) {
+    if (_isRunning && !_isTestMode) {
+        uint32_t now = millis();
+        uint32_t pausedMs = _pausedMs + (_isPaused ? now - _pauseStartTime : 0);
+        _lastSession = {
+            LAST_SESSION_MAGIC,
+            _sessionId,
+            (now - _sessionStartTime) / 1000,
+            pausedMs / 1000,
+            _sessionDurationSec,
+            reason
+        };
+        _lastSessionDirty = true;
+        Serial.printf("[THERAPY] Session %lu ended: %s\n",
+                      static_cast<unsigned long>(_sessionId), sessionEndReasonToString(reason));
+    }
     _shouldStop = true;
     _isRunning = false;
 
@@ -470,6 +499,26 @@ void TherapyEngine::stop() {
 
     Serial.printf("[THERAPY] Stopped - Cycles: %lu, Activations: %lu\n",
                   _cyclesCompleted, _totalActivations);
+}
+
+void TherapyEngine::loadLastSession() {
+    LastSessionSummary loaded = {};
+    size_t len = 0;
+    if (fsb::readFile(LAST_SESSION_FILE, reinterpret_cast<uint8_t*>(&loaded), sizeof(loaded), len)
+        && len == sizeof(loaded) && loaded.magic == LAST_SESSION_MAGIC) {
+        _lastSession = loaded;
+    }
+}
+
+void TherapyEngine::persistLastSession() {
+    if (!_lastSessionDirty) {
+        return;
+    }
+    _lastSessionDirty = false;
+    LastSessionSummary copy = _lastSession;
+    if (!fsb::writeFile(LAST_SESSION_FILE, reinterpret_cast<const uint8_t*>(&copy), sizeof(copy))) {
+        Serial.println(F("[THERAPY] Could not save last session"));
+    }
 }
 
 // =============================================================================

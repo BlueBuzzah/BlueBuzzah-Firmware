@@ -770,6 +770,7 @@ void MenuController::handleSessionStart() {
     addResponseLine("SESSION_STATUS", "RUNNING");
     addResponseLine("ELAPSED", static_cast<int32_t>(0));
     addResponseLine("TOTAL", static_cast<int32_t>(durationSec));
+    addResponseLine("SESSION_ID", static_cast<int32_t>(_therapy->getSessionId()));
     sendResponse();
 }
 
@@ -885,6 +886,18 @@ void MenuController::handleSessionStatus() {
     addResponseLine("ELAPSED", (int32_t)elapsed);
     addResponseLine("TOTAL", (int32_t)total);
     addResponseLine("PROGRESS", (int32_t)progress);
+
+    // While active: the id the app binds its record to. Otherwise: how the most
+    // recent session ended, so a phone that wasn't watching records it exactly.
+    if (_therapy && _therapy->isRunning()) {
+        addResponseLine("SESSION_ID", (int32_t)_therapy->getSessionId());
+    } else if (const LastSessionSummary* last = _therapy ? _therapy->getLastSession() : nullptr) {
+        addResponseLine("LAST_ID", (int32_t)last->id);
+        addResponseLine("LAST_ELAPSED", (int32_t)last->elapsedSec);
+        addResponseLine("LAST_PAUSED", (int32_t)last->pausedSec);
+        addResponseLine("LAST_TOTAL", (int32_t)last->totalSec);
+        addResponseLine("LAST_REASON", sessionEndReasonToString(last->reason));
+    }
     sendResponse();
 }
 

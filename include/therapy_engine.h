@@ -202,6 +202,52 @@ Pattern generateMirroredPattern(
 float calculateRelaxIntervalMs(uint8_t numFingers, float timeOnMs, float timeOffMs);
 
 // =============================================================================
+// LAST SESSION SUMMARY
+// =============================================================================
+
+/**
+ * @brief Why the most recent session ended. The wire names (LAST_REASON on
+ *        SESSION_STATUS) come from sessionEndReasonToString().
+ */
+enum class SessionEndReason : uint8_t {
+    COMPLETED = 0,      // Ran to its planned length
+    STOPPED,            // Stopped by a command (phone, serial, profile change)
+    BATTERY,            // Critical battery
+    CONNECTION_LOST,    // Glove-to-glove link lost
+    ERROR,              // Firmware error state
+    POWER_OFF           // Power switch turned off (PentaBuzzer)
+};
+
+inline const char* sessionEndReasonToString(SessionEndReason reason) {
+    switch (reason) {
+        case SessionEndReason::COMPLETED: return "COMPLETED";
+        case SessionEndReason::STOPPED: return "STOPPED";
+        case SessionEndReason::BATTERY: return "BATTERY";
+        case SessionEndReason::CONNECTION_LOST: return "CONNECTION_LOST";
+        case SessionEndReason::ERROR: return "ERROR";
+        case SessionEndReason::POWER_OFF: return "POWER_OFF";
+    }
+    return "STOPPED";
+}
+
+/**
+ * @brief The most recent ended session, kept (and persisted) until the next one ends,
+ *        so the phone can learn how a session it wasn't watching ended.
+ *        Persisted as raw bytes: changing the layout must change LAST_SESSION_MAGIC.
+ */
+struct LastSessionSummary {
+    uint32_t magic;          // LAST_SESSION_MAGIC when valid
+    uint32_t id;             // SESSION_ID the session reported while active
+    uint32_t elapsedSec;     // Same clock as SESSION_STATUS ELAPSED (runs through pauses)
+    uint32_t pausedSec;      // Seconds of elapsedSec spent paused
+    uint32_t totalSec;       // Planned length (SESSION_STATUS TOTAL)
+    SessionEndReason reason;
+};
+
+constexpr uint32_t LAST_SESSION_MAGIC = 0x4C535331;  // "LSS1"
+constexpr const char* LAST_SESSION_FILE = "/last_session.bin";
+
+// =============================================================================
 // CALLBACK TYPES
 // =============================================================================
 
@@ -418,8 +464,10 @@ public:
 
     /**
      * @brief Stop therapy execution
+     * @param reason Recorded in the last-session summary. Only the first stop of a
+     *        running session records, so a follow-up safety stop keeps the real reason.
      */
-    void stop();
+    void stop(SessionEndReason reason = SessionEndReason::STOPPED);
 
     // =========================================================================
     // STATUS
@@ -466,6 +514,32 @@ public:
     uint32_t getDurationSeconds() const { return _sessionDurationSec; }
 
     /**
+     * @brief Id of the current (or most recent) session; 0 before the first one.
+     *        The start time in microseconds (31 bits): a repeat needs a start at the
+     *        same microsecond of uptime, mod ~36 minutes.
+     */
+    uint32_t getSessionId() const { return _sessionId; }
+
+    /**
+     * @brief Summary of the most recent ended session, or nullptr if none
+     */
+    const LastSessionSummary* getLastSession() const {
+        return _lastSession.magic == LAST_SESSION_MAGIC ? &_lastSession : nullptr;
+    }
+
+    /**
+     * @brief Load the persisted summary (call once at boot, after fsb::begin())
+     */
+    void loadLastSession();
+
+    /**
+     * @brief Write the summary to flash if a session ended since the last call.
+     *        Call from loop() only: stop() can run in BLE callbacks, where flash
+     *        writes aren't safe.
+     */
+    void persistLastSession();
+
+    /**
      * @brief Get current frequency for a finger
      * @param finger Finger index (0 to MAX_ACTUATORS-1)
      * @return Current frequency in Hz
@@ -480,6 +554,13 @@ private:
     bool _isPaused;
     bool _shouldStop;
     bool _isTestMode;  // True when started via TEST command (not persisted)
+
+    // Last-session summary
+    uint32_t _sessionId = 0;
+    uint32_t _pauseStartTime = 0;
+    uint32_t _pausedMs = 0;
+    LastSessionSummary _lastSession = {};
+    volatile bool _lastSessionDirty = false;
 
     // Session parameters
     uint32_t _sessionStartTime;

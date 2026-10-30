@@ -586,6 +586,7 @@ void setup()
     Serial.println(F("\n--- Profile Manager Initialization ---"));
     profiles.begin();
     Serial.printf("[PROFILE] Initialized with %d profiles\n", profiles.getProfileCount());
+    therapy.loadLastSession();
 
     // Check if device has a configured role
     if (!profiles.hasStoredRole())
@@ -773,6 +774,9 @@ void loop()
     // Execute one menu command deferred off the 3KB Bluefruit callback task
     processPendingMenuCommand();
 
+    // Save the summary of a session that just ended (flash is loop-context only)
+    therapy.persistLastSession();
+
     // Process SECONDARY battery response in main loop context (thread-safe)
     menu.checkSecondaryBatteryResponse();
 
@@ -810,7 +814,9 @@ void loop()
     // Power-switch shutdown request (PentaBuzzer only; no-op on nRF)
     if (power.powerOffRequested())
     {
+        therapy.stop(SessionEndReason::POWER_OFF);
         safeMotorShutdown();
+        therapy.persistLastSession();
         power.enterDeepSleep(led);
     }
 
@@ -3017,14 +3023,14 @@ void onStateChange(const StateTransition &transition)
         led.setPattern(Colors::RED, LEDPattern::BLINK_SLOW);
         // Emergency stop on error
         haptic.emergencyStop();
-        therapy.stop();
+        therapy.stop(SessionEndReason::ERROR);
         break;
 
     case TherapyState::CRITICAL_BATTERY:
         led.setPattern(Colors::RED, LEDPattern::BLINK_URGENT);
         // Emergency stop on critical battery
         haptic.emergencyStop();
-        therapy.stop();
+        therapy.stop(SessionEndReason::BATTERY);
         break;
 
     case TherapyState::LOW_BATTERY:
@@ -3039,7 +3045,7 @@ void onStateChange(const StateTransition &transition)
         // Stop therapy on connection loss
         if (therapy.isRunning())
         {
-            therapy.stop();
+            therapy.stop(SessionEndReason::CONNECTION_LOST);
         }
         // Always call emergencyStop - motors can be active without therapy running
         // (e.g., from deferred queue connect/disconnect pulses)
@@ -3156,7 +3162,7 @@ void handleKeepaliveTimeout()
     Serial.println(F("[WARN] Keepalive timeout - PRIMARY connection lost"));
 
     // 1. Safety first - stop therapy and all motors immediately
-    therapy.stop();
+    therapy.stop(SessionEndReason::CONNECTION_LOST);
     safeMotorShutdown();
 
     // 2. Update state machine (LED handled by onStateChange callback)
