@@ -7,7 +7,12 @@
 
 #include "therapy_engine.h"
 #include "sync_protocol.h"  // For getMicros() - overflow-safe 64-bit timestamp
+#include "fs_backend.h"
+#include "platform.h"
 #include <span>
+#if defined(NRF52840_XXAA) && !defined(NATIVE_TEST_BUILD)
+#include <nrf_soc.h>
+#endif
 
 using namespace std::literals;
 
@@ -345,6 +350,28 @@ void TherapyEngine::setFrequencyRandomization(bool enabled, uint16_t minHz, uint
 // THERAPY ENGINE - SESSION CONTROL
 // =============================================================================
 
+// Hardware entropy for session ids, which must not repeat across reboots
+static uint32_t sessionEntropy() {
+#if defined(BOARD_PENTABUZZER_ESP32S3) && !defined(NATIVE_TEST_BUILD)
+    return esp_random();  // true RNG while the radio is on
+#elif defined(NRF52840_XXAA) && !defined(NATIVE_TEST_BUILD)
+    uint32_t value = 0;
+    uint32_t err;
+    // The SoftDevice pool refills within microseconds; only "empty" is worth a retry
+    do {
+        err = sd_rand_application_vector_get(reinterpret_cast<uint8_t*>(&value), sizeof(value));
+    } while (err == NRF_ERROR_SOC_RAND_NOT_ENOUGH_VALUES);
+    if (err != NRF_SUCCESS) {
+        // Not random, but the start tap time varies run to run, unlike a fixed fallback
+        Serial.printf("[THERAPY] RNG error 0x%lX, session id from micros()\n", static_cast<unsigned long>(err));
+        return micros();
+    }
+    return value;
+#else
+    return static_cast<uint32_t>(random(0, 0x7FFFFFFF));
+#endif
+}
+
 void TherapyEngine::startSession(
     uint32_t durationSec,
     PatternType patternType,
@@ -368,6 +395,16 @@ void TherapyEngine::startSession(
 
     // Store session parameters
     _sessionStartTime = millis();
+    // Test sessions are never reported, so they keep the last real id.
+    // 31 bits so it prints as a positive int32 response value.
+    if (!isTestMode) {
+        _sessionId = sessionEntropy() & 0x7FFFFFFF;
+        if (_sessionId == 0) {
+            _sessionId = 1;  // 0 means "no session"
+        }
+    }
+    _pauseStartTime = 0;
+    _pausedMs = 0;
     _sessionDurationSec = durationSec;
     _patternType = patternType;
     _timeOnMs = timeOnMs;
@@ -421,12 +458,11 @@ void TherapyEngine::update() {
         return;
     }
 
-    // Check session timeout
+    // Check session timeout (paused time doesn't count toward the length)
     if (_sessionDurationSec > 0) {
-        auto elapsed = uint32_t((millis() - _sessionStartTime) / 1000);
-        if (elapsed >= _sessionDurationSec) {
+        if (getElapsedSeconds() >= _sessionDurationSec) {
             Serial.println(F("[THERAPY] Session duration reached"));
-            stop();
+            stop(SessionEndReason::COMPLETED);
             return;
         }
     }
@@ -436,7 +472,16 @@ void TherapyEngine::update() {
 }
 
 void TherapyEngine::pause() {
-    _isPaused = true;
+    // Menu commands run on the NimBLE core on ESP32 while update() reads these
+    // on the loop core: set the pair as one step
+    {
+        PLATFORM_CRITICAL_ENTER();
+        if (!_isPaused) {
+            _pauseStartTime = millis();
+        }
+        _isPaused = true;
+        PLATFORM_CRITICAL_EXIT();
+    }
 
     // Deactivate any active motors
     if (_motorActive && _deactivateCallback) {
@@ -451,13 +496,45 @@ void TherapyEngine::pause() {
 }
 
 void TherapyEngine::resume() {
-    _isPaused = false;
+    {
+        PLATFORM_CRITICAL_ENTER();
+        if (_isPaused) {
+            _pausedMs += millis() - _pauseStartTime;
+        }
+        _isPaused = false;
+        PLATFORM_CRITICAL_EXIT();
+    }
     Serial.println(F("[THERAPY] Resumed"));
 }
 
-void TherapyEngine::stop() {
-    _shouldStop = true;
-    _isRunning = false;
+void TherapyEngine::stop(SessionEndReason reason) {
+    // stop() runs on the BLE task and in loop(): the running check, the record
+    // and the clear must be one step, or two stops can both record
+    bool recorded = false;
+    {
+        PLATFORM_CRITICAL_ENTER();
+        uint32_t now = millis();
+        if (_isRunning && !_isTestMode) {
+            _lastSession = {
+                LAST_SESSION_MAGIC,
+                _sessionId,
+                (now - _sessionStartTime) / 1000,
+                pausedMsAt(now) / 1000,
+                _sessionDurationSec,
+                reason
+            };
+            _lastSessionDirty = true;
+            recorded = true;
+        }
+        _shouldStop = true;
+        _isRunning = false;
+        _isPaused = false;  // a later SESSION_RESUME must not find a dead session paused
+        PLATFORM_CRITICAL_EXIT();
+    }
+    if (recorded) {
+        Serial.printf("[THERAPY] Session %lu ended: %s\n",
+                      static_cast<unsigned long>(_sessionId), sessionEndReasonToString(reason));
+    }
 
     // Deactivate any active motors
     if (_motorActive && _deactivateCallback) {
@@ -472,15 +549,71 @@ void TherapyEngine::stop() {
                   _cyclesCompleted, _totalActivations);
 }
 
+void TherapyEngine::loadLastSession() {
+    LastSessionSummary loaded = {};
+    size_t len = 0;
+    if (fsb::readFile(LAST_SESSION_FILE, reinterpret_cast<uint8_t*>(&loaded), sizeof(loaded), len)
+        && len == sizeof(loaded) && loaded.magic == LAST_SESSION_MAGIC) {
+        _lastSession = loaded;
+    }
+}
+
+void TherapyEngine::persistLastSession() {
+    if (!_lastSessionDirty
+        || (_persistFailedAt != 0 && millis() - _persistFailedAt < LAST_SESSION_RETRY_MS)) {
+        return;
+    }
+    LastSessionSummary copy;
+    {
+        PLATFORM_CRITICAL_ENTER();
+        copy = _lastSession;
+        _lastSessionDirty = false;
+        PLATFORM_CRITICAL_EXIT();
+    }
+    if (fsb::writeFile(LAST_SESSION_FILE, reinterpret_cast<const uint8_t*>(&copy), sizeof(copy))) {
+        _persistFailedAt = 0;
+    } else {
+        // Retry later; a newer stop in the meantime has already set the flag
+        _lastSessionDirty = true;
+        _persistFailedAt = millis();
+        Serial.println(F("[THERAPY] Could not save last session"));
+    }
+}
+
+void TherapyEngine::clearLastSession() {
+    _lastSession = {};
+    _lastSessionDirty = false;
+    fsb::removeFile(LAST_SESSION_FILE);
+}
+
 // =============================================================================
 // THERAPY ENGINE - STATUS
 // =============================================================================
 
 uint32_t TherapyEngine::getElapsedSeconds() const {
-    if (!_isRunning || _sessionStartTime == 0) {
+    if (!_isRunning) {
         return 0;
     }
-    return uint32_t((millis() - _sessionStartTime) / 1000);
+    // Sample the clock under the lock: a pause() after it would start later than now
+    uint32_t now;
+    uint32_t pausedMs;
+    {
+        PLATFORM_CRITICAL_ENTER();
+        now = millis();
+        pausedMs = pausedMsAt(now);
+        PLATFORM_CRITICAL_EXIT();
+    }
+    return (now - _sessionStartTime - pausedMs) / 1000;
+}
+
+uint32_t TherapyEngine::getPausedSeconds() const {
+    if (!_isRunning) {
+        return 0;
+    }
+    PLATFORM_CRITICAL_ENTER();
+    uint32_t pausedMs = pausedMsAt(millis());
+    PLATFORM_CRITICAL_EXIT();
+    return pausedMs / 1000;
 }
 
 uint32_t TherapyEngine::getRemainingSeconds() const {

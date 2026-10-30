@@ -81,7 +81,7 @@ struct [[nodiscard]] Pattern {
         interBurstIntervalMs(668.0f)
     {
         assert(primarySequence.size() == secondarySequence.size() && primarySequence.size() == timeOffMs.size());
-        for (uint8_t i = 0; i < primarySequence.size(); i++) {
+        for (uint8_t i = 0; i < _numFingers; i++) {
             primarySequence[i] = i;
             secondarySequence[i] = i;
         }
@@ -200,6 +200,53 @@ Pattern generateMirroredPattern(
  * @return Relax interval in milliseconds
  */
 float calculateRelaxIntervalMs(uint8_t numFingers, float timeOnMs, float timeOffMs);
+
+// =============================================================================
+// LAST SESSION SUMMARY
+// =============================================================================
+
+/**
+ * @brief Why the most recent session ended. The wire names (LAST_REASON on
+ *        SESSION_STATUS) come from sessionEndReasonToString().
+ */
+enum class SessionEndReason : uint8_t {
+    COMPLETED = 0,      // Ran to its planned length
+    STOPPED,            // Stopped by a command (phone, serial, profile change)
+    BATTERY,            // Critical battery
+    CONNECTION_LOST,    // Glove-to-glove link lost
+    ERROR,              // Firmware error state (reserved: nothing enters it yet)
+    POWER_OFF           // Power switch turned off (PentaBuzzer)
+};
+
+inline const char* sessionEndReasonToString(SessionEndReason reason) {
+    switch (reason) {
+        case SessionEndReason::COMPLETED: return "COMPLETED";
+        case SessionEndReason::STOPPED: return "STOPPED";
+        case SessionEndReason::BATTERY: return "BATTERY";
+        case SessionEndReason::CONNECTION_LOST: return "CONNECTION_LOST";
+        case SessionEndReason::ERROR: return "ERROR";
+        case SessionEndReason::POWER_OFF: return "POWER_OFF";
+    }
+    return "STOPPED";
+}
+
+/**
+ * @brief The most recent ended session, kept (and persisted) until the next one ends,
+ *        so the phone can learn how a session it wasn't watching ended.
+ *        Persisted as raw bytes: changing the layout must change LAST_SESSION_MAGIC.
+ */
+struct LastSessionSummary {
+    uint32_t magic;          // LAST_SESSION_MAGIC when valid
+    uint32_t id;             // SESSION_ID the session reported while active
+    uint32_t elapsedSec;     // Wall time from start to end, pauses included
+    uint32_t pausedSec;      // Seconds of elapsedSec spent paused
+    uint32_t totalSec;       // Planned length (SESSION_STATUS TOTAL)
+    SessionEndReason reason;
+};
+
+constexpr uint32_t LAST_SESSION_MAGIC = 0x4C535331;  // "LSS1"
+constexpr const char* LAST_SESSION_FILE = "/last_session.bin";
+constexpr uint32_t LAST_SESSION_RETRY_MS = 1000;  // Wait after a failed flash write
 
 // =============================================================================
 // CALLBACK TYPES
@@ -418,8 +465,10 @@ public:
 
     /**
      * @brief Stop therapy execution
+     * @param reason Recorded in the last-session summary. Only the first stop of a
+     *        running session records, so a follow-up safety stop keeps the real reason.
      */
-    void stop();
+    void stop(SessionEndReason reason = SessionEndReason::STOPPED);
 
     // =========================================================================
     // STATUS
@@ -451,9 +500,15 @@ public:
     uint32_t getTotalActivations() const { return _totalActivations; }
 
     /**
-     * @brief Get elapsed session time in seconds
+     * @brief Get elapsed session time in seconds, not counting paused time
      */
     uint32_t getElapsedSeconds() const;
+
+    /**
+     * @brief Seconds the running session has spent paused so far, including a
+     *        pause in progress (0 when no session runs)
+     */
+    uint32_t getPausedSeconds() const;
 
     /**
      * @brief Get remaining session time in seconds
@@ -464,6 +519,36 @@ public:
      * @brief Get total session duration in seconds
      */
     uint32_t getDurationSeconds() const { return _sessionDurationSec; }
+
+    /**
+     * @brief Id of the current (or most recent) non-test session; 0 before the first one.
+     *        31 random bits from the hardware RNG, so ids don't repeat across reboots.
+     */
+    uint32_t getSessionId() const { return _sessionId; }
+
+    /**
+     * @brief Summary of the most recent ended session, or nullptr if none
+     */
+    const LastSessionSummary* getLastSession() const {
+        return _lastSession.magic == LAST_SESSION_MAGIC ? &_lastSession : nullptr;
+    }
+
+    /**
+     * @brief Load the persisted summary (call once at boot, after fsb::begin())
+     */
+    void loadLastSession();
+
+    /**
+     * @brief Write the summary to flash if a session ended since the last call.
+     *        Call from loop() only: stop() can run in BLE callbacks, where flash
+     *        writes aren't safe.
+     */
+    void persistLastSession();
+
+    /**
+     * @brief Forget the summary and delete its file (factory reset)
+     */
+    void clearLastSession();
 
     /**
      * @brief Get current frequency for a finger
@@ -480,6 +565,19 @@ private:
     bool _isPaused;
     bool _shouldStop;
     bool _isTestMode;  // True when started via TEST command (not persisted)
+
+    // Last-session summary
+    uint32_t _sessionId = 0;
+    uint32_t _pauseStartTime = 0;
+    uint32_t _pausedMs = 0;
+    LastSessionSummary _lastSession = {};
+    volatile bool _lastSessionDirty = false;
+    uint32_t _persistFailedAt = 0;  // millis() of the last failed write; 0 = none
+
+    // Paused time so far, including a pause still in progress
+    uint32_t pausedMsAt(uint32_t now) const {
+        return _pausedMs + (_isPaused ? now - _pauseStartTime : 0);
+    }
 
     // Session parameters
     uint32_t _sessionStartTime;

@@ -574,6 +574,31 @@ void test_StateMachine_phoneDisconnected_to_previous_on_phoneReconnected(void) {
     TEST_ASSERT_EQUAL(TherapyState::RUNNING, sm.getCurrentState());
 }
 
+void test_StateMachine_session_ending_while_phone_away_is_not_restored(void) {
+    TherapyStateMachine sm;
+    sm.begin(TherapyState::RUNNING);
+    TEST_ASSERT_TRUE(sm.transition(StateTrigger::PHONE_LOST));
+
+    // The loop's end-of-session handling: STOP_SESSION then STOPPED
+    TEST_ASSERT_TRUE(sm.transition(StateTrigger::STOP_SESSION));
+    TEST_ASSERT_TRUE(sm.transition(StateTrigger::STOPPED));
+    TEST_ASSERT_EQUAL(TherapyState::IDLE, sm.getCurrentState());
+
+    // The phone coming back must not revive the finished session
+    TEST_ASSERT_FALSE(sm.transition(StateTrigger::PHONE_RECONNECTED));
+    TEST_ASSERT_EQUAL(TherapyState::IDLE, sm.getCurrentState());
+}
+
+void test_StateMachine_phoneDisconnected_to_connectionLost_on_disconnected(void) {
+    TherapyStateMachine sm;
+    sm.begin(TherapyState::RUNNING);
+    TEST_ASSERT_TRUE(sm.transition(StateTrigger::PHONE_LOST));
+
+    TEST_ASSERT_TRUE(sm.transition(StateTrigger::DISCONNECTED));
+    TEST_ASSERT_EQUAL(TherapyState::CONNECTION_LOST, sm.getCurrentState());
+    TEST_ASSERT_FALSE(sm.transition(StateTrigger::PHONE_RECONNECTED));
+}
+
 void test_StateMachine_phoneDisconnected_to_previous_on_phoneTimeout(void) {
     TherapyStateMachine sm;
     sm.begin(TherapyState::READY);
@@ -743,6 +768,8 @@ int main(int argc, char **argv) {
 
     // Phone Reconnect/Timeout Tests
     RUN_TEST(test_StateMachine_phoneDisconnected_to_previous_on_phoneReconnected);
+    RUN_TEST(test_StateMachine_session_ending_while_phone_away_is_not_restored);
+    RUN_TEST(test_StateMachine_phoneDisconnected_to_connectionLost_on_disconnected);
     RUN_TEST(test_StateMachine_phoneDisconnected_to_previous_on_phoneTimeout);
 
     // Max Callbacks Tests

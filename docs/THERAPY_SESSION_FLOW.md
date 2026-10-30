@@ -66,6 +66,8 @@ stateDiagram-v2
     RUNNING --> PHONE_DISCONNECTED: PHONE_LOST
     PHONE_DISCONNECTED --> READY: PHONE_RECONNECTED\n(back to previous state)
     PHONE_DISCONNECTED --> RUNNING: PHONE_RECONNECTED\n(back to previous state)
+    PHONE_DISCONNECTED --> STOPPING: STOP_SESSION\n(session ended while phone away)
+    PHONE_DISCONNECTED --> CONNECTION_LOST: DISCONNECTED
 ```
 
 **State Descriptions:**
@@ -636,7 +638,7 @@ stateDiagram-v2
 
 - **Low**: <3.4V (`BATTERY_LOW_VOLTAGE`): reported in battery status only
 - **Critical**: <3.3V (`BATTERY_CRITICAL_VOLTAGE`): `SESSION_START` is refused with `Battery too low`
-- Battery is not monitored during a session; the LOW_BATTERY and CRITICAL_BATTERY states are never entered
+- During a session the PRIMARY checks its battery every 60s, between pulses, and stops the session after two readings in a row below 3.3V (`BATTERY_CRITICAL_CONFIRM_READINGS`, `LAST_REASON:BATTERY`); a bench `TEST` is never stopped this way; the LOW_BATTERY and CRITICAL_BATTERY states are never entered
 
 **Connection Loss Handling:**
 
@@ -862,7 +864,7 @@ sequenceDiagram
 | -------- | ------------- | ------------------------------------------------- |
 | Normal   | ≥3.4V         | Normal operation                                  |
 | Low      | 3.3-3.4V      | Flagged in battery status only                    |
-| Critical | <3.3V         | `SESSION_START` refused (`Battery too low`); a running session is not stopped |
+| Critical | <3.3V         | `SESSION_START` refused (`Battery too low`); the PRIMARY stops a running session after two readings in a row |
 
 ---
 

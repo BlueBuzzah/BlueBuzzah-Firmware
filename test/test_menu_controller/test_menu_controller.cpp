@@ -89,13 +89,47 @@ enum class StateTrigger {
     RESET
 };
 
+// Mock SessionEndReason / LastSessionSummary (mirror include/therapy_engine.h)
+enum class SessionEndReason : uint8_t { COMPLETED = 0, STOPPED, BATTERY, CONNECTION_LOST, ERROR, POWER_OFF };
+
+const char* sessionEndReasonToString(SessionEndReason reason) {
+    switch (reason) {
+        case SessionEndReason::COMPLETED: return "COMPLETED";
+        case SessionEndReason::STOPPED: return "STOPPED";
+        case SessionEndReason::BATTERY: return "BATTERY";
+        case SessionEndReason::CONNECTION_LOST: return "CONNECTION_LOST";
+        case SessionEndReason::ERROR: return "ERROR";
+        case SessionEndReason::POWER_OFF: return "POWER_OFF";
+    }
+    return "STOPPED";
+}
+
+struct LastSessionSummary {
+    uint32_t magic;
+    uint32_t id;
+    uint32_t elapsedSec;
+    uint32_t pausedSec;
+    uint32_t totalSec;
+    SessionEndReason reason;
+};
+
 // Mock TherapyEngine
 class TherapyEngine {
 public:
     bool _running = false;
     bool _paused = false;
+    bool _testMode = false;
     uint32_t _elapsedSec = 0;
     uint32_t _durationSec = 3600;
+    uint32_t _sessionId = 0;
+    uint32_t _pausedSec = 0;
+    bool _hasLast = false;
+    LastSessionSummary _last = {};
+
+    bool isTestMode() const { return _testMode; }
+    uint32_t getSessionId() const { return _sessionId; }
+    uint32_t getPausedSeconds() const { return _pausedSec; }
+    const LastSessionSummary* getLastSession() const { return _hasLast ? &_last : nullptr; }
 
     bool isRunning() const { return _running; }
     bool isPaused() const { return _paused; }
@@ -755,6 +789,46 @@ public:
         sendResponse();
     }
 
+    void handleSessionStatus() {
+        beginResponse();
+
+        const char* statusStr = "IDLE";
+        uint32_t elapsed = 0;
+        uint32_t total = 0;
+        uint8_t progress = 0;
+
+        if (_stateMachine) {
+            statusStr = therapyStateToString(_stateMachine->getCurrentState());
+        }
+
+        if (_therapy && _therapy->isRunning()) {
+            elapsed = _therapy->getElapsedSeconds();
+            total = _therapy->getDurationSeconds();
+            if (total > 0) {
+                progress = static_cast<uint8_t>((elapsed * 100) / total);
+            }
+        }
+
+        addResponseLine("SESSION_STATUS", statusStr);
+        addResponseLine("ELAPSED", (int32_t)elapsed);
+        addResponseLine("TOTAL", (int32_t)total);
+        addResponseLine("PROGRESS", (int32_t)progress);
+
+        if (_therapy && _therapy->isRunning()) {
+            if (!_therapy->isTestMode()) {
+                addResponseLine("SESSION_ID", (int32_t)_therapy->getSessionId());
+                addResponseLine("PAUSED", (int32_t)_therapy->getPausedSeconds());
+            }
+        } else if (const LastSessionSummary* last = _therapy ? _therapy->getLastSession() : nullptr) {
+            addResponseLine("LAST_ID", (int32_t)last->id);
+            addResponseLine("LAST_ELAPSED", (int32_t)last->elapsedSec);
+            addResponseLine("LAST_PAUSED", (int32_t)last->pausedSec);
+            addResponseLine("LAST_TOTAL", (int32_t)last->totalSec);
+            addResponseLine("LAST_REASON", sessionEndReasonToString(last->reason));
+        }
+        sendResponse();
+    }
+
     void handleProfileLoad(int profileId) {
         if (!_profiles) {
             sendError("Profile manager not available");
@@ -833,6 +907,11 @@ public:
 
         if (strcmp(command, "PING") == 0) {
             handlePing();
+            return true;
+        }
+
+        if (strcmp(command, "SESSION_STATUS") == 0) {
+            handleSessionStatus();
             return true;
         }
 
@@ -1749,6 +1828,56 @@ void test_profileLoad_rejected_while_low_battery(void) {
     g_stateMachine->_state = TherapyState::IDLE;
 }
 
+void test_sessionStatus_running_reports_id_and_paused(void) {
+    g_stateMachine->_state = TherapyState::RUNNING;
+    g_therapy->_running = true;
+    g_therapy->_sessionId = 12345;
+    g_therapy->_pausedSec = 30;
+    g_therapy->_hasLast = true;  // an older session's summary stays hidden while one runs
+
+    g_menu->handleCommand("SESSION_STATUS");
+
+    TEST_ASSERT_NOT_NULL(strstr(g_lastResponse, "SESSION_ID:12345\n"));
+    TEST_ASSERT_NOT_NULL(strstr(g_lastResponse, "PAUSED:30\n"));
+    TEST_ASSERT_NULL(strstr(g_lastResponse, "LAST_"));
+}
+
+void test_sessionStatus_test_mode_reports_no_id_or_summary(void) {
+    g_stateMachine->_state = TherapyState::RUNNING;
+    g_therapy->_running = true;
+    g_therapy->_testMode = true;
+    g_therapy->_sessionId = 12345;  // the last real session's id
+    g_therapy->_hasLast = true;
+
+    g_menu->handleCommand("SESSION_STATUS");
+
+    TEST_ASSERT_NULL(strstr(g_lastResponse, "SESSION_ID"));
+    TEST_ASSERT_NULL(strstr(g_lastResponse, "PAUSED:"));
+    TEST_ASSERT_NULL(strstr(g_lastResponse, "LAST_"));
+}
+
+void test_sessionStatus_idle_reports_last_session(void) {
+    g_therapy->_hasLast = true;
+    g_therapy->_last = {0, 777, 72, 32, 300, SessionEndReason::BATTERY};
+
+    g_menu->handleCommand("SESSION_STATUS");
+
+    TEST_ASSERT_NOT_NULL(strstr(g_lastResponse, "LAST_ID:777\n"));
+    TEST_ASSERT_NOT_NULL(strstr(g_lastResponse, "LAST_ELAPSED:72\n"));
+    TEST_ASSERT_NOT_NULL(strstr(g_lastResponse, "LAST_PAUSED:32\n"));
+    TEST_ASSERT_NOT_NULL(strstr(g_lastResponse, "LAST_TOTAL:300\n"));
+    TEST_ASSERT_NOT_NULL(strstr(g_lastResponse, "LAST_REASON:BATTERY\n"));
+    TEST_ASSERT_NULL(strstr(g_lastResponse, "SESSION_ID"));
+}
+
+void test_sessionStatus_idle_without_summary_reports_no_last(void) {
+    g_menu->handleCommand("SESSION_STATUS");
+
+    TEST_ASSERT_NOT_NULL(strstr(g_lastResponse, "SESSION_STATUS:IDLE\n"));
+    TEST_ASSERT_NULL(strstr(g_lastResponse, "LAST_"));
+    TEST_ASSERT_NULL(strstr(g_lastResponse, "SESSION_ID"));
+}
+
 void test_profileLoad_allowed_while_idle(void) {
     g_stateMachine->_state = TherapyState::IDLE;
 
@@ -1868,6 +1997,11 @@ int main(int argc, char **argv) {
     RUN_TEST(test_profileLoad_rejected_while_paused);
     RUN_TEST(test_profileLoad_rejected_while_low_battery);
     RUN_TEST(test_profileLoad_allowed_while_idle);
+
+    RUN_TEST(test_sessionStatus_running_reports_id_and_paused);
+    RUN_TEST(test_sessionStatus_test_mode_reports_no_id_or_summary);
+    RUN_TEST(test_sessionStatus_idle_reports_last_session);
+    RUN_TEST(test_sessionStatus_idle_without_summary_reports_no_last);
 
     return UNITY_END();
 }

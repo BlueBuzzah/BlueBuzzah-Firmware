@@ -183,6 +183,7 @@ constexpr uint32_t TEST_DURATION_SEC = 120;  // 2 minutes
 
 #define BATTERY_LOW_VOLTAGE 3.4f        // Low battery warning threshold (V)
 #define BATTERY_CRITICAL_VOLTAGE 3.3f   // Critical battery shutdown threshold (V)
+#define BATTERY_CRITICAL_CONFIRM_READINGS 2  // Consecutive critical readings before a session stops
 #define BATTERY_FULL_VOLTAGE 4.2f       // Fully charged voltage (V)
 #define BATTERY_EMPTY_VOLTAGE 3.27f     // Empty battery voltage (V)
 
