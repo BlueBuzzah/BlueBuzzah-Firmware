@@ -17,6 +17,7 @@
 7. [Clinical Tuning Guidelines](#clinical-tuning-guidelines)
 8. [Troubleshooting](#troubleshooting)
 9. [Assembly QA (BlueBuzzah v3)](#assembly-qa-bluebuzzah-v3)
+10. [Low-battery threshold](#low-battery-threshold)
 
 ---
 
