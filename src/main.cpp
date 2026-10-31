@@ -457,6 +457,7 @@ void waitForRoleConfiguration();
 void safeMotorShutdown(SessionEndReason reason = SessionEndReason::STOPPED);
 void stopSessionFromPrimary(SessionEndReason reason);
 bool batteryAllowsSession();
+BatteryLevel batteryLevelOf(bool secondary);
 void reconcileBatteryState();
 void applyLed();
 
@@ -573,6 +574,11 @@ bool batteryAllowsSession()
     }
     return !(deviceRole == DeviceRole::PRIMARY && ble.isSecondaryConnected() &&
              g_secondaryBatteryLevel != BatteryLevel::NORMAL);
+}
+
+BatteryLevel batteryLevelOf(bool secondary)
+{
+    return secondary ? g_secondaryBatteryLevel : g_battery.level;
 }
 
 // Matches the FSM to the battery levels; runs every loop so no path into
@@ -741,6 +747,7 @@ void setup()
     menu.setRestartCallback(restartAfterTxDrain);
     menu.setSyncReadyCallback(phoneStartSyncReady);
     menu.setBatteryGateCallback(batteryAllowsSession);
+    menu.setBatteryLevelCallback(batteryLevelOf);
     Serial.println(F("[SUCCESS] Menu controller initialized"));
 
     // Initialize Deferred Queue (for ISR-safe callback operations)

@@ -1287,7 +1287,7 @@ void HapticController::configureDRV2605(Adafruit_DRV2605& drv) {
 
 ### Battery Monitor
 
-Battery sensing has two backends selected by the `BATTERY_SENSE_ADC` build flag, one per board. Both feed the same LiPo discharge curve, the same thresholds (`BATTERY_LOW_VOLTAGE` low, per board in `board_config.h`, 3.8V on both until bench-calibrated per [CALIBRATION_GUIDE.md](CALIBRATION_GUIDE.md#low-battery-threshold) / 3.3V critical), and the same reporting paths (serial log, BLE `BATP`/`BATS`, the low-battery LED and states, the `SESSION_START` low-battery check, and the PRIMARY's in-session critical-battery stop).
+Battery sensing has two backends selected by the `BATTERY_SENSE_ADC` build flag, one per board. Both feed the same LiPo discharge curve, the same thresholds (`BATTERY_LOW_VOLTAGE` low, per board in `board_config.h`, 3.8V on both until bench-calibrated per [CALIBRATION_GUIDE.md](CALIBRATION_GUIDE.md#low-battery-threshold) / 3.3V critical), and the same reporting paths (serial log, BLE `BATP`/`BATS` voltages and `BATLP`/`BATLS` levels, the low-battery LED and states, the `SESSION_START` low-battery check, and the PRIMARY's in-session critical-battery stop).
 
 #### ADC (v2, nRF52840)
 

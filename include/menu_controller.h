@@ -84,6 +84,7 @@ typedef void (*SendToSecondaryCallback)(const char* message);
  */
 typedef bool (*SyncReadyCallback)();
 typedef bool (*BatteryGateCallback)();  // true if both gloves' batteries allow a session
+typedef BatteryLevel (*BatteryLevelCallback)(bool secondary);  // a glove's level, as the start gate sees it
 
 // =============================================================================
 // MENU CONTROLLER CLASS
@@ -186,6 +187,12 @@ public:
     void setBatteryGateCallback(BatteryGateCallback callback);
 
     /**
+     * @brief Set callback that reports each glove's battery level for INFO/BATTERY
+     *        (BATLP/BATLS), so the phone shows the same low state as the LED
+     */
+    void setBatteryLevelCallback(BatteryLevelCallback callback);
+
+    /**
      * @brief Set SECONDARY battery voltage from ISR/BLE callback context
      * @param voltage Battery voltage from SECONDARY glove
      *
@@ -262,6 +269,7 @@ private:
     SendToSecondaryCallback _sendToSecondaryCallback;
     SyncReadyCallback _syncReadyCallback;
     BatteryGateCallback _batteryGateCallback;
+    BatteryLevelCallback _batteryLevelCallback;
 
     // Deferred command tracking for SECONDARY battery query
     enum class DeferredCommand : uint8_t {
@@ -350,6 +358,9 @@ private:
      * MUST only be called from main loop context (manipulates _responseBuffer).
      */
     void handleSecondaryBatteryResponse(float voltage);
+
+    /** @brief Add a BATLP/BATLS line; nothing without a level callback */
+    void addBatteryLevelLine(const char* key, bool secondary);
 
     void handleInfo();
     void handleBattery();

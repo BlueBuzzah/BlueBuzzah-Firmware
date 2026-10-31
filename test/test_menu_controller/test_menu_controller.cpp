@@ -89,6 +89,9 @@ enum class StateTrigger {
     RESET
 };
 
+// Mock BatteryLevel (mirror include/types.h)
+enum class BatteryLevel : uint8_t { NORMAL, LOW_CHARGE, CRITICAL };
+
 // Mock SessionEndReason / LastSessionSummary (mirror include/therapy_engine.h)
 enum class SessionEndReason : uint8_t { COMPLETED = 0, STOPPED, BATTERY, CONNECTION_LOST, ERROR, POWER_OFF };
 
@@ -319,6 +322,8 @@ public:
 
     typedef void (*SendToSecondaryCallback)(const char* message);
     SendToSecondaryCallback _sendToSecondaryCallback;
+    typedef BatteryLevel (*BatteryLevelCallback)(bool secondary);
+    BatteryLevelCallback _batteryLevelCallback = nullptr;
     DeferredCommand _deferredCommand;
     volatile float _secondaryBatteryVoltage;
     bool _waitingForSecondaryBattery;
@@ -532,6 +537,21 @@ public:
         _sendToSecondaryCallback = callback;
     }
 
+    void setBatteryLevelCallback(BatteryLevelCallback callback) {
+        _batteryLevelCallback = callback;
+    }
+
+    void addBatteryLevelLine(const char* key, bool secondary) {
+        if (!_batteryLevelCallback) {
+            return;
+        }
+        switch (_batteryLevelCallback(secondary)) {
+            case BatteryLevel::LOW_CHARGE: addResponseLine(key, "LOW"); break;
+            case BatteryLevel::CRITICAL:   addResponseLine(key, "CRITICAL"); break;
+            default:                       addResponseLine(key, "NORMAL"); break;
+        }
+    }
+
     void setBLE(BLEManager* ble) {
         _ble = ble;
     }
@@ -678,6 +698,9 @@ public:
         if (_battery) {
             BatteryStatus status = _battery->getStatus();
             addResponseLine("BATP", status.voltage, 2);
+            if (status.voltage > 0.0f) {
+                addBatteryLevelLine("BATLP", false);
+            }
         } else {
             addResponseLine("BATP", "0.00");
         }
@@ -714,6 +737,9 @@ public:
         if (_battery) {
             BatteryStatus status = _battery->getStatus();
             addResponseLine("BATP", status.voltage, 2);
+            if (status.voltage > 0.0f) {
+                addBatteryLevelLine("BATLP", false);
+            }
         } else {
             addResponseLine("BATP", "0.00");
         }
@@ -754,6 +780,9 @@ public:
         _secondaryBatteryVoltage = voltage;
 
         addResponseLine("BATS", voltage, 2);
+        if (voltage > 0.0f) {
+            addBatteryLevelLine("BATLS", true);
+        }
 
         if (_deferredCommand == DeferredCommand::INFO) {
             const char* statusStr = "IDLE";
@@ -1767,6 +1796,59 @@ void test_handleInfo_timeout_returns_zero_with_status() {
     TEST_ASSERT_TRUE(strstr(g_lastResponse, "STATUS:IDLE") != nullptr);
 }
 
+// Each glove's latched level, as the start gate sees it (BATLP/BATLS)
+static BatteryLevel g_testPrimaryLevel = BatteryLevel::NORMAL;
+static BatteryLevel g_testSecondaryLevel = BatteryLevel::NORMAL;
+static BatteryLevel testBatteryLevel(bool secondary) {
+    return secondary ? g_testSecondaryLevel : g_testPrimaryLevel;
+}
+
+void test_handleInfo_reports_battery_levels() {
+    // A pack latched low reads above 3.80 V after resting; the level still says LOW
+    g_menu->setSendToSecondaryCallback(testSendToSecondaryCallback);
+    g_menu->setBatteryLevelCallback(testBatteryLevel);
+    g_testPrimaryLevel = BatteryLevel::NORMAL;
+    g_testSecondaryLevel = BatteryLevel::LOW_CHARGE;
+    g_battery->_status.voltage = 4.05f;
+
+    g_menu->handleInfo();
+    g_menu->handleSecondaryBatteryResponse(3.85f);
+
+    TEST_ASSERT_EQUAL_INT(1, g_responseCount);
+    TEST_ASSERT_NOT_NULL(strstr(g_lastResponse, "BATP:4.05\nBATLP:NORMAL\n"));
+    TEST_ASSERT_NOT_NULL(strstr(g_lastResponse, "BATS:3.85\nBATLS:LOW\nSTATUS:IDLE"));
+}
+
+void test_handleBattery_reports_critical_level() {
+    g_menu->setSendToSecondaryCallback(testSendToSecondaryCallback);
+    g_menu->setBatteryLevelCallback(testBatteryLevel);
+    g_testPrimaryLevel = BatteryLevel::CRITICAL;
+    g_testSecondaryLevel = BatteryLevel::NORMAL;
+    g_battery->_status.voltage = 3.25f;
+
+    g_menu->handleBattery();
+    g_menu->handleSecondaryBatteryResponse(3.95f);
+
+    TEST_ASSERT_NOT_NULL(strstr(g_lastResponse, "BATLP:CRITICAL"));
+    TEST_ASSERT_NOT_NULL(strstr(g_lastResponse, "BATLS:NORMAL"));
+}
+
+void test_battery_level_omitted_without_reading() {
+    // BATS:0.00 (timeout) or BATP:0.00 carry no level
+    g_menu->setSendToSecondaryCallback(testSendToSecondaryCallback);
+    g_menu->setBatteryLevelCallback(testBatteryLevel);
+    g_battery->_status.voltage = 0.0f;
+
+    g_menu->handleBattery();
+    mockAdvanceMillis(1001);
+    g_menu->checkSecondaryBatteryTimeout();
+
+    TEST_ASSERT_EQUAL_INT(1, g_responseCount);
+    TEST_ASSERT_NOT_NULL(strstr(g_lastResponse, "BATS:0.00"));
+    TEST_ASSERT_NULL(strstr(g_lastResponse, "BATLP"));
+    TEST_ASSERT_NULL(strstr(g_lastResponse, "BATLS"));
+}
+
 void test_handleCommand_cancels_stale_deferred_INFO_on_new_command() {
     // If a new command is dispatched while an INFO response is still
     // deferred (awaiting the SECONDARY battery reply), the stale deferral
@@ -1992,6 +2074,9 @@ int main(int argc, char **argv) {
     RUN_TEST(test_handleInfo_includes_motors_and_profile);
     RUN_TEST(test_handleBattery_timeout_returns_zero);
     RUN_TEST(test_handleInfo_timeout_returns_zero_with_status);
+    RUN_TEST(test_handleInfo_reports_battery_levels);
+    RUN_TEST(test_handleBattery_reports_critical_level);
+    RUN_TEST(test_battery_level_omitted_without_reading);
     RUN_TEST(test_handleCommand_cancels_stale_deferred_INFO_on_new_command);
     RUN_TEST(test_profileLoad_rejected_while_running);
     RUN_TEST(test_profileLoad_rejected_while_paused);

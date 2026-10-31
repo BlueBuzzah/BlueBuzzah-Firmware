@@ -31,6 +31,7 @@ MenuController::MenuController() :
     _sendToSecondaryCallback(nullptr),
     _syncReadyCallback(nullptr),
     _batteryGateCallback(nullptr),
+    _batteryLevelCallback(nullptr),
     _deferredCommand(DeferredCommand::NONE),
     _secondaryBatteryVoltage(0.0f),
     _waitingForSecondaryBattery(false),
@@ -106,6 +107,10 @@ void MenuController::setSyncReadyCallback(SyncReadyCallback callback) {
 
 void MenuController::setBatteryGateCallback(BatteryGateCallback callback) {
     _batteryGateCallback = callback;
+}
+
+void MenuController::setBatteryLevelCallback(BatteryLevelCallback callback) {
+    _batteryLevelCallback = callback;
 }
 
 // =============================================================================
@@ -374,6 +379,9 @@ void MenuController::handleSecondaryBatteryResponse(float voltage) {
 
     // Complete the deferred response
     addResponseLine("BATS", voltage, 2);
+    if (voltage > 0.0f) {
+        addBatteryLevelLine("BATLS", true);  // no level without a reading
+    }
 
     if (_deferredCommand == DeferredCommand::INFO) {
         // INFO response needs STATUS after BATS
@@ -392,6 +400,17 @@ void MenuController::handleSecondaryBatteryResponse(float voltage) {
 
     _deferredCommand = DeferredCommand::NONE;
     sendResponse();
+}
+
+void MenuController::addBatteryLevelLine(const char* key, bool secondary) {
+    if (!_batteryLevelCallback) {
+        return;
+    }
+    switch (_batteryLevelCallback(secondary)) {
+        case BatteryLevel::LOW_CHARGE: addResponseLine(key, "LOW"); break;
+        case BatteryLevel::CRITICAL:   addResponseLine(key, "CRITICAL"); break;
+        default:                       addResponseLine(key, "NORMAL"); break;
+    }
 }
 
 void MenuController::checkSecondaryBatteryTimeout() {
@@ -428,6 +447,9 @@ void MenuController::handleInfo() {
     if (_battery) {
         BatteryStatus status = _battery->getStatus();
         addResponseLine("BATP", status.voltage, 2);
+        if (status.voltage > 0.0f) {
+            addBatteryLevelLine("BATLP", false);
+        }
     } else {
         addResponseLine("BATP", "0.00");
     }
@@ -484,6 +506,9 @@ void MenuController::handleBattery() {
     if (_battery) {
         BatteryStatus status = _battery->getStatus();
         addResponseLine("BATP", status.voltage, 2);
+        if (status.voltage > 0.0f) {
+            addBatteryLevelLine("BATLP", false);
+        }
     } else {
         addResponseLine("BATP", "0.00");
     }
