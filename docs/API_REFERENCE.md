@@ -1695,6 +1695,8 @@ public:
     void setSyncReadyCallback(SyncReadyCallback callback);
     // Set callback that gates SESSION_START on both gloves' battery levels
     void setBatteryGateCallback(BatteryGateCallback callback);
+    // Set callback reporting each glove's level for INFO/BATTERY BATLP/BATLS
+    void setBatteryLevelCallback(BatteryLevelCallback callback);
 
     // SECONDARY battery reply (deferred INFO/BATTERY responses)
     void setSecondaryBatteryVoltage(float voltage);
