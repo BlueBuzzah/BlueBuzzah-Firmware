@@ -1053,7 +1053,7 @@ All I2C access to the drivers takes the I2C mutex (`I2CMutexLock`), so the motor
 
 ### Safety Features
 
-1. **Battery check**: `SESSION_START` is refused with `ERROR:Battery too low` when the battery is below `BATTERY_CRITICAL_VOLTAGE` (3.3V), and the PRIMARY stops a running session when two 60s battery checks in a row (taken between pulses) read below it
+1. **Battery check**: `SESSION_START` is refused with `ERROR:Battery too low` when the battery is below `BATTERY_CRITICAL_VOLTAGE` (3.3V), the PRIMARY doesn't auto-start, and it stops a running session when two 60s battery checks in a row (taken between pulses) read below it
 2. **Keepalive timeout**: Therapy stops if the peer glove's keepalive stops for 6s (`KEEPALIVE_TIMEOUT_MS`)
 3. **Emergency stop**: `emergencyStop()` immediately stops all motors
 4. **Visual feedback**: LED indicators for errors

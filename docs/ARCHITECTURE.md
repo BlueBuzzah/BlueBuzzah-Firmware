@@ -2126,7 +2126,7 @@ The architecture enables confident refactoring, easy testing, and straightforwar
 |---------|--------|--------|
 | ≥3.4V | OK | Full operation |
 | <3.4V | Low | Reported as `LOW` (`BATTERY_LOW_VOLTAGE`) |
-| <3.3V | Critical | `SESSION_START` refused with `ERROR:Battery too low` (`BATTERY_CRITICAL_VOLTAGE`) |
+| <3.3V | Critical | `SESSION_START` refused with `ERROR:Battery too low` (`BATTERY_CRITICAL_VOLTAGE`); no auto-start |
 | ≤3.27V | Empty | Reported as 0% (`BATTERY_EMPTY_VOLTAGE`) |
 
 ### Timing Constants
