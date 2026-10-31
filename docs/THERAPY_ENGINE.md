@@ -571,7 +571,7 @@ _therapy->startSession(durationSec, patternType, timeOnMs, timeOffMs, jitterPerc
                         amplitudeMin, amplitudeMax, false);
 ```
 
-`SESSION_START` is refused while a session runs, when the battery is critical, and (with a SECONDARY connected) until clock sync is ready (`ERROR:Sync not ready`); once the SECONDARY has been connected for `SYNC_START_FALLBACK_MS` (10 s) the start is let through even without converged sync.
+`SESSION_START` is refused while a session runs, when either glove's battery is low (`ERROR:Battery too low`), and (with a SECONDARY connected) until clock sync is ready (`ERROR:Sync not ready`); once the SECONDARY has been connected for `SYNC_START_FALLBACK_MS` (10 s) the start is let through even without converged sync.
 
 **Main Loop Integration:**
 
@@ -1053,7 +1053,7 @@ All I2C access to the drivers takes the I2C mutex (`I2CMutexLock`), so the motor
 
 ### Safety Features
 
-1. **Battery check**: `SESSION_START` is refused with `ERROR:Battery too low` when the battery is below `BATTERY_CRITICAL_VOLTAGE` (3.3V), the PRIMARY doesn't auto-start, and it stops a running session when two 60s battery checks in a row (taken between pulses) read below it
+1. **Battery check**: `SESSION_START` is refused with `ERROR:Battery too low` when either glove's battery is low: two 60s battery checks in a row (taken between pulses) below `BATTERY_LOW_VOLTAGE` (3.8V, too low to finish a 2-hour session). The PRIMARY doesn't auto-start then, and it stops a running session when either glove is critical: two checks in a row below `BATTERY_CRITICAL_VOLTAGE` (3.3V)
 2. **Keepalive timeout**: Therapy stops if the peer glove's keepalive stops for 6s (`KEEPALIVE_TIMEOUT_MS`)
 3. **Emergency stop**: `emergencyStop()` immediately stops all motors
 4. **Visual feedback**: LED indicators for errors

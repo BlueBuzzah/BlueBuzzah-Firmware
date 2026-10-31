@@ -802,16 +802,22 @@ stateDiagram-v2
     PAUSED --> ERROR: EMERGENCY_STOP
 
     LOW_BATTERY --> RUNNING: BATTERY_OK
+    LOW_BATTERY --> PAUSED: PAUSE_SESSION
+    LOW_BATTERY --> STOPPING: STOP_SESSION
+    LOW_BATTERY --> IDLE: SESSION_COMPLETE / STOPPED
+    LOW_BATTERY --> CONNECTION_LOST: DISCONNECTED
+    LOW_BATTERY --> PHONE_DISCONNECTED: PHONE_LOST
     LOW_BATTERY --> CRITICAL_BATTERY: BATTERY_CRITICAL
     LOW_BATTERY --> ERROR: EMERGENCY_STOP
 
-    CRITICAL_BATTERY --> IDLE: FORCED_SHUTDOWN / RESET
+    CRITICAL_BATTERY --> IDLE: BATTERY_OK / FORCED_SHUTDOWN / RESET
 
     CONNECTION_LOST --> READY: CONNECTED / RECONNECTED
     CONNECTION_LOST --> IDLE: RECONNECT_FAILED
 
     PHONE_DISCONNECTED --> READY: PHONE_RECONNECTED / PHONE_TIMEOUT (previous state)
     PHONE_DISCONNECTED --> RUNNING: PHONE_RECONNECTED / PHONE_TIMEOUT (previous state)
+    PHONE_DISCONNECTED --> LOW_BATTERY: PHONE_RECONNECTED / PHONE_TIMEOUT (previous state)
     PHONE_DISCONNECTED --> STOPPING: STOP_SESSION
     PHONE_DISCONNECTED --> IDLE: SESSION_COMPLETE / STOPPED
     PHONE_DISCONNECTED --> CONNECTION_LOST: DISCONNECTED
@@ -825,7 +831,9 @@ stateDiagram-v2
 
 After a session stops, the FSM lands in `IDLE`; `loop()` promotes it to `READY` while the peer glove's keepalive traffic is live.
 
-Current firmware fires only `CONNECTED`, `DISCONNECTED`, `START_SESSION`, `PAUSE_SESSION`, `RESUME_SESSION`, `STOP_SESSION`, `STOPPED`, `RECONNECT_FAILED`, `PHONE_LOST`, and `PHONE_RECONNECTED`. `CONNECTING`, `LOW_BATTERY`, `CRITICAL_BATTERY`, and `ERROR` are defined but never entered.
+Current firmware fires only `CONNECTED`, `DISCONNECTED`, `START_SESSION`, `PAUSE_SESSION`, `RESUME_SESSION`, `STOP_SESSION`, `STOPPED`, `RECONNECT_FAILED`, `PHONE_LOST`, `PHONE_RECONNECTED`, and the battery triggers `BATTERY_WARNING`, `BATTERY_CRITICAL`, and `BATTERY_OK`. `CONNECTING` and `ERROR` are defined but never entered.
+
+`reconcileBatteryState()` in `src/main.cpp` runs every loop pass and matches the FSM to this glove's battery level: `RUNNING` becomes `LOW_BATTERY` when the level is low and returns on recovery (so resuming a paused session on a low battery goes `RUNNING` then straight to `LOW_BATTERY`), and a critical level enters `CRITICAL_BATTERY` from any state except during a bench `TEST`, leaving to `IDLE` once the glove charges to `BATTERY_LOW_VOLTAGE`. `LOW_BATTERY` behaves like `RUNNING` (`isRunning()` is true for both).
 
 **State Descriptions**:
 
@@ -838,8 +846,8 @@ Current firmware fires only `CONNECTED`, `DISCONNECTED`, `START_SESSION`, `PAUSE
 | `PAUSED`             | 4     | Session paused, can resume                 |
 | `STOPPING`           | 5     | Session ending, cleanup                    |
 | `ERROR`              | 6     | Error condition, motors stopped (never entered) |
-| `LOW_BATTERY`        | 7     | Low battery, session can continue (never entered) |
-| `CRITICAL_BATTERY`   | 8     | Critical battery, motors stopped (never entered) |
+| `LOW_BATTERY`        | 7     | Session running on a low battery (below `BATTERY_LOW_VOLTAGE`) |
+| `CRITICAL_BATTERY`   | 8     | Critical battery, motors stopped until the glove charges |
 | `CONNECTION_LOST`    | 9     | Inter-device BLE lost; purple LED for 30s, then IDLE |
 | `PHONE_DISCONNECTED` | 10    | Phone BLE lost (PRIMARY only, informational) |
 
@@ -1177,7 +1185,7 @@ MC:<seq>|<baseHigh>|<baseLow>|<offHigh>|<offLow>|<durationMs>|<count>|<delta>,<f
 | `BUZZ`               | `BUZZ`           | P->S      | Deprecated; the SECONDARY logs a warning and ignores it |
 | `DEACTIVATE`         | `DEACTIVATE`     | P->S      | Defined but not sent         |
 
-Other device-to-device messages are plain strings: `IDENTIFY:SECONDARY` (S->P, on connect), `GET_BATTERY` / `BATRESPONSE:<volts>` (battery query), `LED_OFF_SYNC:<0|1>`, `DEBUG_SYNC:<0|1>`, `CALIB_BUZZ:<finger>:<intensity>:<ms>`, and `CALIB_STOP` (all P->S except `BATRESPONSE`). Every prefix the menu must ignore is listed in `INTERNAL_MESSAGES[]` (`include/internal_messages.h`).
+Other device-to-device messages are plain strings: `IDENTIFY:SECONDARY` (S->P, on connect), `GET_BATTERY` / `BATRESPONSE:<volts>` (battery query, answered with the SECONDARY's last motor-idle reading; the SECONDARY also pushes `BATRESPONSE:<volts>|<level>` with its own battery level, 0 normal / 1 low / 2 critical, after every motor-idle battery check), `LED_OFF_SYNC:<0|1>`, `DEBUG_SYNC:<0|1>`, `CALIB_BUZZ:<finger>:<intensity>:<ms>`, and `CALIB_STOP` (all P->S except `BATRESPONSE`). Every prefix the menu must ignore is listed in `INTERNAL_MESSAGES[]` (`include/internal_messages.h`).
 
 **Example Messages** (EOT not shown):
 
@@ -1279,7 +1287,7 @@ void HapticController::configureDRV2605(Adafruit_DRV2605& drv) {
 
 ### Battery Monitor
 
-Battery sensing has two backends selected by the `BATTERY_SENSE_ADC` build flag, one per board. Both feed the same LiPo discharge curve, the same thresholds (3.4V low / 3.3V critical), and the same reporting paths (serial log, BLE `BATP`/`BATS`, the `SESSION_START` critical-battery check, and the PRIMARY's in-session critical-battery stop).
+Battery sensing has two backends selected by the `BATTERY_SENSE_ADC` build flag, one per board. Both feed the same LiPo discharge curve, the same thresholds (`BATTERY_LOW_VOLTAGE` low, per board in `board_config.h`, 3.8V on both until bench-calibrated per [CALIBRATION_GUIDE.md](CALIBRATION_GUIDE.md#low-battery-threshold) / 3.3V critical), and the same reporting paths (serial log, BLE `BATP`/`BATS`, the low-battery LED and states, the `SESSION_START` low-battery check, and the PRIMARY's in-session critical-battery stop).
 
 #### ADC (v2, nRF52840)
 
@@ -1395,12 +1403,14 @@ private:
 // src/main.cpp - usage
 void onStateChange(const StateTransition &transition)
 {
+    applyLed();   // LED from the new state and this glove's battery level
     switch (transition.toState)
     {
-    case TherapyState::READY:
-        led.setPattern(Colors::GREEN, LEDPattern::SOLID);
+    case TherapyState::CRITICAL_BATTERY:
+        haptic.emergencyStop();
+        therapy.stop(SessionEndReason::BATTERY);
         break;
-    // ... LED pattern for every state
+    // ... motor stops for ERROR and CONNECTION_LOST
     }
 }
 
@@ -1821,7 +1831,7 @@ Users edit their own parameters on the built-in Custom profile (ID 4) with `PROF
 
 ### Adding New Hardware Platforms
 
-1. Add a board macro and its block in `board_config.h` (pins, `MAX_ACTUATORS`, battery sensing)
+1. Add a board macro and its block in `board_config.h` (pins, `MAX_ACTUATORS`, battery sensing, `BATTERY_LOW_VOLTAGE`)
 2. Add platform primitives to `platform.h`
 3. Provide `BLEManager`, `fs_backend`, and `PowerController` implementations (or reuse an existing one)
 4. Add a PlatformIO environment whose `build_src_filter` excludes the other boards' implementations, and exclude the new files from the native test environments
@@ -1836,6 +1846,7 @@ Users edit their own parameters on the built-in Custom profile (ID 4) with `PROF
   #define USER_BUTTON_ENABLED      0
   #define BATTERY_SENSE_ENABLED    1
   #define BATTERY_SENSE_ADC        1
+  #define BATTERY_LOW_VOLTAGE      3.80f
   // ...
 ```
 
@@ -2124,9 +2135,9 @@ The architecture enables confident refactoring, easy testing, and straightforwar
 
 | Voltage | Status | Action |
 |---------|--------|--------|
-| ≥3.4V | OK | Full operation |
-| <3.4V | Low | Reported as `LOW` (`BATTERY_LOW_VOLTAGE`) |
-| <3.3V | Critical | `SESSION_START` refused with `ERROR:Battery too low` (`BATTERY_CRITICAL_VOLTAGE`); no auto-start |
+| ≥3.8V | OK | Full operation |
+| <3.8V | Low | Two readings in a row (`BATTERY_CRITICAL_CONFIRM_READINGS`): can't finish a 2-hour session (`BATTERY_LOW_VOLTAGE`, per board): orange LED, `RUNNING` becomes `LOW_BATTERY`, `SESSION_START` refused with `ERROR:Battery too low` and no auto-start if either glove is low. Clears at ≥3.9V (`BATTERY_LOW_HYSTERESIS_V`) |
+| <3.3V | Critical | Two readings in a row (`BATTERY_CRITICAL_CONFIRM_READINGS`, `BATTERY_CRITICAL_VOLTAGE`): `CRITICAL_BATTERY`, red urgent blink; the PRIMARY ends the session (`LAST_REASON:BATTERY`) if either glove is critical. Clears at ≥3.8V |
 | ≤3.27V | Empty | Reported as 0% (`BATTERY_EMPTY_VOLTAGE`) |
 
 ### Timing Constants

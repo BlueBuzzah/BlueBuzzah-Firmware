@@ -15,7 +15,7 @@ The BlueBuzzah system uses a dual-glove architecture with synchronized bilateral
 
 ## 1. Session Lifecycle State Machine
 
-The therapy session follows an 11-state finite state machine (`src/state_machine.cpp`). The diagram shows the transitions current firmware actually fires; CONNECTING, LOW_BATTERY, CRITICAL_BATTERY and ERROR are defined but never entered (see the table below):
+The therapy session follows an 11-state finite state machine (`src/state_machine.cpp`). The diagram shows the transitions current firmware actually fires; CONNECTING and ERROR are defined but never entered (see the table below). `BATTERY_CRITICAL` enters CRITICAL_BATTERY from any state except during a bench `TEST`; only the edge from LOW_BATTERY is drawn:
 
 ```mermaid
 %%{init: {'theme': 'base', 'themeVariables': {
@@ -68,6 +68,16 @@ stateDiagram-v2
     PHONE_DISCONNECTED --> RUNNING: PHONE_RECONNECTED\n(back to previous state)
     PHONE_DISCONNECTED --> STOPPING: STOP_SESSION\n(session ended while phone away)
     PHONE_DISCONNECTED --> CONNECTION_LOST: DISCONNECTED
+
+    RUNNING --> LOW_BATTERY: BATTERY_WARNING\n(this glove below 3.8V)
+    LOW_BATTERY --> RUNNING: BATTERY_OK\n(back to 3.9V or more)
+    LOW_BATTERY --> PAUSED: PAUSE_SESSION
+    LOW_BATTERY --> STOPPING: STOP_SESSION
+    LOW_BATTERY --> CONNECTION_LOST: DISCONNECTED
+    LOW_BATTERY --> PHONE_DISCONNECTED: PHONE_LOST
+    PHONE_DISCONNECTED --> LOW_BATTERY: PHONE_RECONNECTED\n(back to previous state)
+    LOW_BATTERY --> CRITICAL_BATTERY: BATTERY_CRITICAL\n(this glove critical)
+    CRITICAL_BATTERY --> IDLE: BATTERY_OK\n(charged to 3.8V or more)
 ```
 
 **State Descriptions:**
@@ -81,10 +91,10 @@ stateDiagram-v2
 | `PAUSED`             | Session paused, motors idle, timing preserved           |
 | `STOPPING`           | Stop in progress; `STOPPED` follows immediately, so it lands in IDLE (then READY if the pair is still connected) |
 | `ERROR`              | Defined but never entered (no code fires `ERROR_OCCURRED` or `EMERGENCY_STOP`) |
-| `LOW_BATTERY`        | Defined but never entered (no code fires battery triggers) |
-| `CRITICAL_BATTERY`   | Defined but never entered (no code fires battery triggers) |
+| `LOW_BATTERY`        | Session running on a low battery (this glove below 3.8V); behaves like RUNNING, orange slow pulse |
+| `CRITICAL_BATTERY`   | This glove's battery critical; motors stopped, red urgent blink, until it charges to 3.8V |
 | `CONNECTION_LOST`    | Glove link lost; therapy stopped, purple blink, waits up to 30s for the peer |
-| `PHONE_DISCONNECTED` | PRIMARY only: phone lost from READY or RUNNING; informational, LED unchanged |
+| `PHONE_DISCONNECTED` | PRIMARY only: phone lost from READY, RUNNING or LOW_BATTERY; informational, keeps the interrupted state's LED |
 
 ---
 
@@ -148,7 +158,7 @@ sequenceDiagram
     Note over P: Profile stays on PRIMARY<br/>(PROFILE_LOAD saves and reboots)<br/>SECONDARY gets timing in each MC: message
 
     APP->>P: SESSION_START
-    Note over P: Check: Battery OK?<br/>SECONDARY connected → clock sync valid?<br/>(else Sync not ready error until 10s after connect)
+    Note over P: Check: both gloves' batteries OK?<br/>SECONDARY connected → clock sync valid?<br/>(else Sync not ready error until 10s after connect)
     P->>P: STATE: READY → RUNNING
     P->>S: START_SESSION:seq|ts
     S->>S: STATE: READY → RUNNING
@@ -488,7 +498,7 @@ graph TD
     D --> D3["MC_ACK:seq|ts<br/>(acknowledgment)"]
 
     E --> E1["GET_BATTERY"]
-    E --> E2["BATRESPONSE:voltage"]
+    E --> E2["BATRESPONSE:voltage (reply)<br/>BATRESPONSE:voltage|level<br/>(after every SECONDARY battery check)"]
 
     A --> B
     A --> C
@@ -621,9 +631,12 @@ Battery checks and connection-loss recovery flows:
 stateDiagram-v2
     [*] --> READY
 
-    READY --> REFUSED: SESSION_START with\nbattery below 3.3V
+    READY --> REFUSED: SESSION_START with either\nglove's battery below 3.8V
     REFUSED --> READY: Error "Battery too low"
-    READY --> RUNNING: SESSION_START\n(battery OK)
+    READY --> RUNNING: SESSION_START\n(both batteries OK)
+
+    RUNNING --> LOW_BATTERY: This glove below 3.8V\n(session continues, orange LED)
+    LOW_BATTERY --> RUNNING: Back to 3.9V or more
 
     RUNNING --> CONNECTION_LOST: Link drop, or SECONDARY\nhears no PING/MC for 6s
     RUNNING --> IDLE: PRIMARY hears no PONG/MC_ACK\nfor 6s (stop + STOP_SESSION)
@@ -636,9 +649,9 @@ stateDiagram-v2
 
 **Battery Thresholds:**
 
-- **Low**: <3.4V (`BATTERY_LOW_VOLTAGE`): reported in battery status only
-- **Critical**: <3.3V (`BATTERY_CRITICAL_VOLTAGE`): `SESSION_START` is refused with `Battery too low`, and the PRIMARY doesn't auto-start
-- During a session the PRIMARY checks its battery every 60s, between pulses, and stops the session after two readings in a row below 3.3V (`BATTERY_CRITICAL_CONFIRM_READINGS`, `LAST_REASON:BATTERY`); a bench `TEST` is never stopped this way; the LOW_BATTERY and CRITICAL_BATTERY states are never entered
+- **Low**: two readings in a row below 3.8V (`BATTERY_LOW_VOLTAGE`, per board in `board_config.h`; provisional until bench-calibrated, see [CALIBRATION_GUIDE.md](./CALIBRATION_GUIDE.md#low-battery-threshold)): the glove can't finish a 2-hour session. Its LED turns orange and a running session continues as LOW_BATTERY. While either glove is low, `SESSION_START` is refused with `Battery too low` and the PRIMARY doesn't auto-start. Clears at ≥3.9V (`BATTERY_LOW_HYSTERESIS_V`)
+- **Critical**: two readings in a row below 3.3V (`BATTERY_CRITICAL_VOLTAGE`, `BATTERY_CRITICAL_CONFIRM_READINGS`): the glove enters CRITICAL_BATTERY (motors off, red urgent blink; a critical SECONDARY acknowledges macrocycles but plays none), and the PRIMARY ends the session (`LAST_REASON:BATTERY`) when either glove is critical; a bench `TEST` is never stopped this way. Returns to IDLE once the glove charges to ≥3.8V
+- Each glove checks its battery every 60s between pulses, on its first idle loop after boot, and (SECONDARY) right after connecting to the PRIMARY; after each motor-idle reading the SECONDARY pushes its voltage and level to the PRIMARY (`BATRESPONSE:<volts>|<level>`), and the PRIMARY gates and stops on that level. A glove with no reading yet doesn't block a start
 
 **Connection Loss Handling:**
 
@@ -862,9 +875,9 @@ sequenceDiagram
 
 | Level    | Voltage Range | Action                                            |
 | -------- | ------------- | ------------------------------------------------- |
-| Normal   | ≥3.4V         | Normal operation                                  |
-| Low      | 3.3-3.4V      | Flagged in battery status only                    |
-| Critical | <3.3V         | `SESSION_START` refused (`Battery too low`) and no auto-start; the PRIMARY stops a running session after two readings in a row |
+| Normal   | ≥3.8V         | Normal operation                                  |
+| Low      | 3.3-3.8V      | After two readings in a row: orange LED; a running session continues as LOW_BATTERY; `SESSION_START` refused (`Battery too low`) and no auto-start if either glove is low; clears at ≥3.9V |
+| Critical | <3.3V         | After two readings in a row: CRITICAL_BATTERY (red urgent blink) until charged to ≥3.8V; the PRIMARY stops a running session if either glove is critical |
 
 ---
 
