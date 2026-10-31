@@ -1036,8 +1036,11 @@ BatteryStatus BatteryMonitor::getStatus() {
 
     status.voltage = readVoltage();
     status.percentage = interpolatePercentage(status.voltage);
-    status.isLow = (status.voltage < BATTERY_LOW_VOLTAGE);
-    status.isCritical = (status.voltage < BATTERY_CRITICAL_VOLTAGE);
+    // 0 V means no reading yet (or a failed read): unknown, not critical, so it
+    // can't refuse SESSION_START.
+    bool hasReading = status.voltage > 0.0f;
+    status.isLow = hasReading && status.voltage < BATTERY_LOW_VOLTAGE;
+    status.isCritical = hasReading && status.voltage < BATTERY_CRITICAL_VOLTAGE;
 
     return status;
 }
