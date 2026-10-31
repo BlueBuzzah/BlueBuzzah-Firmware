@@ -24,6 +24,10 @@
   #define ADC_MAX_VALUE            16383
   #define ADC_REFERENCE_VOLTAGE    3.6f
   #define BATTERY_VOLTAGE_DIVIDER  2.0f
+  // Low battery = can't finish a 2-hour session (orange LED, sessions refused).
+  // Provisional ~40% on the discharge curve; calibrate per CALIBRATION_GUIDE.md
+  // "Low-battery threshold" and update.
+  #define BATTERY_LOW_VOLTAGE      3.80f
   #define MOTOR_SILK_PORT(finger)  (finger)       // no labeled motor ports on this board
 #elif defined(BOARD_PENTABUZZER_ESP32S3)
   #define MAX_ACTUATORS            5
@@ -41,6 +45,10 @@
   #define USER_BUTTON_ENABLED      0              // no user button on this board
   #define BATTERY_SENSE_ENABLED    1              // no VBAT divider, but DRV2605 VBAT register doubles as a voltmeter
   #define BATTERY_SENSE_ADC        0              // no VBAT divider / fuel gauge ADC on this board
+  // Low battery = can't finish a 2-hour session (orange LED, sessions refused).
+  // Provisional ~40% on the discharge curve; calibrate per CALIBRATION_GUIDE.md
+  // "Low-battery threshold" and update.
+  #define BATTERY_LOW_VOLTAGE      3.80f
   // Motor JST ports are silk-labeled 1-5 in REVERSE of firmware channels:
   // firmware finger N drives the port labeled (5 - N). Wire the glove
   // harness accordingly - therapy patterns are per-finger.

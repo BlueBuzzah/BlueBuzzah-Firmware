@@ -462,6 +462,90 @@ void test_BatteryStatus_requiresAction_when_critical(void) {
 }
 
 // =============================================================================
+// BATTERY LEVEL TESTS
+// =============================================================================
+
+static BatteryTracker trackerAt(BatteryLevel level) {
+    BatteryTracker t;
+    t.level = level;
+    return t;
+}
+
+void test_BatteryTracker_zero_volts_changes_nothing(void) {
+    BatteryTracker t = trackerAt(BatteryLevel::LOW_CHARGE);
+    t.update(0.0f);
+    t.update(0.0f);
+    TEST_ASSERT_EQUAL(BatteryLevel::LOW_CHARGE, t.level);
+    TEST_ASSERT_EQUAL_UINT8(0, t.lowReadings);
+}
+
+void test_BatteryTracker_low_needs_consecutive_readings(void) {
+    BatteryTracker t;
+    t.update(BATTERY_LOW_VOLTAGE - 0.01f);
+    TEST_ASSERT_EQUAL(BatteryLevel::NORMAL, t.level);  // one sagged reading can't latch it
+    t.update(BATTERY_LOW_VOLTAGE - 0.01f);
+    TEST_ASSERT_EQUAL(BatteryLevel::LOW_CHARGE, t.level);
+}
+
+void test_BatteryTracker_good_reading_resets_low_count(void) {
+    BatteryTracker t;
+    t.update(BATTERY_LOW_VOLTAGE - 0.01f);
+    t.update(BATTERY_LOW_VOLTAGE + 0.01f);
+    t.update(BATTERY_LOW_VOLTAGE - 0.01f);
+    TEST_ASSERT_EQUAL(BatteryLevel::NORMAL, t.level);
+}
+
+void test_BatteryTracker_low_clears_only_above_hysteresis(void) {
+    BatteryTracker t = trackerAt(BatteryLevel::LOW_CHARGE);
+    t.update(BATTERY_LOW_VOLTAGE + 0.05f);
+    TEST_ASSERT_EQUAL(BatteryLevel::LOW_CHARGE, t.level);
+    t.update(BATTERY_LOW_VOLTAGE + BATTERY_LOW_HYSTERESIS_V + 0.01f);
+    TEST_ASSERT_EQUAL(BatteryLevel::NORMAL, t.level);
+}
+
+void test_BatteryTracker_critical_needs_consecutive_readings(void) {
+    BatteryTracker t;
+    t.update(3.2f);
+    TEST_ASSERT_EQUAL(BatteryLevel::NORMAL, t.level);
+    t.update(3.2f);
+    TEST_ASSERT_EQUAL(BatteryLevel::CRITICAL, t.level);
+}
+
+void test_BatteryTracker_good_reading_resets_critical_count(void) {
+    BatteryTracker t;
+    t.update(3.2f);
+    t.update(3.5f);
+    t.update(3.2f);
+    TEST_ASSERT_EQUAL(BatteryLevel::LOW_CHARGE, t.level);  // low confirmed, critical not
+}
+
+void test_BatteryTracker_critical_holds_through_rest_recovery(void) {
+    // A pack that sagged to critical rests near 3.5V: still critical until it charges
+    BatteryTracker t = trackerAt(BatteryLevel::CRITICAL);
+    t.update(3.5f);
+    TEST_ASSERT_EQUAL(BatteryLevel::CRITICAL, t.level);
+    t.update(BATTERY_LOW_VOLTAGE + 0.01f);
+    TEST_ASSERT_EQUAL(BatteryLevel::LOW_CHARGE, t.level);
+
+    BatteryTracker charged = trackerAt(BatteryLevel::CRITICAL);
+    charged.update(4.1f);
+    TEST_ASSERT_EQUAL(BatteryLevel::NORMAL, charged.level);
+}
+
+void test_BatteryTracker_confirming_until_second_reading(void) {
+    BatteryTracker t;
+    TEST_ASSERT_FALSE(t.confirming());
+    t.update(BATTERY_LOW_VOLTAGE - 0.01f);
+    TEST_ASSERT_TRUE(t.confirming());
+    t.update(BATTERY_LOW_VOLTAGE - 0.01f);
+    TEST_ASSERT_FALSE(t.confirming());  // confirmed low
+    t.update(3.2f);
+    TEST_ASSERT_TRUE(t.confirming());   // critical pending
+    t.update(3.2f);
+    TEST_ASSERT_FALSE(t.confirming());
+}
+
+// =============================================================================
 // DEVICE CONFIG TESTS
 // =============================================================================
 
@@ -684,6 +768,14 @@ int main(int argc, char **argv) {
     RUN_TEST(test_BatteryStatus_requiresAction_when_ok);
     RUN_TEST(test_BatteryStatus_requiresAction_when_low);
     RUN_TEST(test_BatteryStatus_requiresAction_when_critical);
+    RUN_TEST(test_BatteryTracker_zero_volts_changes_nothing);
+    RUN_TEST(test_BatteryTracker_low_needs_consecutive_readings);
+    RUN_TEST(test_BatteryTracker_good_reading_resets_low_count);
+    RUN_TEST(test_BatteryTracker_low_clears_only_above_hysteresis);
+    RUN_TEST(test_BatteryTracker_critical_needs_consecutive_readings);
+    RUN_TEST(test_BatteryTracker_good_reading_resets_critical_count);
+    RUN_TEST(test_BatteryTracker_critical_holds_through_rest_recovery);
+    RUN_TEST(test_BatteryTracker_confirming_until_second_reading);
 
     // Device Config Tests
     RUN_TEST(test_DeviceConfig_default_constructor);

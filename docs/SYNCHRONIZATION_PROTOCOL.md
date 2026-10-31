@@ -574,7 +574,7 @@ None are sent. `PARAM_UPDATE`, `SEED`, `SEED_ACK` and `ACK_PARAM_UPDATE` survive
 | Message | Direction | Fields | Example |
 |---------|-----------|--------|---------|
 | `GET_BATTERY` | P → S | (none) | `GET_BATTERY` |
-| `BATRESPONSE` | S → P | voltage | `BATRESPONSE:3.68` |
+| `BATRESPONSE` | S → P | voltage (reply to `GET_BATTERY`: the SECONDARY's last motor-idle reading, `0.00` if none yet); voltage and level (pushed after every motor-idle SECONDARY battery check; level 0 normal, 1 low, 2 critical) | `BATRESPONSE:3.68`, `BATRESPONSE:3.68\|0` |
 | `LED_OFF_SYNC` | P → S | 0 or 1 (mirrors `THERAPY_LED_OFF`) | `LED_OFF_SYNC:1` |
 | `DEBUG_SYNC` | P → S | 0 or 1 (mirrors `DEBUG`) | `DEBUG_SYNC:1` |
 | `CALIB_BUZZ` | P → S | finger, intensity, duration (relayed `CALIBRATE_BUZZ`) | `CALIB_BUZZ:1:80:500` |
@@ -592,6 +592,7 @@ The protocol includes several safety mechanisms to prevent incorrect synchroniza
 | Validation | Threshold | Action |
 |------------|-----------|--------|
 | baseTime freshness | ±5 seconds | SECONDARY plays nothing from a macrocycle whose local base time is further than this from now (still sends `MC_ACK`) |
+| Critical battery | SECONDARY in `CRITICAL_BATTERY` | SECONDARY acknowledges each macrocycle but plays nothing until the PRIMARY ends the session |
 | Drift rate (measured) | ±150 ppm | Cap measured drift for plausibility |
 | Drift rate (applied) | ±100 ppm | Cap corrections to prevent oscillation |
 | Elapsed time | 10 seconds max | Cap EMA time delta to prevent overflow |

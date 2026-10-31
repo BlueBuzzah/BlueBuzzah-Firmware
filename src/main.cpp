@@ -70,7 +70,14 @@ bool bleReady = false;
 
 // Timing
 uint32_t lastBatteryCheck = 0;
-uint32_t criticalBatteryReadings = 0;  // Consecutive trusted critical readings
+volatile bool g_batteryCheckNow = true;  // check on the first idle loop, and when the SECONDARY connects
+
+// This glove's battery level, from motor-idle readings only. On the PRIMARY,
+// g_secondaryBatteryLevel is the level the SECONDARY reports with each push.
+// They drive the LED, the LOW/CRITICAL_BATTERY states and the start gate.
+BatteryTracker g_battery;
+volatile float g_trustedBatteryVoltage = 0.0f;  // last motor-idle reading; GET_BATTERY replies with it
+volatile BatteryLevel g_secondaryBatteryLevel = BatteryLevel::NORMAL;
 uint32_t lastKeepalive = 0;        // Time of last keepalive PING sent (PRIMARY)
 uint32_t lastStatusPrint = 0;
 
@@ -449,6 +456,10 @@ void waitForRoleConfiguration();
 // Safety shutdown helper (centralized motor stop sequence)
 void safeMotorShutdown(SessionEndReason reason = SessionEndReason::STOPPED);
 void stopSessionFromPrimary(SessionEndReason reason);
+bool batteryAllowsSession();
+BatteryLevel batteryLevelOf(bool secondary);
+void reconcileBatteryState();
+void applyLed();
 
 // =============================================================================
 // ROLE CONFIGURATION WAIT
@@ -551,6 +562,61 @@ void stopSessionFromPrimary(SessionEndReason reason)
         }
     }
     safeMotorShutdown(reason);
+}
+
+// Both gloves must be able to finish a 2-hour session (BATTERY_LOW_VOLTAGE).
+// A glove with no reading yet doesn't block.
+bool batteryAllowsSession()
+{
+    if (g_battery.level != BatteryLevel::NORMAL)
+    {
+        return false;
+    }
+    return !(deviceRole == DeviceRole::PRIMARY && ble.isSecondaryConnected() &&
+             g_secondaryBatteryLevel != BatteryLevel::NORMAL);
+}
+
+BatteryLevel batteryLevelOf(bool secondary)
+{
+    return secondary ? g_secondaryBatteryLevel : g_battery.level;
+}
+
+// Matches the FSM to the battery levels; runs every loop so no path into
+// RUNNING (start, resume, phone reconnect) misses a low battery
+void reconcileBatteryState()
+{
+    bool runningSession = therapy.isRunning() && !therapy.isTestMode();
+
+    // PRIMARY ends the session when either glove is critical, never a bench TEST
+    if (deviceRole == DeviceRole::PRIMARY && runningSession &&
+        (g_battery.level == BatteryLevel::CRITICAL ||
+         (ble.isSecondaryConnected() && g_secondaryBatteryLevel == BatteryLevel::CRITICAL)))
+    {
+        Serial.printf("[BATTERY] Critical (%s) - stopping therapy\n",
+                      g_battery.level == BatteryLevel::CRITICAL ? "PRIMARY" : "SECONDARY");
+        stopSessionFromPrimary(SessionEndReason::BATTERY);
+    }
+
+    TherapyState state = stateMachine.getCurrentState();
+    if (g_battery.level == BatteryLevel::CRITICAL)
+    {
+        if (state != TherapyState::CRITICAL_BATTERY && !(therapy.isRunning() && therapy.isTestMode()))
+        {
+            stateMachine.transition(StateTrigger::BATTERY_CRITICAL);
+        }
+    }
+    else if (state == TherapyState::CRITICAL_BATTERY)
+    {
+        stateMachine.transition(StateTrigger::BATTERY_OK);  // charged: -> IDLE
+    }
+    else if (g_battery.level == BatteryLevel::LOW_CHARGE && state == TherapyState::RUNNING)
+    {
+        stateMachine.transition(StateTrigger::BATTERY_WARNING);
+    }
+    else if (g_battery.level == BatteryLevel::NORMAL && state == TherapyState::LOW_BATTERY)
+    {
+        stateMachine.transition(StateTrigger::BATTERY_OK);
+    }
 }
 
 // =============================================================================
@@ -680,6 +746,8 @@ void setup()
     menu.setSendToSecondaryCallback(onMenuSendToSecondary);
     menu.setRestartCallback(restartAfterTxDrain);
     menu.setSyncReadyCallback(phoneStartSyncReady);
+    menu.setBatteryGateCallback(batteryAllowsSession);
+    menu.setBatteryLevelCallback(batteryLevelOf);
     Serial.println(F("[SUCCESS] Menu controller initialized"));
 
     // Initialize Deferred Queue (for ISR-safe callback operations)
@@ -1139,30 +1207,49 @@ void loop()
 #if BATTERY_SENSE_ENABLED
     // Check battery every 60 seconds, between pulses: an LRA pulse sags VBat
     // by hundreds of mV, enough to read a healthy pack as critical
-    if (now - lastBatteryCheck >= BATTERY_CHECK_INTERVAL_MS && !haptic.anyMotorActive())
+    if ((g_batteryCheckNow || now - lastBatteryCheck >= BATTERY_CHECK_INTERVAL_MS) && !haptic.anyMotorActive())
     {
+        g_batteryCheckNow = false;
         lastBatteryCheck = now;
         BatteryStatus status = battery.getStatus();
         Serial.printf("[BATTERY] %.2fV | %d%% | Status: %s\n",
                       status.voltage, status.percentage, status.statusString());
 
-        // Skip readings a pulse may have sagged: one that started mid-sample, or
-        // 0 V (no reading yet). The rest must be critical several times running.
-        if (status.voltage > 0.0f && !haptic.anyMotorActive())
+        // Skip a reading a pulse may have sagged (one that started mid-sample).
+        // The tracker ignores 0 V (no reading yet) and confirms low and critical.
+        if (!haptic.anyMotorActive())
         {
-            criticalBatteryReadings = status.isCritical ? criticalBatteryReadings + 1 : 0;
-        }
+            if (status.voltage > 0.0f)
+            {
+                g_trustedBatteryVoltage = status.voltage;
+            }
+            BatteryLevel previous = g_battery.level;
+            g_battery.update(status.voltage);
+            if (g_battery.confirming())
+            {
+                lastBatteryCheck = now - (BATTERY_CHECK_INTERVAL_MS - BATTERY_CONFIRM_RECHECK_MS);
+            }
+            if (g_battery.level != previous)
+            {
+                Serial.printf("[BATTERY] Level: %s\n", g_battery.level == BatteryLevel::CRITICAL     ? "CRITICAL"
+                                                       : g_battery.level == BatteryLevel::LOW_CHARGE ? "LOW"
+                                                                                                     : "OK");
+                applyLed();
+            }
 
-        // PRIMARY ends the session at critical battery, never a bench TEST.
-        // Not via CRITICAL_BATTERY: nothing leaves that state short of a reboot.
-        if (deviceRole == DeviceRole::PRIMARY && therapy.isRunning() && !therapy.isTestMode() &&
-            criticalBatteryReadings >= BATTERY_CRITICAL_CONFIRM_READINGS)
-        {
-            Serial.println(F("[BATTERY] Critical - stopping therapy"));
-            criticalBatteryReadings = 0;
-            stopSessionFromPrimary(SessionEndReason::BATTERY);
+            // SECONDARY pushes each trusted reading with its level (|level after the
+            // volts): the PRIMARY gates starts on it and ends the session at critical
+            if (deviceRole == DeviceRole::SECONDARY && ble.isPrimaryConnected() && status.voltage > 0.0f)
+            {
+                char response[32];
+                snprintf(response, sizeof(response), "BATRESPONSE:%.2f|%u", status.voltage,
+                         (unsigned)g_battery.level);
+                ble.sendToPrimary(response);
+            }
         }
     }
+
+    reconcileBatteryState();
 #endif
 
     // Yield to BLE stack (non-blocking - allows SoftDevice processing)
@@ -1512,6 +1599,8 @@ void onBLEConnect(uint16_t connHandle, ConnectionType type)
         ble.sendToPrimary("IDENTIFY:SECONDARY");
         // Start keepalive timeout tracking
         lastKeepaliveReceived = millis();
+        // Report the battery now, not up to 60s later: the PRIMARY gates starts on it
+        g_batteryCheckNow = true;
     }
 
     // Update state machine on relevant connections
@@ -1542,6 +1631,9 @@ void onBLEConnect(uint16_t connHandle, ConnectionType type)
             // Initialize keepalive tracking (timeout detection starts when first PONG received)
             lastSecondaryKeepalive = millis();
             g_secondaryConnectedAt = millis();
+
+            // Unknown until this SECONDARY reports (it does on connect)
+            g_secondaryBatteryLevel = BatteryLevel::NORMAL;
 
             // Reset clock sync state
             syncProtocol.resetClockSync();
@@ -1926,14 +2018,7 @@ void onBLEMessage(uint16_t connHandle, const char *message, uint64_t rxTimestamp
         // Update LED immediately if currently running therapy
         if (stateMachine.getCurrentState() == TherapyState::RUNNING)
         {
-            if (value)
-            {
-                led.setPattern(Colors::GREEN, LEDPattern::OFF);
-            }
-            else
-            {
-                led.setPattern(Colors::GREEN, LEDPattern::PULSE_SLOW);
-            }
+            applyLed();
         }
         return;
     }
@@ -1963,14 +2048,14 @@ void onBLEMessage(uint16_t connHandle, const char *message, uint64_t rxTimestamp
     }
 
     // Handle GET_BATTERY from PRIMARY (SECONDARY only)
-    // SECONDARY reads its local battery and sends BATRESPONSE back
+    // Replies with the last motor-idle reading: a fresh read here would block the
+    // BLE callback (ADC delays / I2C) and could catch a pulse's sag
     if (strcmp(message, "GET_BATTERY") == 0)
     {
         if (deviceRole == DeviceRole::SECONDARY)
         {
-            BatteryStatus status = battery.getStatus();
             char response[32];
-            snprintf(response, sizeof(response), "BATRESPONSE:%.2f", status.voltage);
+            snprintf(response, sizeof(response), "BATRESPONSE:%.2f", (float)g_trustedBatteryVoltage);
             ble.sendToPrimary(response);
         }
         return;
@@ -1980,8 +2065,18 @@ void onBLEMessage(uint16_t connHandle, const char *message, uint64_t rxTimestamp
     // ISR-safe: only sets volatile fields; actual response is built in loop()
     if (deviceRole == DeviceRole::PRIMARY && strncmp(message, "BATRESPONSE:", 12) == 0)
     {
-        float voltage = strtof(message + 12, nullptr);
+        char *end = nullptr;
+        float voltage = strtof(message + 12, &end);
         menu.setSecondaryBatteryVoltage(voltage);
+        // Periodic pushes carry the SECONDARY's own level; GET_BATTERY replies don't
+        if (end && *end == '|')
+        {
+            int level = atoi(end + 1);
+            if (level >= (int)BatteryLevel::NORMAL && level <= (int)BatteryLevel::CRITICAL)
+            {
+                g_secondaryBatteryLevel = (BatteryLevel)level;
+            }
+        }
         return;
     }
 
@@ -2060,6 +2155,19 @@ void onBLEMessage(uint16_t connHandle, const char *message, uint64_t rxTimestamp
                     Serial.printf("[ERROR] MACROCYCLE rejected: baseTime %ld seconds from now\n",
                                   (long)diffSec);  // Division reduces to 32-bit safe range
                     // Still send ACK to avoid retry storms
+                    SyncCommand ackCmd = SyncCommand::createMacrocycleAck(mc.sequenceId);
+                    char ackBuffer[32];
+                    if (ackCmd.serialize(ackBuffer, sizeof(ackBuffer)))
+                    {
+                        ble.sendToPrimary(ackBuffer);
+                    }
+                    return;
+                }
+
+                // Critical battery: motors stay off until the PRIMARY ends the
+                // session. Still ACK, like a rejected macrocycle, to avoid retries
+                if (stateMachine.getCurrentState() == TherapyState::CRITICAL_BATTERY)
+                {
                     SyncCommand ackCmd = SyncCommand::createMacrocycleAck(mc.sequenceId);
                     char ackBuffer[32];
                     if (ackCmd.serialize(ackBuffer, sizeof(ackBuffer)))
@@ -2760,7 +2868,7 @@ void stopTherapyTest()
     // (On a SECONDARY following a live PRIMARY session the next macrocycle resumes
     // playback; a durable stop must come from the PRIMARY/phone.)
     TherapyState st = stateMachine.getCurrentState();
-    bool fsmActive = (st == TherapyState::RUNNING || st == TherapyState::PAUSED);
+    bool fsmActive = isActiveState(st);
     if (!therapy.isRunning() && !fsmActive)
     {
         Serial.println(F("[TEST] Therapy not running"));
@@ -2810,15 +2918,12 @@ void autoStartTherapy()
         return;
     }
 
-#if BATTERY_SENSE_ENABLED
-    // Same gate as a phone SESSION_START. 0 V is no reading yet, not critical
-    BatteryStatus batteryStatus = battery.getStatus();
-    if (batteryStatus.voltage > 0.0f && batteryStatus.isCritical)
+    // Same gate as a phone SESSION_START
+    if (!batteryAllowsSession())
     {
-        Serial.printf("[AUTO] Battery too low (%.2fV) - not starting\n", batteryStatus.voltage);
+        Serial.println(F("[AUTO] Battery too low - not starting"));
         return;
     }
-#endif
 
     // Check sync validity before starting therapy (SECONDARY must be synced)
     // After reconnection, sync requires 5 samples (~350ms at the acquire cadence)
@@ -3009,83 +3114,130 @@ void onTxStamped(TxStampKind kind, uint32_t seqId, uint64_t txTimeUs)
 // =============================================================================
 
 /**
- * @brief Update LED pattern based on therapy state
+ * @brief Set the LED from the therapy state and this glove's battery level
  *
- * LED Pattern Mapping:
  * | State              | Color  | Pattern       | Description                    |
  * |--------------------|--------|---------------|--------------------------------|
  * | IDLE               | Blue   | Breathe slow  | Calm, system ready             |
  * | CONNECTING         | Blue   | Fast blink    | Actively connecting            |
  * | READY              | Green  | Solid         | Connected, stable              |
- * | RUNNING            | Green  | Pulse slow    | Active therapy                 |
+ * | RUNNING            | Green  | Pulse slow    | Active therapy (off if set)    |
  * | PAUSED             | Yellow | Solid         | Session paused                 |
  * | STOPPING           | Yellow | Fast blink    | Winding down                   |
  * | ERROR              | Red    | Slow blink    | Error condition                |
- * | LOW_BATTERY        | Orange | Slow blink    | Battery warning                |
- * | CRITICAL_BATTERY   | Red    | Urgent blink  | Critical - shutdown imminent   |
+ * | LOW_BATTERY        | Orange | Pulse slow    | Session running on low battery |
+ * | CRITICAL_BATTERY   | Red    | Urgent blink  | Session stopped; charge it     |
  * | CONNECTION_LOST    | Purple | Fast blink    | BLE connection lost            |
- * | PHONE_DISCONNECTED | —      | No change     | Informational only             |
+ * | PHONE_DISCONNECTED | —      | As before     | Informational: the prior state |
+ *
+ * Battery overlay: a low battery turns IDLE, READY and RUNNING orange with the
+ * state's own pattern (even with the therapy LED off). The other states keep
+ * their color: they're brief or more urgent. A critical battery is red urgent
+ * blink in every state. Orange slow blink stays "no role configured".
  */
-void onStateChange(const StateTransition &transition)
+// During a debug flash, update what the flash restores instead of the LED
+static void setLed(const RGBColor &color, LEDPattern pattern)
 {
-    // Update LED pattern based on new state
-    switch (transition.toState)
+    if (debugFlashActive)
+    {
+        savedLedColor = color;
+        savedLedPattern = pattern;
+        return;
+    }
+    led.setPattern(color, pattern);
+}
+
+void applyLed()
+{
+    TherapyState state = stateMachine.getCurrentState();
+    if (state == TherapyState::PHONE_DISCONNECTED)
+    {
+        // Informational only: show the state it interrupted, so a session with
+        // the phone away still turns orange
+        state = stateMachine.getPreviousState();
+    }
+    if (g_battery.level == BatteryLevel::CRITICAL || state == TherapyState::CRITICAL_BATTERY)
+    {
+        setLed(Colors::RED, LEDPattern::BLINK_URGENT);
+        return;
+    }
+
+    bool low = (g_battery.level == BatteryLevel::LOW_CHARGE);
+    switch (state)
     {
     case TherapyState::IDLE:
-        led.setPattern(Colors::BLUE, LEDPattern::BREATHE_SLOW);
+        setLed(low ? Colors::ORANGE : Colors::BLUE, LEDPattern::BREATHE_SLOW);
         break;
 
     case TherapyState::CONNECTING:
-        led.setPattern(Colors::BLUE, LEDPattern::BLINK_CONNECT);
+        setLed(Colors::BLUE, LEDPattern::BLINK_CONNECT);
         break;
 
     case TherapyState::READY:
-        led.setPattern(Colors::GREEN, LEDPattern::SOLID);
+        setLed(low ? Colors::ORANGE : Colors::GREEN, LEDPattern::SOLID);
         break;
 
     case TherapyState::RUNNING:
-        // Check if LED should be off during therapy
-        if (profiles.getTherapyLedOff())
+    case TherapyState::LOW_BATTERY:
+        if (low)
         {
-            led.setPattern(Colors::GREEN, LEDPattern::OFF);
+            setLed(Colors::ORANGE, LEDPattern::PULSE_SLOW);
         }
         else
         {
-            led.setPattern(Colors::GREEN, LEDPattern::PULSE_SLOW);
+            setLed(Colors::GREEN, profiles.getTherapyLedOff() ? LEDPattern::OFF : LEDPattern::PULSE_SLOW);
         }
         break;
 
     case TherapyState::PAUSED:
-        led.setPattern(Colors::YELLOW, LEDPattern::SOLID);
+        setLed(Colors::YELLOW, LEDPattern::SOLID);
         break;
 
     case TherapyState::STOPPING:
-        led.setPattern(Colors::YELLOW, LEDPattern::BLINK_FAST);
+        setLed(Colors::YELLOW, LEDPattern::BLINK_FAST);
         break;
 
     case TherapyState::ERROR:
-        led.setPattern(Colors::RED, LEDPattern::BLINK_SLOW);
+        setLed(Colors::RED, LEDPattern::BLINK_SLOW);
+        break;
+
+    case TherapyState::CONNECTION_LOST:
+        setLed(Colors::PURPLE, LEDPattern::BLINK_CONNECT);
+        break;
+
+    default:
+        break;
+    }
+}
+
+void onStateChange(const StateTransition &transition)
+{
+    applyLed();
+
+    switch (transition.toState)
+    {
+    case TherapyState::ERROR:
         // Emergency stop on error
         haptic.emergencyStop();
         therapy.stop(SessionEndReason::ERROR);
         break;
 
     case TherapyState::CRITICAL_BATTERY:
-        led.setPattern(Colors::RED, LEDPattern::BLINK_URGENT);
         // Emergency stop on critical battery
         haptic.emergencyStop();
         therapy.stop(SessionEndReason::BATTERY);
-        break;
-
-    case TherapyState::LOW_BATTERY:
-        led.setPattern(Colors::ORANGE, LEDPattern::BLINK_SLOW);
+        // emergencyStop() leaves queued macrocycle events that would buzz again;
+        // the loop's safety shutdown clears the queues
+        if (safetyShutdownSema)
+        {
+            xSemaphoreGive(safetyShutdownSema);
+        }
         break;
 
     case TherapyState::CONNECTION_LOST:
         // Start the purple-indication window; loop() demotes to IDLE after
         // CONNECTION_LOST_TIMEOUT_MS if the peer hasn't reconnected
         g_connectionLostAt = millis();
-        led.setPattern(Colors::PURPLE, LEDPattern::BLINK_CONNECT);
         // Stop therapy on connection loss
         if (therapy.isRunning())
         {
@@ -3096,10 +3248,6 @@ void onStateChange(const StateTransition &transition)
         // Note: safeMotorShutdown() will also run from loop() via safety shutdown semaphore
         // but this provides immediate belt-and-suspenders safety
         haptic.emergencyStop();
-        break;
-
-    case TherapyState::PHONE_DISCONNECTED:
-        // Informational only - keep current LED pattern
         break;
 
     default:

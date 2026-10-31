@@ -390,9 +390,9 @@ private:
 enum class LEDPattern : uint8_t {
     SOLID = 0,          // Constant on
     BREATHE_SLOW,       // Slow fade in/out (2s cycle) - IDLE
-    PULSE_SLOW,         // Slow pulse (1.5s cycle) - RUNNING
+    PULSE_SLOW,         // Slow pulse (1.5s cycle) - RUNNING, LOW_BATTERY (orange)
     BLINK_FAST,         // Fast blink (200ms on/off) - STOPPING
-    BLINK_SLOW,         // Slow blink (1s on/off) - ERROR, LOW_BATTERY
+    BLINK_SLOW,         // Slow blink (1s on/off) - ERROR, no role configured
     BLINK_URGENT,       // Urgent blink (150ms on/off) - CRITICAL_BATTERY
     BLINK_CONNECT,      // Connection blink (250ms on/off) - CONNECTING, CONNECTION_LOST
     DOUBLE_BLINK,       // Two quick blinks then pause - missing/failed motor(s)

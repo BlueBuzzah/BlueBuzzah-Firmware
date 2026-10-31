@@ -89,9 +89,9 @@ enum class TherapyState : uint8_t {
     PAUSED,             // Therapy temporarily suspended by user
     STOPPING,           // Graceful shutdown in progress
     ERROR,              // Unrecoverable error occurred
-    LOW_BATTERY,        // Battery below warning threshold (<3.4V)
-    CRITICAL_BATTERY,   // Battery critically low (<3.3V), immediate shutdown
-    CONNECTION_LOST,    // PRIMARY-SECONDARY connection lost (from READY, RUNNING or PAUSED)
+    LOW_BATTERY,        // Session running on a low battery (BATTERY_LOW_VOLTAGE)
+    CRITICAL_BATTERY,   // Battery critical: session stopped until the glove charges
+    CONNECTION_LOST,    // PRIMARY-SECONDARY connection lost (from READY, RUNNING, LOW_BATTERY or PAUSED)
     PHONE_DISCONNECTED  // Phone connection lost (informational, therapy continues)
 };
 ```
@@ -107,9 +107,9 @@ enum class TherapyState : uint8_t {
 | `PAUSED` | Therapy temporarily suspended by user |
 | `STOPPING` | Graceful shutdown in progress |
 | `ERROR` | Unrecoverable error occurred |
-| `LOW_BATTERY` | Battery below warning threshold (<3.4V) |
-| `CRITICAL_BATTERY` | Battery critically low (<3.3V), immediate shutdown |
-| `CONNECTION_LOST` | PRIMARY-SECONDARY connection lost (from READY, RUNNING or PAUSED) |
+| `LOW_BATTERY` | Session running on a low battery (two readings <3.8V, `BATTERY_LOW_VOLTAGE`); behaves like `RUNNING` |
+| `CRITICAL_BATTERY` | Battery critical (two readings <3.3V): motors stopped until the glove charges to ≥3.8V, then `IDLE` |
+| `CONNECTION_LOST` | PRIMARY-SECONDARY connection lost (from READY, RUNNING, LOW_BATTERY or PAUSED) |
 | `PHONE_DISCONNECTED` | Phone connection lost (informational, therapy continues) |
 
 **State Transitions** (`TherapyStateMachine::determineNextState()`, `src/state_machine.cpp`):
@@ -121,9 +121,9 @@ IDLE -> READY -> RUNNING <-> PAUSED -> STOPPING -> IDLE
                                             IDLE after CONNECTION_LOST_TIMEOUT_MS (30 s)
 ```
 
-`CONNECTING` exists in the enum but is never entered: `CONNECTED` moves `IDLE` straight to `READY`. `LOW_BATTERY` and `CRITICAL_BATTERY` have transitions and LED patterns, but current firmware never fires the battery triggers that reach them.
+`CONNECTING` exists in the enum but is never entered: `CONNECTED` moves `IDLE` straight to `READY`. `RUNNING` becomes `LOW_BATTERY` (`BATTERY_WARNING`) while this glove's battery is low and returns on `BATTERY_OK`; `LOW_BATTERY` pauses, stops, completes, and loses the peer or phone exactly like `RUNNING`. A critical battery enters `CRITICAL_BATTERY` (`BATTERY_CRITICAL`) from any state except during a bench `TEST`, and `BATTERY_OK` returns it to `IDLE` once charged. `reconcileBatteryState()` (`src/main.cpp`) fires these every loop pass.
 
-**Note:** `PHONE_DISCONNECTED` is an informational state - therapy continues normally when the phone disconnects. Only `CONNECTION_LOST` (PRIMARY-SECONDARY) stops therapy.
+**Note:** `PHONE_DISCONNECTED` is an informational state - therapy continues normally when the phone disconnects. Only `CONNECTION_LOST` (PRIMARY-SECONDARY) and `CRITICAL_BATTERY` stop therapy.
 
 **Helper Functions:**
 
@@ -356,13 +356,17 @@ namespace Colors {
 // Critical battery voltage (immediate shutdown)
 
 #define BATTERY_CRITICAL_CONFIRM_READINGS 2
-// Consecutive critical readings before the PRIMARY stops a session
+// Consecutive readings below a threshold before the level turns low or critical
 
-#define BATTERY_LOW_VOLTAGE 3.4f
-// Low battery warning voltage (warning, therapy continues)
+#define BATTERY_LOW_HYSTERESIS_V 0.10f
+// Low clears at BATTERY_LOW_VOLTAGE + this; critical clears at BATTERY_LOW_VOLTAGE
 
 #define BATTERY_CHECK_INTERVAL_MS 60000
 // Battery voltage check interval in milliseconds
+
+// include/board_config.h (per board)
+#define BATTERY_LOW_VOLTAGE 3.80f
+// Low battery: can't finish a 2-hour session (orange LED, sessions refused)
 ```
 
 ---
@@ -608,7 +612,7 @@ public:
     // State checks
     bool isActive() const;   // isActiveState()
     bool isError() const;    // isErrorState()
-    bool isRunning() const;
+    bool isRunning() const;  // RUNNING or LOW_BATTERY
     bool isPaused() const;
     bool isReady() const;
     bool isIdle() const;
@@ -1689,6 +1693,10 @@ public:
     void setSendToSecondaryCallback(SendToSecondaryCallback callback);
     // Set callback that gates SESSION_START on bilateral clock sync
     void setSyncReadyCallback(SyncReadyCallback callback);
+    // Set callback that gates SESSION_START on both gloves' battery levels
+    void setBatteryGateCallback(BatteryGateCallback callback);
+    // Set callback reporting each glove's level for INFO/BATTERY BATLP/BATLS
+    void setBatteryLevelCallback(BatteryLevelCallback callback);
 
     // SECONDARY battery reply (deferred INFO/BATTERY responses)
     void setSecondaryBatteryVoltage(float voltage);
@@ -1766,10 +1774,10 @@ class LEDController {
 |-----------------|---------------------------------|----------------------------------|
 | `SOLID`         | constant on                     | READY, PAUSED                    |
 | `BREATHE_SLOW`  | 2000 ms fade cycle              | IDLE                             |
-| `PULSE_SLOW`    | 1500 ms fade cycle              | RUNNING                          |
+| `PULSE_SLOW`    | 1500 ms fade cycle              | RUNNING, LOW_BATTERY             |
 | `BLINK_FAST`    | 200 ms on / 200 ms off          | STOPPING                         |
-| `BLINK_SLOW`    | 1000 ms on / 1000 ms off        | ERROR, LOW_BATTERY               |
-| `BLINK_URGENT`  | 150 ms on / 150 ms off          | CRITICAL_BATTERY                 |
+| `BLINK_SLOW`    | 1000 ms on / 1000 ms off        | ERROR, no role configured        |
+| `BLINK_URGENT`  | 150 ms on / 150 ms off          | CRITICAL_BATTERY, critical level |
 | `BLINK_CONNECT` | 250 ms on / 250 ms off          | CONNECTING, CONNECTION_LOST      |
 | `DOUBLE_BLINK`  | two quick blinks, then pause    | missing/failed motor(s) at boot  |
 | `OFF`           | off                             | RUNNING with "LED off" enabled   |
@@ -1787,7 +1795,7 @@ class LEDController {
 | BLE init failed                         | Red    | `BLINK_SLOW`    |
 | Glove pair connected (enters READY)     | Green  | `SOLID`         |
 
-### Therapy / Device State Patterns (`src/main.cpp` `onStateChange`)
+### Therapy / Device State Patterns (`src/main.cpp` `applyLed`)
 
 | State                | Color  | Pattern                                        |
 |----------------------|--------|------------------------------------------------|
@@ -1797,13 +1805,15 @@ class LEDController {
 | `RUNNING`            | Green  | `PULSE_SLOW` (or `OFF` if "LED off during therapy") |
 | `PAUSED`             | Yellow | `SOLID`                                        |
 | `STOPPING`           | Yellow | `BLINK_FAST`                                   |
-| `LOW_BATTERY`        | Orange | `BLINK_SLOW`                                   |
+| `LOW_BATTERY`        | Orange | `PULSE_SLOW`                                   |
 | `CRITICAL_BATTERY`   | Red    | `BLINK_URGENT`                                 |
 | `ERROR`              | Red    | `BLINK_SLOW`                                   |
 | `CONNECTION_LOST`    | Purple | `BLINK_CONNECT` (30 s window, then reverts to IDLE) |
-| `PHONE_DISCONNECTED` | —      | unchanged (keeps the prior state's LED)        |
+| `PHONE_DISCONNECTED` | —      | the prior state's LED                          |
 
-`CONNECTING`, `LOW_BATTERY` and `CRITICAL_BATTERY` are mapped but never entered by current firmware.
+`CONNECTING` is mapped but never entered by current firmware.
+
+Each glove's LED also shows its own battery level. A low level turns `IDLE` orange `BREATHE_SLOW`, `READY` orange `SOLID`, and `RUNNING` orange `PULSE_SLOW` (even with "LED off during therapy"); the other states keep their colors. A critical level is red `BLINK_URGENT` in every state. Orange `BLINK_SLOW` stays exclusive to "no role configured".
 
 A brief **white `SOLID`** flash marks each macrocycle start on both gloves while debug
 mode (`DEBUG:1`) is on, and overrides "LED off during therapy" for its duration.

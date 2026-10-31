@@ -17,6 +17,7 @@
 7. [Clinical Tuning Guidelines](#clinical-tuning-guidelines)
 8. [Troubleshooting](#troubleshooting)
 9. [Assembly QA (BlueBuzzah v3)](#assembly-qa-bluebuzzah-v3)
+10. [Low-battery threshold](#low-battery-threshold)
 
 ---
 
@@ -897,3 +898,15 @@ Wiring facts:
 - At boot, the presence probe feeds pattern generation: with 4 of 5 motors
   attached, both gloves run 4-buzz macrocycles that skip the empty port.
   Fewer than 4 motors = red double-blink LED for 5 s at boot.
+
+## Low-battery threshold
+
+`BATTERY_LOW_VOLTAGE` (`include/board_config.h`, one per board) marks the voltage below which a glove can't finish a 2-hour session. Below it the glove's LED turns orange and both phone `SESSION_START` and auto-start are refused with `Battery too low`. The shipped 3.80 V (about 40% on the discharge curve) is an estimate. Measure it once per board (v2 and v3):
+
+1. Build with `BATTERY_LOW_VOLTAGE` temporarily set to `3.30f`, so restarting a session below the real threshold isn't refused. Flash both gloves.
+2. Charge both gloves fully.
+3. Open a timestamped serial log on each glove: `pio device monitor -b 115200 --filter time`. Each glove prints `[BATTERY] <volts>V` every 60 s.
+4. From the app, start a session on the profile and intensity people actually use. When it completes, start another right away. Continue until the PRIMARY logs `[BATTERY] Critical (...) - stopping therapy`, and note that time.
+5. On each glove's log, read the voltage 2 hours before that time. Take the higher of the two gloves, round up to the next 0.05 V, and set it as that board's `BATTERY_LOW_VOLTAGE`. Restore the build.
+
+If a glove reaches critical in under 2 hours from full, no threshold works: the pack is too small or worn for a 2-hour session.

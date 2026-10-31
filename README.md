@@ -29,7 +29,7 @@ One codebase builds for two hardware generations, selected by PlatformIO environ
 - **Mobile Control**: Comprehensive BLE protocol for iOS/Android app integration
 - **Real-Time Session Management**: Pause, resume, and progress tracking
 - **Multi-Connection Support**: Simultaneous phone and glove connections
-- **Battery Monitoring**: Voltage and percentage reporting on both boards; app-started sessions are refused at critical levels
+- **Battery Monitoring**: Voltage and percentage reporting on both boards; an orange LED and refused session starts when either glove is too low to finish a 2-hour session
 - **Calibration Mode**: Individual finger testing and adjustment
 - **Assembly QA**: `MOTOR_DIAG`, `MOTOR_TEST:<n>`, and `MOTOR_PRESENT` serial commands for motor verification
 
@@ -119,12 +119,11 @@ Key constants in `include/config.h`:
 ```cpp
 #define STARTUP_WINDOW_MS 30000            // Boot connection window
 #define BATTERY_CRITICAL_VOLTAGE 3.3f      // Critical battery shutdown (volts)
-#define BATTERY_LOW_VOLTAGE 3.4f           // Low battery warning (volts)
 #define I2C_FREQUENCY 400000               // I2C bus speed (Hz)
 #define CONNECTION_LOST_TIMEOUT_MS 30000   // Purple blink duration after peer loss
 ```
 
-Board-specific values (pins, actuator count, battery availability) live in `include/board_config.h`.
+Board-specific values (pins, actuator count, battery availability, the `BATTERY_LOW_VOLTAGE` low-battery threshold) live in `include/board_config.h`.
 
 ## Troubleshooting
 
@@ -137,7 +136,7 @@ Board-specific values (pins, actuator count, battery availability) live in `incl
 **Red slow-blinking LED during boot (hardware or BLE initialization failed):**
 
 - Power cycle the device
-- Check battery voltage (> 3.4V)
+- Check battery voltage (> 3.8V)
 - Verify I2C connections
 
 **Breathing blue indefinitely (gloves never pair):**
@@ -167,9 +166,10 @@ Board-specific values (pins, actuator count, battery availability) live in `incl
 
 Battery monitoring applies to both boards (v2 senses VBAT via an ADC divider; v3 reads
 the DRV2605 VBAT register). Voltage is reported by the `BATTERY` command and logged to
-serial every 60 seconds. There is no low-battery LED indication or automatic shutdown:
+serial every 60 seconds. Each glove's LED shows its own battery:
 
-- **`Battery too low` error when the app starts a session**: Battery critical (< 3.3V) - charge before starting therapy
+- **Orange LED (breathing, solid, or slow pulse) / `Battery too low` error when a session starts**: A glove is below 3.8V (`BATTERY_LOW_VOLTAGE`) and can't finish a 2-hour session - charge it to 3.9V or more. A session already running continues
+- **Red urgent blinking**: Battery critical (< 3.3V) - the session stops; charge the glove: the red blink stops at 3.8V, and the LED stays orange until 3.9V
 
 ### BlueBuzzah v3 Power
 

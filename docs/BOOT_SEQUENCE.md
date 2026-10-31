@@ -478,6 +478,10 @@ full pattern-timing table.
 > Note: on pairing the state goes directly to **READY (solid green)**; there is no
 > separate connect flash, and phone presence is not shown with a distinct LED.
 
+> A low battery (below `BATTERY_LOW_VOLTAGE`) turns blue breathe and solid green
+> orange, from the glove's first battery check on its first idle loop; a critical
+> battery is red urgent blink. Orange slow blink always means no role.
+
 ### LED Pattern Details
 
 Each entry is `led.setPattern(color, pattern)` in `src/main.cpp`. Pattern timings
@@ -699,8 +703,9 @@ When the window expires with the SECONDARY connected and no phone, `autoStartThe
 1. **Default Profile**: Uses the current (saved) therapy profile; if none is loaded, the built-in `noisy_vcr` profile
 2. **Duration**: The profile's session duration (120 minutes for the built-in vCR profiles)
 3. **Pattern**: The profile's pattern type, timing, jitter and mirroring
-4. **Sync gate**: If clock sync isn't valid yet it retries every second; after 10 retries it starts anyway (`[AUTO] Sync not valid after 10s - starting therapy (timing may be degraded)`)
-5. **No User Intervention**: Therapy begins automatically when the 30-second window expires without a phone connection
+4. **Battery gate**: If either glove's battery is low (below `BATTERY_LOW_VOLTAGE`), it doesn't start (`[AUTO] Battery too low - not starting`) and auto-start doesn't run again this boot
+5. **Sync gate**: If clock sync isn't valid yet it retries every second; after 10 retries it starts anyway (`[AUTO] Sync not valid after 10s - starting therapy (timing may be degraded)`)
+6. **No User Intervention**: Therapy begins automatically when the 30-second window expires without a phone connection
 
 This "auto-start" behavior allows the system to function as a standalone therapy device without requiring a phone app. Users can simply power on both devices and therapy will begin about 30 seconds after the gloves pair.
 
@@ -914,8 +919,8 @@ The 7.5-10ms range applies to the glove link. The phone link is requested at 30-
 **Solutions**:
 
 1. **Verify Both Devices Powered On**:
-   - Check that both LEDs are breathing blue
-   - Verify battery voltage (> 3.4V)
+   - Check that both LEDs are breathing blue (orange on a low battery)
+   - Verify battery voltage (> 3.8V)
    - Check USB connections if using USB power
 
 2. **Reduce Distance**:
@@ -1144,8 +1149,9 @@ The BlueBuzzah boot sequence is a **safety-critical** operation that establishes
 Auto-start therapy begins only when:
 1. The SECONDARY is connected when the 30-second window expires
 2. No phone connected during the window
-3. Bilateral time synchronization is established, or 10 one-second retries have passed
-4. Auto-start has not already run since boot
+3. Neither glove's battery is low
+4. Bilateral time synchronization is established, or 10 one-second retries have passed
+5. Auto-start has not already run since boot
 
 ---
 

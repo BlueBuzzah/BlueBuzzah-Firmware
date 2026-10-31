@@ -10,6 +10,7 @@
 
 #include <Arduino.h>
 #include "board_config.h"  // MAX_ACTUATORS (4 or 5 depending on board)
+#include "config.h"        // battery thresholds
 
 // =============================================================================
 // RESULT CODES
@@ -78,8 +79,8 @@ enum class TherapyState : uint8_t {
     PAUSED,             // Session paused, can resume
     STOPPING,           // Session ending, cleanup in progress
     ERROR,              // Error condition, motors stopped
-    LOW_BATTERY,        // Battery < 20%, session can continue
-    CRITICAL_BATTERY,   // Battery < 5%, forced shutdown
+    LOW_BATTERY,        // Session running on a low battery (BATTERY_LOW_VOLTAGE)
+    CRITICAL_BATTERY,   // Battery critical: session stopped until the glove charges
     CONNECTION_LOST,    // PRIMARY-SECONDARY BLE lost
     PHONE_DISCONNECTED  // Phone BLE lost (PRIMARY only, informational)
 };
@@ -324,6 +325,61 @@ struct BatteryStatus {
      */
     bool requiresAction() const {
         return isLow || isCritical;
+    }
+};
+
+/**
+ * @brief A glove's battery level, with hysteresis, as the LED and start gate see it
+ */
+enum class BatteryLevel : uint8_t {
+    NORMAL,
+    LOW_CHARGE,     // Below BATTERY_LOW_VOLTAGE: can't finish a 2-hour session
+    CRITICAL        // Below BATTERY_CRITICAL_VOLTAGE: session stopped until the glove charges
+};
+
+/**
+ * @brief Tracks a glove's battery level from trusted (motor-idle) readings
+ *
+ * Low and critical each need BATTERY_CRITICAL_CONFIRM_READINGS readings in a
+ * row below their threshold, so one sagged reading can't latch either. 0 V (no
+ * reading) changes nothing. Low clears at BATTERY_LOW_VOLTAGE +
+ * BATTERY_LOW_HYSTERESIS_V; critical clears at BATTERY_LOW_VOLTAGE (charging).
+ */
+struct BatteryTracker {
+    BatteryLevel level = BatteryLevel::NORMAL;
+    uint8_t lowReadings = 0;
+    uint8_t criticalReadings = 0;
+
+    void update(float voltage) {
+        if (voltage <= 0.0f) {
+            return;
+        }
+        lowReadings = voltage < BATTERY_LOW_VOLTAGE ? countUp(lowReadings) : 0;
+        criticalReadings = voltage < BATTERY_CRITICAL_VOLTAGE ? countUp(criticalReadings) : 0;
+
+        if (criticalReadings >= BATTERY_CRITICAL_CONFIRM_READINGS) {
+            level = BatteryLevel::CRITICAL;
+        } else if (level == BatteryLevel::CRITICAL) {
+            if (voltage >= BATTERY_LOW_VOLTAGE) {
+                level = voltage >= BATTERY_LOW_VOLTAGE + BATTERY_LOW_HYSTERESIS_V ? BatteryLevel::NORMAL
+                                                                                 : BatteryLevel::LOW_CHARGE;
+            }
+        } else if (lowReadings >= BATTERY_CRITICAL_CONFIRM_READINGS) {
+            level = BatteryLevel::LOW_CHARGE;
+        } else if (level == BatteryLevel::LOW_CHARGE && voltage >= BATTERY_LOW_VOLTAGE + BATTERY_LOW_HYSTERESIS_V) {
+            level = BatteryLevel::NORMAL;
+        }
+    }
+
+    // A below-threshold reading is waiting for its confirming reading
+    bool confirming() const {
+        return (level == BatteryLevel::NORMAL && lowReadings > 0) ||
+               (level != BatteryLevel::CRITICAL && criticalReadings > 0);
+    }
+
+private:
+    static uint8_t countUp(uint8_t n) {
+        return n < BATTERY_CRITICAL_CONFIRM_READINGS ? n + 1 : n;
     }
 };
 

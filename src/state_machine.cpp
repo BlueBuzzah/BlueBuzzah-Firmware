@@ -164,6 +164,7 @@ TherapyState TherapyStateMachine::determineNextState(TherapyState current, State
             // Any active state -> CONNECTION_LOST (the glove link matters with or
             // without the phone)
             if (current == TherapyState::RUNNING ||
+                current == TherapyState::LOW_BATTERY ||
                 current == TherapyState::PAUSED ||
                 current == TherapyState::READY ||
                 current == TherapyState::PHONE_DISCONNECTED) {
@@ -193,7 +194,7 @@ TherapyState TherapyStateMachine::determineNextState(TherapyState current, State
             break;
 
         case StateTrigger::PAUSE_SESSION:
-            if (current == TherapyState::RUNNING) {
+            if (current == TherapyState::RUNNING || current == TherapyState::LOW_BATTERY) {
                 return TherapyState::PAUSED;
             }
             break;
@@ -207,8 +208,8 @@ TherapyState TherapyStateMachine::determineNextState(TherapyState current, State
         case StateTrigger::STOP_SESSION:
             // A session can end while the phone is away; leaving PHONE_DISCONNECTED
             // here keeps PHONE_RECONNECTED from restoring a RUNNING that is over
-            if (current == TherapyState::RUNNING || current == TherapyState::PAUSED ||
-                current == TherapyState::PHONE_DISCONNECTED) {
+            if (current == TherapyState::RUNNING || current == TherapyState::LOW_BATTERY ||
+                current == TherapyState::PAUSED || current == TherapyState::PHONE_DISCONNECTED) {
                 return TherapyState::STOPPING;
             }
             break;
@@ -218,7 +219,8 @@ TherapyState TherapyStateMachine::determineNextState(TherapyState current, State
             if (current == TherapyState::STOPPING) {
                 return TherapyState::IDLE;
             }
-            if (current == TherapyState::RUNNING || current == TherapyState::PHONE_DISCONNECTED) {
+            if (current == TherapyState::RUNNING || current == TherapyState::LOW_BATTERY ||
+                current == TherapyState::PHONE_DISCONNECTED) {
                 return TherapyState::IDLE;
             }
             break;
@@ -240,13 +242,18 @@ TherapyState TherapyStateMachine::determineNextState(TherapyState current, State
             if (current == TherapyState::LOW_BATTERY) {
                 return TherapyState::RUNNING;
             }
+            // Charged back up after a critical stop
+            if (current == TherapyState::CRITICAL_BATTERY) {
+                return TherapyState::IDLE;
+            }
             break;
 
         // =====================================================================
         // PHONE TRIGGERS
         // =====================================================================
         case StateTrigger::PHONE_LOST:
-            if (current == TherapyState::READY || current == TherapyState::RUNNING) {
+            if (current == TherapyState::READY || current == TherapyState::RUNNING ||
+                current == TherapyState::LOW_BATTERY) {
                 return TherapyState::PHONE_DISCONNECTED;
             }
             break;
