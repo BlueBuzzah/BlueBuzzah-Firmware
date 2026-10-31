@@ -78,7 +78,7 @@ typedef void (*StateChangeCallback)(const StateTransition& transition);
  *   - PAUSED: Session paused, can resume
  *   - STOPPING: Session ending, cleanup in progress
  *   - ERROR: Error condition
- *   - LOW_BATTERY: Battery warning
+ *   - LOW_BATTERY: Session running on a low battery
  *   - CRITICAL_BATTERY: Battery critical
  *   - CONNECTION_LOST: BLE connection lost
  *   - PHONE_DISCONNECTED: Phone disconnected (informational)
@@ -187,7 +187,10 @@ public:
     /**
      * @brief Check if therapy is running
      */
-    bool isRunning() const { return _currentState.load(std::memory_order_acquire) == TherapyState::RUNNING; }
+    bool isRunning() const {
+        TherapyState s = _currentState.load(std::memory_order_acquire);
+        return s == TherapyState::RUNNING || s == TherapyState::LOW_BATTERY;  // a low battery doesn't stop a session
+    }
 
     /**
      * @brief Check if therapy is paused

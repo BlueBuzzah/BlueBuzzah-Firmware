@@ -181,9 +181,13 @@ constexpr uint32_t TEST_DURATION_SEC = 120;  // 2 minutes
 // BATTERY CONFIGURATION
 // =============================================================================
 
-#define BATTERY_LOW_VOLTAGE 3.4f        // Low battery warning threshold (V)
+// BATTERY_LOW_VOLTAGE is per board (board_config.h)
 #define BATTERY_CRITICAL_VOLTAGE 3.3f   // Critical battery shutdown threshold (V)
 #define BATTERY_CRITICAL_CONFIRM_READINGS 2  // Consecutive critical readings before a session stops
+// Low clears only this far above BATTERY_LOW_VOLTAGE, so a pack hovering at the
+// threshold doesn't flip orange every check. Critical clears only at
+// BATTERY_LOW_VOLTAGE: a pack that sagged to 3.3V rests near 3.5V, so only charging gets there
+#define BATTERY_LOW_HYSTERESIS_V 0.10f
 #define BATTERY_FULL_VOLTAGE 4.2f       // Fully charged voltage (V)
 #define BATTERY_EMPTY_VOLTAGE 3.27f     // Empty battery voltage (V)
 
@@ -262,7 +266,7 @@ constexpr float MIN_INTER_BURST_GAP_MS = 5.0f;
 // Blink patterns (on/off)
 #define LED_BLINK_FAST_ON_MS    200     // Fast blink: 200ms on
 #define LED_BLINK_FAST_OFF_MS   200     // Fast blink: 200ms off
-#define LED_BLINK_SLOW_ON_MS    1000    // Slow blink: 1s on (ERROR, LOW_BATTERY)
+#define LED_BLINK_SLOW_ON_MS    1000    // Slow blink: 1s on (ERROR, no role configured)
 #define LED_BLINK_SLOW_OFF_MS   1000    // Slow blink: 1s off
 #define LED_BLINK_URGENT_ON_MS  150     // Urgent blink: 150ms (CRITICAL_BATTERY)
 #define LED_BLINK_URGENT_OFF_MS 150     // Urgent blink: 150ms

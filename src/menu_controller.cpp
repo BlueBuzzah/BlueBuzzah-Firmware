@@ -30,6 +30,7 @@ MenuController::MenuController() :
     _restartCallback(nullptr),
     _sendToSecondaryCallback(nullptr),
     _syncReadyCallback(nullptr),
+    _batteryGateCallback(nullptr),
     _deferredCommand(DeferredCommand::NONE),
     _secondaryBatteryVoltage(0.0f),
     _waitingForSecondaryBattery(false),
@@ -101,6 +102,10 @@ void MenuController::setSendToSecondaryCallback(SendToSecondaryCallback callback
 
 void MenuController::setSyncReadyCallback(SyncReadyCallback callback) {
     _syncReadyCallback = callback;
+}
+
+void MenuController::setBatteryGateCallback(BatteryGateCallback callback) {
+    _batteryGateCallback = callback;
 }
 
 // =============================================================================
@@ -346,10 +351,15 @@ void MenuController::setSecondaryBatteryVoltage(float voltage) {
 }
 
 void MenuController::checkSecondaryBatteryResponse() {
-    if (!_waitingForSecondaryBattery || !_secondaryBatteryReceived) {
+    if (!_secondaryBatteryReceived) {
         return;
     }
     _secondaryBatteryReceived = false;
+    // The SECONDARY also pushes BATRESPONSE after every battery check; with no
+    // request pending, drop it so the next INFO/BATTERY waits for a fresh reply
+    if (!_waitingForSecondaryBattery) {
+        return;
+    }
     // Now safe to call handleSecondaryBatteryResponse from main loop context
     handleSecondaryBatteryResponse(_secondaryBatteryVoltage);
 }
@@ -697,13 +707,10 @@ void MenuController::handleSessionStart() {
         return;
     }
 
-    // Check battery
-    if (_battery) {
-        BatteryStatus status = _battery->getStatus();
-        if (status.isCritical) {
-            sendError("Battery too low");
-            return;
-        }
+    // Either glove too low to finish a 2-hour session
+    if (_batteryGateCallback && !_batteryGateCallback()) {
+        sendError("Battery too low");
+        return;
     }
 
     // Until clock sync converges the PRIMARY sends macrocycles with offset 0,

@@ -240,6 +240,48 @@ void test_StateMachine_any_to_criticalBattery_on_batteryCritical(void) {
     TEST_ASSERT_EQUAL(TherapyState::CRITICAL_BATTERY, sm3.getCurrentState());
 }
 
+void test_StateMachine_criticalBattery_to_idle_on_batteryOk(void) {
+    TherapyStateMachine sm;
+    sm.begin(TherapyState::CRITICAL_BATTERY);
+
+    TEST_ASSERT_TRUE(sm.transition(StateTrigger::BATTERY_OK));
+    TEST_ASSERT_EQUAL(TherapyState::IDLE, sm.getCurrentState());
+}
+
+// A session that went low must still pause, stop, end and lose its links like RUNNING
+void test_StateMachine_lowBattery_session_transitions(void) {
+    struct { StateTrigger trigger; TherapyState expected; } cases[] = {
+        {StateTrigger::PAUSE_SESSION, TherapyState::PAUSED},
+        {StateTrigger::STOP_SESSION, TherapyState::STOPPING},
+        {StateTrigger::SESSION_COMPLETE, TherapyState::IDLE},
+        {StateTrigger::STOPPED, TherapyState::IDLE},
+        {StateTrigger::DISCONNECTED, TherapyState::CONNECTION_LOST},
+        {StateTrigger::PHONE_LOST, TherapyState::PHONE_DISCONNECTED},
+        {StateTrigger::BATTERY_CRITICAL, TherapyState::CRITICAL_BATTERY},
+    };
+    for (auto& c : cases) {
+        TherapyStateMachine sm;
+        sm.begin(TherapyState::LOW_BATTERY);
+        TEST_ASSERT_TRUE(sm.transition(c.trigger));
+        TEST_ASSERT_EQUAL(c.expected, sm.getCurrentState());
+    }
+}
+
+void test_StateMachine_phoneReconnected_restores_lowBattery(void) {
+    TherapyStateMachine sm;
+    sm.begin(TherapyState::LOW_BATTERY);
+    sm.transition(StateTrigger::PHONE_LOST);
+
+    TEST_ASSERT_TRUE(sm.transition(StateTrigger::PHONE_RECONNECTED));
+    TEST_ASSERT_EQUAL(TherapyState::LOW_BATTERY, sm.getCurrentState());
+}
+
+void test_StateMachine_isRunning_in_lowBattery(void) {
+    TherapyStateMachine sm;
+    sm.begin(TherapyState::LOW_BATTERY);
+    TEST_ASSERT_TRUE(sm.isRunning());
+}
+
 // =============================================================================
 // PHONE TRANSITION TESTS
 // =============================================================================
@@ -349,7 +391,7 @@ void test_StateMachine_batteryOk_from_running_stays_same(void) {
     TherapyStateMachine sm;
     sm.begin(TherapyState::RUNNING);
 
-    // Battery OK only transitions from LOW_BATTERY
+    // Battery OK only transitions from LOW_BATTERY or CRITICAL_BATTERY
     TEST_ASSERT_FALSE(sm.transition(StateTrigger::BATTERY_OK));
     TEST_ASSERT_EQUAL(TherapyState::RUNNING, sm.getCurrentState());
 }
@@ -662,7 +704,8 @@ void test_StateMachine_lowBattery_stopSession(void) {
     sm.begin(TherapyState::LOW_BATTERY);
 
     // LOW_BATTERY is an active state, can stop
-    TEST_ASSERT_FALSE(sm.transition(StateTrigger::STOP_SESSION));  // Not running/paused
+    TEST_ASSERT_TRUE(sm.transition(StateTrigger::STOP_SESSION));
+    TEST_ASSERT_EQUAL(TherapyState::STOPPING, sm.getCurrentState());
 }
 
 void test_StateMachine_stopping_emergencyStop(void) {
@@ -762,6 +805,10 @@ int main(int argc, char **argv) {
     RUN_TEST(test_StateMachine_isError_when_connectionLost);
     RUN_TEST(test_StateMachine_isError_when_running);
     RUN_TEST(test_StateMachine_isRunning);
+    RUN_TEST(test_StateMachine_criticalBattery_to_idle_on_batteryOk);
+    RUN_TEST(test_StateMachine_lowBattery_session_transitions);
+    RUN_TEST(test_StateMachine_phoneReconnected_restores_lowBattery);
+    RUN_TEST(test_StateMachine_isRunning_in_lowBattery);
     RUN_TEST(test_StateMachine_isPaused);
     RUN_TEST(test_StateMachine_isReady);
     RUN_TEST(test_StateMachine_isIdle);
