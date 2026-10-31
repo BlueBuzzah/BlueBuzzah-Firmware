@@ -168,6 +168,8 @@
 
 // Battery monitoring
 #define BATTERY_CHECK_INTERVAL_MS 60000  // 60 seconds between checks
+#define BATTERY_CONFIRM_RECHECK_MS 5000  // Re-read this soon after an unconfirmed low/critical reading,
+                                         // so the boot reading is confirmed before the 30s auto-start
 
 // Therapy timing
 #define THERAPY_CYCLE_MS 100            // Main therapy cycle period

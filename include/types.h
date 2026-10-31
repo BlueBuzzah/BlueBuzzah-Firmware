@@ -371,6 +371,12 @@ struct BatteryTracker {
         }
     }
 
+    // A below-threshold reading is waiting for its confirming reading
+    bool confirming() const {
+        return (level == BatteryLevel::NORMAL && lowReadings > 0) ||
+               (level != BatteryLevel::CRITICAL && criticalReadings > 0);
+    }
+
 private:
     static uint8_t countUp(uint8_t n) {
         return n < BATTERY_CRITICAL_CONFIRM_READINGS ? n + 1 : n;

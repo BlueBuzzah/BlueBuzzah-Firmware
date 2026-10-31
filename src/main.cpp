@@ -1218,6 +1218,10 @@ void loop()
             }
             BatteryLevel previous = g_battery.level;
             g_battery.update(status.voltage);
+            if (g_battery.confirming())
+            {
+                lastBatteryCheck = now - (BATTERY_CHECK_INTERVAL_MS - BATTERY_CONFIRM_RECHECK_MS);
+            }
             if (g_battery.level != previous)
             {
                 Serial.printf("[BATTERY] Level: %s\n", g_battery.level == BatteryLevel::CRITICAL     ? "CRITICAL"
@@ -3124,6 +3128,18 @@ void onTxStamped(TxStampKind kind, uint32_t seqId, uint64_t txTimeUs)
  * their color: they're brief or more urgent. A critical battery is red urgent
  * blink in every state. Orange slow blink stays "no role configured".
  */
+// During a debug flash, update what the flash restores instead of the LED
+static void setLed(const RGBColor &color, LEDPattern pattern)
+{
+    if (debugFlashActive)
+    {
+        savedLedColor = color;
+        savedLedPattern = pattern;
+        return;
+    }
+    led.setPattern(color, pattern);
+}
+
 void applyLed()
 {
     TherapyState state = stateMachine.getCurrentState();
@@ -3135,7 +3151,7 @@ void applyLed()
     }
     if (g_battery.level == BatteryLevel::CRITICAL || state == TherapyState::CRITICAL_BATTERY)
     {
-        led.setPattern(Colors::RED, LEDPattern::BLINK_URGENT);
+        setLed(Colors::RED, LEDPattern::BLINK_URGENT);
         return;
     }
 
@@ -3143,43 +3159,43 @@ void applyLed()
     switch (state)
     {
     case TherapyState::IDLE:
-        led.setPattern(low ? Colors::ORANGE : Colors::BLUE, LEDPattern::BREATHE_SLOW);
+        setLed(low ? Colors::ORANGE : Colors::BLUE, LEDPattern::BREATHE_SLOW);
         break;
 
     case TherapyState::CONNECTING:
-        led.setPattern(Colors::BLUE, LEDPattern::BLINK_CONNECT);
+        setLed(Colors::BLUE, LEDPattern::BLINK_CONNECT);
         break;
 
     case TherapyState::READY:
-        led.setPattern(low ? Colors::ORANGE : Colors::GREEN, LEDPattern::SOLID);
+        setLed(low ? Colors::ORANGE : Colors::GREEN, LEDPattern::SOLID);
         break;
 
     case TherapyState::RUNNING:
     case TherapyState::LOW_BATTERY:
-        if (low || state == TherapyState::LOW_BATTERY)
+        if (low)
         {
-            led.setPattern(Colors::ORANGE, LEDPattern::PULSE_SLOW);
+            setLed(Colors::ORANGE, LEDPattern::PULSE_SLOW);
         }
         else
         {
-            led.setPattern(Colors::GREEN, profiles.getTherapyLedOff() ? LEDPattern::OFF : LEDPattern::PULSE_SLOW);
+            setLed(Colors::GREEN, profiles.getTherapyLedOff() ? LEDPattern::OFF : LEDPattern::PULSE_SLOW);
         }
         break;
 
     case TherapyState::PAUSED:
-        led.setPattern(Colors::YELLOW, LEDPattern::SOLID);
+        setLed(Colors::YELLOW, LEDPattern::SOLID);
         break;
 
     case TherapyState::STOPPING:
-        led.setPattern(Colors::YELLOW, LEDPattern::BLINK_FAST);
+        setLed(Colors::YELLOW, LEDPattern::BLINK_FAST);
         break;
 
     case TherapyState::ERROR:
-        led.setPattern(Colors::RED, LEDPattern::BLINK_SLOW);
+        setLed(Colors::RED, LEDPattern::BLINK_SLOW);
         break;
 
     case TherapyState::CONNECTION_LOST:
-        led.setPattern(Colors::PURPLE, LEDPattern::BLINK_CONNECT);
+        setLed(Colors::PURPLE, LEDPattern::BLINK_CONNECT);
         break;
 
     default:
@@ -3203,6 +3219,12 @@ void onStateChange(const StateTransition &transition)
         // Emergency stop on critical battery
         haptic.emergencyStop();
         therapy.stop(SessionEndReason::BATTERY);
+        // emergencyStop() leaves queued macrocycle events that would buzz again;
+        // the loop's safety shutdown clears the queues
+        if (safetyShutdownSema)
+        {
+            xSemaphoreGive(safetyShutdownSema);
+        }
         break;
 
     case TherapyState::CONNECTION_LOST:
