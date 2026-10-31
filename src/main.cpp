@@ -2810,6 +2810,16 @@ void autoStartTherapy()
         return;
     }
 
+#if BATTERY_SENSE_ENABLED
+    // Same gate as a phone SESSION_START. 0 V is no reading yet, not critical
+    BatteryStatus batteryStatus = battery.getStatus();
+    if (batteryStatus.voltage > 0.0f && batteryStatus.isCritical)
+    {
+        Serial.printf("[AUTO] Battery too low (%.2fV) - not starting\n", batteryStatus.voltage);
+        return;
+    }
+#endif
+
     // Check sync validity before starting therapy (SECONDARY must be synced)
     // After reconnection, sync requires 5 samples (~350ms at the acquire cadence)
     if (ble.isSecondaryConnected() && !syncProtocol.isClockSyncValid())
