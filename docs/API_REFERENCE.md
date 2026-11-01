@@ -1079,7 +1079,7 @@ public:
     void setActiveFingers(const uint8_t* fingers, uint8_t count);
     uint8_t getActiveFingerCount() const;
 
-    void setFrequencyRandomization(bool enabled, uint16_t minHz = 210, uint16_t maxHz = 255);
+    void setFrequencyRandomization(bool enabled, uint16_t minHz = 210, uint16_t maxHz = 260);
 
     // =========================================================================
     // SESSION CONTROL

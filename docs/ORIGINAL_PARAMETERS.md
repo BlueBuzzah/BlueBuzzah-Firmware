@@ -505,7 +505,7 @@ This section maps original V1 CircuitPython concepts to V2 C++ implementation.
 | `defaults.py` | `include/config.h` | Hardware constants, timing defaults |
 | `defaults_*.py` (presets) | `ProfileManager` built-in profiles + `fs_backend` (InternalFS on nRF52840, LittleFS on ESP32-S3) | Profile storage |
 | `AMPLITUDE_MIN/MAX` | `TherapyProfile.amplitudeMin/amplitudeMax` | Random per event when they differ (per-finger planned) |
-| `RANDOM_FREQ` + `ACTUATOR_FREQ*` | `frequencyRandomization`, `frequencyMin`, `frequencyMax` | Stored per profile but not applied: nothing calls `TherapyEngine::setFrequencyRandomization()`, so all profiles run at 250 Hz |
+| `RANDOM_FREQ` + `ACTUATOR_FREQ*` | `frequencyRandomization`, `frequencyMin`, `frequencyMax` | Applied at every session start; only `custom_vcr` randomizes (210-255 Hz in 5 Hz steps, like v1), the others run at 250 Hz |
 
 ### Architecture Differences
 
