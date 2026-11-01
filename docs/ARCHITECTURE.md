@@ -1600,6 +1600,7 @@ BLE callbacks never touch I2C. A disconnect callback signals `safetyShutdownSema
 - Invalid command -> `ERROR:Unknown command: <COMMAND>`
 - Invalid parameter -> `ERROR:Invalid parameter name or value out of range`
 - Command during session -> `ERROR:Cannot modify parameters during active session`
+- `SESSION_START` while the SECONDARY isn't connected -> `ERROR:Secondary not connected` (therapy never runs on the PRIMARY alone)
 - `SESSION_START` while the SECONDARY is connected but clock sync is not yet valid -> `ERROR:Sync not ready` (accepted with degraded timing once the SECONDARY has been connected for `SYNC_START_FALLBACK_MS`, 10s)
 
 Every menu reply, success or error, begins with a `CMD:<command>` line naming the command it answers. Only `ERROR:Invalid command format` has no `CMD:` line, since the command was never parsed.
