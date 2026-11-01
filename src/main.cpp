@@ -1247,6 +1247,12 @@ void loop()
                 ble.sendToPrimary(response);
             }
         }
+        else
+        {
+            // A pulse cut the reading short: try again soon rather than in 60s, so
+            // a pending low/critical confirmation (or the on-connect push) isn't a minute late
+            lastBatteryCheck = now - (BATTERY_CHECK_INTERVAL_MS - BATTERY_CONFIRM_RECHECK_MS);
+        }
     }
 
     reconcileBatteryState();
