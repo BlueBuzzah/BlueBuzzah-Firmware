@@ -757,7 +757,6 @@ void test_TherapyEngine_getRemainingSeconds_exceeded(void) {
 static int g_macrocycleStartCallCount = 0;
 static int g_sendMacrocycleCallCount = 0;
 static int g_scheduleActivationCallCount = 0;
-static int g_setFrequencyCallCount = 0;
 static uint32_t g_lastLeadTimeReturned = 0;
 static bool g_schedulingComplete = false;
 
@@ -784,10 +783,6 @@ bool mockIsSchedulingCompleteCallback() {
 uint32_t mockGetLeadTimeCallback() {
     g_lastLeadTimeReturned = 50000;  // 50ms
     return g_lastLeadTimeReturned;
-}
-
-void mockSetFrequencyCallback(uint8_t finger, uint16_t freq) {
-    g_setFrequencyCallCount++;
 }
 
 void test_TherapyEngine_setMacrocycleStartCallback(void) {
@@ -843,21 +838,6 @@ void test_TherapyEngine_setGetLeadTimeCallback(void) {
 
     // Lead time callback should have been called
     TEST_ASSERT_EQUAL_UINT32(50000, g_lastLeadTimeReturned);
-}
-
-void test_TherapyEngine_setSetFrequencyCallback(void) {
-    TherapyEngine engine;
-    engine.setSetFrequencyCallback(mockSetFrequencyCallback);
-    engine.setFrequencyRandomization(true, 210, 260);
-
-    g_setFrequencyCallCount = 0;
-
-    engine.startSession(100, PatternType::RNDP, 100.0f, 67.0f, 0.0f, 4, true, 100, 100, false);
-
-    // Randomization covers every physical actuator (not just session
-    // fingers): events look frequency up by physical finger index, which
-    // can exceed numFingers when the active-finger map skips a missing motor
-    TEST_ASSERT_EQUAL_INT(MAX_ACTUATORS, g_setFrequencyCallCount);
 }
 
 // =============================================================================
@@ -981,6 +961,29 @@ void test_macrocycle_without_frequency_randomization_is_250hz(void) {
     g_macrocycleReceived = false;
     mockSetMillis(1000);
 
+    engine.startSession(100, PatternType::RNDP, 100.0f, 67.0f, 0.0f, 4, true, 100, 100, false);
+    engine.update();
+
+    TEST_ASSERT_TRUE(g_macrocycleReceived);
+    for (uint8_t i = 0; i < g_lastSentMacrocycle.eventCount; i++) {
+        TEST_ASSERT_EQUAL_UINT16(250, g_lastSentMacrocycle.events[i].getFrequencyHz());
+    }
+}
+
+void test_fixed_session_after_randomized_session_is_250hz(void) {
+    // The engine outlives sessions: a Custom vCR session's last draws must
+    // not carry into the next fixed-frequency session
+    TherapyEngine engine;
+    engine.setSendMacrocycleCallback(mockCaptureMacrocycleCallback);
+    engine.setFrequencyRandomization(true, 210, 260);
+    mockSetMillis(1000);
+    engine.startSession(100, PatternType::RNDP, 100.0f, 67.0f, 0.0f, 4, true, 100, 100, false);
+    engine.update();
+    engine.stop();
+
+    engine.setFrequencyRandomization(false);
+    g_macrocycleReceived = false;
+    mockSetMillis(20000);
     engine.startSession(100, PatternType::RNDP, 100.0f, 67.0f, 0.0f, 4, true, 100, 100, false);
     engine.update();
 
@@ -1673,7 +1676,6 @@ int main(int argc, char **argv) {
     RUN_TEST(test_TherapyEngine_setSendMacrocycleCallback);
     RUN_TEST(test_TherapyEngine_setSchedulingCallbacks);
     RUN_TEST(test_TherapyEngine_setGetLeadTimeCallback);
-    RUN_TEST(test_TherapyEngine_setSetFrequencyCallback);
 
     // Macrocycle Generation Tests (via callbacks)
     RUN_TEST(test_macrocycle_creates_12_events);
@@ -1683,6 +1685,7 @@ int main(int argc, char **argv) {
     RUN_TEST(test_macrocycle_with_frequency_randomization);
     RUN_TEST(test_macrocycle_without_frequency_randomization_is_250hz);
     RUN_TEST(test_frequency_randomization_covers_v1_range);
+    RUN_TEST(test_fixed_session_after_randomized_session_is_250hz);
     RUN_TEST(test_macrocycle_duration_matches);
     RUN_TEST(test_macrocycle_amplitude_range);
     RUN_TEST(test_macrocycle_fixed_amplitude);

@@ -261,10 +261,6 @@ typedef void (*DeactivateCallback)(uint8_t finger);
 // Callback for cycle completion
 typedef void (*CycleCompleteCallback)(uint32_t cycleCount);
 
-// Callback for setting motor frequency (for Custom vCR frequency randomization)
-// Called at start of each pattern cycle when frequencyRandomization is enabled
-typedef void (*SetFrequencyCallback)(uint8_t finger, uint16_t frequencyHz);
-
 // Callback for macrocycle start (for PING/PONG latency measurement)
 // Called at the start of each macrocycle before the first pattern
 typedef void (*MacrocycleStartCallback)(uint32_t macrocycleCount);
@@ -329,11 +325,6 @@ public:
      * @brief Set callback for cycle completion
      */
     void setCycleCompleteCallback(CycleCompleteCallback callback);
-
-    /**
-     * @brief Set callback for frequency changes (Custom vCR frequency randomization)
-     */
-    void setSetFrequencyCallback(SetFrequencyCallback callback);
 
     /**
      * @brief Set callback for macrocycle start (PING/PONG latency measurement)
@@ -626,7 +617,6 @@ private:
     ActivateCallback _activateCallback;
     DeactivateCallback _deactivateCallback;
     CycleCompleteCallback _cycleCompleteCallback;
-    SetFrequencyCallback _setFrequencyCallback;
     MacrocycleStartCallback _macrocycleStartCallback;
     SendMacrocycleCallback _sendMacrocycleCallback;
 
@@ -644,7 +634,6 @@ private:
     // Internal methods
     void remapPatternFingers(Pattern& pattern);  // Map slot indices -> physical fingers
     void generateNextPattern();
-    void applyFrequencyRandomization();  // Called at start of each pattern cycle
     Macrocycle generateMacrocycle();     // Generate 3*numFingers events for a macrocycle
     void executeMacrocycleStep();        // State machine for macrocycle batching mode
 };

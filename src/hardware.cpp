@@ -199,8 +199,11 @@ void HapticController::configureDRV2605(Adafruit_DRV2605& drv) {
     // 6. Initialize RTP value to 0 (motor off)
     drv.setRealtimeValue(0);
 
-    // The period register is back at 250Hz: the next setFrequency() rewrites it
-    _lastFrequency[&drv - _drv] = 0;
+    // The period register is back at 250Hz, here and on any other chip whose
+    // mux channel was still open: every finger's next setFrequency() rewrites it
+    for (uint8_t i = 0; i < MAX_ACTUATORS; i++) {
+        _lastFrequency[i] = 0;
+    }
 }
 
 // OL_LRA_PERIOD (0x20) is the open-loop drive period in 98.49us units, as in

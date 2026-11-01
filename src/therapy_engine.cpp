@@ -239,7 +239,6 @@ TherapyEngine::TherapyEngine() :
     _activateCallback(nullptr),
     _deactivateCallback(nullptr),
     _cycleCompleteCallback(nullptr),
-    _setFrequencyCallback(nullptr),
     _macrocycleStartCallback(nullptr),
     _sendMacrocycleCallback(nullptr),
     _scheduleActivationCallback(nullptr),
@@ -316,10 +315,6 @@ void TherapyEngine::setCycleCompleteCallback(CycleCompleteCallback callback) {
     _cycleCompleteCallback = callback;
 }
 
-void TherapyEngine::setSetFrequencyCallback(SetFrequencyCallback callback) {
-    _setFrequencyCallback = callback;
-}
-
 void TherapyEngine::setMacrocycleStartCallback(MacrocycleStartCallback callback) {
     _macrocycleStartCallback = callback;
 }
@@ -344,6 +339,13 @@ void TherapyEngine::setFrequencyRandomization(bool enabled, uint16_t minHz, uint
     _frequencyRandomization = enabled;
     _frequencyMin = minHz;
     _frequencyMax = maxHz;
+    if (!enabled) {
+        // A previous randomized session left its last draws here; events
+        // read them, so a fixed-frequency session must start from 250 Hz
+        for (uint8_t finger = 0; finger < MAX_ACTUATORS; finger++) {
+            _currentFrequency[finger] = DEFAULT_FREQUENCY_HZ;
+        }
+    }
 }
 
 // =============================================================================
@@ -688,41 +690,6 @@ void TherapyEngine::generateNextPattern() {
     // Reset flow control state for new pattern
     _buzzFlowState = BuzzFlowState::IDLE;
     _buzzSendTime = millis();  // Allow immediate first buzz
-
-    // Apply frequency randomization if enabled (Custom vCR feature)
-    // v1 reconfigures frequency at the start of each pattern cycle
-    applyFrequencyRandomization();
-}
-
-void TherapyEngine::applyFrequencyRandomization() {
-    // Custom vCR feature: randomize motor frequency at start of each pattern cycle
-    // v1 behavior from defaults_CustomVCR.py:
-    //   ACTUATOR_FREQL = 210 Hz
-    //   ACTUATOR_FREQH = 260 Hz
-    //   ACTUATOR_FREQUENCY = random.randrange(FREQL, FREQH, 5)
-    // Generates: 210, 215, 220, 225, 230, 235, 240, 245, 250, 255 Hz (randrange excludes upper bound)
-
-    if (!_frequencyRandomization) {
-        return;
-    }
-
-    // Calculate number of 5Hz steps between min and max
-    uint16_t range = _frequencyMax - _frequencyMin;
-    uint16_t steps = range / 5;
-
-    // Apply randomized frequency to each finger's motor (all MAX_ACTUATORS:
-    // physical finger indices can exceed _numFingers when the finger map
-    // skips a missing motor)
-    for (uint8_t finger = 0; finger < MAX_ACTUATORS; finger++) {
-        // Generate random frequency in 5 Hz steps (matching v1 behavior)
-        uint16_t freq = _frequencyMin + static_cast<uint16_t>(random(0, steps) * 5);
-        _currentFrequency[finger] = freq;
-
-        // Apply locally if callback registered
-        if (_setFrequencyCallback) {
-            _setFrequencyCallback(finger, freq);
-        }
-    }
 }
 
 // =============================================================================

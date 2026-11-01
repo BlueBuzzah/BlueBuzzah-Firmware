@@ -72,7 +72,6 @@ TherapyEngine uses a **callback-driven architecture**. Hardware operations are d
 typedef void (*ActivateCallback)(uint8_t finger, uint8_t amplitude);
 typedef void (*DeactivateCallback)(uint8_t finger);
 typedef void (*CycleCompleteCallback)(uint32_t cycleCount);
-typedef void (*SetFrequencyCallback)(uint8_t finger, uint16_t frequencyHz);
 typedef void (*MacrocycleStartCallback)(uint32_t macrocycleCount);
 typedef void (*SendMacrocycleCallback)(const Macrocycle& macrocycle);
 typedef void (*ScheduleActivationCallback)(uint64_t activateTimeUs, uint8_t finger,
@@ -89,7 +88,6 @@ public:
     void setActivateCallback(ActivateCallback callback);
     void setDeactivateCallback(DeactivateCallback callback);
     void setCycleCompleteCallback(CycleCompleteCallback callback);
-    void setSetFrequencyCallback(SetFrequencyCallback callback);
     void setMacrocycleStartCallback(MacrocycleStartCallback callback);
     void setSendMacrocycleCallback(SendMacrocycleCallback callback);
     void setSchedulingCallbacks(ScheduleActivationCallback scheduleCallback,
