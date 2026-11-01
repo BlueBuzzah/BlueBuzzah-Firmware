@@ -897,7 +897,8 @@ Wiring facts:
   cannot converge on an open port.
 - At boot, the presence probe feeds pattern generation: with 4 of 5 motors
   attached, both gloves run 4-buzz macrocycles that skip the empty port.
-  Fewer than 4 motors = red double-blink LED for 5 s at boot.
+  Fewer than 4 motors = red double-blink LED for 5 s at boot, then the glove
+  enters `ERROR` (red slow blink) and refuses sessions until reboot.
 
 ## Low-battery threshold
 

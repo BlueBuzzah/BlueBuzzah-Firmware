@@ -59,7 +59,7 @@ The BlueBuzzah boot sequence (`setup()` in `src/main.cpp`) initializes the LED, 
 
 **For System:**
 - Auto-start requires the SECONDARY to be connected when the 30-second window expires
-- A phone `SESSION_START` works with or without the SECONDARY. While the SECONDARY is connected it is refused with `Sync not ready` until clock sync is valid, or until 10 seconds (`SYNC_START_FALLBACK_MS`) after the SECONDARY connected
+- A phone `SESSION_START` needs the SECONDARY (`Secondary not connected` otherwise) and is refused while either glove is in `ERROR` (`Primary glove error` / `Secondary glove error`). With the SECONDARY connected it is refused with `Sync not ready` until clock sync is valid, or until 10 seconds (`SYNC_START_FALLBACK_MS`) after the SECONDARY connected
 - Clock sync needs 5 valid PING/PONG samples (~350ms) after connecting, or 3 on a warm start
 
 ### Success Criteria
@@ -68,7 +68,7 @@ The BlueBuzzah boot sequence (`setup()` in `src/main.cpp`) initializes the LED, 
 |----------|-----------|-------|--------|
 | Full Success | ✓ | ✓ (within 30 s of pairing) | App control; no auto-start |
 | Partial Success | ✓ | ✗ | Automatic default therapy starts 30 s after pairing |
-| No SECONDARY | ✗ | ? | PRIMARY stays IDLE (breathing blue) and keeps advertising; a phone can still start a PRIMARY-only session |
+| No SECONDARY | ✗ | ? | PRIMARY stays IDLE (breathing blue) and keeps advertising; a phone start is refused (`Secondary not connected`) |
 | No PRIMARY | ✗ | - | SECONDARY stays IDLE (breathing blue) and keeps scanning |
 
 ---
@@ -87,7 +87,8 @@ the probe never runs at boot; it is available on demand via the
   generated over present fingers only, and those indices reach SECONDARY
   inside macrocycle events, so both gloves skip a motor missing on PRIMARY.
 - **Fewer than 4 motors detected** = assembly fault: logged over serial and
-  indicated by a red double-blink LED for 5 seconds before boot continues.
+  indicated by a red double-blink LED for 5 seconds. Boot continues, then the
+  glove enters `ERROR` (red slow blink) and refuses sessions until reboot.
 - If the supply dips during the probe (USB-only power, no battery), the
   results are discarded as unreliable, a warning is logged, and no fault is
   indicated.
@@ -414,6 +415,10 @@ if (deviceRole == DeviceRole::SECONDARY && type == ConnectionType::PRIMARY)
 {
     Serial.println(F("[SECONDARY] Sending IDENTIFY:SECONDARY to PRIMARY"));
     ble.sendToPrimary("IDENTIFY:SECONDARY");
+    if (g_hardwareFault)
+    {
+        ble.sendToPrimary("GLOVE_ERROR");  // the PRIMARY refuses starts while linked to us
+    }
     // Start keepalive timeout tracking
     lastKeepaliveReceived = millis();
 }
@@ -471,6 +476,7 @@ full pattern-timing table.
 | **Missing/Failed Motor(s)** | Red | Double blink | 2 blinks/pause, shown 5 s | v3 boot probe found fewer than 4 motors |
 | **Hardware init success** | Cyan | Connect blink | 250 ms on/off | motors/mux/battery OK |
 | **Hardware init failed** | Red | Slow blink | 1 s on/off | a hardware subsystem failed (replaced by blue breathe if BLE then starts) |
+| **Boot hardware fault (`ERROR`)** | Red | Slow blink | 1 s on/off | no motor driver started, no motor task, or (v3) fewer than 4 motors; set after BLE init, held until reboot |
 | **BLE ready (enters IDLE)** | Blue | Breathe | 2 s cycle | BLE up, waiting to pair/connect |
 | **BLE init failed** | Red | Slow blink | 1 s on/off | BLE stack failed to start |
 | **Ready** | Green | Solid | - | glove pair connected, ready for therapy |
@@ -499,8 +505,12 @@ are defined in `include/config.h` (see `docs/API_REFERENCE.md#led-controller`).
 - **Red slow blink** (`Colors::RED, BLINK_SLOW`, 1 s) — a boot step failed
   (hardware or BLE init). Boot continues either way; after a hardware failure the
   LED switches to blue breathe once BLE starts, so only a BLE failure stays red.
+  Exception: a boot hardware fault (no finger's motor driver initialized, the
+  motor task couldn't be created, or the v3 probe found fewer than 4 motors)
+  puts the glove in `ERROR` once the state machine starts, which shows red slow
+  blink until reboot. A battery monitor failure isn't one.
 - **Red double-blink** (`Colors::RED, DOUBLE_BLINK`, 5 s) — v3 boot motor probe found
-  fewer than 4 motors, then boot continues.
+  fewer than 4 motors, then boot continues and ends in `ERROR`.
 - **Orange slow blink** (`Colors::ORANGE, BLINK_SLOW`, 1 s) — no role configured
   yet (run `SET_ROLE`).
 
@@ -517,6 +527,7 @@ Boot (both roles), success:
 
 Boot, failure:
       -> [red slow blink]       hardware init failed (until BLE starts) or BLE init failed (until restart)
+      -> [red slow blink]       boot hardware fault: ERROR from state machine start until reboot
 ```
 
 ## Connection Requirements
@@ -703,9 +714,10 @@ When the window expires with the SECONDARY connected and no phone, `autoStartThe
 1. **Default Profile**: Uses the current (saved) therapy profile; if none is loaded, the built-in `noisy_vcr` profile
 2. **Duration**: The profile's session duration (120 minutes for the built-in vCR profiles)
 3. **Pattern**: The profile's pattern type, timing, jitter and mirroring
-4. **Battery gate**: If either glove's battery is low (below `BATTERY_LOW_VOLTAGE`), it doesn't start (`[AUTO] Battery too low - not starting`) and auto-start doesn't run again this boot
-5. **Sync gate**: If clock sync isn't valid yet it retries every second; after 10 retries it starts anyway (`[AUTO] Sync not valid after 10s - starting therapy (timing may be degraded)`)
-6. **No User Intervention**: Therapy begins automatically when the 30-second window expires without a phone connection
+4. **Glove error gate**: If either glove is in `ERROR` (a boot hardware fault, reported by the SECONDARY with `GLOVE_ERROR`), it doesn't start (`[AUTO] Primary glove error - not starting` or `[AUTO] Secondary glove error - not starting`)
+5. **Battery gate**: If either glove's battery is low (below `BATTERY_LOW_VOLTAGE`), it doesn't start (`[AUTO] Battery too low - not starting`) and auto-start doesn't run again this boot
+6. **Sync gate**: If clock sync isn't valid yet it retries every second; after 10 retries it starts anyway (`[AUTO] Sync not valid after 10s - starting therapy (timing may be degraded)`)
+7. **No User Intervention**: Therapy begins automatically when the 30-second window expires without a phone connection
 
 This "auto-start" behavior allows the system to function as a standalone therapy device without requiring a phone app. Users can simply power on both devices and therapy will begin about 30 seconds after the gloves pair.
 
@@ -828,6 +840,7 @@ Boot errors are printed to serial as they happen; there is no separate error log
 [ERROR] Battery monitor initialization failed
 [WARNING] Some hardware initialization failed
 [ERROR] Missing/failed motor(s): 3/5 detected (minimum 4) - check JST connections
+[ERROR] Motor task creation failed - motors will not function
 [ERROR] BLE begin() failed
 [FAILURE] BLE initialization failed
 [ERROR] Failed to start scanning
@@ -953,8 +966,9 @@ The 7.5-10ms range applies to the glove link. The phone link is requested at 30-
 **Possible Causes**:
 1. BLE stack failed to start (`[FAILURE] BLE initialization failed`)
 2. SECONDARY could not start scanning (`[ERROR] Failed to start scanning`)
+3. Boot hardware fault: the glove is in `ERROR` until reboot (`[ERROR] Haptic controller initialization failed`, `[ERROR] Motor task creation failed`, or on v3 `[ERROR] Missing/failed motor(s)`). It still pairs, but `SESSION_START` is refused with `Primary glove error` (or `Secondary glove error` when it is the SECONDARY)
 
-A hardware init failure also shows a slow red blink, but only until BLE starts; check serial for `[ERROR]` lines even when the LED looks normal.
+A battery monitor init failure also shows a slow red blink, but only until BLE starts; check serial for `[ERROR]` lines even when the LED looks normal.
 
 **Solutions**:
 
@@ -1068,6 +1082,10 @@ void setup()
     initializeTherapy();
     stateMachine.begin(TherapyState::IDLE);
     stateMachine.onStateChange(onStateChange);
+    if (g_hardwareFault)
+    {
+        stateMachine.transition(StateTrigger::ERROR_OCCURRED);  // red slow blink until reboot
+    }
     menu.begin(&therapy, &battery, &haptic, &stateMachine, &profiles, &ble);
     deferredQueue.setExecutor(executeDeferredWork);
 }

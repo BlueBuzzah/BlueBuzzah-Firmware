@@ -567,11 +567,15 @@ amplitudeMin = profile->amplitudeMin;
 amplitudeMax = profile->amplitudeMax;
 // patternType: "rndp" | "sequential" | "mirrored" -> PatternType
 
+if (_stateMachine && !_stateMachine->transition(StateTrigger::START_SESSION)) {
+    sendError("Cannot start in current state");  // therapy never runs against the FSM
+    return;
+}
 _therapy->startSession(durationSec, patternType, timeOnMs, timeOffMs, jitterPercent, numFingers, mirror,
                         amplitudeMin, amplitudeMax, false);
 ```
 
-`SESSION_START` is refused while a session runs, when either glove's battery is low (`ERROR:Battery too low`), and (with a SECONDARY connected) until clock sync is ready (`ERROR:Sync not ready`); once the SECONDARY has been connected for `SYNC_START_FALLBACK_MS` (10 s) the start is let through even without converged sync.
+`SESSION_START` is refused while a session runs, while either glove is in `ERROR` (`ERROR:Primary glove error` / `ERROR:Secondary glove error`), without a SECONDARY (`ERROR:Secondary not connected`), when either glove's battery is low (`ERROR:Battery too low`), and (with a SECONDARY connected) until clock sync is ready (`ERROR:Sync not ready`); once the SECONDARY has been connected for `SYNC_START_FALLBACK_MS` (10 s) the start is let through even without converged sync. If the state machine won't enter `RUNNING`, it replies `ERROR:Cannot start in current state` and therapy doesn't start.
 
 **Main Loop Integration:**
 
@@ -1058,6 +1062,7 @@ All I2C access to the drivers takes the I2C mutex (`I2CMutexLock`), so the motor
 3. **Emergency stop**: `emergencyStop()` immediately stops all motors
 4. **Visual feedback**: LED indicators for errors
 5. **Driver self-heal**: `verifyAndHeal()` reconfigures a DRV2605 that reset after a supply brownout
+6. **Hardware fault**: A glove with no working motor driver, no motor task, or (v3) fewer than 4 motors enters `ERROR` at boot and stays there until reboot. Starts are refused while either glove is in `ERROR`, and the PRIMARY ends a running session (reason `ERROR`) if the SECONDARY reports `GLOVE_ERROR`
 
 ### Bilateral Synchronization
 

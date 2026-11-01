@@ -7,7 +7,7 @@ This document provides a detailed explanation of the BlueBuzzah firmware archite
 
 Platform-specific code is isolated behind compile-time seams: `board_config.h` (pins, `MAX_ACTUATORS`, battery availability), `platform.h` (critical sections, memory barrier, system reset, RTOS headers), a split `BLEManager` backend (`ble_manager_nrf52.cpp` Bluefruit / `ble_manager_esp32.cpp` NimBLE — identical Nordic-UART protocol, MTU 200, 7.5-10 ms glove-link connection interval (30-50 ms requested for the phone link), 0 dBm TX, 2M PHY), an `fs_backend` filesystem shim, and a `build_src_filter`-selected `PowerController` (BlueBuzzah v3 power switch + deep sleep; no-op on nRF). Everything below the seams — therapy engine, sync protocol, state machine, menus, profiles — is shared and platform-neutral.
 
-**BlueBuzzah v3 power topology** (verified against the V2.2 PCB netlist): the ESP32-S3, TCA9548A mux, and IMU (an LSM6DS3 on SPI — present on the board but unused by firmware) run from the XIAO's onboard 3V3 LDO; the five DRV2605 drivers and the WS2812 LED run **directly from VBat**. There is no switched power rail. **Motors cannot run on USB alone** — without a battery, VBat is only the XIAO charger's current-limited output, and any LRA drive browns the drivers out to power-on defaults (standby → silent motors while I2C still works). GPIO1 is the shared DRV2605 EN + mux reset: a LOW→HIGH toggle resets every DRV2605 register, so any runtime toggle must be followed by full haptic reconfiguration. Motor JST ports are silk-labeled 1–5 in reverse of firmware channels (finger N ↔ port 5−N, `MOTOR_SILK_PORT()`). Serial QA commands `MOTOR_DIAG` (buzz every channel + supply-reset canary), `MOTOR_TEST:<n>` (single channel, 2 s), and `MOTOR_PRESENT` (per-port open-load probe via LRA auto-calibration) validate assembly. The presence probe also runs at every boot and feeds the therapy engine's active-finger map, so macrocycles skip motor ports found empty on the PRIMARY glove; fewer than 4 detected motors is signaled by a red double-blink LED at boot.
+**BlueBuzzah v3 power topology** (verified against the V2.2 PCB netlist): the ESP32-S3, TCA9548A mux, and IMU (an LSM6DS3 on SPI — present on the board but unused by firmware) run from the XIAO's onboard 3V3 LDO; the five DRV2605 drivers and the WS2812 LED run **directly from VBat**. There is no switched power rail. **Motors cannot run on USB alone** — without a battery, VBat is only the XIAO charger's current-limited output, and any LRA drive browns the drivers out to power-on defaults (standby → silent motors while I2C still works). GPIO1 is the shared DRV2605 EN + mux reset: a LOW→HIGH toggle resets every DRV2605 register, so any runtime toggle must be followed by full haptic reconfiguration. Motor JST ports are silk-labeled 1–5 in reverse of firmware channels (finger N ↔ port 5−N, `MOTOR_SILK_PORT()`). Serial QA commands `MOTOR_DIAG` (buzz every channel + supply-reset canary), `MOTOR_TEST:<n>` (single channel, 2 s), and `MOTOR_PRESENT` (per-port open-load probe via LRA auto-calibration) validate assembly. The presence probe also runs at every boot and feeds the therapy engine's active-finger map, so macrocycles skip motor ports found empty on the PRIMARY glove; fewer than 4 detected motors is signaled by a red double-blink LED at boot, then the glove enters `ERROR` until reboot (a probe skipped because the supply dipped doesn't count).
 
 ## Table of Contents
 
@@ -782,6 +782,7 @@ stateDiagram-v2
 
     IDLE --> READY: CONNECTED
     IDLE --> RUNNING: START_SESSION
+    IDLE --> ERROR: ERROR_OCCURRED (boot fault)
     CONNECTING --> READY: CONNECTED
 
     READY --> RUNNING: START_SESSION
@@ -827,13 +828,15 @@ stateDiagram-v2
     ERROR --> IDLE: RESET
 ```
 
-`BATTERY_CRITICAL` and `ERROR_OCCURRED` lead to `CRITICAL_BATTERY` and `ERROR` from any state, and `RESET` / `FORCED_SHUTDOWN` return any state to `IDLE` (`determineNextState()` in `src/state_machine.cpp`). A trigger that is not valid in the current state is ignored.
+`BATTERY_CRITICAL` leads to `CRITICAL_BATTERY` from any state except `ERROR`, `ERROR_OCCURRED` leads to `ERROR` from any state, and `RESET` / `FORCED_SHUTDOWN` return any state to `IDLE` (`determineNextState()` in `src/state_machine.cpp`). A trigger that is not valid in the current state is ignored.
 
 After a session stops, the FSM lands in `IDLE`; `loop()` promotes it to `READY` while the peer glove's keepalive traffic is live.
 
-Current firmware fires only `CONNECTED`, `DISCONNECTED`, `START_SESSION`, `PAUSE_SESSION`, `RESUME_SESSION`, `STOP_SESSION`, `STOPPED`, `RECONNECT_FAILED`, `PHONE_LOST`, `PHONE_RECONNECTED`, and the battery triggers `BATTERY_WARNING`, `BATTERY_CRITICAL`, and `BATTERY_OK`. `CONNECTING` and `ERROR` are defined but never entered.
+Current firmware fires only `CONNECTED`, `DISCONNECTED`, `START_SESSION`, `PAUSE_SESSION`, `RESUME_SESSION`, `STOP_SESSION`, `STOPPED`, `RECONNECT_FAILED`, `PHONE_LOST`, `PHONE_RECONNECTED`, the battery triggers `BATTERY_WARNING`, `BATTERY_CRITICAL`, and `BATTERY_OK`, and `ERROR_OCCURRED`. `CONNECTING` is defined but never entered.
 
-`reconcileBatteryState()` in `src/main.cpp` runs every loop pass and matches the FSM to this glove's battery level: `RUNNING` becomes `LOW_BATTERY` when the level is low and returns on recovery (so resuming a paused session on a low battery goes `RUNNING` then straight to `LOW_BATTERY`), and a critical level enters `CRITICAL_BATTERY` from any state except during a bench `TEST`, leaving to `IDLE` once the glove charges to `BATTERY_LOW_VOLTAGE`. `LOW_BATTERY` behaves like `RUNNING` (`isRunning()` is true for both).
+`setup()` fires `ERROR_OCCURRED` once, after BLE init, when the glove has a boot hardware fault: the haptic controller initialized no finger, the motor task couldn't be created, or (v3) the boot motor probe found fewer than 4 motors. A battery monitor failure doesn't count. Nothing fires `RESET` or `FORCED_SHUTDOWN`, so `ERROR` holds until reboot: red slow blink, sessions refused (see [Error Handling Strategy](#error-handling-strategy)).
+
+`reconcileBatteryState()` in `src/main.cpp` runs every loop pass and matches the FSM to this glove's battery level: `RUNNING` becomes `LOW_BATTERY` when the level is low and returns on recovery (so resuming a paused session on a low battery goes `RUNNING` then straight to `LOW_BATTERY`), and a critical level enters `CRITICAL_BATTERY` from any state except `ERROR` or during a bench `TEST` (an `ERROR` glove still shows the red urgent blink), leaving to `IDLE` once the glove charges to `BATTERY_LOW_VOLTAGE`. `LOW_BATTERY` behaves like `RUNNING` (`isRunning()` is true for both).
 
 **State Descriptions**:
 
@@ -845,7 +848,7 @@ Current firmware fires only `CONNECTED`, `DISCONNECTED`, `START_SESSION`, `PAUSE
 | `RUNNING`            | 3     | Active therapy session                     |
 | `PAUSED`             | 4     | Session paused, can resume                 |
 | `STOPPING`           | 5     | Session ending, cleanup                    |
-| `ERROR`              | 6     | Error condition, motors stopped (never entered) |
+| `ERROR`              | 6     | Boot hardware fault, motors stopped until reboot |
 | `LOW_BATTERY`        | 7     | Session running on a low battery (below `BATTERY_LOW_VOLTAGE`) |
 | `CRITICAL_BATTERY`   | 8     | Critical battery, motors stopped until the glove charges |
 | `CONNECTION_LOST`    | 9     | Inter-device BLE lost; purple LED for 30s, then IDLE |
@@ -1185,7 +1188,7 @@ MC:<seq>|<baseHigh>|<baseLow>|<offHigh>|<offLow>|<durationMs>|<count>|<delta>,<f
 | `BUZZ`               | `BUZZ`           | P->S      | Deprecated; the SECONDARY logs a warning and ignores it |
 | `DEACTIVATE`         | `DEACTIVATE`     | P->S      | Defined but not sent         |
 
-Other device-to-device messages are plain strings: `IDENTIFY:SECONDARY` (S->P, on connect), `GET_BATTERY` / `BATRESPONSE:<volts>` (battery query, answered with the SECONDARY's last motor-idle reading; the SECONDARY also pushes `BATRESPONSE:<volts>|<level>` with its own battery level, 0 normal / 1 low / 2 critical, after every motor-idle battery check), `LED_OFF_SYNC:<0|1>`, `DEBUG_SYNC:<0|1>`, `CALIB_BUZZ:<finger>:<intensity>:<ms>`, and `CALIB_STOP` (all P->S except `BATRESPONSE`). Every prefix the menu must ignore is listed in `INTERNAL_MESSAGES[]` (`include/internal_messages.h`).
+Other device-to-device messages are plain strings: `IDENTIFY:SECONDARY` (S->P, on connect), `GLOVE_ERROR` (S->P, right after `IDENTIFY:SECONDARY` when the SECONDARY has a boot hardware fault; the PRIMARY clears it on every SECONDARY connect, refuses starts while it is set, and ends a running session with reason `ERROR`), `GET_BATTERY` / `BATRESPONSE:<volts>` (battery query, answered with the SECONDARY's last motor-idle reading; the SECONDARY also pushes `BATRESPONSE:<volts>|<level>` with its own battery level, 0 normal / 1 low / 2 critical, after every motor-idle battery check), `LED_OFF_SYNC:<0|1>`, `DEBUG_SYNC:<0|1>`, `CALIB_BUZZ:<finger>:<intensity>:<ms>`, and `CALIB_STOP` (all P->S except `GLOVE_ERROR` and `BATRESPONSE`). Every prefix the menu must ignore is listed in `INTERNAL_MESSAGES[]` (`include/internal_messages.h`).
 
 **Example Messages** (EOT not shown):
 
@@ -1570,9 +1573,10 @@ sequenceDiagram
 **Level 1: Safety Stops** (Motors off, keep running)
 
 - Hardware initialization failure -> Diagnostic message and red slow-blink LED (until BLE init succeeds); boot continues with the fingers that initialized
+- Boot hardware fault (no finger's motor driver initialized, motor task not created, or v3 fewer than 4 motors) -> `ERROR` state, red slow-blink LED until reboot; `SESSION_START`, auto-start and `TEST` are refused, and a SECONDARY in `ERROR` acknowledges macrocycles but plays none
 - No stored role -> Orange slow-blink LED; boot waits for `SET_ROLE:` over serial
 - Peer disconnect or keepalive timeout -> Stop therapy and motors, CONNECTION_LOST (purple LED), keep scanning/advertising
-- v3: fewer than 4 motors detected at boot -> Red double-blink LED for 5s
+- v3: fewer than 4 motors detected at boot -> Red double-blink LED for 5s, then `ERROR`
 
 ```cpp
 // src/main.cpp - centralized safe motor shutdown
@@ -1600,8 +1604,10 @@ BLE callbacks never touch I2C. A disconnect callback signals `safetyShutdownSema
 - Invalid command -> `ERROR:Unknown command: <COMMAND>`
 - Invalid parameter -> `ERROR:Invalid parameter name or value out of range`
 - Command during session -> `ERROR:Cannot modify parameters during active session`
+- `SESSION_START` while the PRIMARY is in `ERROR` -> `ERROR:Primary glove error`; while the linked SECONDARY reported `GLOVE_ERROR` -> `ERROR:Secondary glove error` (both checked before the SECONDARY link)
 - `SESSION_START` while the SECONDARY isn't connected -> `ERROR:Secondary not connected` (therapy never runs on the PRIMARY alone)
 - `SESSION_START` while the SECONDARY is connected but clock sync is not yet valid -> `ERROR:Sync not ready` (accepted with degraded timing once the SECONDARY has been connected for `SYNC_START_FALLBACK_MS`, 10s)
+- `SESSION_START` the state machine won't move to `RUNNING` -> `ERROR:Cannot start in current state` (therapy doesn't start)
 
 Every menu reply, success or error, begins with a `CMD:<command>` line naming the command it answers. Only `ERROR:Invalid command format` has no `CMD:` line, since the command was never parsed.
 
