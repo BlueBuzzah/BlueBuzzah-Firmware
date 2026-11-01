@@ -454,6 +454,10 @@ void MenuController::handleInfo() {
         addResponseLine("BATP", "0.00");
     }
 
+    // Link state now, so the phone needn't infer it from BATS:0.00 (which also
+    // means the battery reply timed out)
+    addResponseLine("SECONDARY", static_cast<int32_t>(_ble && _ble->isSecondaryConnected() ? 1 : 0));
+
     // Guard: already waiting for SECONDARY — return 0.00 immediately
     if (_waitingForSecondaryBattery) {
         addResponseLine("BATS", "0.00");
@@ -732,6 +736,13 @@ void MenuController::handleSessionStart() {
         return;
     }
 
+    // Therapy is bilateral: never run on the PRIMARY alone. Checked before the
+    // battery gate, which can't read an unlinked SECONDARY.
+    if (!_ble || !_ble->isSecondaryConnected()) {
+        sendError("Secondary not connected");
+        return;
+    }
+
     // Either glove too low to finish a 2-hour session
     if (_batteryGateCallback && !_batteryGateCallback()) {
         sendError("Battery too low");
@@ -742,7 +753,7 @@ void MenuController::handleSessionStart() {
     // so the hands buzz as far apart as their boot times (or only the PRIMARY
     // buzzes). Transient - the app retries, and the callback lets the start
     // through (degraded) once the SECONDARY has been connected long enough.
-    if (_ble && _ble->isSecondaryConnected() && _syncReadyCallback && !_syncReadyCallback()) {
+    if (_syncReadyCallback && !_syncReadyCallback()) {
         sendError("Sync not ready");
         return;
     }

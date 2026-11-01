@@ -324,6 +324,9 @@ public:
     SendToSecondaryCallback _sendToSecondaryCallback;
     typedef BatteryLevel (*BatteryLevelCallback)(bool secondary);
     BatteryLevelCallback _batteryLevelCallback = nullptr;
+    typedef bool (*GateCallback)();
+    GateCallback _batteryGateCallback = nullptr;
+    GateCallback _syncReadyCallback = nullptr;
     DeferredCommand _deferredCommand;
     volatile float _secondaryBatteryVoltage;
     bool _waitingForSecondaryBattery;
@@ -556,6 +559,34 @@ public:
         _ble = ble;
     }
 
+    // Mirrors MenuController::handleSessionStart's refusals, in order. The
+    // success reply is trimmed to its first line.
+    void handleSessionStart() {
+        if (!_therapy) {
+            sendError("Therapy engine not available");
+            return;
+        }
+        if (_therapy->isRunning()) {
+            sendError("Session already active");
+            return;
+        }
+        if (!_ble || !_ble->isSecondaryConnected()) {
+            sendError("Secondary not connected");
+            return;
+        }
+        if (_batteryGateCallback && !_batteryGateCallback()) {
+            sendError("Battery too low");
+            return;
+        }
+        if (_syncReadyCallback && !_syncReadyCallback()) {
+            sendError("Sync not ready");
+            return;
+        }
+        beginResponse();
+        addResponseLine("SESSION_STATUS", "RUNNING");
+        sendResponse();
+    }
+
     // Calibration buzz methods (mirror MenuController::calibrationBuzz /
     // MenuController::updateCalibrationBuzz). Production only touches the
     // haptic hardware from updateCalibrationBuzz() (loop context);
@@ -743,6 +774,8 @@ public:
         } else {
             addResponseLine("BATP", "0.00");
         }
+
+        addResponseLine("SECONDARY", (int32_t)(_ble && _ble->isSecondaryConnected() ? 1 : 0));
 
         // Request SECONDARY battery if callback is available
         if (_sendToSecondaryCallback) {
@@ -941,6 +974,11 @@ public:
 
         if (strcmp(command, "SESSION_STATUS") == 0) {
             handleSessionStatus();
+            return true;
+        }
+
+        if (strcmp(command, "SESSION_START") == 0) {
+            handleSessionStart();
             return true;
         }
 
@@ -1819,6 +1857,76 @@ void test_handleInfo_reports_battery_levels() {
     TEST_ASSERT_NOT_NULL(strstr(g_lastResponse, "BATS:3.85\nBATLS:LOW\nSTATUS:IDLE"));
 }
 
+static bool g_testBatteryOk = true;
+static bool g_testSyncReady = true;
+static bool testBatteryGate() { return g_testBatteryOk; }
+static bool testSyncReady() { return g_testSyncReady; }
+
+void test_sessionStart_refused_without_secondary() {
+    // Reported ahead of the battery gate, which can't read an unlinked SECONDARY
+    g_ble->_secondaryConnected = false;
+    g_testBatteryOk = false;
+    g_menu->_batteryGateCallback = testBatteryGate;
+
+    g_menu->handleCommand("SESSION_START");
+
+    TEST_ASSERT_NOT_NULL(strstr(g_lastResponse, "ERROR:Secondary not connected"));
+    TEST_ASSERT_NULL(strstr(g_lastResponse, "SESSION_STATUS"));
+    g_testBatteryOk = true;
+}
+
+void test_sessionStart_refused_without_ble() {
+    g_menu->setBLE(nullptr);
+    g_menu->handleCommand("SESSION_START");
+    TEST_ASSERT_NOT_NULL(strstr(g_lastResponse, "ERROR:Secondary not connected"));
+}
+
+void test_sessionStart_allowed_with_secondary() {
+    g_menu->_batteryGateCallback = testBatteryGate;
+    g_menu->_syncReadyCallback = testSyncReady;
+
+    g_menu->handleCommand("SESSION_START");
+
+    TEST_ASSERT_NOT_NULL(strstr(g_lastResponse, "SESSION_STATUS:RUNNING"));
+}
+
+void test_sessionStart_with_secondary_still_checks_battery_then_sync() {
+    g_menu->_batteryGateCallback = testBatteryGate;
+    g_menu->_syncReadyCallback = testSyncReady;
+    g_testBatteryOk = false;
+    g_testSyncReady = false;
+    g_menu->handleCommand("SESSION_START");
+    TEST_ASSERT_NOT_NULL(strstr(g_lastResponse, "ERROR:Battery too low"));
+
+    g_testBatteryOk = true;
+    g_menu->handleCommand("SESSION_START");
+    TEST_ASSERT_NOT_NULL(strstr(g_lastResponse, "ERROR:Sync not ready"));
+    g_testSyncReady = true;
+}
+
+void test_handleInfo_reports_secondary_link() {
+    // Linked: present in the deferred reply, ahead of BATS
+    g_menu->setSendToSecondaryCallback(testSendToSecondaryCallback);
+    g_menu->handleInfo();
+    g_menu->handleSecondaryBatteryResponse(3.92f);
+    TEST_ASSERT_NOT_NULL(strstr(g_lastResponse, "SECONDARY:1\nBATS:3.92"));
+
+    // Timed out: still reports the link, so BATS:0.00 isn't read as unlinked
+    resetCapturedResponse();
+    g_menu->handleInfo();
+    mockAdvanceMillis(1001);
+    g_menu->checkSecondaryBatteryTimeout();
+    TEST_ASSERT_NOT_NULL(strstr(g_lastResponse, "SECONDARY:1\nBATS:0.00"));
+
+    // Unlinked: answered at once
+    resetCapturedResponse();
+    g_menu->setSendToSecondaryCallback(nullptr);
+    g_ble->_secondaryConnected = false;
+    g_menu->handleInfo();
+    TEST_ASSERT_EQUAL_INT(1, g_responseCount);
+    TEST_ASSERT_NOT_NULL(strstr(g_lastResponse, "SECONDARY:0\nBATS:0.00"));
+}
+
 void test_handleBattery_reports_critical_level() {
     g_menu->setSendToSecondaryCallback(testSendToSecondaryCallback);
     g_menu->setBatteryLevelCallback(testBatteryLevel);
@@ -2075,6 +2183,11 @@ int main(int argc, char **argv) {
     RUN_TEST(test_handleBattery_timeout_returns_zero);
     RUN_TEST(test_handleInfo_timeout_returns_zero_with_status);
     RUN_TEST(test_handleInfo_reports_battery_levels);
+    RUN_TEST(test_sessionStart_refused_without_secondary);
+    RUN_TEST(test_sessionStart_refused_without_ble);
+    RUN_TEST(test_sessionStart_allowed_with_secondary);
+    RUN_TEST(test_sessionStart_with_secondary_still_checks_battery_then_sync);
+    RUN_TEST(test_handleInfo_reports_secondary_link);
     RUN_TEST(test_handleBattery_reports_critical_level);
     RUN_TEST(test_battery_level_omitted_without_reading);
     RUN_TEST(test_handleCommand_cancels_stale_deferred_INFO_on_new_command);

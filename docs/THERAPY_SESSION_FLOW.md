@@ -158,7 +158,7 @@ sequenceDiagram
     Note over P: Profile stays on PRIMARY<br/>(PROFILE_LOAD saves and reboots)<br/>SECONDARY gets timing in each MC: message
 
     APP->>P: SESSION_START
-    Note over P: Check: both gloves' batteries OK?<br/>SECONDARY connected → clock sync valid?<br/>(else Sync not ready error until 10s after connect)
+    Note over P: Check: SECONDARY connected?<br/>(else Secondary not connected error)<br/>Both gloves' batteries OK?<br/>Clock sync valid?<br/>(else Sync not ready error until 10s after connect)
     P->>P: STATE: READY → RUNNING
     P->>S: START_SESSION:seq|ts
     S->>S: STATE: READY → RUNNING

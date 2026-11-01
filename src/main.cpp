@@ -2918,7 +2918,14 @@ void autoStartTherapy()
         return;
     }
 
-    // Same gate as a phone SESSION_START
+    // Same gates as a phone SESSION_START. A retry can fire after the
+    // SECONDARY dropped, so check the link again here.
+    if (!ble.isSecondaryConnected())
+    {
+        Serial.println(F("[AUTO] SECONDARY not connected - not starting"));
+        return;
+    }
+
     if (!batteryAllowsSession())
     {
         Serial.println(F("[AUTO] Battery too low - not starting"));
