@@ -431,8 +431,8 @@ The engine schedules activations via callbacks rather than executing them direct
 
 ```cpp
 // Calculate lead time FIRST (callback takes 50-200µs)
-// Falls back to 50ms if no callback registered
-uint32_t leadTimeUs = _getLeadTimeCallback ? _getLeadTimeCallback() : 50000;
+// Falls back to the 70ms minimum if no callback registered
+uint32_t leadTimeUs = _getLeadTimeCallback ? _getLeadTimeCallback() : SYNC_MIN_LEAD_TIME_US;
 
 uint64_t nowUs = getMicros();
 _macrocycleBaseTime = nowUs + leadTimeUs;

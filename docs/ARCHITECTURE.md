@@ -616,7 +616,7 @@ void TherapyEngine::startSession(
 _currentMacrocycle = generateMacrocycle();   // 3 patterns x numFingers events
 
 // Schedule against an absolute time one adaptive lead time ahead
-uint32_t leadTimeUs = _getLeadTimeCallback ? _getLeadTimeCallback() : 50000;
+uint32_t leadTimeUs = _getLeadTimeCallback ? _getLeadTimeCallback() : SYNC_MIN_LEAD_TIME_US;
 _macrocycleBaseTime = getMicros() + leadTimeUs;
 _currentMacrocycle.baseTime = _macrocycleBaseTime;
 

@@ -794,8 +794,8 @@ void TherapyEngine::executeMacrocycleStep() {
             }
 
             // Calculate lead time FIRST (callback takes 50-200µs)
-            // Falls back to 50ms if no callback registered
-            uint32_t leadTimeUs = _getLeadTimeCallback ? _getLeadTimeCallback() : 50000;
+            // Falls back to the 70ms minimum if no callback registered
+            uint32_t leadTimeUs = _getLeadTimeCallback ? _getLeadTimeCallback() : SYNC_MIN_LEAD_TIME_US;
 
             // CRITICAL: Capture timestamp AFTER lead time calculation to minimize staleness
             // Lead time callback can take 50-200µs; capturing before causes systematic lateness

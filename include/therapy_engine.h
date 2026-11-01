@@ -354,7 +354,7 @@ public:
      * @brief Set callback to get adaptive lead time
      *
      * When set, TherapyEngine uses this callback to determine lead time
-     * for macrocycle scheduling instead of hardcoded 50ms. The callback
+     * for macrocycle scheduling instead of the fixed 70ms minimum. The callback
      * should return syncProtocol.calculateAdaptiveLeadTime().
      *
      * @param callback Function returning lead time in microseconds

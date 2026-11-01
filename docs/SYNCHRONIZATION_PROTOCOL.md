@@ -329,7 +329,7 @@ activate_time = current_time + lead_time
 lead_time = average_RTT + safety_margin + processing_overhead + generation_overhead
 ```
 
-`average_RTT` is twice the smoothed one-way latency from PING/PONG (`calculateAdaptiveLeadTime()`). Until 3 RTT samples exist the lead time is the 70ms minimum.
+`average_RTT` is twice the smoothed one-way latency from PING/PONG (`calculateAdaptiveLeadTime()`). With no RTT samples yet the lead time is the 70ms minimum; the first sample already counts.
 
 | Parameter | Value | Purpose |
 |-----------|-------|---------|
@@ -734,7 +734,7 @@ Sync state variables are accessed from both main loop and BLE callbacks. Key con
 | Keepalive timeout (SECONDARY, `KEEPALIVE_TIMEOUT_MS`) | 6s | 6 missed PINGs = connection lost |
 | Keepalive timeout (PRIMARY, `PRIMARY_KEEPALIVE_TIMEOUT_MS`) | 6s | During therapy: sends `STOP_SESSION` and shuts down its motors |
 | Lead time range | 70-150ms | Adaptive scheduling window |
-| Initial lead time | 70ms | The minimum, used until 3 RTT samples exist |
+| Initial lead time | 70ms | The minimum, used until the first RTT sample exists |
 | Processing overhead (`SYNC_PROCESSING_OVERHEAD_US`) | 10ms | SECONDARY processing time allowance |
 | Generation overhead (`SYNC_GENERATION_OVERHEAD_US`) | 5ms | PRIMARY macrocycle generation + serialization |
 | Max drift rate (measurement) (`SYNC_MAX_DRIFT_RATE_US_PER_MS`) | ±150 ppm | Measurement cap for plausibility |
