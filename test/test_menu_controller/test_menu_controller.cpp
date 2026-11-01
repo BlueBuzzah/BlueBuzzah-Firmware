@@ -595,6 +595,7 @@ public:
             sendError("Cannot start in current state");
             return;
         }
+        _therapy->startSession(7200, 0, 100.0f, 67.0f, 23.5f, MAX_ACTUATORS, true);
         beginResponse();
         addResponseLine("SESSION_STATUS", "RUNNING");
         sendResponse();
@@ -1141,6 +1142,11 @@ void test_isInternalMessage_GET_BATTERY_returns_true() {
 
 void test_isInternalMessage_BATRESPONSE_returns_true() {
     TEST_ASSERT_TRUE(g_menu->isInternalMessage("BATRESPONSE:3.72:85"));
+}
+
+void test_isInternalMessage_GLOVE_ERROR_returns_true() {
+    // The SECONDARY's fault report must never reach the menu as a phone command
+    TEST_ASSERT_TRUE(g_menu->isInternalMessage("GLOVE_ERROR"));
 }
 
 void test_isInternalMessage_ACK_PARAM_UPDATE_returns_true() {
@@ -1927,8 +1933,16 @@ void test_sessionStart_refused_on_glove_error_before_link_check() {
     g_menu->_gloveErrorCallback = testGloveError;
 
     g_menu->handleCommand("SESSION_START");
-
     TEST_ASSERT_NOT_NULL(strstr(g_lastResponse, "ERROR:Primary glove error"));
+
+    // ...and before the battery gate
+    g_ble->_secondaryConnected = true;
+    g_testBatteryOk = false;
+    g_menu->_batteryGateCallback = testBatteryGate;
+    g_menu->handleCommand("SESSION_START");
+    TEST_ASSERT_NOT_NULL(strstr(g_lastResponse, "ERROR:Primary glove error"));
+
+    g_testBatteryOk = true;
     g_testGloveError = nullptr;
 }
 
@@ -1950,6 +1964,7 @@ void test_sessionStart_refused_when_state_machine_rejects() {
 
     TEST_ASSERT_NOT_NULL(strstr(g_lastResponse, "ERROR:Cannot start in current state"));
     TEST_ASSERT_NULL(strstr(g_lastResponse, "SESSION_STATUS"));
+    TEST_ASSERT_FALSE(g_therapy->isRunning());  // the FSM is asked before therapy starts
 }
 
 void test_handleInfo_reports_secondary_link() {
@@ -2140,6 +2155,7 @@ int main(int argc, char **argv) {
     RUN_TEST(test_isInternalMessage_SEED_ACK_returns_true);
     RUN_TEST(test_isInternalMessage_GET_BATTERY_returns_true);
     RUN_TEST(test_isInternalMessage_BATRESPONSE_returns_true);
+    RUN_TEST(test_isInternalMessage_GLOVE_ERROR_returns_true);
     RUN_TEST(test_isInternalMessage_ACK_PARAM_UPDATE_returns_true);
     RUN_TEST(test_isInternalMessage_SYNC_prefix_returns_true);
     RUN_TEST(test_isInternalMessage_IDENTIFY_prefix_returns_true);

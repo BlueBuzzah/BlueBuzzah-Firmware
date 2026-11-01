@@ -1188,7 +1188,7 @@ MC:<seq>|<baseHigh>|<baseLow>|<offHigh>|<offLow>|<durationMs>|<count>|<delta>,<f
 | `BUZZ`               | `BUZZ`           | P->S      | Deprecated; the SECONDARY logs a warning and ignores it |
 | `DEACTIVATE`         | `DEACTIVATE`     | P->S      | Defined but not sent         |
 
-Other device-to-device messages are plain strings: `IDENTIFY:SECONDARY` (S->P, on connect), `GLOVE_ERROR` (S->P, right after `IDENTIFY:SECONDARY` when the SECONDARY has a boot hardware fault; the PRIMARY clears it on every SECONDARY connect, refuses starts while it is set, and ends a running session with reason `ERROR`), `GET_BATTERY` / `BATRESPONSE:<volts>` (battery query, answered with the SECONDARY's last motor-idle reading; the SECONDARY also pushes `BATRESPONSE:<volts>|<level>` with its own battery level, 0 normal / 1 low / 2 critical, after every motor-idle battery check), `LED_OFF_SYNC:<0|1>`, `DEBUG_SYNC:<0|1>`, `CALIB_BUZZ:<finger>:<intensity>:<ms>`, and `CALIB_STOP` (all P->S except `GLOVE_ERROR` and `BATRESPONSE`). Every prefix the menu must ignore is listed in `INTERNAL_MESSAGES[]` (`include/internal_messages.h`).
+Other device-to-device messages are plain strings: `IDENTIFY:SECONDARY` (S->P, on connect), `GLOVE_ERROR` (S->P, right after `IDENTIFY:SECONDARY` and again with every battery check when the SECONDARY has a boot hardware fault; only accepted from the SECONDARY's link; the PRIMARY clears it on every SECONDARY connect, refuses starts while it is set, and ends a running session with reason `ERROR`), `GET_BATTERY` / `BATRESPONSE:<volts>` (battery query, answered with the SECONDARY's last motor-idle reading; the SECONDARY also pushes `BATRESPONSE:<volts>|<level>` with its own battery level, 0 normal / 1 low / 2 critical, after every motor-idle battery check), `LED_OFF_SYNC:<0|1>`, `DEBUG_SYNC:<0|1>`, `CALIB_BUZZ:<finger>:<intensity>:<ms>`, and `CALIB_STOP` (all P->S except `GLOVE_ERROR` and `BATRESPONSE`). Every prefix the menu must ignore is listed in `INTERNAL_MESSAGES[]` (`include/internal_messages.h`).
 
 **Example Messages** (EOT not shown):
 
@@ -1496,7 +1496,8 @@ sequenceDiagram
     U->>B: SESSION_START + EOT
     B->>L: onBLEMessage() queues the menu command
     L->>M: handleCommand("SESSION_START")
-    M->>M: Check battery and clock sync, read current profile
+    M->>M: Check glove errors, SECONDARY link, battery and clock sync, read current profile
+    M->>M: transition(START_SESSION), or ERROR:Cannot start in current state
     M->>TE: startSession(duration, pattern, timing, fingers, mirror, amplitude range)
     M->>B: START_SESSION to SECONDARY
     M->>U: CMD:SESSION_START, SESSION_STATUS:RUNNING, ELAPSED, TOTAL

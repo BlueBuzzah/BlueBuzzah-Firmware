@@ -487,7 +487,7 @@ COMMAND:field1|field2|field3|...
 | Message | Direction | Fields | Example |
 |---------|-----------|--------|---------|
 | `IDENTIFY:SECONDARY` | S → P | (plain string, not pipe-delimited) | `IDENTIFY:SECONDARY` |
-| `GLOVE_ERROR` | S → P | (plain string; sent right after `IDENTIFY:SECONDARY` only when the SECONDARY has a boot hardware fault and is in `ERROR`) | `GLOVE_ERROR` |
+| `GLOVE_ERROR` | S → P | (plain string; sent right after `IDENTIFY:SECONDARY` and again with every battery check, only when the SECONDARY has a boot hardware fault and is in `ERROR`; the PRIMARY ignores it from any other link) | `GLOVE_ERROR` |
 | `START_SESSION` | P → S | seq, timestamp | `START_SESSION:1\|50000` |
 | `PAUSE_SESSION` | P → S | seq, timestamp | `PAUSE_SESSION:0\|61000000` |
 | `RESUME_SESSION` | P → S | seq, timestamp | `RESUME_SESSION:0\|65000000` |

@@ -487,7 +487,7 @@ graph TD
     E["Status Messages"]
 
     B --> B0["IDENTIFY:SECONDARY<br/>(SECONDARY → PRIMARY on connect)"]
-    B --> B5["GLOVE_ERROR<br/>(SECONDARY → PRIMARY after IDENTIFY,<br/>boot hardware fault only)"]
+    B --> B5["GLOVE_ERROR<br/>(SECONDARY → PRIMARY after IDENTIFY<br/>and every battery check,<br/>boot hardware fault only)"]
     B --> B1["START_SESSION:seq|ts"]
     B --> B2["PAUSE_SESSION:seq|ts"]
     B --> B3["RESUME_SESSION:seq|ts"]

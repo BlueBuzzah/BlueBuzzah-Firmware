@@ -331,6 +331,14 @@ void test_StateMachine_error_holds_until_reset(void) {
         sm.transition(trigger);
         TEST_ASSERT_EQUAL_MESSAGE(TherapyState::ERROR, sm.getCurrentState(), stateTriggerToString(trigger));
     }
+
+    const StateTrigger exits[] = {StateTrigger::RESET, StateTrigger::FORCED_SHUTDOWN};
+    for (StateTrigger exit : exits) {
+        TherapyStateMachine sm;
+        sm.begin(TherapyState::ERROR);
+        TEST_ASSERT_TRUE(sm.transition(exit));
+        TEST_ASSERT_EQUAL(TherapyState::IDLE, sm.getCurrentState());
+    }
 }
 
 void test_StateMachine_activeState_to_error_on_emergencyStop(void) {

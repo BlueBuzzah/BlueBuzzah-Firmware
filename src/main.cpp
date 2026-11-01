@@ -587,7 +587,7 @@ const char *gloveErrorReply()
 {
     if (g_hardwareFault)
     {
-        return "Primary glove error";
+        return deviceRole == DeviceRole::PRIMARY ? "Primary glove error" : "Secondary glove error";
     }
     if (deviceRole == DeviceRole::PRIMARY && ble.isSecondaryConnected() && g_secondaryFault)
     {
@@ -1236,6 +1236,12 @@ void loop()
     {
         g_batteryCheckNow = false;
         lastBatteryCheck = now;
+
+        // Repeat the on-connect fault report, in case that send was dropped
+        if (g_hardwareFault && deviceRole == DeviceRole::SECONDARY && ble.isPrimaryConnected())
+        {
+            ble.sendToPrimary("GLOVE_ERROR");
+        }
         BatteryStatus status = battery.getStatus();
         Serial.printf("[BATTERY] %.2fV | %d%% | Status: %s\n",
                       status.voltage, status.percentage, status.statusString());
@@ -2129,7 +2135,8 @@ void onBLEMessage(uint16_t connHandle, const char *message, uint64_t rxTimestamp
     }
 
     // SECONDARY has a boot hardware fault (PRIMARY only)
-    if (deviceRole == DeviceRole::PRIMARY && strcmp(message, "GLOVE_ERROR") == 0)
+    if (deviceRole == DeviceRole::PRIMARY && strcmp(message, "GLOVE_ERROR") == 0 &&
+        ble.getConnectionType(connHandle) == ConnectionType::SECONDARY)
     {
         g_secondaryFault = true;
         Serial.println(F("[ERROR] SECONDARY reports a hardware fault - sessions refused"));
