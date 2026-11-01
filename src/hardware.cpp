@@ -198,6 +198,17 @@ void HapticController::configureDRV2605(Adafruit_DRV2605& drv) {
 
     // 6. Initialize RTP value to 0 (motor off)
     drv.setRealtimeValue(0);
+
+    // The period register is back at 250Hz: the next setFrequency() rewrites it
+    _lastFrequency[&drv - _drv] = 0;
+}
+
+// OL_LRA_PERIOD (0x20) is the open-loop drive period in 98.49us units, as in
+// configureDRV2605(). This register sets the frequency an LRA is driven at in
+// open-loop mode; CONTROL1's drive time only matters in closed loop.
+constexpr uint8_t DRV_REG_OL_LRA_PERIOD = 0x20;
+static uint8_t olLraPeriod(uint16_t frequencyHz) {
+    return static_cast<uint8_t>(10153 / frequencyHz);  // 1 / 98.49us = 10153Hz
 }
 
 // DRV2605 FEEDBACK register and its N_ERM_LRA bit: set by configureDRV2605
@@ -779,6 +790,7 @@ Result HapticController::setFrequency(uint8_t finger, uint16_t frequencyHz) {
 
     // Write to CONTROL1 register (0x1B)
     _drv[finger].writeRegister8(DRV2605_REG_CONTROL1, driveTime);
+    _drv[finger].writeRegister8(DRV_REG_OL_LRA_PERIOD, olLraPeriod(frequencyHz));
 
     closeChannels();
 
@@ -844,11 +856,25 @@ Result HapticController::setFrequencyDirect(uint8_t finger, uint16_t frequencyHz
     // PRECONDITION: Channel must already be selected
     // Write directly to DRV2605 without mux operations
 
+    // Another I2C user (v3: VBAT or heal on the other core) closed the mux
+    // since selectChannelPersistent(): writing now would miss the chip but
+    // still cache the frequency. The slow path sets it at activation instead.
+    if (_preSelectedFinger != static_cast<int8_t>(finger)) {
+        return Result::ERROR_HARDWARE;
+    }
+
     // Calculate drive time for LRA frequency (same formula as setFrequency)
     uint8_t driveTime = (uint8_t)((5000 / frequencyHz) & 0x1F);
 
     // Write to CONTROL1 register (0x1B)
     _drv[finger].writeRegister8(DRV2605_REG_CONTROL1, driveTime);
+
+    // The period only when it changes: one extra write per burst with
+    // randomization, none for a fixed-frequency profile
+    if (_lastFrequency[finger] != frequencyHz) {
+        _drv[finger].writeRegister8(DRV_REG_OL_LRA_PERIOD, olLraPeriod(frequencyHz));
+        _lastFrequency[finger] = frequencyHz;
+    }
 
     return Result::OK;
 }

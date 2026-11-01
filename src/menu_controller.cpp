@@ -781,6 +781,9 @@ void MenuController::handleSessionStart() {
     bool mirror = true;
     uint8_t amplitudeMin = 100;
     uint8_t amplitudeMax = 100;
+    bool frequencyRandomization = false;
+    uint16_t frequencyMin = 210;
+    uint16_t frequencyMax = 260;
 
     if (_profiles) {
         const TherapyProfile* profile = _profiles->getCurrentProfile();
@@ -793,6 +796,9 @@ void MenuController::handleSessionStart() {
             mirror = profile->mirrorPattern;
             amplitudeMin = profile->amplitudeMin;
             amplitudeMax = profile->amplitudeMax;
+            frequencyRandomization = profile->frequencyRandomization;
+            frequencyMin = profile->frequencyMin;
+            frequencyMax = profile->frequencyMax;
 
             if (strcmp(profile->patternType, "rndp") == 0) {
                 patternType = PatternType::RNDP;
@@ -811,6 +817,7 @@ void MenuController::handleSessionStart() {
         return;
     }
 
+    _therapy->setFrequencyRandomization(frequencyRandomization, frequencyMin, frequencyMax);
     _therapy->startSession(durationSec, patternType, timeOnMs, timeOffMs, jitterPercent, numFingers, mirror,
                             amplitudeMin, amplitudeMax, false);
 

@@ -715,7 +715,7 @@ void TherapyEngine::applyFrequencyRandomization() {
     // skips a missing motor)
     for (uint8_t finger = 0; finger < MAX_ACTUATORS; finger++) {
         // Generate random frequency in 5 Hz steps (matching v1 behavior)
-        uint16_t freq = _frequencyMin + static_cast<uint16_t>(random(0, steps + 1) * 5);
+        uint16_t freq = _frequencyMin + static_cast<uint16_t>(random(0, steps) * 5);
         _currentFrequency[finger] = freq;
 
         // Apply locally if callback registered
@@ -770,7 +770,7 @@ Macrocycle TherapyEngine::generateMacrocycle() {
             uint16_t range = _frequencyMax - _frequencyMin;
             uint16_t steps = range / 5;
             for (uint8_t finger = 0; finger < MAX_ACTUATORS; finger++) {
-                _currentFrequency[finger] = _frequencyMin + static_cast<uint16_t>(random(0, steps + 1) * 5);
+                _currentFrequency[finger] = _frequencyMin + static_cast<uint16_t>(random(0, steps) * 5);
             }
         }
 

@@ -963,11 +963,55 @@ void test_macrocycle_with_frequency_randomization(void) {
     engine.update();
 
     TEST_ASSERT_TRUE(g_macrocycleReceived);
-    // Check that frequencies are within expected range
+    // v1 randrange(210, 260, 5): 210-255 Hz in 5 Hz steps. 260 would exceed
+    // MAX_FREQUENCY_HZ and the driver would refuse it.
     for (uint8_t i = 0; i < g_lastSentMacrocycle.eventCount; i++) {
         uint16_t freq = g_lastSentMacrocycle.events[i].getFrequencyHz();
         TEST_ASSERT_TRUE(freq >= 210);
-        TEST_ASSERT_TRUE(freq <= 260);
+        TEST_ASSERT_TRUE(freq <= MAX_FREQUENCY_HZ);
+        TEST_ASSERT_EQUAL_UINT16(0, freq % 5);
+    }
+}
+
+void test_macrocycle_without_frequency_randomization_is_250hz(void) {
+    TherapyEngine engine;
+    engine.setSendMacrocycleCallback(mockCaptureMacrocycleCallback);
+    engine.setFrequencyRandomization(false);
+
+    g_macrocycleReceived = false;
+    mockSetMillis(1000);
+
+    engine.startSession(100, PatternType::RNDP, 100.0f, 67.0f, 0.0f, 4, true, 100, 100, false);
+    engine.update();
+
+    TEST_ASSERT_TRUE(g_macrocycleReceived);
+    for (uint8_t i = 0; i < g_lastSentMacrocycle.eventCount; i++) {
+        TEST_ASSERT_EQUAL_UINT16(250, g_lastSentMacrocycle.events[i].getFrequencyHz());
+    }
+}
+
+void test_frequency_randomization_covers_v1_range(void) {
+    // Over many macrocycles every 5 Hz step from 210 to 255 shows up, never 260
+    TherapyEngine engine;
+    engine.setSendMacrocycleCallback(mockCaptureMacrocycleCallback);
+    engine.setFrequencyRandomization(true, 210, 260);
+    bool seen[10] = {};
+
+    for (uint8_t run = 0; run < 40; run++) {
+        g_macrocycleReceived = false;
+        mockSetMillis(1000 + run * 10000);
+        engine.startSession(100, PatternType::RNDP, 100.0f, 67.0f, 0.0f, 4, true, 100, 100, false);
+        engine.update();
+        TEST_ASSERT_TRUE(g_macrocycleReceived);
+        for (uint8_t i = 0; i < g_lastSentMacrocycle.eventCount; i++) {
+            uint16_t freq = g_lastSentMacrocycle.events[i].getFrequencyHz();
+            TEST_ASSERT_TRUE(freq >= 210 && freq <= 255);
+            seen[(freq - 210) / 5] = true;
+        }
+        engine.stop();
+    }
+    for (uint8_t step = 0; step < 10; step++) {
+        TEST_ASSERT_TRUE_MESSAGE(seen[step], "a 5 Hz step never appeared");
     }
 }
 
@@ -1637,6 +1681,8 @@ int main(int argc, char **argv) {
     RUN_TEST(test_macrocycle_sequential_pattern);
     RUN_TEST(test_macrocycle_mirrored_pattern);
     RUN_TEST(test_macrocycle_with_frequency_randomization);
+    RUN_TEST(test_macrocycle_without_frequency_randomization_is_250hz);
+    RUN_TEST(test_frequency_randomization_covers_v1_range);
     RUN_TEST(test_macrocycle_duration_matches);
     RUN_TEST(test_macrocycle_amplitude_range);
     RUN_TEST(test_macrocycle_fixed_amplitude);

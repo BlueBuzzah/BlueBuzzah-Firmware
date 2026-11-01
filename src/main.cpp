@@ -417,7 +417,6 @@ void processPendingMenuCommand();
 
 // Therapy Callbacks
 void onSendMacrocycle(const Macrocycle& macrocycle);
-void onSetFrequency(uint8_t finger, uint16_t frequencyHz);
 void onActivate(uint8_t finger, uint8_t amplitude);
 void onDeactivate(uint8_t finger);
 void onCycleComplete(uint32_t cycleCount);
@@ -1557,8 +1556,6 @@ bool initializeTherapy()
         therapy.setSendMacrocycleCallback(onSendMacrocycle);
         // Set macrocycle start callback for PING/PONG latency measurement
         therapy.setMacrocycleStartCallback(onMacrocycleStart);
-        // Set frequency callback for Custom vCR frequency randomization
-        therapy.setSetFrequencyCallback(onSetFrequency);
         // Set scheduling callbacks for FreeRTOS motor task
         therapy.setSchedulingCallbacks(onScheduleActivation, onStartScheduling, onIsSchedulingComplete);
         // Set adaptive lead time callback for RTT-based scheduling
@@ -2702,15 +2699,6 @@ void onDeactivate(uint8_t finger)
     }
 }
 
-void onSetFrequency(uint8_t finger, uint16_t frequencyHz)
-{
-    // Set frequency for local motor (PRIMARY only - SECONDARY gets frequency in BUZZ command)
-    if (haptic.isEnabled(finger))
-    {
-        haptic.setFrequency(finger, frequencyHz);
-    }
-}
-
 // =============================================================================
 // PRIMARY SCHEDULING CALLBACKS (FreeRTOS Motor Task)
 // =============================================================================
@@ -2911,6 +2899,7 @@ void startTherapyTest()
     }
 
     // Start test session using profile settings (send STOP to end early)
+    therapy.setFrequencyRandomization(profile->frequencyRandomization, profile->frequencyMin, profile->frequencyMax);
     therapy.startSession(
         durationSec,
         patternType,
@@ -3088,6 +3077,7 @@ void autoStartTherapy()
     syncProtocol.resetLatency();  // Clear EMA state for fresh warmup
 
     // Start therapy session using profile settings
+    therapy.setFrequencyRandomization(profile->frequencyRandomization, profile->frequencyMin, profile->frequencyMax);
     therapy.startSession(
         durationSec,
         patternType,

@@ -190,7 +190,7 @@ public:
     /**
      * @brief Set resonant frequency for LRA actuator
      * @param finger Finger index (0 to MAX_ACTUATORS-1)
-     * @param frequencyHz Frequency in Hz (150-250)
+     * @param frequencyHz Frequency in Hz (150-255)
      * @return Result code indicating success or error
      */
     Result setFrequency(uint8_t finger, uint16_t frequencyHz);
@@ -221,7 +221,7 @@ public:
     /**
      * @brief Set frequency without mux open/close (channel must be pre-selected)
      * @param finger Finger index (0 to MAX_ACTUATORS-1)
-     * @param frequencyHz Frequency in Hz (150-250)
+     * @param frequencyHz Frequency in Hz (150-255)
      * @return Result code indicating success or error
      *
      * PRECONDITION: Channel must already be selected via selectChannelPersistent()
