@@ -532,6 +532,17 @@ void test_BatteryTracker_critical_holds_through_rest_recovery(void) {
     TEST_ASSERT_EQUAL(BatteryLevel::NORMAL, charged.level);
 }
 
+void test_BatteryTracker_thresholds_are_strict(void) {
+    // A reading exactly at a threshold is not below it
+    BatteryTracker t;
+    t.update(BATTERY_LOW_VOLTAGE);
+    t.update(BATTERY_LOW_VOLTAGE);
+    TEST_ASSERT_EQUAL(BatteryLevel::NORMAL, t.level);
+    t.update(BATTERY_CRITICAL_VOLTAGE);
+    t.update(BATTERY_CRITICAL_VOLTAGE);
+    TEST_ASSERT_EQUAL(BatteryLevel::LOW_CHARGE, t.level);
+}
+
 void test_BatteryTracker_confirming_until_second_reading(void) {
     BatteryTracker t;
     TEST_ASSERT_FALSE(t.confirming());
@@ -775,6 +786,7 @@ int main(int argc, char **argv) {
     RUN_TEST(test_BatteryTracker_critical_needs_consecutive_readings);
     RUN_TEST(test_BatteryTracker_good_reading_resets_critical_count);
     RUN_TEST(test_BatteryTracker_critical_holds_through_rest_recovery);
+    RUN_TEST(test_BatteryTracker_thresholds_are_strict);
     RUN_TEST(test_BatteryTracker_confirming_until_second_reading);
 
     // Device Config Tests
