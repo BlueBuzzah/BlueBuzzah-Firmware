@@ -1070,7 +1070,7 @@ public:
                                 StartSchedulingCallback startCallback,
                                 IsSchedulingCompleteCallback isCompleteCallback);
 
-    // Adaptive lead time callback (defaults to 50 ms when unset)
+    // Adaptive lead time callback (defaults to the 70 ms minimum when unset)
     void setGetLeadTimeCallback(GetLeadTimeCallback callback);
 
     // Physical fingers patterns are generated over (shrunk when motor ports are empty)

@@ -1197,14 +1197,32 @@ void test_SimpleSyncProtocol_resetAsymmetryTracking(void) {
 // ADAPTIVE LEAD TIME TESTS
 // =============================================================================
 
-void test_SimpleSyncProtocol_calculateAdaptiveLeadTime_default_when_few_samples(void) {
+void test_SimpleSyncProtocol_calculateAdaptiveLeadTime_floor_with_no_samples(void) {
     SimpleSyncProtocol sync;
 
-    // No samples - should return default without clamping
-    // SYNC_LEAD_TIME_US + SYNC_PROCESSING_OVERHEAD_US + SYNC_GENERATION_OVERHEAD_US
-    // = 35000 + 10000 + 5000 = 50000 (no clamping for few-sample case)
+    // No RTT data yet - never schedule closer than the design floor
     uint32_t leadTime = sync.calculateAdaptiveLeadTime();
-    TEST_ASSERT_EQUAL_UINT32(50000, leadTime);
+    TEST_ASSERT_EQUAL_UINT32(SYNC_MIN_LEAD_TIME_US, leadTime);
+}
+
+void test_SimpleSyncProtocol_calculateAdaptiveLeadTime_uses_first_sample(void) {
+    SimpleSyncProtocol sync;
+
+    // One slow sample (RTT 100ms) must already push past the floor:
+    // 100000 RTT + 0 variance + 10000 processing + 5000 generation
+    sync.updateLatency(100000);
+    TEST_ASSERT_EQUAL_UINT32(115000, sync.calculateAdaptiveLeadTime());
+}
+
+void test_SimpleSyncProtocol_calculateAdaptiveLeadTime_floor_after_reset(void) {
+    SimpleSyncProtocol sync;
+
+    // A jittery link leaves variance behind; a reset must not carry it over
+    sync.updateLatency(20000);
+    sync.updateLatency(120000);
+    sync.updateLatency(20000);
+    sync.resetLatency();
+    TEST_ASSERT_EQUAL_UINT32(SYNC_MIN_LEAD_TIME_US, sync.calculateAdaptiveLeadTime());
 }
 
 void test_SimpleSyncProtocol_calculateAdaptiveLeadTime_minimum_clamp(void) {
@@ -2409,7 +2427,9 @@ int main(int argc, char **argv) {
     RUN_TEST(test_SimpleSyncProtocol_resetAsymmetryTracking);
 
     // Adaptive Lead Time Tests
-    RUN_TEST(test_SimpleSyncProtocol_calculateAdaptiveLeadTime_default_when_few_samples);
+    RUN_TEST(test_SimpleSyncProtocol_calculateAdaptiveLeadTime_floor_with_no_samples);
+    RUN_TEST(test_SimpleSyncProtocol_calculateAdaptiveLeadTime_uses_first_sample);
+    RUN_TEST(test_SimpleSyncProtocol_calculateAdaptiveLeadTime_floor_after_reset);
     RUN_TEST(test_SimpleSyncProtocol_calculateAdaptiveLeadTime_minimum_clamp);
     RUN_TEST(test_SimpleSyncProtocol_calculateAdaptiveLeadTime_maximum_clamp);
     RUN_TEST(test_SimpleSyncProtocol_calculateAdaptiveLeadTime_normal_calculation);

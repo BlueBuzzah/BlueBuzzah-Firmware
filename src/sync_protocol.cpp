@@ -816,6 +816,7 @@ void SimpleSyncProtocol::reset() {
     _lastSyncTime = UINT32_MAX;
     _measuredLatencyUs = 0;
     _smoothedLatencyUs = 0;
+    _rttVariance = 0;
     _sampleCount = 0;
     resetClockSync();
 }
@@ -1237,12 +1238,9 @@ bool SimpleSyncProtocol::updateOffsetEMAWithQuality(int64_t offset, uint32_t rtt
 }
 
 uint32_t SimpleSyncProtocol::calculateAdaptiveLeadTime() const {
-    // If not enough samples, use conservative default
-    if (_sampleCount < MIN_SAMPLES) {
-        return SYNC_LEAD_TIME_US + SYNC_PROCESSING_OVERHEAD_US + SYNC_GENERATION_OVERHEAD_US;
-        // Default 35ms + 10ms processing + 5ms generation = 50ms
-    }
-
+    // No minimum sample count: with no samples this clamps to the 70ms floor,
+    // and the first one or two samples already raise it on a slow link.
+    //
     // Calculate lead time based on RTT statistics + overheads:
     // Lead time = RTT + 3σ margin + processing overhead + generation overhead
     //

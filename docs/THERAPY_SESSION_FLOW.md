@@ -711,7 +711,7 @@ lead_time = RTT + 3σ margin + processing_overhead + generation_overhead
           = 2×smoothed_one_way + 6×variance + 10ms + 5ms
 lead_time = clamp(lead_time, 70ms, 150ms)
 
-// Before 3 latency samples: 35ms + 10ms + 5ms = 50ms (not clamped)
+// No latency samples yet: the formula clamps to 70ms; the first sample already counts
 
 // From config.h:
 // SYNC_MIN_LEAD_TIME_US = 70000  (70ms minimum)

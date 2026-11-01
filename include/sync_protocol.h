@@ -556,6 +556,7 @@ public:
     void resetLatency() {
         _measuredLatencyUs = 0;
         _smoothedLatencyUs = 0;
+        _rttVariance = 0;
         _sampleCount = 0;
         _minRttUs = UINT32_MAX;
     }
