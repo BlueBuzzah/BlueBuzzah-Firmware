@@ -169,9 +169,10 @@ public:
 class TherapyStateMachine {
 public:
     TherapyState _state = TherapyState::IDLE;
+    bool _acceptTransitions = true;
 
     TherapyState getCurrentState() const { return _state; }
-    void transition(StateTrigger) {}
+    bool transition(StateTrigger) { return _acceptTransitions; }
     bool isRunning() const { return _state == TherapyState::RUNNING; }
     bool isPaused() const { return _state == TherapyState::PAUSED; }
     bool isReady() const { return _state == TherapyState::READY; }
@@ -326,6 +327,8 @@ public:
     BatteryLevelCallback _batteryLevelCallback = nullptr;
     typedef bool (*GateCallback)();
     GateCallback _batteryGateCallback = nullptr;
+    typedef const char* (*GloveErrorCallback)();
+    GloveErrorCallback _gloveErrorCallback = nullptr;
     GateCallback _syncReadyCallback = nullptr;
     DeferredCommand _deferredCommand;
     volatile float _secondaryBatteryVoltage;
@@ -570,6 +573,12 @@ public:
             sendError("Session already active");
             return;
         }
+        if (_gloveErrorCallback) {
+            if (const char* error = _gloveErrorCallback()) {
+                sendError(error);
+                return;
+            }
+        }
         if (!_ble || !_ble->isSecondaryConnected()) {
             sendError("Secondary not connected");
             return;
@@ -580,6 +589,10 @@ public:
         }
         if (_syncReadyCallback && !_syncReadyCallback()) {
             sendError("Sync not ready");
+            return;
+        }
+        if (_stateMachine && !_stateMachine->transition(StateTrigger::START_SESSION)) {
+            sendError("Cannot start in current state");
             return;
         }
         beginResponse();
@@ -1904,6 +1917,41 @@ void test_sessionStart_with_secondary_still_checks_battery_then_sync() {
     g_testSyncReady = true;
 }
 
+static const char* g_testGloveError = nullptr;
+static const char* testGloveError() { return g_testGloveError; }
+
+void test_sessionStart_refused_on_glove_error_before_link_check() {
+    // A boot hardware fault needs a reboot whatever the link state
+    g_ble->_secondaryConnected = false;
+    g_testGloveError = "Primary glove error";
+    g_menu->_gloveErrorCallback = testGloveError;
+
+    g_menu->handleCommand("SESSION_START");
+
+    TEST_ASSERT_NOT_NULL(strstr(g_lastResponse, "ERROR:Primary glove error"));
+    g_testGloveError = nullptr;
+}
+
+void test_sessionStart_refused_on_secondary_glove_error() {
+    g_testGloveError = "Secondary glove error";
+    g_menu->_gloveErrorCallback = testGloveError;
+
+    g_menu->handleCommand("SESSION_START");
+
+    TEST_ASSERT_NOT_NULL(strstr(g_lastResponse, "ERROR:Secondary glove error"));
+    TEST_ASSERT_NULL(strstr(g_lastResponse, "SESSION_STATUS"));
+    g_testGloveError = nullptr;
+}
+
+void test_sessionStart_refused_when_state_machine_rejects() {
+    g_stateMachine->_acceptTransitions = false;
+
+    g_menu->handleCommand("SESSION_START");
+
+    TEST_ASSERT_NOT_NULL(strstr(g_lastResponse, "ERROR:Cannot start in current state"));
+    TEST_ASSERT_NULL(strstr(g_lastResponse, "SESSION_STATUS"));
+}
+
 void test_handleInfo_reports_secondary_link() {
     // Linked: present in the deferred reply, ahead of BATS
     g_menu->setSendToSecondaryCallback(testSendToSecondaryCallback);
@@ -2187,6 +2235,9 @@ int main(int argc, char **argv) {
     RUN_TEST(test_sessionStart_refused_without_ble);
     RUN_TEST(test_sessionStart_allowed_with_secondary);
     RUN_TEST(test_sessionStart_with_secondary_still_checks_battery_then_sync);
+    RUN_TEST(test_sessionStart_refused_on_glove_error_before_link_check);
+    RUN_TEST(test_sessionStart_refused_on_secondary_glove_error);
+    RUN_TEST(test_sessionStart_refused_when_state_machine_rejects);
     RUN_TEST(test_handleInfo_reports_secondary_link);
     RUN_TEST(test_handleBattery_reports_critical_level);
     RUN_TEST(test_battery_level_omitted_without_reading);

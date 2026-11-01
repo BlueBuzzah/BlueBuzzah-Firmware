@@ -31,6 +31,7 @@ MenuController::MenuController() :
     _sendToSecondaryCallback(nullptr),
     _syncReadyCallback(nullptr),
     _batteryGateCallback(nullptr),
+    _gloveErrorCallback(nullptr),
     _batteryLevelCallback(nullptr),
     _deferredCommand(DeferredCommand::NONE),
     _secondaryBatteryVoltage(0.0f),
@@ -107,6 +108,10 @@ void MenuController::setSyncReadyCallback(SyncReadyCallback callback) {
 
 void MenuController::setBatteryGateCallback(BatteryGateCallback callback) {
     _batteryGateCallback = callback;
+}
+
+void MenuController::setGloveErrorCallback(GloveErrorCallback callback) {
+    _gloveErrorCallback = callback;
 }
 
 void MenuController::setBatteryLevelCallback(BatteryLevelCallback callback) {
@@ -736,6 +741,14 @@ void MenuController::handleSessionStart() {
         return;
     }
 
+    // A glove with a boot hardware fault (ERROR) can't run therapy until rebooted
+    if (_gloveErrorCallback) {
+        if (const char* error = _gloveErrorCallback()) {
+            sendError(error);
+            return;
+        }
+    }
+
     // Therapy is bilateral: never run on the PRIMARY alone. Checked before the
     // battery gate, which can't read an unlinked SECONDARY.
     if (!_ble || !_ble->isSecondaryConnected()) {
@@ -791,14 +804,15 @@ void MenuController::handleSessionStart() {
         }
     }
 
-    // Start session
+    // State machine first, like TEST and auto-start: if it refuses, therapy
+    // must not run with the FSM (and LED) disagreeing about the state
+    if (_stateMachine && !_stateMachine->transition(StateTrigger::START_SESSION)) {
+        sendError("Cannot start in current state");
+        return;
+    }
+
     _therapy->startSession(durationSec, patternType, timeOnMs, timeOffMs, jitterPercent, numFingers, mirror,
                             amplitudeMin, amplitudeMax, false);
-
-    // Update state machine
-    if (_stateMachine) {
-        _stateMachine->transition(StateTrigger::START_SESSION);
-    }
 
     // Notify SECONDARY of session start
     if (_ble && _ble->isSecondaryConnected()) {

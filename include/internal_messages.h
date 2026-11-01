@@ -32,6 +32,7 @@ inline constexpr const char* const INTERNAL_MESSAGES[] = {
     "SEED_ACK",
     "GET_BATTERY",
     "BATRESPONSE",
+    "GLOVE_ERROR",     // SECONDARY -> PRIMARY on connect: boot hardware fault
     "ACK_PARAM_UPDATE",
     "SYNC_",           // Covers SYNC_ADJ, SYNC_PROBE, SYNC_PROBE_ACK
     "FIRST_SYNC",

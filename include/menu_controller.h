@@ -84,6 +84,7 @@ typedef void (*SendToSecondaryCallback)(const char* message);
  */
 typedef bool (*SyncReadyCallback)();
 typedef bool (*BatteryGateCallback)();  // true if both gloves' batteries allow a session
+typedef const char* (*GloveErrorCallback)();  // SESSION_START error when a glove is in ERROR, else nullptr
 typedef BatteryLevel (*BatteryLevelCallback)(bool secondary);  // a glove's level, as the start gate sees it
 
 // =============================================================================
@@ -185,6 +186,7 @@ public:
      */
     void setSyncReadyCallback(SyncReadyCallback callback);
     void setBatteryGateCallback(BatteryGateCallback callback);
+    void setGloveErrorCallback(GloveErrorCallback callback);
 
     /**
      * @brief Set callback that reports each glove's battery level for INFO/BATTERY
@@ -269,6 +271,7 @@ private:
     SendToSecondaryCallback _sendToSecondaryCallback;
     SyncReadyCallback _syncReadyCallback;
     BatteryGateCallback _batteryGateCallback;
+    GloveErrorCallback _gloveErrorCallback;
     BatteryLevelCallback _batteryLevelCallback;
 
     // Deferred command tracking for SECONDARY battery query
