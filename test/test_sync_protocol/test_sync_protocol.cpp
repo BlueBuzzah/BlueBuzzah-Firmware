@@ -1200,11 +1200,9 @@ void test_SimpleSyncProtocol_resetAsymmetryTracking(void) {
 void test_SimpleSyncProtocol_calculateAdaptiveLeadTime_default_when_few_samples(void) {
     SimpleSyncProtocol sync;
 
-    // No samples - should return default without clamping
-    // SYNC_LEAD_TIME_US + SYNC_PROCESSING_OVERHEAD_US + SYNC_GENERATION_OVERHEAD_US
-    // = 35000 + 10000 + 5000 = 50000 (no clamping for few-sample case)
+    // No RTT data yet - never schedule closer than the design floor
     uint32_t leadTime = sync.calculateAdaptiveLeadTime();
-    TEST_ASSERT_EQUAL_UINT32(50000, leadTime);
+    TEST_ASSERT_EQUAL_UINT32(SYNC_MIN_LEAD_TIME_US, leadTime);
 }
 
 void test_SimpleSyncProtocol_calculateAdaptiveLeadTime_minimum_clamp(void) {

@@ -1237,10 +1237,9 @@ bool SimpleSyncProtocol::updateOffsetEMAWithQuality(int64_t offset, uint32_t rtt
 }
 
 uint32_t SimpleSyncProtocol::calculateAdaptiveLeadTime() const {
-    // If not enough samples, use conservative default
+    // No RTT estimate yet: use the floor the adaptive path never goes below
     if (_sampleCount < MIN_SAMPLES) {
-        return SYNC_LEAD_TIME_US + SYNC_PROCESSING_OVERHEAD_US + SYNC_GENERATION_OVERHEAD_US;
-        // Default 35ms + 10ms processing + 5ms generation = 50ms
+        return SYNC_MIN_LEAD_TIME_US;
     }
 
     // Calculate lead time based on RTT statistics + overheads:

@@ -83,8 +83,6 @@
 #define COMMAND_TIMEOUT_MS 5000      // General BLE command timeout
 
 // PTP-style clock synchronization
-#define SYNC_LEAD_TIME_US 35000      // 35ms default lead time (BLE RTT is 16-24ms; 35ms provides ample margin)
-                                      // Actual lead time is adaptive based on measured RTT + margin
 #define SYNC_PROCESSING_OVERHEAD_US 10000  // 10ms overhead for processing on SECONDARY
                                             // Actual processing is 3-5ms; 10ms is 2-3x margin
                                             // Accounts for: BLE callback (~2ms), deserialization (~1ms),
