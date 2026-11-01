@@ -235,7 +235,12 @@ TherapyState TherapyStateMachine::determineNextState(TherapyState current, State
             break;
 
         case StateTrigger::BATTERY_CRITICAL:
-            // Any state -> CRITICAL_BATTERY (emergency)
+            // Any state -> CRITICAL_BATTERY (emergency), except ERROR: a boot
+            // hardware fault holds until reboot, and charging would otherwise
+            // lead it out through BATTERY_OK. The LED still shows critical.
+            if (current == TherapyState::ERROR) {
+                break;
+            }
             return TherapyState::CRITICAL_BATTERY;
 
         case StateTrigger::BATTERY_OK:

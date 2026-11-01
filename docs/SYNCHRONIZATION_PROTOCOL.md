@@ -487,6 +487,7 @@ COMMAND:field1|field2|field3|...
 | Message | Direction | Fields | Example |
 |---------|-----------|--------|---------|
 | `IDENTIFY:SECONDARY` | S → P | (plain string, not pipe-delimited) | `IDENTIFY:SECONDARY` |
+| `GLOVE_ERROR` | S → P | (plain string; sent right after `IDENTIFY:SECONDARY` and again with every battery check, only when the SECONDARY has a boot hardware fault and is in `ERROR`; the PRIMARY ignores it from any other link) | `GLOVE_ERROR` |
 | `START_SESSION` | P → S | seq, timestamp | `START_SESSION:1\|50000` |
 | `PAUSE_SESSION` | P → S | seq, timestamp | `PAUSE_SESSION:0\|61000000` |
 | `RESUME_SESSION` | P → S | seq, timestamp | `RESUME_SESSION:0\|65000000` |
@@ -593,6 +594,7 @@ The protocol includes several safety mechanisms to prevent incorrect synchroniza
 |------------|-----------|--------|
 | baseTime freshness | ±5 seconds | SECONDARY plays nothing from a macrocycle whose local base time is further than this from now (still sends `MC_ACK`) |
 | Critical battery | SECONDARY in `CRITICAL_BATTERY` | SECONDARY acknowledges each macrocycle but plays nothing until the PRIMARY ends the session |
+| Hardware fault | SECONDARY in `ERROR` (sent `GLOVE_ERROR`) | SECONDARY acknowledges each macrocycle but plays nothing. The PRIMARY refuses starts while linked to it (`Secondary glove error`, flag cleared on every SECONDARY connect) and ends a running session (not a bench `TEST`) with reason `ERROR` |
 | Drift rate (measured) | ±150 ppm | Cap measured drift for plausibility |
 | Drift rate (applied) | ±100 ppm | Cap corrections to prevent oscillation |
 | Elapsed time | 10 seconds max | Cap EMA time delta to prevent overflow |

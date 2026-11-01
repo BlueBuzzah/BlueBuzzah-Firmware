@@ -15,7 +15,7 @@ The BlueBuzzah system uses a dual-glove architecture with synchronized bilateral
 
 ## 1. Session Lifecycle State Machine
 
-The therapy session follows an 11-state finite state machine (`src/state_machine.cpp`). The diagram shows the transitions current firmware actually fires; CONNECTING and ERROR are defined but never entered (see the table below). `BATTERY_CRITICAL` enters CRITICAL_BATTERY from any state except during a bench `TEST`; only the edge from LOW_BATTERY is drawn:
+The therapy session follows an 11-state finite state machine (`src/state_machine.cpp`). The diagram shows the transitions current firmware actually fires; CONNECTING is defined but never entered, and ERROR is entered only at boot (see the table below). `BATTERY_CRITICAL` enters CRITICAL_BATTERY from any state except ERROR or during a bench `TEST`; only the edge from LOW_BATTERY is drawn:
 
 ```mermaid
 %%{init: {'theme': 'base', 'themeVariables': {
@@ -41,6 +41,7 @@ The therapy session follows an 11-state finite state machine (`src/state_machine
 }}}%%
 stateDiagram-v2
     [*] --> IDLE: Boot
+    IDLE --> ERROR: ERROR_OCCURRED\n(boot hardware fault,\nheld until reboot)
 
     IDLE --> READY: CONNECTED\n(glove pair connects,\nor peer keepalive alive after a stop)
 
@@ -90,7 +91,7 @@ stateDiagram-v2
 | `RUNNING`            | Active therapy session, motors executing patterns       |
 | `PAUSED`             | Session paused, motors idle, timing preserved           |
 | `STOPPING`           | Stop in progress; `STOPPED` follows immediately, so it lands in IDLE (then READY if the pair is still connected) |
-| `ERROR`              | Defined but never entered (no code fires `ERROR_OCCURRED` or `EMERGENCY_STOP`) |
+| `ERROR`              | Boot hardware fault (no motor driver, no motor task, or v3 fewer than 4 motors); red slow blink, sessions refused, held until reboot. Nothing fires `EMERGENCY_STOP` |
 | `LOW_BATTERY`        | Session running on a low battery (this glove below 3.8V); behaves like RUNNING, orange slow pulse |
 | `CRITICAL_BATTERY`   | This glove's battery critical; motors stopped, red urgent blink, until it charges to 3.8V |
 | `CONNECTION_LOST`    | Glove link lost; therapy stopped, purple blink, waits up to 30s for the peer |
@@ -158,7 +159,7 @@ sequenceDiagram
     Note over P: Profile stays on PRIMARY<br/>(PROFILE_LOAD saves and reboots)<br/>SECONDARY gets timing in each MC: message
 
     APP->>P: SESSION_START
-    Note over P: Check: SECONDARY connected?<br/>(else Secondary not connected error)<br/>Both gloves' batteries OK?<br/>Clock sync valid?<br/>(else Sync not ready error until 10s after connect)
+    Note over P: Check: either glove in ERROR?<br/>(Primary / Secondary glove error)<br/>SECONDARY connected?<br/>(else Secondary not connected error)<br/>Both gloves' batteries OK?<br/>Clock sync valid?<br/>(else Sync not ready error until 10s after connect)
     P->>P: STATE: READY → RUNNING
     P->>S: START_SESSION:seq|ts
     S->>S: STATE: READY → RUNNING
@@ -486,6 +487,7 @@ graph TD
     E["Status Messages"]
 
     B --> B0["IDENTIFY:SECONDARY<br/>(SECONDARY → PRIMARY on connect)"]
+    B --> B5["GLOVE_ERROR<br/>(SECONDARY → PRIMARY after IDENTIFY<br/>and every battery check,<br/>boot hardware fault only)"]
     B --> B1["START_SESSION:seq|ts"]
     B --> B2["PAUSE_SESSION:seq|ts"]
     B --> B3["RESUME_SESSION:seq|ts"]
@@ -760,7 +762,7 @@ sequenceDiagram
     participant S as SECONDARY
 
     Ph->>P: SESSION_START
-    P->>P: Validate (battery, clock sync if SECONDARY connected)
+    P->>P: Validate (no glove in ERROR, SECONDARY connected, battery, clock sync)
 
     P->>P: Load profile settings
     P->>P: State: READY → RUNNING

@@ -106,7 +106,7 @@ enum class TherapyState : uint8_t {
 | `RUNNING` | Actively delivering therapy |
 | `PAUSED` | Therapy temporarily suspended by user |
 | `STOPPING` | Graceful shutdown in progress |
-| `ERROR` | Unrecoverable error occurred |
+| `ERROR` | Boot hardware fault (no motor driver, no motor task, or v3 fewer than 4 motors); motors stopped and sessions refused until reboot |
 | `LOW_BATTERY` | Session running on a low battery (two readings <3.8V, `BATTERY_LOW_VOLTAGE`); behaves like `RUNNING` |
 | `CRITICAL_BATTERY` | Battery critical (two readings <3.3V): motors stopped until the glove charges to ≥3.8V, then `IDLE` |
 | `CONNECTION_LOST` | PRIMARY-SECONDARY connection lost (from READY, RUNNING, LOW_BATTERY or PAUSED) |
@@ -121,9 +121,9 @@ IDLE -> READY -> RUNNING <-> PAUSED -> STOPPING -> IDLE
                                             IDLE after CONNECTION_LOST_TIMEOUT_MS (30 s)
 ```
 
-`CONNECTING` exists in the enum but is never entered: `CONNECTED` moves `IDLE` straight to `READY`. `RUNNING` becomes `LOW_BATTERY` (`BATTERY_WARNING`) while this glove's battery is low and returns on `BATTERY_OK`; `LOW_BATTERY` pauses, stops, completes, and loses the peer or phone exactly like `RUNNING`. A critical battery enters `CRITICAL_BATTERY` (`BATTERY_CRITICAL`) from any state except during a bench `TEST`, and `BATTERY_OK` returns it to `IDLE` once charged. `reconcileBatteryState()` (`src/main.cpp`) fires these every loop pass.
+`CONNECTING` exists in the enum but is never entered: `CONNECTED` moves `IDLE` straight to `READY`. `RUNNING` becomes `LOW_BATTERY` (`BATTERY_WARNING`) while this glove's battery is low and returns on `BATTERY_OK`; `LOW_BATTERY` pauses, stops, completes, and loses the peer or phone exactly like `RUNNING`. A critical battery enters `CRITICAL_BATTERY` (`BATTERY_CRITICAL`) from any state except `ERROR` or during a bench `TEST`, and `BATTERY_OK` returns it to `IDLE` once charged. `setup()` fires `ERROR_OCCURRED` on a boot hardware fault; nothing leaves `ERROR` until reboot. `reconcileBatteryState()` (`src/main.cpp`) fires these every loop pass.
 
-**Note:** `PHONE_DISCONNECTED` is an informational state - therapy continues normally when the phone disconnects. Only `CONNECTION_LOST` (PRIMARY-SECONDARY) and `CRITICAL_BATTERY` stop therapy.
+**Note:** `PHONE_DISCONNECTED` is an informational state - therapy continues normally when the phone disconnects. Only `CONNECTION_LOST` (PRIMARY-SECONDARY), `CRITICAL_BATTERY` and `ERROR` stop therapy.
 
 **Helper Functions:**
 
@@ -1695,6 +1695,8 @@ public:
     void setSyncReadyCallback(SyncReadyCallback callback);
     // Set callback that gates SESSION_START on both gloves' battery levels
     void setBatteryGateCallback(BatteryGateCallback callback);
+    // Set callback returning the SESSION_START error when either glove is in ERROR, else nullptr
+    void setGloveErrorCallback(GloveErrorCallback callback);
     // Set callback reporting each glove's level for INFO/BATTERY BATLP/BATLS
     void setBatteryLevelCallback(BatteryLevelCallback callback);
 
@@ -1790,10 +1792,11 @@ class LEDController {
 | LED initialized                         | Blue   | `BLINK_CONNECT` |
 | Hardware init success                   | Cyan   | `BLINK_CONNECT` |
 | Hardware init failed                    | Red    | `BLINK_SLOW`    |
-| Fewer than 4 motors detected (5 s, PentaBuzzer only) | Red | `DOUBLE_BLINK` |
+| Fewer than 4 motors detected (5 s, PentaBuzzer only, then `ERROR`) | Red | `DOUBLE_BLINK` |
 | BLE ready (enters IDLE)                 | Blue   | `BREATHE_SLOW`  |
 | BLE init failed                         | Red    | `BLINK_SLOW`    |
 | Glove pair connected (enters READY)     | Green  | `SOLID`         |
+| Boot hardware fault (enters `ERROR` after BLE init, until reboot) | Red | `BLINK_SLOW` |
 
 ### Therapy / Device State Patterns (`src/main.cpp` `applyLed`)
 
@@ -1890,6 +1893,9 @@ void setup() {
     // 6. State machine
     stateMachine.begin(TherapyState::IDLE);
     stateMachine.onStateChange(onStateChange);  // LED mapping - see LED Controller
+    if (g_hardwareFault) {
+        stateMachine.transition(StateTrigger::ERROR_OCCURRED);  // red slow blink until reboot
+    }
 
     // 7. Menu controller
     menu.begin(&therapy, &battery, &haptic, &stateMachine, &profiles, &ble);

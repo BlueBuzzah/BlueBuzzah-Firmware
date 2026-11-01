@@ -318,6 +318,29 @@ void test_StateMachine_any_to_error_on_errorOccurred(void) {
     TEST_ASSERT_EQUAL(TherapyState::ERROR, sm2.getCurrentState());
 }
 
+void test_StateMachine_error_holds_until_reset(void) {
+    // A boot hardware fault holds until reboot: no trigger but RESET or
+    // FORCED_SHUTDOWN leaves ERROR (BATTERY_CRITICAL then BATTERY_OK would)
+    for (uint8_t t = 0; t <= static_cast<uint8_t>(StateTrigger::FORCED_SHUTDOWN); t++) {
+        StateTrigger trigger = static_cast<StateTrigger>(t);
+        if (trigger == StateTrigger::RESET || trigger == StateTrigger::FORCED_SHUTDOWN) {
+            continue;
+        }
+        TherapyStateMachine sm;
+        sm.begin(TherapyState::ERROR);
+        sm.transition(trigger);
+        TEST_ASSERT_EQUAL_MESSAGE(TherapyState::ERROR, sm.getCurrentState(), stateTriggerToString(trigger));
+    }
+
+    const StateTrigger exits[] = {StateTrigger::RESET, StateTrigger::FORCED_SHUTDOWN};
+    for (StateTrigger exit : exits) {
+        TherapyStateMachine sm;
+        sm.begin(TherapyState::ERROR);
+        TEST_ASSERT_TRUE(sm.transition(exit));
+        TEST_ASSERT_EQUAL(TherapyState::IDLE, sm.getCurrentState());
+    }
+}
+
 void test_StateMachine_activeState_to_error_on_emergencyStop(void) {
     // From RUNNING (active)
     TherapyStateMachine sm1;
@@ -768,6 +791,7 @@ int main(int argc, char **argv) {
 
     // Error Transition Tests
     RUN_TEST(test_StateMachine_any_to_error_on_errorOccurred);
+    RUN_TEST(test_StateMachine_error_holds_until_reset);
     RUN_TEST(test_StateMachine_activeState_to_error_on_emergencyStop);
     RUN_TEST(test_StateMachine_idle_no_change_on_emergencyStop);
 

@@ -78,6 +78,12 @@ volatile bool g_batteryCheckNow = true;  // check on the first idle loop, and wh
 BatteryTracker g_battery;
 volatile float g_trustedBatteryVoltage = 0.0f;  // last motor-idle reading; GET_BATTERY replies with it
 volatile BatteryLevel g_secondaryBatteryLevel = BatteryLevel::NORMAL;
+
+// Boot hardware fault (no working motor driver, no motor task, or too few
+// motors on v3): this glove sits in ERROR until reboot. On the PRIMARY,
+// g_secondaryFault is the SECONDARY's GLOVE_ERROR report. Either refuses starts.
+bool g_hardwareFault = false;
+volatile bool g_secondaryFault = false;
 uint32_t lastKeepalive = 0;        // Time of last keepalive PING sent (PRIMARY)
 uint32_t lastStatusPrint = 0;
 
@@ -457,6 +463,7 @@ void waitForRoleConfiguration();
 void safeMotorShutdown(SessionEndReason reason = SessionEndReason::STOPPED);
 void stopSessionFromPrimary(SessionEndReason reason);
 bool batteryAllowsSession();
+const char *gloveErrorReply();
 BatteryLevel batteryLevelOf(bool secondary);
 void reconcileBatteryState();
 void applyLed();
@@ -574,6 +581,19 @@ bool batteryAllowsSession()
     }
     return !(deviceRole == DeviceRole::PRIMARY && ble.isSecondaryConnected() &&
              g_secondaryBatteryLevel != BatteryLevel::NORMAL);
+}
+
+const char *gloveErrorReply()
+{
+    if (g_hardwareFault)
+    {
+        return deviceRole == DeviceRole::PRIMARY ? "Primary glove error" : "Secondary glove error";
+    }
+    if (deviceRole == DeviceRole::PRIMARY && ble.isSecondaryConnected() && g_secondaryFault)
+    {
+        return "Secondary glove error";
+    }
+    return nullptr;
 }
 
 BatteryLevel batteryLevelOf(bool secondary)
@@ -736,6 +756,10 @@ void setup()
     Serial.println(F("\n--- State Machine Initialization ---"));
     stateMachine.begin(TherapyState::IDLE);
     stateMachine.onStateChange(onStateChange);
+    if (g_hardwareFault)
+    {
+        stateMachine.transition(StateTrigger::ERROR_OCCURRED);  // red slow blink until reboot
+    }
     Serial.println(F("[SUCCESS] State machine initialized"));
 
     // Initialize Menu Controller
@@ -747,6 +771,7 @@ void setup()
     menu.setRestartCallback(restartAfterTxDrain);
     menu.setSyncReadyCallback(phoneStartSyncReady);
     menu.setBatteryGateCallback(batteryAllowsSession);
+    menu.setGloveErrorCallback(gloveErrorReply);
     menu.setBatteryLevelCallback(batteryLevelOf);
     Serial.println(F("[SUCCESS] Menu controller initialized"));
 
@@ -1211,6 +1236,12 @@ void loop()
     {
         g_batteryCheckNow = false;
         lastBatteryCheck = now;
+
+        // Repeat the on-connect fault report, in case that send was dropped
+        if (g_hardwareFault && deviceRole == DeviceRole::SECONDARY && ble.isPrimaryConnected())
+        {
+            ble.sendToPrimary("GLOVE_ERROR");
+        }
         BatteryStatus status = battery.getStatus();
         Serial.printf("[BATTERY] %.2fV | %d%% | Status: %s\n",
                       status.voltage, status.percentage, status.statusString());
@@ -1257,6 +1288,15 @@ void loop()
 
     reconcileBatteryState();
 #endif
+
+    // A SECONDARY that comes back mid-session with a hardware fault plays
+    // nothing: end the session rather than run one-handed
+    if (g_secondaryFault && deviceRole == DeviceRole::PRIMARY && ble.isSecondaryConnected() &&
+        therapy.isRunning() && !therapy.isTestMode())
+    {
+        Serial.println(F("[ERROR] SECONDARY hardware fault - stopping therapy"));
+        stopSessionFromPrimary(SessionEndReason::ERROR);
+    }
 
     // Yield to BLE stack (non-blocking - allows SoftDevice processing)
     yield();
@@ -1352,6 +1392,7 @@ bool initializeHardware()
     {
         Serial.println(F("[ERROR] Haptic controller initialization failed"));
         success = false;
+        g_hardwareFault = true;
     }
     else
     {
@@ -1383,6 +1424,7 @@ bool initializeHardware()
                           motorsPresent, MAX_ACTUATORS, MIN_REQUIRED_MOTORS);
             // Double-blink red long enough to be seen before connection
             // status colors take over the LED
+            g_hardwareFault = true;
             led.setPattern(Colors::RED, LEDPattern::DOUBLE_BLINK);
             uint32_t errorUntil = millis() + 5000;
             while (millis() < errorUntil)
@@ -1420,7 +1462,8 @@ bool initializeHardware()
             xTaskNotifyGive(motorTaskHandle);
             Serial.println(F("[SUCCESS] Motor task created and released at Priority 4 (FreeRTOS timing)"));
         } else {
-            Serial.println(F("[WARN] Motor task creation failed - motors will not function"));
+            Serial.println(F("[ERROR] Motor task creation failed - motors will not function"));
+            g_hardwareFault = true;
         }
     }
 
@@ -1603,6 +1646,10 @@ void onBLEConnect(uint16_t connHandle, ConnectionType type)
     {
         Serial.println(F("[SECONDARY] Sending IDENTIFY:SECONDARY to PRIMARY"));
         ble.sendToPrimary("IDENTIFY:SECONDARY");
+        if (g_hardwareFault)
+        {
+            ble.sendToPrimary("GLOVE_ERROR");  // the PRIMARY refuses starts while linked to us
+        }
         // Start keepalive timeout tracking
         lastKeepaliveReceived = millis();
         // Report the battery now, not up to 60s later: the PRIMARY gates starts on it
@@ -1640,6 +1687,7 @@ void onBLEConnect(uint16_t connHandle, ConnectionType type)
 
             // Unknown until this SECONDARY reports (it does on connect)
             g_secondaryBatteryLevel = BatteryLevel::NORMAL;
+            g_secondaryFault = false;
 
             // Reset clock sync state
             syncProtocol.resetClockSync();
@@ -2086,6 +2134,15 @@ void onBLEMessage(uint16_t connHandle, const char *message, uint64_t rxTimestamp
         return;
     }
 
+    // SECONDARY has a boot hardware fault (PRIMARY only)
+    if (deviceRole == DeviceRole::PRIMARY && strcmp(message, "GLOVE_ERROR") == 0 &&
+        ble.getConnectionType(connHandle) == ConnectionType::SECONDARY)
+    {
+        g_secondaryFault = true;
+        Serial.println(F("[ERROR] SECONDARY reports a hardware fault - sessions refused"));
+        return;
+    }
+
     // Handle DEBUG_SYNC from PRIMARY (SECONDARY only)
     if (deviceRole == DeviceRole::SECONDARY && strncmp(message, "DEBUG_SYNC:", 11) == 0)
     {
@@ -2170,9 +2227,11 @@ void onBLEMessage(uint16_t connHandle, const char *message, uint64_t rxTimestamp
                     return;
                 }
 
-                // Critical battery: motors stay off until the PRIMARY ends the
-                // session. Still ACK, like a rejected macrocycle, to avoid retries
-                if (stateMachine.getCurrentState() == TherapyState::CRITICAL_BATTERY)
+                // Critical battery or a hardware fault: motors stay off until the
+                // PRIMARY ends the session. Still ACK, like a rejected macrocycle,
+                // to avoid retries
+                TherapyState mcState = stateMachine.getCurrentState();
+                if (mcState == TherapyState::CRITICAL_BATTERY || mcState == TherapyState::ERROR)
                 {
                     SyncCommand ackCmd = SyncCommand::createMacrocycleAck(mc.sequenceId);
                     char ackBuffer[32];
@@ -2929,6 +2988,12 @@ void autoStartTherapy()
     if (!ble.isSecondaryConnected())
     {
         Serial.println(F("[AUTO] SECONDARY not connected - not starting"));
+        return;
+    }
+
+    if (const char *error = gloveErrorReply())
+    {
+        Serial.printf("[AUTO] %s - not starting\n", error);
         return;
     }
 
