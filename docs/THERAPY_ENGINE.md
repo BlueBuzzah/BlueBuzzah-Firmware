@@ -72,7 +72,6 @@ TherapyEngine uses a **callback-driven architecture**. Hardware operations are d
 typedef void (*ActivateCallback)(uint8_t finger, uint8_t amplitude);
 typedef void (*DeactivateCallback)(uint8_t finger);
 typedef void (*CycleCompleteCallback)(uint32_t cycleCount);
-typedef void (*SetFrequencyCallback)(uint8_t finger, uint16_t frequencyHz);
 typedef void (*MacrocycleStartCallback)(uint32_t macrocycleCount);
 typedef void (*SendMacrocycleCallback)(const Macrocycle& macrocycle);
 typedef void (*ScheduleActivationCallback)(uint64_t activateTimeUs, uint8_t finger,
@@ -89,7 +88,6 @@ public:
     void setActivateCallback(ActivateCallback callback);
     void setDeactivateCallback(DeactivateCallback callback);
     void setCycleCompleteCallback(CycleCompleteCallback callback);
-    void setSetFrequencyCallback(SetFrequencyCallback callback);
     void setMacrocycleStartCallback(MacrocycleStartCallback callback);
     void setSendMacrocycleCallback(SendMacrocycleCallback callback);
     void setSchedulingCallbacks(ScheduleActivationCallback scheduleCallback,
@@ -99,7 +97,7 @@ public:
 
     // Restrict patterns to the motors found present at boot (v3 presence probe)
     void setActiveFingers(const uint8_t* fingers, uint8_t count);
-    void setFrequencyRandomization(bool enabled, uint16_t minHz = 210, uint16_t maxHz = 255);
+    void setFrequencyRandomization(bool enabled, uint16_t minHz = 210, uint16_t maxHz = 260);
 
     // Session control
     void startSession(uint32_t durationSec, PatternType patternType, float timeOnMs,
@@ -487,19 +485,19 @@ void HapticController::emergencyStop() {
 
 **Feature**: Optionally randomize actuator frequency each pattern (Custom vCR in the original firmware)
 
-When enabled with `setFrequencyRandomization(true, minHz, maxHz)`, `generateMacrocycle()` picks a new frequency per finger for each pattern, in 5 Hz steps from `minHz`, and stores it in each event:
+When enabled with `setFrequencyRandomization(true, minHz, maxHz)`, `generateMacrocycle()` picks a new frequency per finger for each pattern, in 5 Hz steps from `minHz` up to but not including `maxHz` (like v1's `randrange`), and stores it in each event:
 
 ```cpp
 if (_frequencyRandomization) {
     uint16_t range = _frequencyMax - _frequencyMin;
     uint16_t steps = range / 5;
     for (uint8_t finger = 0; finger < MAX_ACTUATORS; finger++) {
-        _currentFrequency[finger] = _frequencyMin + static_cast<uint16_t>(random(0, steps + 1) * 5);
+        _currentFrequency[finger] = _frequencyMin + static_cast<uint16_t>(random(0, steps) * 5);
     }
 }
 ```
 
-> **Current status:** nothing calls `setFrequencyRandomization()`, so randomization is off for every profile (including `custom_vcr`, whose `frequencyRandomization` flag is set but not applied). Every event carries 250 Hz. The motor task passes each event's frequency to `HapticController::setFrequency()` / `setFrequencyDirect()`, which write a drive time to CONTROL1 (0x1B); the LRA period register (0x20) stays at the 250 Hz value written by `configureDRV2605()`.
+Every session start (phone `SESSION_START`, auto-start, `TEST`) applies the current profile's `frequencyRandomization`, `frequencyMin` and `frequencyMax`. Only `custom_vcr` has it on (210-260 Hz, so 210-255 Hz); the others play 250 Hz. Both gloves read each event's frequency from the macrocycle, and the motor task writes it to the LRA period register, OL_LRA_PERIOD (0x20, 98.49 µs units), during pre-selection after the previous burst, off the activation's critical path. The write is skipped when the frequency hasn't changed, so fixed-frequency profiles add no I2C traffic.
 
 ---
 
@@ -525,8 +523,6 @@ bool initializeTherapy()
         therapy.setSendMacrocycleCallback(onSendMacrocycle);
         // Set macrocycle start callback for PING/PONG latency measurement
         therapy.setMacrocycleStartCallback(onMacrocycleStart);
-        // Set frequency callback for Custom vCR frequency randomization
-        therapy.setSetFrequencyCallback(onSetFrequency);
         // Set scheduling callbacks for FreeRTOS motor task
         therapy.setSchedulingCallbacks(onScheduleActivation, onStartScheduling, onIsSchedulingComplete);
         // Set adaptive lead time callback for RTT-based scheduling
@@ -781,7 +777,7 @@ struct TherapyProfile {
 };
 ```
 
-`actuatorType` and `frequencyHz` are stored and reported by `PROFILE_GET` but do not reach the DRV2605: the drivers are always configured as LRA at 250 Hz.
+`actuatorType` and `frequencyHz` are stored and reported by `PROFILE_GET` but do not reach the DRV2605: the drivers are always configured as LRA, at 250 Hz unless the profile randomizes frequency.
 
 ### Profile Comparison
 

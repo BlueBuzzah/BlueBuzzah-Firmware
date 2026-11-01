@@ -560,7 +560,7 @@ MC:seq|baseHigh|baseLow|offHigh|offLow|dur|count|d,f,a[,fo]|d,f,a[,fo]|...
 MC:1|0|5050000|0|12345|100|12|0,0,100,10|167,1,100,10|334,2,100,10|...
 ```
 
-Each event carries `fo=10`, decoded as `200 + 10×5 = 250 Hz`; current firmware sends 250 Hz on every event. An event without an `fo` field decodes as `fo=0` (200 Hz).
+Each event carries `fo=10`, decoded as `200 + 10×5 = 250 Hz`. A profile with frequency randomization (Custom vCR) sends 210-255 Hz (`fo=2` to `fo=11`), and the SECONDARY plays each event at its `fo`. An event without an `fo` field decodes as `fo=0` (200 Hz).
 
 **Note:** The V5 format preserves full microsecond precision for baseTime by splitting the 64-bit value into two 32-bit parts, avoiding the up to 999µs precision loss in the previous millisecond-based format.
 

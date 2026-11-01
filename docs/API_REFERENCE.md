@@ -1038,7 +1038,6 @@ enum class PatternType {
 typedef void (*ActivateCallback)(uint8_t finger, uint8_t amplitude);
 typedef void (*DeactivateCallback)(uint8_t finger);
 typedef void (*CycleCompleteCallback)(uint32_t cycleCount);
-typedef void (*SetFrequencyCallback)(uint8_t finger, uint16_t frequencyHz);
 typedef void (*MacrocycleStartCallback)(uint32_t macrocycleCount);
 typedef void (*SendMacrocycleCallback)(const Macrocycle& macrocycle);
 typedef void (*ScheduleActivationCallback)(uint64_t activateTimeUs, uint8_t finger,
@@ -1061,7 +1060,6 @@ public:
 
     // Event callbacks
     void setCycleCompleteCallback(CycleCompleteCallback callback);      // After each macrocycle
-    void setSetFrequencyCallback(SetFrequencyCallback callback);        // For Custom vCR
 
     // Sync protocol callbacks (PRIMARY)
     void setMacrocycleStartCallback(MacrocycleStartCallback callback);  // Before macrocycle
@@ -1079,7 +1077,7 @@ public:
     void setActiveFingers(const uint8_t* fingers, uint8_t count);
     uint8_t getActiveFingerCount() const;
 
-    void setFrequencyRandomization(bool enabled, uint16_t minHz = 210, uint16_t maxHz = 255);
+    void setFrequencyRandomization(bool enabled, uint16_t minHz = 210, uint16_t maxHz = 260);
 
     // =========================================================================
     // SESSION CONTROL

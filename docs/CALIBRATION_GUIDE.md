@@ -490,7 +490,7 @@ drv.writeRegister8(0x20, 40);  // OL_LRA_PERIOD: 1 / (250 * 0.00009849) ≈ 40
 // Far off-resonance (±100 Hz): ~80% reduced intensity
 ```
 
-**Recommendation**: Calibration and therapy use the same 250 Hz driver configuration, so intensities found here carry over to therapy directly.
+**Recommendation**: Calibration and therapy use the same 250 Hz driver configuration, so intensities found here carry over to therapy directly. The exception is Custom vCR, which randomizes each burst between 210 and 255 Hz, so some bursts feel weaker than at 250 Hz.
 
 ---
 
