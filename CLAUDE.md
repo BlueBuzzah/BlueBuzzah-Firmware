@@ -78,6 +78,7 @@ The board is selected by a build macro (`BOARD_BLUEBUZZAH_NRF52` / `BOARD_PENTAB
 - **`BLE_USE_2M_PHY` is tested with `#ifdef`**: `-DBLE_USE_2M_PHY=0` does not disable 2M PHY. `DEBUG_ENABLED`, `SKIP_BOOT_SEQUENCE`, `SYNC_DEBUG_GPIO_ENABLED`, `SYNC_ANCHOR_TIMESTAMPING_ENABLED` are `#ifndef` defaults in `config.h` and are safe to override with `-D`.
 - **`FIRMWARE_VERSION` comes from the release tag at build time.** `release.yml` strips the leading `v` and passes it as `-DFIRMWARE_VERSION` (overriding the `#ifndef` default in `config.h`) and as `BLUEBUZZAH_VERSION` for the v3 manifest. Local builds and the tag's source tree report the `config.h` default.
 - **`partitions_penta.csv` has a single `ota_0`**: no A/B OTA on Penta.
+- **Worktrees go only in `.claude/worktrees/<name>`** inside this repo (gitignored), never beside it in the workspace's `projects/` or anywhere else.
 
 ## Key Documentation
 
