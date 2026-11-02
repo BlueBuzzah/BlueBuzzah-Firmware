@@ -553,10 +553,7 @@ void test_SyncCommand_serialize_large_timestamp(void) {
     // Serialization should succeed even for large timestamps
     TEST_ASSERT_TRUE(cmd.serialize(buffer, sizeof(buffer)));
 
-    // Verify the buffer contains the expected format with high bits
-    // Note: The current format uses a concatenated high/low representation
-    // that doesn't perfectly round-trip for all 64-bit values
-    TEST_ASSERT_NOT_NULL(strstr(buffer, "PING:1|"));
+    TEST_ASSERT_EQUAL_STRING("PING:1|4294967296", buffer);
 }
 
 // =============================================================================
@@ -1466,16 +1463,17 @@ void test_SyncCommand_setDataUnsigned(void) {
 void test_SyncCommand_serialize_with_high_timestamp_bits(void) {
     SyncCommand cmd(SyncCommandType::PING, 1);
 
-    // Set a timestamp with high bits set (> 32-bit, simulating uptime > 71 minutes)
-    uint64_t largeTimestamp = 0x0000000200000000ULL;  // High bits set
+    // Uptime > 71 minutes, with low bits that need all 10 digits
+    uint64_t largeTimestamp = 0x00000002FFFFFFFFULL;  // 12884901887
     cmd.setTimestamp(largeTimestamp);
 
     char buffer[256];
     TEST_ASSERT_TRUE(cmd.serialize(buffer, sizeof(buffer)));
+    TEST_ASSERT_EQUAL_STRING("PING:1|12884901887", buffer);
 
-    // Should contain the high bits representation
-    // Format: PING:1|<high><low_padded>
-    TEST_ASSERT_NOT_NULL(strstr(buffer, "PING:1|"));
+    SyncCommand decoded;
+    TEST_ASSERT_TRUE(decoded.deserialize(buffer));
+    TEST_ASSERT_TRUE(decoded.getTimestamp() == largeTimestamp);
 }
 
 // =============================================================================
