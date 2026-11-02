@@ -192,9 +192,10 @@ bool SyncCommand::serialize(char* buffer, size_t bufferSize) const {
 
     // Format: COMMAND_TYPE:sequence_id|timestamp[|data...]
     // All parameters after the command type are pipe-delimited
-    // Note: %llu doesn't work on ARM Arduino, so we print timestamp as two 32-bit parts
-    uint32_t tsHigh = (uint32_t)(_timestamp >> 32);
-    uint32_t tsLow = (uint32_t)(_timestamp & 0xFFFFFFFF);
+    // Note: %llu doesn't work on ARM Arduino, so we print the timestamp as two
+    // base-10^9 parts; the low part is zero-padded to exactly 9 digits
+    uint32_t tsHigh = (uint32_t)(_timestamp / 1000000000ULL);
+    uint32_t tsLow = (uint32_t)(_timestamp % 1000000000ULL);
     int written;
     if (tsHigh > 0) {
         written = snprintf(buffer, bufferSize, "%s:%lu|%lu%09lu",
