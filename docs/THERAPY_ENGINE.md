@@ -943,6 +943,8 @@ MCU I2C Bus @ 400kHz (nRF52840 default pins / ESP32-S3 SDA=GPIO5, SCL=GPIO6)
         +-- Port 4: DRV2605 #5 (Thumb)   @ 0x5A  (v3 only)
 ```
 
+That's v3. The v2 PCB reverses ports 0–3 (port 0 = pinky); finger N uses port `FINGER_CHANNEL(N)` from `board_config.h`.
+
 **Why Multiplexer?** All DRV2605 chips have fixed address 0x5A. The multiplexer lets up to 8 chips share one bus (4 or 5 are used).
 
 **Channel Selection** (`src/hardware.cpp`):
@@ -1111,7 +1113,7 @@ For a measured result, use the GPIO method in [SYNC_VALIDATION.md](SYNC_VALIDATI
 
 4. **Check the motor itself**:
    ```
-   // MOTOR_TEST:<n> drives one channel at full amplitude for 2s
+   // MOTOR_TEST:<n> drives finger n at full amplitude for 2s
    // MOTOR_PRESENT probes every port for an attached LRA
    ```
 

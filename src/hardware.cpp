@@ -621,7 +621,7 @@ bool HapticController::selectChannel(uint8_t finger) {
         return false;
     }
 
-    _tca.openChannel(finger);
+    _tca.openChannel(FINGER_CHANNEL(finger));
     return true;
 }
 
@@ -829,7 +829,7 @@ bool HapticController::selectChannelPersistent(uint8_t finger) {
     }
 
     // Open channel and leave it open (no closeChannels call)
-    _tca.openChannel(finger);
+    _tca.openChannel(FINGER_CHANNEL(finger));
     _preSelectedFinger = static_cast<int8_t>(finger);  // Track pre-selected channel
     return true;
 }

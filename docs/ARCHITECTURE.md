@@ -1216,6 +1216,8 @@ IDENTIFY:SECONDARY
             └── Port 4: DRV2605 (Thumb)   @ 0x5A   (v3 only)
 ```
 
+That's v3. The v2 PCB reverses ports 0–3 (port 0 = pinky, port 3 = index); `selectChannel()` maps finger N to `FINGER_CHANNEL(N)` from `board_config.h`.
+
 ### I2C Initialization
 
 ```cpp

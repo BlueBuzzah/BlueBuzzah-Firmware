@@ -681,7 +681,7 @@ Result: All fingers above detection, Finger 1 has optimal intensity
    ```
    // Connect terminal to SECONDARY glove directly (115200 baud).
    // CALIBRATE_* commands are PRIMARY-only, so use:
-   // Send: MOTOR_TEST:1          (drives local channel 1 for 2s)
+   // Send: MOTOR_TEST:1          (drives local finger 1, middle, for 2s)
    // or:   CALIB_BUZZ:1:80:500   (the same message the PRIMARY relays)
    // If works: BLE relay issue
    // If fails: SECONDARY hardware issue
@@ -879,7 +879,7 @@ assembled glove. Stop any running session first (they do it automatically).
 | Command | Effect |
 | --- | --- |
 | `MOTOR_DIAG` | Buzzes every channel alone (600 ms, full amplitude) and checks a per-chip reset canary afterward. `*** CHIP RESET` means the supply dipped mid-drive — check the battery (missing, discharged, or miswired). |
-| `MOTOR_TEST:<n>` | Drives one channel (`0`–`4`) for 2 s. Use to map a specific connector. |
+| `MOTOR_TEST:<n>` | Drives finger `n` (`0`–`4`, 0 = index) for 2 s. Use to map a specific connector. |
 | `MOTOR_PRESENT` | Open-load probe: runs LRA auto-calibration per channel (each present motor buzzes ~0.5 s) and prints `MOTOR PRESENT` / `NO MOTOR` per port. Also refreshes the therapy engine's active-finger map. Runs automatically at every boot; needs battery power (`SUPPLY DIP` output means the results were discarded). |
 
 Wiring facts:
