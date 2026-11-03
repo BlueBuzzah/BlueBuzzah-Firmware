@@ -17,6 +17,10 @@ MCU (nRF52840 default pins / ESP32-S3 SDA=GPIO5, SCL=GPIO6)
         └── Ch4: DRV2605 - Thumb (PentaBuzzer only, MAX_ACTUATORS == 5)
 ```
 
+That's the PentaBuzzer (v3) wiring. The v2 PCB reverses channels 0-3 (Ch0 = pinky,
+Ch3 = index). Code works in fingers: `selectChannel()` maps finger N to
+`FINGER_CHANNEL(N)` (`board_config.h`), never open a raw channel number.
+
 ## I2C Multiplexer Rules
 
 1. **Always close channels** after operations to prevent bus conflicts
@@ -48,7 +52,7 @@ Different I2C paths need different settling times:
 - Motor JST silk labels 1–5 are **reversed** vs firmware channels:
   finger N ↔ port `5−N` (`MOTOR_SILK_PORT()` in `board_config.h`).
 - QA over serial: `MOTOR_DIAG` (buzz all channels + brownout canary),
-  `MOTOR_TEST:<n>` (one channel, 2 s), `MOTOR_PRESENT` (per-port open-load
+  `MOTOR_TEST:<n>` (one finger, 2 s), `MOTOR_PRESENT` (per-port open-load
   probe). DRV2605 built-in diagnostics (MODE=6) are NOT valid for our LRAs —
   verified: attached LRAs fail identically to open ports. `MOTOR_PRESENT`
   instead runs LRA auto-calibration (MODE=7) per channel, which can only

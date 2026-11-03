@@ -29,6 +29,9 @@
   // "Low-battery threshold" and update.
   #define BATTERY_LOW_VOLTAGE      3.80f
   #define MOTOR_SILK_PORT(finger)  (finger)       // no labeled motor ports on this board
+  // The v2 PCB routes mux channel 0 to the pinky pads and channel 3 to the
+  // index pads (archived build guide and netlist), so finger N is channel 3 - N.
+  #define FINGER_CHANNEL(finger)   (MAX_ACTUATORS - 1 - (finger))
 #elif defined(BOARD_PENTABUZZER_ESP32S3)
   #define MAX_ACTUATORS            5
   #define HW_VERSION               3              // BlueBuzzah hardware generation
@@ -53,6 +56,7 @@
   // firmware finger N drives the port labeled (5 - N). Wire the glove
   // harness accordingly - therapy patterns are per-finger.
   #define MOTOR_SILK_PORT(finger)  (5 - (finger))
+  #define FINGER_CHANNEL(finger)   (finger)       // finger N is mux channel N
 #else
   #error "No board macro defined (BOARD_BLUEBUZZAH_NRF52 or BOARD_PENTABUZZER_ESP32S3)"
 #endif

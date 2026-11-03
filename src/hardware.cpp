@@ -148,7 +148,7 @@ bool HapticController::initializeFinger(uint8_t finger) {
 
         // Apply initialization delay for I2C stabilization (channel 4 has the
         // longest PCB trace and needs extra settling time)
-        delay(finger == 4 ? I2C_INIT_DELAY_CH4_MS : I2C_INIT_DELAY_MS);
+        delay(FINGER_CHANNEL(finger) == 4 ? I2C_INIT_DELAY_CH4_MS : I2C_INIT_DELAY_MS);
 
         // Configure for LRA + RTP mode
         configureDRV2605(_drv[finger]);
@@ -368,7 +368,8 @@ void HapticController::diagDriveOne(uint8_t finger) {
     Serial.printf("[DIAG] >>> DRIVING F%u (silk port %u) at full amplitude for 2s <<<\n",
                   finger, MOTOR_SILK_PORT(finger));
 #else
-    Serial.printf("[DIAG] >>> DRIVING F%u at full amplitude for 2s <<<\n", finger);
+    Serial.printf("[DIAG] >>> DRIVING F%u (channel %u) at full amplitude for 2s <<<\n",
+                  finger, FINGER_CHANNEL(finger));
 #endif
     delay(2000);
     uint8_t fb = 0;
@@ -434,7 +435,8 @@ void HapticController::diagSweep() {
         Serial.printf("[DIAG] buzzing F%u (silk port %u), RTP=127, 600ms...\n",
                       f, MOTOR_SILK_PORT(f));
 #else
-        Serial.printf("[DIAG] buzzing F%u, RTP=127, 600ms...\n", f);
+        Serial.printf("[DIAG] buzzing F%u (channel %u), RTP=127, 600ms...\n",
+                      f, FINGER_CHANNEL(f));
 #endif
         {
             I2CMutexLock lock(_i2cMutex);
@@ -511,7 +513,7 @@ uint8_t HapticController::probeMotorPresence() {
 #if defined(BOARD_PENTABUZZER_ESP32S3)
         Serial.printf("[DIAG]   silk port %u (F%u): ", MOTOR_SILK_PORT(f), f);
 #else
-        Serial.printf("[DIAG]   F%u: ", f);
+        Serial.printf("[DIAG]   F%u (channel %u): ", f, FINGER_CHANNEL(f));
 #endif
         if (!_fingerEnabled[f]) {
             Serial.println(F("NO DRIVER (init failed - check battery power)"));
@@ -621,7 +623,7 @@ bool HapticController::selectChannel(uint8_t finger) {
         return false;
     }
 
-    _tca.openChannel(finger);
+    _tca.openChannel(FINGER_CHANNEL(finger));
     return true;
 }
 
@@ -829,7 +831,7 @@ bool HapticController::selectChannelPersistent(uint8_t finger) {
     }
 
     // Open channel and leave it open (no closeChannels call)
-    _tca.openChannel(finger);
+    _tca.openChannel(FINGER_CHANNEL(finger));
     _preSelectedFinger = static_cast<int8_t>(finger);  // Track pre-selected channel
     return true;
 }
