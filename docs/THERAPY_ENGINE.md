@@ -954,7 +954,7 @@ bool HapticController::selectChannel(uint8_t finger) {
     if (finger >= MAX_ACTUATORS) {
         return false;
     }
-    _tca.openChannel(finger);
+    _tca.openChannel(FINGER_CHANNEL(finger));
     return true;
 }
 

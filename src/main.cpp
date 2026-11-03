@@ -3521,13 +3521,13 @@ void handleSerialCommand(const char *command)
         return;
     }
 
-    // MOTOR_TEST:<n> - assembly QA: drive one channel for 2s at full amplitude
+    // MOTOR_TEST:<n> - assembly QA: drive finger n for 2s at full amplitude
     if (strncmp(command, "MOTOR_TEST:", 11) == 0)
     {
         const char *arg = command + 11;
         if (*arg < '0' || *arg > '9')
         {
-            Serial.println(F("[DIAG] Usage: MOTOR_TEST:<n> where n is a channel number"));
+            Serial.println(F("[DIAG] Usage: MOTOR_TEST:<n> where n is a finger (0 = index)"));
             return;
         }
         int n = atoi(arg);

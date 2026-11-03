@@ -4,6 +4,9 @@
  */
 
 #include <unity.h>
+#include <fstream>
+#include <sstream>
+#include <string>
 #include "config.h"
 
 void setUp(void) {}
@@ -32,6 +35,27 @@ void test_fingerChannel_v3_isFingerIndex(void) {
 
 #endif
 
+// hardware.cpp isn't built for native tests, so scan its source instead: every
+// mux channel it opens must go through FINGER_CHANNEL(), or v2 fingers reverse.
+void test_hardware_opensChannelsOnlyThroughFingerChannel(void) {
+    std::string path = __FILE__;
+    path = path.substr(0, path.rfind("test/")) + "src/hardware.cpp";
+    std::ifstream file(path);
+    TEST_ASSERT_TRUE_MESSAGE(file.good(), path.c_str());
+    std::stringstream buffer;
+    buffer << file.rdbuf();
+    const std::string source = buffer.str();
+
+    const std::string call = "openChannel(";
+    int calls = 0;
+    for (size_t at = source.find(call); at != std::string::npos; at = source.find(call, at + 1)) {
+        calls++;
+        TEST_ASSERT_EQUAL_STRING("FINGER_CHANNEL(",
+            source.substr(at + call.size(), 15).c_str());
+    }
+    TEST_ASSERT_GREATER_THAN(0, calls);
+}
+
 int main(int argc, char **argv) {
     UNITY_BEGIN();
 #if defined(BOARD_BLUEBUZZAH_NRF52)
@@ -39,5 +63,6 @@ int main(int argc, char **argv) {
 #else
     RUN_TEST(test_fingerChannel_v3_isFingerIndex);
 #endif
+    RUN_TEST(test_hardware_opensChannelsOnlyThroughFingerChannel);
     return UNITY_END();
 }

@@ -879,8 +879,8 @@ assembled glove. Stop any running session first (they do it automatically).
 | Command | Effect |
 | --- | --- |
 | `MOTOR_DIAG` | Buzzes every channel alone (600 ms, full amplitude) and checks a per-chip reset canary afterward. `*** CHIP RESET` means the supply dipped mid-drive — check the battery (missing, discharged, or miswired). |
-| `MOTOR_TEST:<n>` | Drives finger `n` (`0`–`4`, 0 = index) for 2 s. Use to map a specific connector. |
-| `MOTOR_PRESENT` | Open-load probe: runs LRA auto-calibration per channel (each present motor buzzes ~0.5 s) and prints `MOTOR PRESENT` / `NO MOTOR` per port. Also refreshes the therapy engine's active-finger map. Runs automatically at every boot; needs battery power (`SUPPLY DIP` output means the results were discarded). |
+| `MOTOR_TEST:<n>` | Drives finger `n` (`0`–`4`, 0 = index) for 2 s and prints the mux channel it used (and the silk port on v3). On v2 finger N is channel 3 − N, so `MOTOR_TEST:0` drives the index pads on channel 3. |
+| `MOTOR_PRESENT` | Open-load probe: runs LRA auto-calibration per channel (each present motor buzzes ~0.5 s) and prints `MOTOR PRESENT` / `NO MOTOR` per finger, with its channel (and silk port on v3). Also refreshes the therapy engine's active-finger map. Runs automatically at every boot; needs battery power (`SUPPLY DIP` output means the results were discarded). |
 
 Wiring facts:
 

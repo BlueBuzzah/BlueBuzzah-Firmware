@@ -31,7 +31,7 @@
   #define MOTOR_SILK_PORT(finger)  (finger)       // no labeled motor ports on this board
   // The v2 PCB routes mux channel 0 to the pinky pads and channel 3 to the
   // index pads (archived build guide and netlist), so finger N is channel 3 - N.
-  #define FINGER_CHANNEL(finger)   (3 - (finger))
+  #define FINGER_CHANNEL(finger)   (MAX_ACTUATORS - 1 - (finger))
 #elif defined(BOARD_PENTABUZZER_ESP32S3)
   #define MAX_ACTUATORS            5
   #define HW_VERSION               3              // BlueBuzzah hardware generation

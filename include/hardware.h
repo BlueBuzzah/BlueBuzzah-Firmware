@@ -168,7 +168,7 @@ public:
     void diagRegs(const char* tag);
 
     /**
-     * @brief Drive a single channel at full amplitude for 2s (serial
+     * @brief Drive a single finger at full amplitude for 2s (serial
      * MOTOR_TEST:<n>). Blocking; stop therapy before calling.
      */
     void diagDriveOne(uint8_t finger);
