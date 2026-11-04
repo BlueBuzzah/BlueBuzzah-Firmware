@@ -809,12 +809,53 @@ Macrocycle TherapyEngine::generateMacrocycle() {
     return mc;
 }
 
+uint32_t TherapyEngine::currentLeadTimeUs() const {
+    return _getLeadTimeCallback ? _getLeadTimeCallback() : SYNC_MIN_LEAD_TIME_US;
+}
+
+uint64_t TherapyEngine::gridSlotUs(uint64_t macroIndex) const {
+    return _gridOriginUs + static_cast<uint64_t>(std::llround(double(macroIndex) * _gridPeriodUs));
+}
+
+bool TherapyEngine::isPreparePointReached(uint64_t macroIndex) const {
+    // 200 ms ahead of the slot's earliest possible onset
+    const uint64_t earliest = gridSlotUs(macroIndex) - uint64_t(_jitterGuardMs) * 1000ULL;
+    return getMicros() + SYNC_MAX_LEAD_TIME_US + 50000ULL >= earliest;
+}
+
 void TherapyEngine::executeMacrocycleStep() {
     uint32_t now = millis();
 
     // State machine for macrocycle batching with FreeRTOS motor task scheduling
     switch (_buzzFlowState) {
         case BuzzFlowState::IDLE: {
+            const uint64_t guardUs = uint64_t(_jitterGuardMs) * 1000ULL;
+            const bool gridStarted = (_gridOriginUs != 0);
+
+            if (gridStarted) {
+                // Every macrocycle goes out at its prepare point, including the
+                // slot after a skip, so baseTime is never a whole period away
+                if (!isPreparePointReached(_gridMacroIndex)) {
+                    break;
+                }
+
+                // Read the clock after the lead time callback, which can take 50-200µs
+                const uint32_t leadTimeUs = currentLeadTimeUs();
+                const uint64_t earliestNominal = getMicros() + leadTimeUs + guardUs;
+                const uint64_t nominal = gridSlotUs(_gridMacroIndex);
+
+                // Never compress late events into a catch-up burst. Skip whole
+                // grid periods if the transport lead cannot be satisfied.
+                if (nominal < earliestNominal) {
+                    const double late = double(earliestNominal - nominal);
+                    const uint64_t skipped = static_cast<uint64_t>(std::ceil(late / _gridPeriodUs));
+                    _gridMacroIndex += skipped;
+                    Serial.printf("[THERAPY] Skipped %lu late macrocycles\n",
+                                  static_cast<unsigned long>(skipped));
+                    break;
+                }
+            }
+
             // Generate and send a new macrocycle
             _currentMacrocycle = generateMacrocycle();
             _macrocycleEventIndex = 0;
@@ -824,34 +865,19 @@ void TherapyEngine::executeMacrocycleStep() {
                 _macrocycleStartCallback(_cyclesCompleted);
             }
 
-            // Calculate lead time FIRST (callback takes 50-200µs)
-            // Falls back to the 70ms minimum if no callback registered
-            uint32_t leadTimeUs = _getLeadTimeCallback ? _getLeadTimeCallback() : SYNC_MIN_LEAD_TIME_US;
+            if (!gridStarted) {
+                // Calculate lead time FIRST (callback takes 50-200µs)
+                // Falls back to the 70ms minimum if no callback registered
+                const uint32_t leadTimeUs = currentLeadTimeUs();
 
-            // CRITICAL: Capture timestamp AFTER lead time calculation to minimize staleness
-            // Lead time callback can take 50-200µs; capturing before causes systematic lateness
-            uint64_t nowUs = getMicros();
-            const uint64_t guardUs = uint64_t(_jitterGuardMs) * 1000ULL;
-            if (_gridOriginUs == 0) {
-                _gridOriginUs = nowUs + leadTimeUs + guardUs;
+                // CRITICAL: Capture timestamp AFTER lead time calculation to minimize staleness
+                // Lead time callback can take 50-200µs; capturing before causes systematic lateness
+                _gridOriginUs = getMicros() + leadTimeUs + guardUs;
                 PLATFORM_CRITICAL_ENTER();
                 _appliedPauseMs = _pausedMs;
                 PLATFORM_CRITICAL_EXIT();
             }
-            uint64_t nominal = _gridOriginUs +
-                static_cast<uint64_t>(std::llround(double(_gridMacroIndex) * _gridPeriodUs));
-            // Never compress late events into a catch-up burst. Skip whole
-            // grid periods if the transport lead cannot be satisfied.
-            if (nominal < nowUs + leadTimeUs + guardUs) {
-                const double late = double(nowUs + leadTimeUs + guardUs - nominal);
-                const uint64_t skipped = static_cast<uint64_t>(std::ceil(late / _gridPeriodUs));
-                _gridMacroIndex += skipped;
-                nominal = _gridOriginUs +
-                    static_cast<uint64_t>(std::llround(double(_gridMacroIndex) * _gridPeriodUs));
-                Serial.printf("[THERAPY] Skipped %lu late macrocycles\n",
-                              static_cast<unsigned long>(skipped));
-            }
-            _macrocycleBaseTime = nominal - guardUs;
+            _macrocycleBaseTime = gridSlotUs(_gridMacroIndex) - guardUs;
             _firstStimulusPending = false;
             _currentMacrocycle.baseTime = _macrocycleBaseTime;
 
@@ -911,13 +937,8 @@ void TherapyEngine::executeMacrocycleStep() {
             break;
 
         case BuzzFlowState::WAITING_RELAX: {
-            // Prepare 200 ms ahead of the earliest possible next onset. IDLE
-            // recalculates the transport lead and detects a missed deadline.
-            const uint64_t nextNominal = _gridOriginUs +
-                static_cast<uint64_t>(std::llround(double(_gridMacroIndex + 1) * _gridPeriodUs));
-            const uint64_t earliest = nextNominal - uint64_t(_jitterGuardMs) * 1000ULL;
-
-            if (getMicros() + SYNC_MAX_LEAD_TIME_US + 50000ULL >= earliest) {
+            // IDLE recalculates the transport lead and detects a missed deadline
+            if (isPreparePointReached(_gridMacroIndex + 1)) {
                 ++_gridMacroIndex;
                 _cyclesCompleted++;
 

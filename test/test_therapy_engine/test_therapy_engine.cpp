@@ -1729,10 +1729,56 @@ void test_onset_late_dispatch_skips_without_rebasing(void) {
     engine.startSession(100, PatternType::RNDP, 100, 67, 23.5, 4, true, 50, 50, false);
     engine.update();
     const uint64_t base = g_lastSentMacrocycle.baseTime;
+    const uint32_t sequenceId = g_lastSentMacrocycle.sequenceId;
     engine.update();
     mockSetMillis(static_cast<uint32_t>((base+3340000+100000)/1000));
-    engine.update(); engine.update();
+    engine.update(); engine.update();  // WAITING_RELAX -> IDLE, then the skip
+    engine.update();
+    TEST_ASSERT_EQUAL_UINT32(sequenceId, g_lastSentMacrocycle.sequenceId);
+    mockSetMillis(static_cast<uint32_t>((base+6680000-180000)/1000));
+    engine.update();
+    TEST_ASSERT_EQUAL_UINT32(sequenceId + 1, g_lastSentMacrocycle.sequenceId);
     TEST_ASSERT_EQUAL_UINT64(base + 6680000, g_lastSentMacrocycle.baseTime);
+}
+
+void test_onset_skip_on_long_period_holds_until_prepare_point(void) {
+    TherapyEngine engine;
+    engine.setSendMacrocycleCallback(mockCaptureMacrocycleCallback);
+    engine.setMacrocycleStartCallback(mockMacrocycleStartCallback);
+    engine.setCycleCompleteCallback(mockCycleCompleteCallback);
+    engine.setGetLeadTimeCallback(mockGetLeadTimeCallback);
+    engine.startSession(100, PatternType::RNDP, 200, 200, 23.5, 4, true, 50, 50, false);
+    engine.update();
+    const uint64_t base = g_lastSentMacrocycle.baseTime;
+    const uint32_t sequenceId = g_lastSentMacrocycle.sequenceId;
+    const uint64_t periodUs = 8000000;
+    const uint64_t nextBase = base + 2 * periodUs;
+
+    engine.update();  // ACTIVE -> WAITING_RELAX
+    mockSetMillis(static_cast<uint32_t>((base + periodUs + 100000) / 1000));
+    engine.update();  // WAITING_RELAX -> IDLE
+    engine.update();  // Late: skips to nextBase
+
+    g_macrocycleStartCallCount = 0;
+    g_cycleCompleteCallCount = 0;
+    g_lastLeadTimeReturned = 0;
+    engine.update();
+    mockSetMillis(static_cast<uint32_t>((nextBase - 201000) / 1000));
+    engine.update();
+
+    TEST_ASSERT_EQUAL_UINT32(sequenceId, g_lastSentMacrocycle.sequenceId);
+    TEST_ASSERT_EQUAL_INT(0, g_macrocycleStartCallCount);
+    TEST_ASSERT_EQUAL_INT(0, g_cycleCompleteCallCount);
+    TEST_ASSERT_EQUAL_UINT32(1, engine.getCyclesCompleted());
+    TEST_ASSERT_EQUAL_UINT32(0, g_lastLeadTimeReturned);  // No lead callback while holding
+
+    const uint32_t dispatchMs = static_cast<uint32_t>((nextBase - ONSET_PREPARE_LEAD_US) / 1000);
+    mockSetMillis(dispatchMs);
+    engine.update();
+
+    TEST_ASSERT_EQUAL_UINT32(sequenceId + 1, g_lastSentMacrocycle.sequenceId);
+    TEST_ASSERT_EQUAL_UINT64(nextBase, g_lastSentMacrocycle.baseTime);
+    TEST_ASSERT_TRUE(g_lastSentMacrocycle.baseTime - uint64_t(dispatchMs) * 1000 < 1000000);
 }
 
 void test_onset_zero_jitter_and_fractional_slot(void) {
@@ -1997,6 +2043,7 @@ int main(int argc, char **argv) {
     RUN_TEST(test_onset_pause_while_active_shifts_grid_once);
     RUN_TEST(test_onset_macrocycle_grid_does_not_accumulate);
     RUN_TEST(test_onset_late_dispatch_skips_without_rebasing);
+    RUN_TEST(test_onset_skip_on_long_period_holds_until_prepare_point);
     RUN_TEST(test_onset_zero_jitter_and_fractional_slot);
     RUN_TEST(test_onset_jitter_above_cap_keeps_minimum_gap);
     RUN_TEST(test_onset_period_scales_with_finger_count);

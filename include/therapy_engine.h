@@ -660,6 +660,9 @@ private:
     void remapPatternFingers(Pattern& pattern);  // Map slot indices -> physical fingers
     void generateNextPattern();
     Macrocycle generateMacrocycle();     // Generate 3*numFingers events for a macrocycle
+    uint32_t currentLeadTimeUs() const;  // Adaptive lead time, or the minimum without a callback
+    uint64_t gridSlotUs(uint64_t macroIndex) const;  // Nominal first onset of a grid slot
+    bool isPreparePointReached(uint64_t macroIndex) const;  // Time to prepare this grid slot?
     void executeMacrocycleStep();        // State machine for macrocycle batching mode
 };
 
