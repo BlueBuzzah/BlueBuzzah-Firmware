@@ -770,8 +770,6 @@ bool TherapyEngine::isPreparePointReached(uint64_t macroIndex) const {
 }
 
 void TherapyEngine::executeMacrocycleStep() {
-    uint32_t now = millis();
-
     // State machine for macrocycle batching with FreeRTOS motor task scheduling
     switch (_buzzFlowState) {
         case BuzzFlowState::IDLE: {
