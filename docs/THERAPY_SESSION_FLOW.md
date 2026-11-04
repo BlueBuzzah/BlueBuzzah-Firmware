@@ -194,9 +194,9 @@ flowchart TD
 
     A --> B["PRIMARY: Start macrocycle generation<br/>(3 patterns × fingers = 12 buzz events at 4 fingers)"]
 
-    B --> C["Generate all 12 events<br/>with delta times from baseTime"]
+    B --> C["Generate all 12 events<br/>with delta times from baseTime<br/>(each onset within ±A of its slot)"]
 
-    C --> D["Calculate baseTime<br/>= now + lead_time<br/>(lead_time = RTT + 3σ margin + overheads)"]
+    C --> D["Calculate baseTime<br/>= grid slot - jitter guard<br/>(first slot = now + lead_time + guard;<br/>lead_time = RTT + 3σ margin + overheads)"]
 
     D --> E["Serialize MACROCYCLE message<br/>MC:seq|baseHigh|baseLow|offHigh|offLow|dur|count|events..."]
 
@@ -214,7 +214,7 @@ flowchart TD
 
     L --> M["Motor ON for TIME_ON<br/>(100ms typical)"]
 
-    M --> N["Motor OFF for TIME_OFF + jitter<br/>(67ms + variation)"]
+    M --> N["Motor OFF until the next slot<br/>(67ms nominal; onsets jittered)"]
 
     N --> O{All events in<br/>macrocycle<br/>processed?}
 
@@ -230,7 +230,7 @@ flowchart TD
 
 **Key Metrics:**
 
-- Pattern duration: ~668ms (4 events × 167ms average)
+- Pattern duration: ~668ms (4 events × 167ms slot spacing)
 - Macrocycle duration: ~3.3s (3 patterns + relaxation)
 - Batching efficiency: 72% bandwidth reduction (200 bytes vs 720 bytes)
 
@@ -566,7 +566,7 @@ flowchart TD
     J -->|Yes| K["PRIMARY finger =<br/>SECONDARY finger<br/>(noisy vCR)"]
     J -->|No| L["PRIMARY & SECONDARY<br/>independent sequences<br/>(standard vCR)"]
 
-    K --> M["Apply jitter<br/>(TIME_OFF ± variation)"]
+    K --> M["Apply jitter<br/>(each onset ± A around its slot)"]
     L --> M
 
     M --> N["Event 1: F0, 100ms ON, 67ms OFF"]
@@ -598,9 +598,9 @@ flowchart TD
 
 **Timing:**
 
-- Event duration: TIME_ON (100ms) + TIME_OFF (67ms) + jitter
+- Event slot spacing: TIME_ON (100ms) + TIME_OFF (67ms); the onset sits within ±A of its slot
 - Pattern duration: 4 events × ~167ms = ~668ms
-- Macrocycle: 3 patterns + 1336ms relaxation = ~3.3s
+- Macrocycle: 3 patterns + 1336ms relaxation = 3.34s, a fixed grid period
 
 ---
 
@@ -696,7 +696,7 @@ flowchart TD
 
     F["Clamp to bounds<br/>70ms (SYNC_MIN_LEAD_TIME_US) ≤ lead_time<br/>≤ 150ms (SYNC_MAX_LEAD_TIME_US)"]
 
-    G["Use for MACROCYCLE events<br/>baseTime = now + lead_time"]
+    G["Use for the first MACROCYCLE<br/>first slot = now + lead_time + jitter guard"]
 
     A --> B --> C --> D --> E --> F --> G
 
@@ -848,8 +848,8 @@ sequenceDiagram
 | TIME_ON               | 100ms   | Motor activation duration (per event)     |
 | TIME_OFF              | 67ms    | Inter-burst interval (base value)         |
 | Lead time             | 70-150ms | Adaptive scheduling margin (config.h bounds) |
-| Pattern duration      | ~668ms  | 4 events × (TIME_ON + TIME_OFF + jitter)  |
-| Macrocycle duration   | ~3.3s   | 3 patterns + inter-macrocycle relaxation  |
+| Pattern duration      | ~668ms  | 4 events × (TIME_ON + TIME_OFF) slot spacing |
+| Macrocycle duration   | 3.34s   | Fixed grid period, 3 patterns + inter-macrocycle relaxation |
 | Relaxation period     | ~1336ms | 2× pattern duration (between macrocycles) |
 | PING/PONG frequency   | 70ms / 250ms / 1s | Keepalive and clock sync refresh rate (acquiring / therapy / idle) |
 | Connection timeout    | 6s      | SECONDARY: no PING/MC for 6s → connection lost; PRIMARY: no SECONDARY traffic for 6s during therapy → session stopped |

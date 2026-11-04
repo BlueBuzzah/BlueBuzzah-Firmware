@@ -79,8 +79,8 @@ sequenceDiagram
     rect rgba(5, 33, 45, 0.5)
         Note over P,S: Phase 3: Therapy Session
         P->>S: START_SESSION
-        loop Every ~3.3s (~4.2s on v3)
-            P->>S: MACROCYCLE (batch of 12 events, 15 on v3)
+        loop Every 3.34s (4.175s at 5 fingers)
+            P->>S: MACROCYCLE (batch of 12 events, 15 at 5 fingers)
             S->>P: MACROCYCLE_ACK
             Note over P,S: Both gloves execute the batch at the scheduled times
         end
@@ -299,7 +299,7 @@ This shortens re-sync after brief BLE interference events from ~350ms (cold star
 }}}%%
 flowchart LR
     subgraph PRIMARY
-        A[Generate 3 patterns<br/>12 events on v2, 15 on v3] --> B[Calculate base time]
+        A[Generate 3 patterns<br/>12 events at 4 fingers, 15 at 5] --> B[Calculate base time]
         B --> C[Send MACROCYCLE]
         C --> D[Enqueue all events]
         D --> E[FreeRTOS motor task<br/>executes chain]
@@ -369,11 +369,11 @@ local_time = primary_time + clock_offset
 }}}%%
 flowchart TD
     A[Therapy Pattern Generator] --> B{Macrocycle ready?}
-    B -->|Yes| C[Generate 3 patterns<br/>12 events on v2, 15 on v3]
+    B -->|Yes| C[Generate 3 patterns<br/>12 events at 4 fingers, 15 at 5]
     B -->|No| D[Wait for completion]
     D --> B
 
-    C --> E[Calculate base time<br/>now + lead_time]
+    C --> E[Calculate base time<br/>grid slot - jitter guard]
     E --> F[Create MACROCYCLE message]
     F --> G[Send to SECONDARY]
     G --> I[Enqueue all events]
@@ -391,7 +391,7 @@ flowchart TD
 
 ### Macrocycle Structure
 
-One therapy macrocycle consists of 3 patterns (12 buzz events on v2, 15 on v3) followed by a relax period. Values below are for the default timing; v3 values in parentheses:
+One therapy macrocycle consists of 3 patterns (12 buzz events at 4 fingers, 15 at 5) followed by a relax period. Values below are for the default timing; v3 values in parentheses:
 
 | Component | Duration |
 |-----------|----------|
@@ -402,7 +402,7 @@ One therapy macrocycle consists of 3 patterns (12 buzz events on v2, 15 on v3) f
 | Events per macrocycle | 12 (15): 3 patterns × fingers |
 | Pattern duration | ~668ms (~835ms) |
 | Inter-macrocycle relax | ~1336ms (~1670ms): 2× pattern duration |
-| **Total macrocycle** | **~3.3 seconds (~4.2 seconds)**, plus the lead time |
+| **Total macrocycle (grid period)** | **3.34 seconds (4.175 seconds)**: 5 × fingers × (TIME_ON + TIME_OFF), fixed. Each onset sits within ±A of its slot, with A capped at (TIME_OFF − 6ms) / 2. |
 
 ### Macrocycle Batching Architecture
 
