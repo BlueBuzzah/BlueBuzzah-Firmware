@@ -2203,10 +2203,11 @@ void onBLEMessage(uint16_t connHandle, const char *message, uint64_t rxTimestamp
                                   (long)(timeUntilExec / 1000));
                 }
                 int64_t timeDiff = static_cast<int64_t>(localBaseTime) - static_cast<int64_t>(nowUs);
-                // Corruption guard: legitimate values are now + lead time
-                // (35-50ms) plus BLE delivery jitter. 5s is ~100x that
-                // margin while still rejecting a corrupt offset/baseTime
-                // that would otherwise schedule far-off activations.
+                // Corruption guard: legitimate values are 70-300ms ahead,
+                // the adaptive lead time up to the macrocycle prepare point,
+                // plus BLE delivery jitter. 5s is well clear of that while
+                // still rejecting a corrupt offset/baseTime that would
+                // otherwise schedule far-off activations.
                 constexpr int64_t MAX_TIME_DIFF = 5000000LL;  // 5 seconds
                 if (timeDiff > MAX_TIME_DIFF || timeDiff < -MAX_TIME_DIFF)
                 {

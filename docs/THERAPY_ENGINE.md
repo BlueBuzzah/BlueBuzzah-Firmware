@@ -166,7 +166,7 @@ flowchart TD
 
         I -->|IDLE| J["generateMacrocycle(): 3 patterns"]
         J --> K[Invoke _macrocycleStartCallback]
-        K --> L["baseTime = getMicros() + lead time"]
+        K --> L["baseTime = grid slot - jitter guard"]
         L --> M[Invoke _sendMacrocycleCallback]
         M --> N["Invoke _scheduleActivationCallback per event, then _startSchedulingCallback"]
         N --> O[_buzzFlowState = ACTIVE]
@@ -175,7 +175,7 @@ flowchart TD
         P -->|No| G
         P -->|Yes| Q[_buzzFlowState = WAITING_RELAX]
 
-        I -->|WAITING_RELAX| R{"2 x TIME_RELAX elapsed?"}
+        I -->|WAITING_RELAX| R{"Next grid slot prepare point reached?"}
         R -->|No| G
         R -->|Yes| S["_cyclesCompleted++, invoke _cycleCompleteCallback"]
         S --> T[_buzzFlowState = IDLE]
@@ -210,7 +210,7 @@ constexpr void shuffleArray(std::span<uint8_t> arr) {
 }
 
 Pattern generateRandomPermutation(uint8_t numFingers, float timeOnMs, float timeOffMs,
-                                  float jitterPercent, bool mirrorPattern) {
+                                  bool mirrorPattern) {
     Pattern pattern = Pattern(numFingers);
     // ...
     // Generate PRIMARY device sequence (random permutation)
@@ -232,7 +232,7 @@ Pattern generateRandomPermutation(uint8_t numFingers, float timeOnMs, float time
         }
         shuffleArray(pattern.secondarySequence);
     }
-    // ... jitter applied to timeOffMs (see Timing Breakdown)
+    // ... timeOffMs[] holds nominal TIME_OFF (onset jitter: see Timing Breakdown)
     return pattern;
 }
 ```
@@ -265,7 +265,7 @@ Mirroring is controlled by the `mirrorPattern` parameter based on vCR type:
 struct [[nodiscard]] Pattern {
     std::vector<uint8_t> primarySequence;
     std::vector<uint8_t> secondarySequence;
-    std::vector<float> timeOffMs;   // TIME_OFF + jitter for each finger
+    std::vector<float> timeOffMs;   // Nominal TIME_OFF for each finger
     uint8_t numFingers;
     float burstDurationMs;          // TIME_ON
     float interBurstIntervalMs;     // TIME_RELAX = numFingers * (TIME_ON + TIME_OFF)
@@ -430,12 +430,14 @@ Result HapticController::activate(uint8_t finger, uint8_t amplitude) {
 The engine schedules activations via callbacks rather than executing them directly with blocking delays. In the `IDLE` state of `executeMacrocycleStep()`:
 
 ```cpp
-// Calculate lead time FIRST (callback takes 50-200µs)
+// First macrocycle only: the grid origin is now + lead time + jitter guard.
+// The lead time callback takes 50-200µs, so it runs before the clock is read.
 // Falls back to the 70ms minimum if no callback registered
-uint32_t leadTimeUs = _getLeadTimeCallback ? _getLeadTimeCallback() : SYNC_MIN_LEAD_TIME_US;
+const uint32_t leadTimeUs = currentLeadTimeUs();
+_gridOriginUs = getMicros() + leadTimeUs + guardUs;
 
-uint64_t nowUs = getMicros();
-_macrocycleBaseTime = nowUs + leadTimeUs;
+// Every macrocycle: baseTime is its grid slot minus the jitter guard
+_macrocycleBaseTime = gridSlotUs(_gridMacroIndex) - guardUs;
 _currentMacrocycle.baseTime = _macrocycleBaseTime;
 
 // Send macrocycle to SECONDARY
@@ -688,46 +690,37 @@ static void motorTask(void* pvParameters) {
 - JITTER = 23.5% = ±19.6ms
 - TIME_RELAX = numFingers * (TIME_ON + TIME_OFF) = 668ms
 
-**Jitter** is applied to each finger's TIME_OFF when the pattern is generated:
+**Jitter** is applied to each burst's onset, not to TIME_OFF. A macrocycle sits on a fixed grid whose period is 5 × numFingers × T, with T = TIME_ON + TIME_OFF (three active CR periods, two silent). Each onset is placed within ±A of its nominal slot:
 
 ```cpp
-// Jitter amount: (TIME_ON + TIME_OFF) * jitter% / 100 / 2
-// clampedJitterAmount() also limits it so TIME_OFF never drops below
-// MIN_INTER_BURST_GAP_MS (5 ms)
-const float jitterAmount = clampedJitterAmount(cycleDurationMs, timeOffMs, jitterPercent);
-
-float jitter = static_cast<float>(random(-1000, 1001)) / 1000.0f * jitterAmount;
-offTime += jitter;
+// A = T * jitter% / 100 / 2, capped at (TIME_OFF - MIN_INTER_BURST_GAP_MS
+// - ONSET_ROUNDING_RESERVE_MS) / 2 so adjacent bursts keep their gap
+const float limit = onsetJitterLimitMs(timeOnMs, timeOffMs, jitterPercent);
+double offset = (double(random(0, 1000001)) / 500000.0 - 1.0) * limit;
 ```
 
-**One Macrocycle**:
+Because every slot is anchored to the grid, one onset's shift never moves the next.
+
+**One Macrocycle** (4 fingers):
 
 ```
-Buzz Sequence 1:
-  Finger 1: 100ms ON + 67ms OFF ±19.6ms jitter = 147-186ms
-  Finger 2: 100ms ON + 67ms OFF ±19.6ms jitter = 147-186ms
-  Finger 3: 100ms ON + 67ms OFF ±19.6ms jitter = 147-186ms
-  Finger 4: 100ms ON + 67ms OFF ±19.6ms jitter = 147-186ms
-  Total: 588-744ms (avg 668ms)
+Buzz Sequence 1: 4 bursts, onsets at 0, T, 2T, 3T (each ±19.6ms)
+Buzz Sequence 2: 4 bursts, onsets at 4T .. 7T (each ±19.6ms)
+Buzz Sequence 3: 4 bursts, onsets at 8T .. 11T (each ±19.6ms)
+Silent: 2 CR periods (8T) before the next grid slot
 
-Buzz Sequence 2: 588-744ms
-Buzz Sequence 3: 588-744ms (ends when the last motor turns off;
-                 its final TIME_OFF is not waited out)
-
-Relax: 2 × TIME_RELAX = 1336ms, timed from the last deactivation
+Grid period: 5 × 4 × 167ms = 3340ms
 Lead time before the first event: 70-150ms (adaptive)
-
-Total per macrocycle: ~3.34-3.42 seconds on average
 ```
 
-With 5 fingers (v3) each sequence is 5 buzzes, TIME_RELAX is 835ms, and a macrocycle has 15 events (`MACROCYCLE_MAX_EVENTS = 3 * MAX_ACTUATORS`).
+With 5 fingers (v3) each sequence is 5 buzzes, TIME_RELAX is 835ms, the grid period is 4175ms, and a macrocycle has 15 events (`MACROCYCLE_MAX_EVENTS = 3 * MAX_ACTUATORS`).
 
 **Per Session** (120 minutes, 4 fingers):
 
 ```
-Macrocycles per session: (120 * 60) / ~3.38 = ~2,130 macrocycles
-Total buzzes per glove: ~2,130 * 3 * 4 = ~25,600 finger activations
-Relax periods: ~47 minutes of the 120 (2,130 * 1.336 s)
+Macrocycles per session: (120 * 60) / 3.34 = ~2,156 macrocycles
+Total buzzes per glove: ~2,156 * 3 * 4 = ~25,900 finger activations
+Silent periods: 48 minutes of the 120 (2 of every 5 CR periods)
 ```
 
 ---

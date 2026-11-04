@@ -187,7 +187,7 @@ void test_Pattern_getFingerPair(void) {
 // =============================================================================
 
 void test_generateRandomPermutation_produces_valid_pattern(void) {
-    Pattern p = generateRandomPermutation(4, 100.0f, 67.0f, 0.0f, true);
+    Pattern p = generateRandomPermutation(4, 100.0f, 67.0f, true);
 
     TEST_ASSERT_EQUAL_UINT8(4, p.numFingers);
     TEST_ASSERT_TRUE(isValidPermutation(p.primarySequence));
@@ -195,7 +195,7 @@ void test_generateRandomPermutation_produces_valid_pattern(void) {
 }
 
 void test_generateRandomPermutation_mirrored(void) {
-    Pattern p = generateRandomPermutation(4, 100.0f, 67.0f, 0.0f, true);
+    Pattern p = generateRandomPermutation(4, 100.0f, 67.0f, true);
 
     // Mirrored: primary and secondary should be identical
     TEST_ASSERT_TRUE(std::ranges::equal(p.primarySequence, p.secondarySequence));
@@ -204,7 +204,7 @@ void test_generateRandomPermutation_mirrored(void) {
 void test_generateRandomPermutation_non_mirrored(void) {
     randomSeed(999);  // Seed to ensure different sequences
 
-    Pattern p = generateRandomPermutation(4, 100.0f, 67.0f, 0.0f, false);
+    Pattern p = generateRandomPermutation(4, 100.0f, 67.0f, false);
 
     // Both should still be valid permutations
     TEST_ASSERT_TRUE(isValidPermutation(p.primarySequence));
@@ -213,31 +213,22 @@ void test_generateRandomPermutation_non_mirrored(void) {
     // Note: They might be equal by chance, but usually won't be
 }
 
-void test_generateRandomPermutation_with_jitter(void) {
-    Pattern p = generateRandomPermutation(4, 100.0f, 67.0f, 23.5f, true);
-
-    // With jitter, timing values will vary but should be positive
-    for (int i = 0; i < 4; i++) {
-        TEST_ASSERT_TRUE(p.timeOffMs[i] >= 0.0f);
-    }
-}
-
 void test_generateRandomPermutation_partial_fingers(void) {
-    Pattern p = generateRandomPermutation(3, 100.0f, 67.0f, 0.0f, true);
+    Pattern p = generateRandomPermutation(3, 100.0f, 67.0f, true);
 
     TEST_ASSERT_EQUAL_UINT8(3, p.numFingers);
     TEST_ASSERT_TRUE(isValidPermutation(p.primarySequence));
 }
 
 void test_generateRandomPermutation_burst_duration(void) {
-    Pattern p = generateRandomPermutation(4, 150.0f, 50.0f, 0.0f, true);
+    Pattern p = generateRandomPermutation(4, 150.0f, 50.0f, true);
 
     TEST_ASSERT_FLOAT_WITHIN(0.1f, 150.0f, p.burstDurationMs);
 }
 
 void test_generateRandomPermutation_interBurstInterval(void) {
     // Inter-burst = 4 * (timeOn + timeOff) = 4 * (100 + 67) = 668
-    Pattern p = generateRandomPermutation(4, 100.0f, 67.0f, 0.0f, true);
+    Pattern p = generateRandomPermutation(4, 100.0f, 67.0f, true);
 
     TEST_ASSERT_FLOAT_WITHIN(0.1f, 668.0f, p.interBurstIntervalMs);
 }
@@ -247,7 +238,7 @@ void test_generateRandomPermutation_interBurstInterval(void) {
 // =============================================================================
 
 void test_generateSequentialPattern_forward(void) {
-    Pattern p = generateSequentialPattern(4, 100.0f, 67.0f, 0.0f, true, false);
+    Pattern p = generateSequentialPattern(4, 100.0f, 67.0f, true, false);
 
     // Sequential forward: 0, 1, 2, 3
     for (int i = 0; i < 4; i++) {
@@ -256,7 +247,7 @@ void test_generateSequentialPattern_forward(void) {
 }
 
 void test_generateSequentialPattern_reverse(void) {
-    Pattern p = generateSequentialPattern(4, 100.0f, 67.0f, 0.0f, true, true);
+    Pattern p = generateSequentialPattern(4, 100.0f, 67.0f, true, true);
 
     // Sequential reverse: 3, 2, 1, 0
     for (int i = 0; i < 4; i++) {
@@ -265,14 +256,14 @@ void test_generateSequentialPattern_reverse(void) {
 }
 
 void test_generateSequentialPattern_mirrored(void) {
-    Pattern p = generateSequentialPattern(4, 100.0f, 67.0f, 0.0f, true, false);
+    Pattern p = generateSequentialPattern(4, 100.0f, 67.0f, true, false);
 
     // Mirrored: primary and secondary identical
     TEST_ASSERT_TRUE(std::ranges::equal(p.primarySequence, p.secondarySequence));
 }
 
 void test_generateSequentialPattern_non_mirrored(void) {
-    Pattern p = generateSequentialPattern(4, 100.0f, 67.0f, 0.0f, false, false);
+    Pattern p = generateSequentialPattern(4, 100.0f, 67.0f, false, false);
 
     // Non-mirrored: secondary is opposite order of primary
     // Primary: 0,1,2,3  Secondary: 3,2,1,0
@@ -287,7 +278,7 @@ void test_generateSequentialPattern_non_mirrored(void) {
 // =============================================================================
 
 void test_generateMirroredPattern_not_randomized(void) {
-    Pattern p = generateMirroredPattern(4, 100.0f, 67.0f, 0.0f, false);
+    Pattern p = generateMirroredPattern(4, 100.0f, 67.0f, false);
 
     // Not randomized: sequential
     for (int i = 0; i < 4; i++) {
@@ -299,7 +290,7 @@ void test_generateMirroredPattern_not_randomized(void) {
 }
 
 void test_generateMirroredPattern_randomized(void) {
-    Pattern p = generateMirroredPattern(4, 100.0f, 67.0f, 0.0f, true);
+    Pattern p = generateMirroredPattern(4, 100.0f, 67.0f, true);
 
     // Randomized: valid permutation
     TEST_ASSERT_TRUE(isValidPermutation(p.primarySequence));
@@ -556,112 +547,9 @@ void test_TherapyEngine_fixed_amplitude(void) {
     TEST_ASSERT_TRUE(engine.isRunning());
 }
 
-// =============================================================================
-// JITTER EDGE CASE TESTS
-// =============================================================================
-
-void test_generateRandomPermutation_high_jitter(void) {
-    // Test with 50% jitter (extreme case)
-    Pattern p = generateRandomPermutation(4, 100.0f, 67.0f, 50.0f, true);
-
-    TEST_ASSERT_EQUAL_UINT8(4, p.numFingers);
-    // With high jitter, timing values should still be valid
-    for (int i = 0; i < 4; i++) {
-        TEST_ASSERT_TRUE(p.timeOffMs[i] >= 0.0f);
-    }
-}
-
-void test_generateRandomPermutation_gap_never_collapses_under_max_jitter(void) {
-    // Worst permitted combination: long burst, shortest gap, max jitter.
-    // Run many iterations because the jitter draw is random.
-    for (int iteration = 0; iteration < 500; iteration++) {
-        Pattern p = generateRandomPermutation(
-            4,       // numFingers
-            200.0f,  // timeOnMs  (PARAM_MAX_TIME_ON_MS)
-            30.0f,   // timeOffMs (PARAM_MIN_TIME_OFF_MS)
-            50.0f,   // jitterPercent (PARAM_MAX_JITTER_PCT)
-            false);  // mirrorPattern
-
-        for (uint8_t i = 0; i < 4; i++) {
-            TEST_ASSERT_TRUE_MESSAGE(p.timeOffMs[i] >= MIN_INTER_BURST_GAP_MS,
-                "inter-burst gap fell below MIN_INTER_BURST_GAP_MS under max jitter");
-        }
-    }
-}
-
-void test_generateSequentialPattern_gap_never_collapses_under_max_jitter(void) {
-    // Worst permitted combination: long burst, shortest gap, max jitter.
-    // Run many iterations because the jitter draw is random.
-    for (int iteration = 0; iteration < 500; iteration++) {
-        Pattern p = generateSequentialPattern(
-            4,       // numFingers
-            200.0f,  // timeOnMs  (PARAM_MAX_TIME_ON_MS)
-            30.0f,   // timeOffMs (PARAM_MIN_TIME_OFF_MS)
-            50.0f,   // jitterPercent (PARAM_MAX_JITTER_PCT)
-            false);  // mirrorPattern
-
-        for (uint8_t i = 0; i < 4; i++) {
-            TEST_ASSERT_TRUE_MESSAGE(p.timeOffMs[i] >= MIN_INTER_BURST_GAP_MS,
-                "inter-burst gap fell below MIN_INTER_BURST_GAP_MS under max jitter");
-        }
-    }
-}
-
-void test_generateMirroredPattern_gap_never_collapses_under_max_jitter(void) {
-    // Worst permitted combination: long burst, shortest gap, max jitter.
-    // Run many iterations because the jitter draw is random.
-    for (int iteration = 0; iteration < 500; iteration++) {
-        Pattern p = generateMirroredPattern(
-            4,       // numFingers
-            200.0f,  // timeOnMs  (PARAM_MAX_TIME_ON_MS)
-            30.0f,   // timeOffMs (PARAM_MIN_TIME_OFF_MS)
-            50.0f,   // jitterPercent (PARAM_MAX_JITTER_PCT)
-            false);  // mirrorPattern
-
-        for (uint8_t i = 0; i < 4; i++) {
-            TEST_ASSERT_TRUE_MESSAGE(p.timeOffMs[i] >= MIN_INTER_BURST_GAP_MS,
-                "inter-burst gap fell below MIN_INTER_BURST_GAP_MS under max jitter");
-        }
-    }
-}
-
-void test_generateRandomPermutation_jitter_still_varies_at_defaults(void) {
-    // The clamp must not suppress jitter at the default parameters,
-    // where jitterAmount (19.6ms) is well below OFF (67ms).
-    bool sawVariation = false;
-    Pattern first = generateRandomPermutation(
-        4, 100.0f, 67.0f, 23.5f, false);
-    for (int iteration = 0; iteration < 200 && !sawVariation; iteration++) {
-        Pattern p = generateRandomPermutation(
-            4, 100.0f, 67.0f, 23.5f, false);
-        for (uint8_t i = 0; i < 4; i++) {
-            if (p.timeOffMs[i] != first.timeOffMs[i]) {
-                sawVariation = true;
-            }
-        }
-    }
-    TEST_ASSERT_TRUE_MESSAGE(sawVariation,
-        "jitter produced no variation at default parameters");
-}
-
-void test_relax_interval_scales_with_finger_count(void) {
-    // The paper's 3:2 ON-OFF cycling means the relax interval must equal
-    // exactly two CR periods, and one CR period is numFingers * (ON + OFF).
-    const float onMs  = 100.0f;
-    const float offMs = 67.0f;
-
-    for (uint8_t fingers = 1; fingers <= MAX_ACTUATORS; fingers++) {
-        const float expectedRelaxMs = 2.0f * fingers * (onMs + offMs);
-        const float actualRelaxMs = calculateRelaxIntervalMs(fingers, onMs, offMs);
-
-        TEST_ASSERT_FLOAT_WITHIN_MESSAGE(0.01f, expectedRelaxMs, actualRelaxMs,
-            "relax interval is not two CR periods for this finger count");
-    }
-}
-
 void test_interBurstInterval_scales_with_finger_count_all_generators(void) {
     // Each generator independently sets pattern.interBurstIntervalMs = numFingers *
-    // (ON + OFF). Jitter is 0 so the value is deterministic. This pins all three
+    // (ON + OFF). This pins all three
     // sites directly, unlike test_generateRandomPermutation_interBurstInterval
     // (which hardcodes 4 fingers and can't distinguish numFingers * X from 4 * X).
     const float onMs  = 100.0f;
@@ -670,36 +558,17 @@ void test_interBurstInterval_scales_with_finger_count_all_generators(void) {
     for (uint8_t fingers = 1; fingers <= MAX_ACTUATORS; fingers++) {
         const float expected = static_cast<float>(fingers) * (onMs + offMs);
 
-        Pattern randomPermutation = generateRandomPermutation(fingers, onMs, offMs, 0.0f, true);
+        Pattern randomPermutation = generateRandomPermutation(fingers, onMs, offMs, true);
         TEST_ASSERT_FLOAT_WITHIN_MESSAGE(0.1f, expected, randomPermutation.interBurstIntervalMs,
             "generateRandomPermutation interBurstIntervalMs did not scale with finger count");
 
-        Pattern sequential = generateSequentialPattern(fingers, onMs, offMs, 0.0f, true, false);
+        Pattern sequential = generateSequentialPattern(fingers, onMs, offMs, true, false);
         TEST_ASSERT_FLOAT_WITHIN_MESSAGE(0.1f, expected, sequential.interBurstIntervalMs,
             "generateSequentialPattern interBurstIntervalMs did not scale with finger count");
 
-        Pattern mirrored = generateMirroredPattern(fingers, onMs, offMs, 0.0f, true);
+        Pattern mirrored = generateMirroredPattern(fingers, onMs, offMs, true);
         TEST_ASSERT_FLOAT_WITHIN_MESSAGE(0.1f, expected, mirrored.interBurstIntervalMs,
             "generateMirroredPattern interBurstIntervalMs did not scale with finger count");
-    }
-}
-
-void test_generateSequentialPattern_with_jitter(void) {
-    Pattern p = generateSequentialPattern(4, 100.0f, 67.0f, 23.5f, true, false);
-
-    TEST_ASSERT_EQUAL_UINT8(4, p.numFingers);
-    // Jitter should be applied to timing
-    for (int i = 0; i < 4; i++) {
-        TEST_ASSERT_TRUE(p.timeOffMs[i] >= 0.0f);
-    }
-}
-
-void test_generateMirroredPattern_with_jitter(void) {
-    Pattern p = generateMirroredPattern(4, 100.0f, 67.0f, 23.5f, true);
-
-    TEST_ASSERT_EQUAL_UINT8(4, p.numFingers);
-    for (int i = 0; i < 4; i++) {
-        TEST_ASSERT_TRUE(p.timeOffMs[i] >= 0.0f);
     }
 }
 
@@ -1112,7 +981,7 @@ void test_macrocycle_sequence_id_increments(void) {
     // Complete first cycle
     mockAdvanceMillis(100);
     engine.update();  // ACTIVE -> WAITING_RELAX
-    mockAdvanceMillis(1400);
+    mockAdvanceMillis(3200);
     engine.update();  // WAITING_RELAX -> IDLE
 
     // Second macrocycle
@@ -1185,8 +1054,8 @@ void test_executeMacrocycleStep_transitions_to_waiting_relax(void) {
     mockAdvanceMillis(100);
     engine.update();  // ACTIVE -> WAITING_RELAX
 
-    // Wait for double relax time: 2 * 4 * (100 + 67) = 1336ms
-    mockAdvanceMillis(1400);
+    // Reach the prepare point, 300 ms before the next grid slot
+    mockAdvanceMillis(3200);
     engine.update();  // WAITING_RELAX -> IDLE (cycle complete)
 
     TEST_ASSERT_EQUAL_INT(1, g_cycleCompleteCallCount);
@@ -1215,7 +1084,7 @@ void test_executeMacrocycleStep_full_cycle(void) {
     mockAdvanceMillis(100);
     engine.update();  // ACTIVE -> WAITING_RELAX (since g_schedulingComplete = true)
 
-    mockAdvanceMillis(1400);  // Wait for double relax
+    mockAdvanceMillis(3200);  // Reach the prepare point, 300 ms before the next grid slot
     engine.update();  // WAITING_RELAX -> IDLE, cycle complete
 
     TEST_ASSERT_EQUAL_INT(1, g_cycleCompleteCallCount);
@@ -1581,6 +1450,331 @@ void test_LastSession_load_rejects_bad_file(void) {
     TEST_ASSERT_NULL(engine.getLastSession());
 }
 
+// =============================================================================
+// ONSET TIMING TESTS
+// =============================================================================
+
+static const uint32_t ONSET_PREPARE_LEAD_US = 180000;  // Inside the 300 ms prepare window
+
+static std::vector<uint64_t> onsetScheduledTimes;
+static std::vector<uint16_t> onsetScheduledDurations;
+
+void captureOnsetActivation(uint64_t t, uint8_t, uint8_t, uint16_t duration, uint16_t) {
+    onsetScheduledTimes.push_back(t);
+    onsetScheduledDurations.push_back(duration);
+}
+
+uint32_t mockMaxLeadTimeCallback() {
+    return SYNC_MAX_LEAD_TIME_US;
+}
+
+// From ACTIVE, reach the prepare point of the grid slot at nextBaseUs and dispatch it
+static void runToNextMacrocycle(TherapyEngine& engine, uint64_t nextBaseUs) {
+    engine.update();  // ACTIVE -> WAITING_RELAX
+    mockSetMillis(static_cast<uint32_t>((nextBaseUs - ONSET_PREPARE_LEAD_US) / 1000));
+    engine.update();  // WAITING_RELAX -> IDLE
+    engine.update();  // IDLE -> dispatch
+}
+
+static void assertAdjacentOnsetsKeepMinimumGap(float timeOnMs, float timeOffMs) {
+    TherapyEngine engine;
+    engine.setSendMacrocycleCallback(mockCaptureMacrocycleCallback);
+    engine.startSession(3600, PatternType::RNDP, timeOnMs, timeOffMs, 50, 4, true, 50, 50, false);
+    engine.update();
+    const uint64_t base = g_lastSentMacrocycle.baseTime;
+    const uint64_t periodUs = uint64_t(20 * (timeOnMs + timeOffMs)) * 1000;
+    const int minimumSpacing = static_cast<int>(timeOnMs + MIN_INTER_BURST_GAP_MS);
+
+    for (int m = 1; m <= 200; ++m) {
+        for (int i = 1; i < 12; ++i) {
+            const int spacing = g_lastSentMacrocycle.events[i].deltaTimeMs -
+                                g_lastSentMacrocycle.events[i - 1].deltaTimeMs;
+            TEST_ASSERT_TRUE(spacing >= minimumSpacing);
+        }
+        runToNextMacrocycle(engine, base + m * periodUs);
+        TEST_ASSERT_TRUE(engine.isRunning());
+        TEST_ASSERT_EQUAL_UINT64(base + m * periodUs, g_lastSentMacrocycle.baseTime);
+    }
+}
+
+void test_onset_limit_matches_paper_at_defaults(void) {
+    TEST_ASSERT_FLOAT_WITHIN(0.001f, 19.6225f, onsetJitterLimitMs(100, 67, 23.5f));
+}
+
+void test_onset_limit_caps_to_keep_the_gap(void) {
+    TEST_ASSERT_FLOAT_WITHIN(0.001f, 30.5f, onsetJitterLimitMs(100, 67, 50));
+    TEST_ASSERT_FLOAT_WITHIN(0.001f, 12.0f, onsetJitterLimitMs(200, 30, 50));
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, onsetJitterLimitMs(100, 5, 50));
+}
+
+void test_onset_bounds_and_bilateral_schedule(void) {
+    TherapyEngine engine;
+    engine.setSendMacrocycleCallback(mockCaptureMacrocycleCallback);
+    engine.startSession(100, PatternType::RNDP, 100, 67, 23.5, 4, true, 50, 50, false);
+    engine.update();
+    const Macrocycle mc = g_lastSentMacrocycle;
+    TEST_ASSERT_EQUAL_UINT16(20, mc.events[0].deltaTimeMs);
+    for (int i = 0; i < 12; ++i) {
+        const double error = double(mc.events[i].deltaTimeMs) - (20 + i * 167);
+        TEST_ASSERT_TRUE(std::abs(error) <= 20.123);
+        TEST_ASSERT_EQUAL_UINT8(mc.events[i].finger, mc.events[i].primaryFinger);
+        TEST_ASSERT_EQUAL_UINT8(100, mc.events[i].durationMs);
+        if (i) TEST_ASSERT_TRUE(mc.events[i].deltaTimeMs - mc.events[i-1].deltaTimeMs >= 105);
+    }
+}
+
+void test_onset_primary_uses_transmitted_timestamps(void) {
+    TherapyEngine engine;
+    engine.setSendMacrocycleCallback(mockCaptureMacrocycleCallback);
+    onsetScheduledTimes.clear(); onsetScheduledDurations.clear();
+    engine.setSchedulingCallbacks(captureOnsetActivation, mockStartSchedulingCallback, mockIsSchedulingCompleteCallback);
+    engine.startSession(100, PatternType::RNDP, 100, 67, 23.5, 4, true, 50, 50, false);
+    engine.update();
+    TEST_ASSERT_EQUAL_INT(12, onsetScheduledTimes.size());
+    for (int i=0; i<12; ++i) {
+        TEST_ASSERT_EQUAL_UINT64(g_lastSentMacrocycle.baseTime + uint64_t(g_lastSentMacrocycle.events[i].deltaTimeMs)*1000,
+                                onsetScheduledTimes[i]);
+        TEST_ASSERT_EQUAL_UINT16(100, onsetScheduledDurations[i]);
+    }
+}
+
+void test_onset_pause_shifts_future_grid_once(void) {
+    TherapyEngine engine;
+    engine.setSendMacrocycleCallback(mockCaptureMacrocycleCallback);
+    engine.startSession(100, PatternType::RNDP, 100, 67, 23.5, 4, true, 50, 50, false);
+    engine.update();
+    const uint64_t base = g_lastSentMacrocycle.baseTime;
+    engine.update();
+    mockSetMillis(2200); engine.pause();
+    mockAdvanceMillis(1000); engine.resume(); engine.update();
+    mockSetMillis(static_cast<uint32_t>((base+3340000+1000000-180000)/1000));
+    engine.update(); engine.update();
+    TEST_ASSERT_EQUAL_UINT64(base+3340000+1000000, g_lastSentMacrocycle.baseTime);
+}
+
+void test_onset_pause_while_active_shifts_grid_once(void) {
+    TherapyEngine engine;
+    engine.setSendMacrocycleCallback(mockCaptureMacrocycleCallback);
+    engine.setSchedulingCallbacks(mockScheduleActivationCallback, mockStartSchedulingCallback, mockIsSchedulingCompleteCallback);
+    g_schedulingComplete = false;
+    engine.startSession(100, PatternType::RNDP, 100, 67, 23.5, 4, true, 50, 50, false);
+    engine.update();
+    const uint64_t base = g_lastSentMacrocycle.baseTime;
+    const uint32_t sequenceId = g_lastSentMacrocycle.sequenceId;
+
+    engine.pause();
+    mockAdvanceMillis(1000);
+    engine.resume();
+    engine.update();  // Applies the pause; the queue is still draining
+    engine.update();  // Must not apply it again
+
+    g_schedulingComplete = true;
+    runToNextMacrocycle(engine, base + 3340000 + 1000000);
+
+    TEST_ASSERT_EQUAL_UINT32(sequenceId + 1, g_lastSentMacrocycle.sequenceId);
+    TEST_ASSERT_EQUAL_UINT64(base + 3340000 + 1000000, g_lastSentMacrocycle.baseTime);
+}
+
+void test_onset_macrocycle_grid_does_not_accumulate(void) {
+    TherapyEngine engine;
+    engine.setSendMacrocycleCallback(mockCaptureMacrocycleCallback);
+    engine.startSession(500, PatternType::RNDP, 100, 67, 23.5, 4, true, 50, 50, false);
+    engine.update();
+    const uint64_t base = g_lastSentMacrocycle.baseTime;
+    const double limitMs = onsetJitterLimitMs(100, 67, 23.5f);
+    bool laterFirstShifted = false;
+    for (int m = 1; m <= 50; ++m) {
+        runToNextMacrocycle(engine, base + uint64_t(m)*3340000);
+        TEST_ASSERT_EQUAL_UINT64(base + uint64_t(m)*3340000, g_lastSentMacrocycle.baseTime);
+        laterFirstShifted |= std::abs(double(g_lastSentMacrocycle.events[0].deltaTimeMs) - 20) > limitMs / 2;
+        for (int i = 0; i < 12; ++i)
+            TEST_ASSERT_TRUE(std::abs(double(g_lastSentMacrocycle.events[i].deltaTimeMs) - (20+i*167)) <= limitMs + 0.5);
+    }
+    TEST_ASSERT_TRUE(laterFirstShifted);
+}
+
+void test_onset_late_dispatch_skips_without_rebasing(void) {
+    TherapyEngine engine;
+    engine.setSendMacrocycleCallback(mockCaptureMacrocycleCallback);
+    engine.startSession(100, PatternType::RNDP, 100, 67, 23.5, 4, true, 50, 50, false);
+    engine.update();
+    const uint64_t base = g_lastSentMacrocycle.baseTime;
+    const uint32_t sequenceId = g_lastSentMacrocycle.sequenceId;
+    engine.update();
+    mockSetMillis(static_cast<uint32_t>((base+3340000+100000)/1000));
+    engine.update(); engine.update();  // WAITING_RELAX -> IDLE, then the skip
+    engine.update();
+    TEST_ASSERT_EQUAL_UINT32(sequenceId, g_lastSentMacrocycle.sequenceId);
+    mockSetMillis(static_cast<uint32_t>((base+6680000-180000)/1000));
+    engine.update();
+    TEST_ASSERT_EQUAL_UINT32(sequenceId + 1, g_lastSentMacrocycle.sequenceId);
+    TEST_ASSERT_EQUAL_UINT64(base + 6680000, g_lastSentMacrocycle.baseTime);
+}
+
+void test_onset_skip_on_long_period_holds_until_prepare_point(void) {
+    TherapyEngine engine;
+    engine.setSendMacrocycleCallback(mockCaptureMacrocycleCallback);
+    engine.setMacrocycleStartCallback(mockMacrocycleStartCallback);
+    engine.setCycleCompleteCallback(mockCycleCompleteCallback);
+    engine.setGetLeadTimeCallback(mockGetLeadTimeCallback);
+    engine.startSession(100, PatternType::RNDP, 200, 200, 23.5, 4, true, 50, 50, false);
+    engine.update();
+    const uint64_t base = g_lastSentMacrocycle.baseTime;
+    const uint32_t sequenceId = g_lastSentMacrocycle.sequenceId;
+    const uint64_t periodUs = 8000000;
+    const uint64_t nextBase = base + 2 * periodUs;
+
+    engine.update();  // ACTIVE -> WAITING_RELAX
+    mockSetMillis(static_cast<uint32_t>((base + periodUs + 100000) / 1000));
+    engine.update();  // WAITING_RELAX -> IDLE
+    engine.update();  // Late: skips to nextBase
+
+    g_macrocycleStartCallCount = 0;
+    g_cycleCompleteCallCount = 0;
+    g_lastLeadTimeReturned = 0;
+    engine.update();
+    mockSetMillis(static_cast<uint32_t>((nextBase - SYNC_MAX_LEAD_TIME_US - MACROCYCLE_PREPARE_MARGIN_US - 1000) / 1000));
+    engine.update();
+
+    TEST_ASSERT_EQUAL_UINT32(sequenceId, g_lastSentMacrocycle.sequenceId);
+    TEST_ASSERT_EQUAL_INT(0, g_macrocycleStartCallCount);
+    TEST_ASSERT_EQUAL_INT(0, g_cycleCompleteCallCount);
+    TEST_ASSERT_EQUAL_UINT32(1, engine.getCyclesCompleted());
+    TEST_ASSERT_EQUAL_UINT32(0, g_lastLeadTimeReturned);  // No lead callback while holding
+
+    const uint32_t dispatchMs = static_cast<uint32_t>((nextBase - ONSET_PREPARE_LEAD_US) / 1000);
+    mockSetMillis(dispatchMs);
+    engine.update();
+
+    TEST_ASSERT_EQUAL_UINT32(sequenceId + 1, g_lastSentMacrocycle.sequenceId);
+    TEST_ASSERT_EQUAL_UINT64(nextBase, g_lastSentMacrocycle.baseTime);
+    TEST_ASSERT_TRUE(g_lastSentMacrocycle.baseTime - uint64_t(dispatchMs) * 1000 < 1000000);
+}
+
+void test_onset_stall_inside_prepare_window_does_not_skip(void) {
+    TherapyEngine engine;
+    engine.setSendMacrocycleCallback(mockCaptureMacrocycleCallback);
+    engine.setGetLeadTimeCallback(mockMaxLeadTimeCallback);
+    engine.startSession(100, PatternType::RNDP, 100, 67, 23.5, 4, true, 50, 50, false);
+    engine.update();
+    const uint64_t nextBase = g_lastSentMacrocycle.baseTime + 3340000;
+    const uint32_t sequenceId = g_lastSentMacrocycle.sequenceId;
+
+    engine.update();  // ACTIVE -> WAITING_RELAX
+    mockSetMillis(static_cast<uint32_t>((nextBase - SYNC_MAX_LEAD_TIME_US - MACROCYCLE_PREPARE_MARGIN_US) / 1000));
+    engine.update();  // WAITING_RELAX -> IDLE
+    mockAdvanceMillis(120);  // One stalled loop pass
+    engine.update();
+
+    TEST_ASSERT_EQUAL_UINT32(sequenceId + 1, g_lastSentMacrocycle.sequenceId);
+    TEST_ASSERT_EQUAL_UINT64(nextBase, g_lastSentMacrocycle.baseTime);
+}
+
+void test_onset_zero_jitter_and_fractional_slot(void) {
+    TherapyEngine engine;
+    engine.setSendMacrocycleCallback(mockCaptureMacrocycleCallback);
+    engine.startSession(100, PatternType::RNDP, 100, 66.666667f, 0, 4, true, 50, 50, false);
+    engine.update();
+    for (int i = 0; i < 12; ++i)
+        TEST_ASSERT_EQUAL_UINT16(std::lround(i * (100.0 + double(66.666667f))), g_lastSentMacrocycle.events[i].deltaTimeMs);
+}
+
+void test_onset_jitter_above_cap_keeps_minimum_gap(void) {
+    assertAdjacentOnsetsKeepMinimumGap(100, 67);
+    assertAdjacentOnsetsKeepMinimumGap(200, 30);
+}
+
+void test_onset_period_scales_with_finger_count(void) {
+    for (uint8_t numFingers = 1; numFingers <= MAX_ACTUATORS; ++numFingers) {
+        TherapyEngine engine;
+        engine.setSendMacrocycleCallback(mockCaptureMacrocycleCallback);
+        engine.startSession(100, PatternType::RNDP, 100, 67, 23.5, numFingers, true, 50, 50, false);
+        engine.update();
+        const uint64_t base = g_lastSentMacrocycle.baseTime;
+        const uint64_t periodUs = 5ULL * numFingers * 167000;
+
+        runToNextMacrocycle(engine, base + periodUs);
+
+        TEST_ASSERT_EQUAL_UINT64(base + periodUs, g_lastSentMacrocycle.baseTime);
+    }
+}
+
+void test_onset_uses_clamped_finger_count(void) {
+    TherapyEngine engine;
+    engine.setSendMacrocycleCallback(mockCaptureMacrocycleCallback);
+    const uint8_t present[] = {0, 1, 2, 3};
+    engine.setActiveFingers(present, 4);
+    TEST_ASSERT_EQUAL_UINT8(4, engine.getActiveFingerCount());
+
+    engine.startSession(100, PatternType::RNDP, 100, 67, 23.5, 5, true, 50, 50, false);
+    engine.update();
+
+    TEST_ASSERT_EQUAL_UINT8(12, g_lastSentMacrocycle.eventCount);
+    for (uint8_t i = 0; i < g_lastSentMacrocycle.eventCount; ++i) {
+        TEST_ASSERT_TRUE(g_lastSentMacrocycle.events[i].finger < 4);
+        TEST_ASSERT_TRUE(g_lastSentMacrocycle.events[i].primaryFinger < 4);
+    }
+
+    const uint64_t base = g_lastSentMacrocycle.baseTime;
+    runToNextMacrocycle(engine, base + 3340000);
+    TEST_ASSERT_EQUAL_UINT64(base + 3340000, g_lastSentMacrocycle.baseTime);
+}
+
+void test_onset_applies_to_every_pattern_type(void) {
+    const PatternType types[] = {PatternType::SEQUENTIAL, PatternType::MIRRORED};
+    for (const PatternType type : types) {
+        TherapyEngine engine;
+        engine.setSendMacrocycleCallback(mockCaptureMacrocycleCallback);
+        engine.startSession(500, type, 100, 67, 23.5, 4, true, 50, 50, false);
+        engine.update();
+        const uint64_t base = g_lastSentMacrocycle.baseTime;
+        const double limitMs = onsetJitterLimitMs(100, 67, 23.5f);
+        bool shifted = false;
+        for (int m = 1; m <= 50; ++m) {
+            runToNextMacrocycle(engine, base + uint64_t(m) * 3340000);
+            for (int i = 0; i < 12; ++i) {
+                const double offsetMs = std::abs(double(g_lastSentMacrocycle.events[i].deltaTimeMs) - (20 + i * 167));
+                shifted |= offsetMs > limitMs / 2;
+                TEST_ASSERT_TRUE(offsetMs <= limitMs + 0.5);
+            }
+        }
+        TEST_ASSERT_TRUE(shifted);
+    }
+}
+
+void test_onset_restart_resets_grid(void) {
+    TherapyEngine engine;
+    engine.setSendMacrocycleCallback(mockCaptureMacrocycleCallback);
+    engine.startSession(500, PatternType::RNDP, 100, 67, 23.5, 4, true, 50, 50, false);
+    engine.update();
+    runToNextMacrocycle(engine, g_lastSentMacrocycle.baseTime + 3340000);
+
+    engine.stop();
+    const uint32_t restartMs = 20000;
+    mockSetMillis(restartMs);
+    engine.startSession(500, PatternType::RNDP, 100, 67, 23.5, 4, true, 50, 50, false);
+    engine.update();
+
+    TEST_ASSERT_EQUAL_UINT16(20, g_lastSentMacrocycle.events[0].deltaTimeMs);
+    TEST_ASSERT_EQUAL_UINT64(uint64_t(restartMs) * 1000 + SYNC_MIN_LEAD_TIME_US, g_lastSentMacrocycle.baseTime);
+}
+
+void test_onset_shortest_timing_never_skips(void) {
+    TherapyEngine engine;
+    engine.setSendMacrocycleCallback(mockCaptureMacrocycleCallback);
+    engine.setGetLeadTimeCallback(mockMaxLeadTimeCallback);
+    engine.startSession(100, PatternType::RNDP, 50, 30, 50, 1, true, 50, 50, false);
+    engine.update();
+    const uint64_t base = g_lastSentMacrocycle.baseTime;
+    for (int m = 1; m <= 20; ++m) {
+        mockSetMillis(static_cast<uint32_t>((base + uint64_t(m) * 400000 - ONSET_PREPARE_LEAD_US) / 1000));
+        engine.update();
+        engine.update();
+        engine.update();
+        TEST_ASSERT_EQUAL_UINT64(base + uint64_t(m) * 400000, g_lastSentMacrocycle.baseTime);
+    }
+}
+
 int main(int argc, char **argv) {
     UNITY_BEGIN();
 
@@ -1599,7 +1793,6 @@ int main(int argc, char **argv) {
     RUN_TEST(test_generateRandomPermutation_produces_valid_pattern);
     RUN_TEST(test_generateRandomPermutation_mirrored);
     RUN_TEST(test_generateRandomPermutation_non_mirrored);
-    RUN_TEST(test_generateRandomPermutation_with_jitter);
     RUN_TEST(test_generateRandomPermutation_partial_fingers);
     RUN_TEST(test_generateRandomPermutation_burst_duration);
     RUN_TEST(test_generateRandomPermutation_interBurstInterval);
@@ -1652,15 +1845,7 @@ int main(int argc, char **argv) {
     RUN_TEST(test_TherapyEngine_fixed_amplitude);
 
     // Jitter Edge Case Tests
-    RUN_TEST(test_generateRandomPermutation_high_jitter);
-    RUN_TEST(test_generateRandomPermutation_gap_never_collapses_under_max_jitter);
-    RUN_TEST(test_generateSequentialPattern_gap_never_collapses_under_max_jitter);
-    RUN_TEST(test_generateMirroredPattern_gap_never_collapses_under_max_jitter);
-    RUN_TEST(test_generateRandomPermutation_jitter_still_varies_at_defaults);
-    RUN_TEST(test_relax_interval_scales_with_finger_count);
     RUN_TEST(test_interBurstInterval_scales_with_finger_count_all_generators);
-    RUN_TEST(test_generateSequentialPattern_with_jitter);
-    RUN_TEST(test_generateMirroredPattern_with_jitter);
 
     // Default Pattern Type Tests
     RUN_TEST(test_TherapyEngine_default_pattern_type_fallback);
@@ -1729,6 +1914,25 @@ int main(int argc, char **argv) {
     RUN_TEST(test_LastSession_failed_write_is_retried);
     RUN_TEST(test_LastSession_clear_forgets_and_deletes);
     RUN_TEST(test_LastSession_load_rejects_bad_file);
+
+    // Onset Timing Tests
+    RUN_TEST(test_onset_limit_matches_paper_at_defaults);
+    RUN_TEST(test_onset_limit_caps_to_keep_the_gap);
+    RUN_TEST(test_onset_bounds_and_bilateral_schedule);
+    RUN_TEST(test_onset_primary_uses_transmitted_timestamps);
+    RUN_TEST(test_onset_pause_shifts_future_grid_once);
+    RUN_TEST(test_onset_pause_while_active_shifts_grid_once);
+    RUN_TEST(test_onset_macrocycle_grid_does_not_accumulate);
+    RUN_TEST(test_onset_late_dispatch_skips_without_rebasing);
+    RUN_TEST(test_onset_skip_on_long_period_holds_until_prepare_point);
+    RUN_TEST(test_onset_stall_inside_prepare_window_does_not_skip);
+    RUN_TEST(test_onset_zero_jitter_and_fractional_slot);
+    RUN_TEST(test_onset_jitter_above_cap_keeps_minimum_gap);
+    RUN_TEST(test_onset_period_scales_with_finger_count);
+    RUN_TEST(test_onset_uses_clamped_finger_count);
+    RUN_TEST(test_onset_applies_to_every_pattern_type);
+    RUN_TEST(test_onset_restart_resets_grid);
+    RUN_TEST(test_onset_shortest_timing_never_skips);
 
     return UNITY_END();
 }

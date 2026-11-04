@@ -474,7 +474,7 @@ This section maps original V1 CircuitPython concepts to V2 C++ implementation.
 |--------------|---------------|----------|------------|-------|
 | `TIME_ON` | `timeOnMs` | 100ms | 100ms | Unchanged |
 | `TIME_OFF` | `timeOffMs` | 67ms | 67ms | Unchanged |
-| `TIME_RELAX` | `Pattern::interBurstIntervalMs` | 668ms | 668ms | `numFingers × (TIME_ON + TIME_OFF)`; the double relax is `calculateRelaxIntervalMs()` (1336ms at 4 fingers) |
+| `TIME_RELAX` | `Pattern::interBurstIntervalMs` | 668ms | 668ms | `numFingers × (TIME_ON + TIME_OFF)`; the macrocycle repeats on a fixed grid of five of these periods (3340ms at 4 fingers) |
 | `TIME_SESSION` | `sessionDurationMin` | 120min | 120min | Engine takes `durationSec` (minutes × 60) |
 | `JITTER` | `jitterPercent` | 23.5% | 23.5% | Stored as `float` |
 | `21ms BLE compensation` | Adaptive lead time | Fixed | 70-150ms | V2 uses measured RTT |

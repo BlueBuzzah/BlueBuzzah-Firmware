@@ -154,6 +154,10 @@
 #define SYNC_DRIFT_EMA_ALPHA 0.3f             // Drift rate EMA smoothing factor (α=0.3)
 #define SYNC_MIN_LEAD_TIME_US 70000           // 70ms minimum lead time for MACROCYCLE
 #define SYNC_MAX_LEAD_TIME_US 150000          // 150ms maximum lead time for MACROCYCLE
+// A macrocycle is prepared this far before the max lead, so a slow loop pass
+// can't lose it. Tunable: dispatch stays gated on the previous queue draining,
+// and SECONDARY accepts a baseTime up to 5 s ahead.
+#define MACROCYCLE_PREPARE_MARGIN_US 150000
 
 // Unified keepalive + clock sync (PING/PONG)
 #define KEEPALIVE_INTERVAL_MS 1000   // 1 second between PING messages (unified keepalive + clock sync)
@@ -227,10 +231,14 @@ constexpr uint16_t PARAM_MAX_SESSION_MIN  = 240;
 constexpr uint16_t PARAM_MIN_FREQUENCY_HZ = 50;
 constexpr uint16_t PARAM_MAX_FREQUENCY_HZ = 300;
 
-// Smallest inter-burst gap the jitter excursion may leave. Consecutive bursts
+// Smallest inter-burst gap the onset jitter may leave. Consecutive bursts
 // closer than this mask one another perceptually, which defeats the purpose of
 // the jitter. Tunable: raise it if bench testing shows masking at this spacing.
 constexpr float MIN_INTER_BURST_GAP_MS = 5.0f;
+
+// Event times round to whole milliseconds on the wire, so two adjacent onsets
+// can land up to 1 ms closer than scheduled. Added to the gap the jitter must leave.
+constexpr float ONSET_ROUNDING_RESERVE_MS = 1.0f;
 
 // Finger indices (boards with MAX_ACTUATORS == 5 add the thumb on index 4)
 #define FINGER_INDEX 0

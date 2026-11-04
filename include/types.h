@@ -531,7 +531,7 @@ struct __attribute__((packed)) MacrocycleEvent {
  */
 struct Macrocycle {
     uint32_t sequenceId;                            // Sequence number for ACK matching
-    uint64_t baseTime;                              // Absolute activation time of event 0 (PRIMARY clock, µs)
+    uint64_t baseTime;                              // Before the first onset by the jitter guard; event time = baseTime + deltaTimeMs (PRIMARY clock, µs)
     int64_t  clockOffset;                           // PTP clock offset for SECONDARY (µs)
     uint16_t durationMs;                            // Common duration for all events (from profile, supports up to 65535ms)
     uint8_t  eventCount;                            // Number of valid events (typically 12)

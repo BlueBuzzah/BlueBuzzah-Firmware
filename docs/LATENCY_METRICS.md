@@ -203,8 +203,8 @@ Execution-latency difference: ~215 us (SECONDARY later)
 
 ### Scheduled Execution Flow
 
-1. PRIMARY calculates `executeAt = now + adaptiveLeadTime`
-2. PRIMARY sends MACROCYCLE with all of the macrocycle's events batched (3 patterns × fingers: 12 on v2, 15 on v3) to SECONDARY
+1. PRIMARY prepares each macrocycle for its fixed grid slot; the first slot is `now + adaptiveLeadTime + jitterGuard`. A macrocycle that cannot get its full lead is skipped, never compressed
+2. PRIMARY sends MACROCYCLE with all of the macrocycle's events batched (3 patterns × fingers: 12 at 4 fingers, 15 at 5) to SECONDARY
 3. Both devices enqueue events to ActivationQueue
 4. FreeRTOS motor task (Priority 4) processes queue:
    - Sleeps until ~1ms before event when it is more than 2ms away (non-blocking)

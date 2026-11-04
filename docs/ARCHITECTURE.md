@@ -131,11 +131,11 @@ enum class PatternType {
 };
 
 Pattern generateRandomPermutation(uint8_t numFingers, float timeOnMs, float timeOffMs,
-                                  float jitterPercent, bool mirrorPattern);
+                                  bool mirrorPattern);
 Pattern generateSequentialPattern(uint8_t numFingers, float timeOnMs, float timeOffMs,
-                                  float jitterPercent, bool mirrorPattern, bool reverse);
+                                  bool mirrorPattern, bool reverse);
 Pattern generateMirroredPattern(uint8_t numFingers, float timeOnMs, float timeOffMs,
-                                float jitterPercent, bool randomize);
+                                bool randomize);
 ```
 
 A new pattern is a new generator function, a new `PatternType` value, and a new case in `TherapyEngine::generateMacrocycle()`. Existing generators stay untouched.
@@ -192,8 +192,8 @@ if (deviceRole == DeviceRole::PRIMARY)
 
 - **Session**: A therapy session from start to completion
 - **Cycle**: One pattern: every active finger buzzed once in the generated order (one CR period). `TherapyEngine`'s cycle counter counts macrocycles
-- **Burst**: One finger activation lasting TIME_ON (default 100ms), followed by TIME_OFF (default 67ms, plus jitter)
-- **Macrocycle**: Three patterns sent to the SECONDARY as one batch (12 events on v2, 15 on v3), followed by a relax interval of two CR periods (`calculateRelaxIntervalMs()`)
+- **Burst**: One finger activation lasting TIME_ON (default 100ms), followed by TIME_OFF (default 67ms)
+- **Macrocycle**: Three patterns sent to the SECONDARY as one batch (12 events at 4 fingers, 15 at 5), followed by two silent CR periods, so each macrocycle occupies a fixed grid slot of five CR periods
 - **Profile**: Configuration for a therapy protocol
 
 **Bounded Contexts**:
@@ -364,7 +364,7 @@ Each connection is classified by the `IDENTIFY:PHONE` / `IDENTIFY:SECONDARY` han
 1. **Advertise** as BLE peripheral ("BlueBuzzah")
 2. **Accept connections** from smartphone + SECONDARY
 3. **Run the boot window**: after the SECONDARY connects, wait up to 30s (`STARTUP_WINDOW_MS`) for a phone; if none connects, auto-start therapy
-4. **Orchestrate therapy**: Send MACROCYCLE batches (12 events on v2, 15 on v3, every ~3.3s)
+4. **Orchestrate therapy**: Send MACROCYCLE batches (12 events at 4 fingers, 15 at 5; one every 3.34s at 4 fingers, 4.175s at 5)
 5. **Send PING/PONG** for keepalive + clock sync (every 70ms until clock sync is valid, 250ms during therapy, 1s idle)
 6. **Relay settings** to SECONDARY: therapy LED (`LED_OFF_SYNC:`), debug mode (`DEBUG_SYNC:`), calibration buzzes (`CALIB_BUZZ:`/`CALIB_STOP`). Profile parameters travel inside each macrocycle
 7. **Process smartphone commands** via MenuController
@@ -615,9 +615,10 @@ void TherapyEngine::startSession(
 // Generate pattern (domain logic)
 _currentMacrocycle = generateMacrocycle();   // 3 patterns x numFingers events
 
-// Schedule against an absolute time one adaptive lead time ahead
-uint32_t leadTimeUs = _getLeadTimeCallback ? _getLeadTimeCallback() : SYNC_MIN_LEAD_TIME_US;
-_macrocycleBaseTime = getMicros() + leadTimeUs;
+// Schedule against the fixed grid. The first slot is now + adaptive lead time + jitter guard;
+// later slots are the grid origin plus whole periods. baseTime is the slot minus the guard,
+// and each event runs at baseTime + deltaTimeMs.
+_macrocycleBaseTime = gridSlotUs(_gridMacroIndex) - guardUs;
 _currentMacrocycle.baseTime = _macrocycleBaseTime;
 
 // Send macrocycle to SECONDARY (infrastructure call through a callback)
@@ -633,7 +634,7 @@ for (uint8_t i = 0; i < _currentMacrocycle.eventCount; i++) {
                                 evt.durationMs, evt.getFrequencyHz());
 }
 
-_buzzFlowState = BuzzFlowState::ACTIVE;   // then WAITING_RELAX (2x relax interval)
+_buzzFlowState = BuzzFlowState::ACTIVE;   // then WAITING_RELAX (until the next grid slot)
 ```
 
 The engine never blocks: `update()` advances this state machine on each `loop()` pass.
@@ -1180,7 +1181,7 @@ MC:<seq>|<baseHigh>|<baseLow>|<offHigh>|<offLow>|<durationMs>|<count>|<delta>,<f
 | `PAUSE_SESSION`      | `PAUSE_SESSION`  | P->S      | Pause current session        |
 | `RESUME_SESSION`     | `RESUME_SESSION` | P->S      | Resume paused session        |
 | `STOP_SESSION`       | `STOP_SESSION`   | P->S      | Stop and end session         |
-| `MACROCYCLE`         | `MC`             | P->S      | Batch of motor events (12 on v2, 15 on v3) |
+| `MACROCYCLE`         | `MC`             | P->S      | Batch of motor events (12 at 4 fingers, 15 at 5) |
 | `MACROCYCLE_ACK`     | `MC_ACK`         | S->P      | Macrocycle acknowledgment    |
 | `PING`               | `PING`           | P->S      | Keepalive + clock sync (T1)  |
 | `PONG`               | `PONG`           | S->P      | Keepalive + clock sync (T2, T3) |
@@ -1334,16 +1335,16 @@ BlueBuzzah v3 has no battery ADC. All five DRV2605 drivers run directly off the 
 Pattern pattern;
 switch (_patternType) {
     case PatternType::RNDP:
-        pattern = generateRandomPermutation(_numFingers, _timeOnMs, _timeOffMs, _jitterPercent, _mirrorPattern);
+        pattern = generateRandomPermutation(_numFingers, _timeOnMs, _timeOffMs, _mirrorPattern);
         break;
     case PatternType::SEQUENTIAL:
-        pattern = generateSequentialPattern(_numFingers, _timeOnMs, _timeOffMs, _jitterPercent, _mirrorPattern, false);
+        pattern = generateSequentialPattern(_numFingers, _timeOnMs, _timeOffMs, _mirrorPattern, false);
         break;
     case PatternType::MIRRORED:
-        pattern = generateMirroredPattern(_numFingers, _timeOnMs, _timeOffMs, _jitterPercent, true);
+        pattern = generateMirroredPattern(_numFingers, _timeOnMs, _timeOffMs, true);
         break;
     default:
-        pattern = generateRandomPermutation(_numFingers, _timeOnMs, _timeOffMs, _jitterPercent, _mirrorPattern);
+        pattern = generateRandomPermutation(_numFingers, _timeOnMs, _timeOffMs, _mirrorPattern);
         break;
 }
 ```
@@ -1509,7 +1510,7 @@ sequenceDiagram
         TE->>B: MC to SECONDARY
         TE->>Q: Schedule activations at baseTime + delta
         Q->>Q: Activate and deactivate each motor on time
-        TE->>TE: Wait for queue to drain, then relax interval
+        TE->>TE: Wait for queue to drain, then wait for the next grid slot
     end
 
     TE->>L: Session time elapsed, isRunning() false
@@ -1557,7 +1558,7 @@ sequenceDiagram
     end
 
     loop Each macrocycle (~3.3s)
-        PE->>PS: Macrocycle (baseTime = now + lead time)
+        PE->>PS: Macrocycle (baseTime = grid slot - jitter guard)
         PS->>SS: MC (events, baseTime, clock offset)
         SS->>PS: MC_ACK
         SS->>SE: Events at baseTime + offset (local clock)
@@ -1805,7 +1806,7 @@ uint8_t HapticController::amplitudeToRTP(uint8_t amplitude) const {
 
 ```cpp
 Pattern generateCustomPattern(uint8_t numFingers, float timeOnMs, float timeOffMs,
-                              float jitterPercent, bool mirrorPattern) {
+                              bool mirrorPattern) {
     Pattern pattern(numFingers);
     pattern.burstDurationMs = timeOnMs;
     // Fill pattern.primarySequence / secondarySequence with slot indices
