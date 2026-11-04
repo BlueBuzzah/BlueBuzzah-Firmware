@@ -9,7 +9,9 @@
 #include "sync_protocol.h"  // For getMicros() - overflow-safe 64-bit timestamp
 #include "fs_backend.h"
 #include "platform.h"
+#include <array>
 #include <span>
+#include <cmath>
 #if defined(NRF52840_XXAA) && !defined(NATIVE_TEST_BUILD)
 #include <nrf_soc.h>
 #endif
@@ -39,6 +41,13 @@ float clampedJitterAmount(float cycleDurationMs, float timeOffMs, float jitterPe
                                    ? (timeOffMs - MIN_INTER_BURST_GAP_MS)
                                    : 0.0f;
     return (jitterAmount > maxExcursion) ? maxExcursion : jitterAmount;
+}
+
+float onsetJitterLimitMs(float timeOnMs, float timeOffMs, float jitterPercent) {
+    const float limit = (timeOnMs + timeOffMs) * (jitterPercent / 100.0f) / 2.0f;
+    const float cap = (timeOffMs - MIN_INTER_BURST_GAP_MS - ONSET_ROUNDING_RESERVE_MS) / 2.0f;
+    const float capped = (limit < cap) ? limit : cap;
+    return (capped > 0.0f) ? capped : 0.0f;
 }
 
 // =============================================================================
@@ -414,6 +423,13 @@ void TherapyEngine::startSession(
     _jitterPercent = jitterPercent;
     // Never more fingers than the active (physically present) set
     _numFingers = (numFingers < _fingerMapCount) ? numFingers : _fingerMapCount;
+    _jitterLimitMs = onsetJitterLimitMs(timeOnMs, timeOffMs, jitterPercent);
+    _jitterGuardMs = static_cast<uint16_t>(std::ceil(_jitterLimitMs));
+    _gridPeriodUs = double(CR_CYCLES_PER_MACROCYCLE) * _numFingers * (double(_timeOnMs) + _timeOffMs) * 1000.0;
+    _gridOriginUs = 0;
+    _gridMacroIndex = 0;
+    _firstStimulusPending = true;
+    _appliedPauseMs = 0;
     _mirrorPattern = mirrorPattern;
     _amplitudeMin = amplitudeMin;
     _amplitudeMax = amplitudeMax;
@@ -467,6 +483,16 @@ void TherapyEngine::update() {
             stop(SessionEndReason::COMPLETED);
             return;
         }
+    }
+
+    // Account for deliberate pauses once, in the scheduler thread. Events already
+    // dispatched to the hardware queue keep the existing queue/pause semantics.
+    if (_gridOriginUs != 0) {
+        PLATFORM_CRITICAL_ENTER();
+        const uint32_t paused = _pausedMs;
+        PLATFORM_CRITICAL_EXIT();
+        _gridOriginUs += uint64_t(paused - _appliedPauseMs) * 1000ULL;
+        _appliedPauseMs = paused;
     }
 
     // Execute macrocycle batching (MACROCYCLE-only architecture)
@@ -706,7 +732,12 @@ Macrocycle TherapyEngine::generateMacrocycle() {
     mc.clockOffset = 0;  // Will be set by PRIMARY before sending (V2 format)
     mc.eventCount = 0;
 
-    uint16_t cumulativeTimeMs = 0;  // Running time offset from base
+    // Timing draws are generated separately from finger/amplitude draws
+    std::array<double, MACROCYCLE_MAX_EVENTS> offsets = {};
+    for (uint8_t i = 0; i < 3 * _numFingers; ++i) {
+        offsets[i] = (_firstStimulusPending && i == 0) ? 0.0 :
+            (double(random(0, 1000001)) / 500000.0 - 1.0) * _jitterLimitMs;
+    }
 
     // Generate 3 patterns
     for (uint8_t patternNum = 0; patternNum < PATTERNS_PER_MACROCYCLE; patternNum++) {
@@ -714,16 +745,16 @@ Macrocycle TherapyEngine::generateMacrocycle() {
         Pattern pattern;
         switch (_patternType) {
             case PatternType::RNDP:
-                pattern = generateRandomPermutation(_numFingers, _timeOnMs, _timeOffMs, _jitterPercent, _mirrorPattern);
+                pattern = generateRandomPermutation(_numFingers, _timeOnMs, _timeOffMs, 0.0f, _mirrorPattern);
                 break;
             case PatternType::SEQUENTIAL:
-                pattern = generateSequentialPattern(_numFingers, _timeOnMs, _timeOffMs, _jitterPercent, _mirrorPattern, false);
+                pattern = generateSequentialPattern(_numFingers, _timeOnMs, _timeOffMs, 0.0f, _mirrorPattern, false);
                 break;
             case PatternType::MIRRORED:
-                pattern = generateMirroredPattern(_numFingers, _timeOnMs, _timeOffMs, _jitterPercent, true);
+                pattern = generateMirroredPattern(_numFingers, _timeOnMs, _timeOffMs, 0.0f, true);
                 break;
             default:
-                pattern = generateRandomPermutation(_numFingers, _timeOnMs, _timeOffMs, _jitterPercent, _mirrorPattern);
+                pattern = generateRandomPermutation(_numFingers, _timeOnMs, _timeOffMs, 0.0f, _mirrorPattern);
                 break;
         }
 
@@ -755,8 +786,12 @@ Macrocycle TherapyEngine::generateMacrocycle() {
             // - secondaryFinger: transmitted over BLE to SECONDARY device
             // - primaryFinger: used locally on PRIMARY device
             // In mirrored mode these are identical; in non-mirrored mode they differ
+            // The guard moves the wire base earlier so negative onset offsets fit the
+            // unsigned deltaTimeMs field. Both gloves use the same base and deltas.
+            const uint16_t eventDelta = static_cast<uint16_t>(std::lround(
+                _jitterGuardMs + double(mc.eventCount) * (double(_timeOnMs) + _timeOffMs) + offsets[mc.eventCount]));
             MacrocycleEvent evt(
-                cumulativeTimeMs,
+                eventDelta,
                 secondaryFinger,   // For SECONDARY (BLE transmission)
                 primaryFinger,     // For PRIMARY (local scheduling)
                 amplitude,
@@ -765,10 +800,6 @@ Macrocycle TherapyEngine::generateMacrocycle() {
             );
 
             mc.events[mc.eventCount++] = evt;
-
-            // Advance time: TIME_ON + TIME_OFF (with jitter)
-            cumulativeTimeMs += (uint16_t)pattern.burstDurationMs;
-            cumulativeTimeMs += (uint16_t)pattern.timeOffMs[fingerIdx];
         }
 
         // NO extra time between patterns within a macrocycle
@@ -800,7 +831,28 @@ void TherapyEngine::executeMacrocycleStep() {
             // CRITICAL: Capture timestamp AFTER lead time calculation to minimize staleness
             // Lead time callback can take 50-200µs; capturing before causes systematic lateness
             uint64_t nowUs = getMicros();
-            _macrocycleBaseTime = nowUs + leadTimeUs;
+            const uint64_t guardUs = uint64_t(_jitterGuardMs) * 1000ULL;
+            if (_gridOriginUs == 0) {
+                _gridOriginUs = nowUs + leadTimeUs + guardUs;
+                PLATFORM_CRITICAL_ENTER();
+                _appliedPauseMs = _pausedMs;
+                PLATFORM_CRITICAL_EXIT();
+            }
+            uint64_t nominal = _gridOriginUs +
+                static_cast<uint64_t>(std::llround(double(_gridMacroIndex) * _gridPeriodUs));
+            // Never compress late events into a catch-up burst. Skip whole
+            // grid periods if the transport lead cannot be satisfied.
+            if (nominal < nowUs + leadTimeUs + guardUs) {
+                const double late = double(nowUs + leadTimeUs + guardUs - nominal);
+                const uint64_t skipped = static_cast<uint64_t>(std::ceil(late / _gridPeriodUs));
+                _gridMacroIndex += skipped;
+                nominal = _gridOriginUs +
+                    static_cast<uint64_t>(std::llround(double(_gridMacroIndex) * _gridPeriodUs));
+                Serial.printf("[THERAPY] Skipped %lu late macrocycles\n",
+                              static_cast<unsigned long>(skipped));
+            }
+            _macrocycleBaseTime = nominal - guardUs;
+            _firstStimulusPending = false;
             _currentMacrocycle.baseTime = _macrocycleBaseTime;
 
             // Send macrocycle to SECONDARY
@@ -847,7 +899,7 @@ void TherapyEngine::executeMacrocycleStep() {
 
             if (queueComplete) {
                 // Macrocycle execution complete on PRIMARY side
-                // Wait for 2x TIME_RELAX before starting next macrocycle
+                // Wait until it is time to prepare the next grid slot
                 _buzzSendTime = now;
                 _buzzFlowState = BuzzFlowState::WAITING_RELAX;
             }
@@ -859,11 +911,14 @@ void TherapyEngine::executeMacrocycleStep() {
             break;
 
         case BuzzFlowState::WAITING_RELAX: {
-            // Wait for 2x TIME_RELAX (1336ms with default timing at 4 fingers)
-            float doubleRelaxMs = calculateRelaxIntervalMs(_numFingers, _timeOnMs, _timeOffMs);
+            // Prepare 200 ms ahead of the earliest possible next onset. IDLE
+            // recalculates the transport lead and detects a missed deadline.
+            const uint64_t nextNominal = _gridOriginUs +
+                static_cast<uint64_t>(std::llround(double(_gridMacroIndex + 1) * _gridPeriodUs));
+            const uint64_t earliest = nextNominal - uint64_t(_jitterGuardMs) * 1000ULL;
 
-            if ((now - _buzzSendTime) >= (uint32_t)doubleRelaxMs) {
-                // Double TIME_RELAX elapsed - macrocycle complete
+            if (getMicros() + SYNC_MAX_LEAD_TIME_US + 50000ULL >= earliest) {
+                ++_gridMacroIndex;
                 _cyclesCompleted++;
 
                 if (_cycleCompleteCallback) {

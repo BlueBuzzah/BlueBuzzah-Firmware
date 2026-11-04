@@ -227,10 +227,14 @@ constexpr uint16_t PARAM_MAX_SESSION_MIN  = 240;
 constexpr uint16_t PARAM_MIN_FREQUENCY_HZ = 50;
 constexpr uint16_t PARAM_MAX_FREQUENCY_HZ = 300;
 
-// Smallest inter-burst gap the jitter excursion may leave. Consecutive bursts
+// Smallest inter-burst gap the onset jitter may leave. Consecutive bursts
 // closer than this mask one another perceptually, which defeats the purpose of
 // the jitter. Tunable: raise it if bench testing shows masking at this spacing.
 constexpr float MIN_INTER_BURST_GAP_MS = 5.0f;
+
+// Event times round to whole milliseconds on the wire, so two adjacent onsets
+// can land up to 1 ms closer than scheduled. Added to the gap the jitter must leave.
+constexpr float ONSET_ROUNDING_RESERVE_MS = 1.0f;
 
 // Finger indices (boards with MAX_ACTUATORS == 5 add the thumb on index 4)
 #define FINGER_INDEX 0

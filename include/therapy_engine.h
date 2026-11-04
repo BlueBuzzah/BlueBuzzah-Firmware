@@ -201,6 +201,21 @@ Pattern generateMirroredPattern(
  */
 float calculateRelaxIntervalMs(uint8_t numFingers, float timeOnMs, float timeOffMs);
 
+/**
+ * @brief Largest shift of a burst onset from its nominal grid slot.
+ *
+ * With T = timeOnMs + timeOffMs and J = jitterPercent / 100 this is J * T / 2,
+ * the J * T_CR / 8 of Pfeifer et al. 2021 at four fingers (T_CR = 4 * T). It is
+ * capped so two adjacent onsets, each shifted by the limit in opposite directions,
+ * still leave MIN_INTER_BURST_GAP_MS after millisecond rounding on the wire.
+ *
+ * @param timeOnMs Vibration burst duration
+ * @param timeOffMs Time between bursts
+ * @param jitterPercent Timing jitter percentage (0-100)
+ * @return Limit in milliseconds, never negative
+ */
+float onsetJitterLimitMs(float timeOnMs, float timeOffMs, float jitterPercent);
+
 // =============================================================================
 // LAST SESSION SUMMARY
 // =============================================================================
@@ -608,6 +623,7 @@ private:
     // Macrocycle tracking (v1 parity: 3 patterns per macrocycle)
     uint8_t _patternsInMacrocycle;      // Count of patterns executed in current macrocycle (0-2)
     static const uint8_t PATTERNS_PER_MACROCYCLE = 3;  // v1: 3 patterns per macrocycle
+    static const uint8_t CR_CYCLES_PER_MACROCYCLE = 5;  // 3 active + 2 silent CR cycles
 
     // Flow control state machine (used by MACROCYCLE mode)
     BuzzFlowState _buzzFlowState;       // NOTE: Used by MACROCYCLE, not just BUZZ (legacy name)
@@ -630,6 +646,15 @@ private:
     Macrocycle _currentMacrocycle;       // Current macrocycle being executed
     uint8_t _macrocycleEventIndex;       // Current event index within macrocycle (0-11)
     uint64_t _macrocycleBaseTime;        // Base activation time for current macrocycle
+
+    // Fixed onset grid: every macrocycle's nominal first onset is origin + index * period
+    uint64_t _gridOriginUs = 0;          // Nominal first onset of the session, 0 until dispatched
+    uint64_t _gridMacroIndex = 0;        // Grid slot of the current macrocycle
+    double _gridPeriodUs = 0;            // CR_CYCLES_PER_MACROCYCLE * numFingers * (ON + OFF)
+    float _jitterLimitMs = 0;            // Largest onset shift, see onsetJitterLimitMs()
+    uint16_t _jitterGuardMs = 0;         // Base time sits this far before nominal, so deltas stay unsigned
+    bool _firstStimulusPending = true;   // The session's very first onset is not shifted
+    uint32_t _appliedPauseMs = 0;        // Part of _pausedMs already moved into the grid
 
     // Internal methods
     void remapPatternFingers(Pattern& pattern);  // Map slot indices -> physical fingers

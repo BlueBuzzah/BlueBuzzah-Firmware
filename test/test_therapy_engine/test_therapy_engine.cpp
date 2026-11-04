@@ -1112,7 +1112,7 @@ void test_macrocycle_sequence_id_increments(void) {
     // Complete first cycle
     mockAdvanceMillis(100);
     engine.update();  // ACTIVE -> WAITING_RELAX
-    mockAdvanceMillis(1400);
+    mockAdvanceMillis(3200);
     engine.update();  // WAITING_RELAX -> IDLE
 
     // Second macrocycle
@@ -1185,8 +1185,8 @@ void test_executeMacrocycleStep_transitions_to_waiting_relax(void) {
     mockAdvanceMillis(100);
     engine.update();  // ACTIVE -> WAITING_RELAX
 
-    // Wait for double relax time: 2 * 4 * (100 + 67) = 1336ms
-    mockAdvanceMillis(1400);
+    // Reach the prepare point, 200 ms before the next grid slot
+    mockAdvanceMillis(3200);
     engine.update();  // WAITING_RELAX -> IDLE (cycle complete)
 
     TEST_ASSERT_EQUAL_INT(1, g_cycleCompleteCallCount);
@@ -1215,7 +1215,7 @@ void test_executeMacrocycleStep_full_cycle(void) {
     mockAdvanceMillis(100);
     engine.update();  // ACTIVE -> WAITING_RELAX (since g_schedulingComplete = true)
 
-    mockAdvanceMillis(1400);  // Wait for double relax
+    mockAdvanceMillis(3200);  // Reach the prepare point, 200 ms before the next grid slot
     engine.update();  // WAITING_RELAX -> IDLE, cycle complete
 
     TEST_ASSERT_EQUAL_INT(1, g_cycleCompleteCallCount);
@@ -1581,6 +1581,264 @@ void test_LastSession_load_rejects_bad_file(void) {
     TEST_ASSERT_NULL(engine.getLastSession());
 }
 
+// =============================================================================
+// ONSET TIMING TESTS
+// =============================================================================
+
+static const uint32_t ONSET_PREPARE_LEAD_US = 180000;  // Inside the 200 ms prepare window
+
+static std::vector<uint64_t> onsetScheduledTimes;
+static std::vector<uint16_t> onsetScheduledDurations;
+
+void captureOnsetActivation(uint64_t t, uint8_t, uint8_t, uint16_t duration, uint16_t) {
+    onsetScheduledTimes.push_back(t);
+    onsetScheduledDurations.push_back(duration);
+}
+
+uint32_t mockMaxLeadTimeCallback() {
+    return SYNC_MAX_LEAD_TIME_US;
+}
+
+// From ACTIVE, reach the prepare point of the grid slot at nextBaseUs and dispatch it
+static void runToNextMacrocycle(TherapyEngine& engine, uint64_t nextBaseUs) {
+    engine.update();  // ACTIVE -> WAITING_RELAX
+    mockSetMillis(static_cast<uint32_t>((nextBaseUs - ONSET_PREPARE_LEAD_US) / 1000));
+    engine.update();  // WAITING_RELAX -> IDLE
+    engine.update();  // IDLE -> dispatch
+}
+
+static void assertAdjacentOnsetsKeepMinimumGap(float timeOnMs, float timeOffMs) {
+    TherapyEngine engine;
+    engine.setSendMacrocycleCallback(mockCaptureMacrocycleCallback);
+    engine.startSession(3600, PatternType::RNDP, timeOnMs, timeOffMs, 50, 4, true, 50, 50, false);
+    engine.update();
+    const uint64_t base = g_lastSentMacrocycle.baseTime;
+    const uint64_t periodUs = uint64_t(20 * (timeOnMs + timeOffMs)) * 1000;
+    const int minimumSpacing = static_cast<int>(timeOnMs + MIN_INTER_BURST_GAP_MS);
+
+    for (int m = 1; m <= 200; ++m) {
+        for (int i = 1; i < 12; ++i) {
+            const int spacing = g_lastSentMacrocycle.events[i].deltaTimeMs -
+                                g_lastSentMacrocycle.events[i - 1].deltaTimeMs;
+            TEST_ASSERT_TRUE(spacing >= minimumSpacing);
+        }
+        runToNextMacrocycle(engine, base + m * periodUs);
+        TEST_ASSERT_TRUE(engine.isRunning());
+        TEST_ASSERT_EQUAL_UINT64(base + m * periodUs, g_lastSentMacrocycle.baseTime);
+    }
+}
+
+void test_onset_limit_matches_paper_at_defaults(void) {
+    TEST_ASSERT_FLOAT_WITHIN(0.001f, 19.6225f, onsetJitterLimitMs(100, 67, 23.5f));
+}
+
+void test_onset_limit_caps_to_keep_the_gap(void) {
+    TEST_ASSERT_FLOAT_WITHIN(0.001f, 30.5f, onsetJitterLimitMs(100, 67, 50));
+    TEST_ASSERT_FLOAT_WITHIN(0.001f, 12.0f, onsetJitterLimitMs(200, 30, 50));
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, onsetJitterLimitMs(100, 5, 50));
+}
+
+void test_onset_bounds_and_bilateral_schedule(void) {
+    TherapyEngine engine;
+    engine.setSendMacrocycleCallback(mockCaptureMacrocycleCallback);
+    engine.startSession(100, PatternType::RNDP, 100, 67, 23.5, 4, true, 50, 50, false);
+    engine.update();
+    const Macrocycle mc = g_lastSentMacrocycle;
+    TEST_ASSERT_EQUAL_UINT16(20, mc.events[0].deltaTimeMs);
+    for (int i = 0; i < 12; ++i) {
+        const double error = double(mc.events[i].deltaTimeMs) - (20 + i * 167);
+        TEST_ASSERT_TRUE(std::abs(error) <= 20.123);
+        TEST_ASSERT_EQUAL_UINT8(mc.events[i].finger, mc.events[i].primaryFinger);
+        TEST_ASSERT_EQUAL_UINT8(100, mc.events[i].durationMs);
+        if (i) TEST_ASSERT_TRUE(mc.events[i].deltaTimeMs - mc.events[i-1].deltaTimeMs >= 105);
+    }
+}
+
+void test_onset_primary_uses_transmitted_timestamps(void) {
+    TherapyEngine engine;
+    engine.setSendMacrocycleCallback(mockCaptureMacrocycleCallback);
+    onsetScheduledTimes.clear(); onsetScheduledDurations.clear();
+    engine.setSchedulingCallbacks(captureOnsetActivation, mockStartSchedulingCallback, mockIsSchedulingCompleteCallback);
+    engine.startSession(100, PatternType::RNDP, 100, 67, 23.5, 4, true, 50, 50, false);
+    engine.update();
+    TEST_ASSERT_EQUAL_INT(12, onsetScheduledTimes.size());
+    for (int i=0; i<12; ++i) {
+        TEST_ASSERT_EQUAL_UINT64(g_lastSentMacrocycle.baseTime + uint64_t(g_lastSentMacrocycle.events[i].deltaTimeMs)*1000,
+                                onsetScheduledTimes[i]);
+        TEST_ASSERT_EQUAL_UINT16(100, onsetScheduledDurations[i]);
+    }
+}
+
+void test_onset_pause_shifts_future_grid_once(void) {
+    TherapyEngine engine;
+    engine.setSendMacrocycleCallback(mockCaptureMacrocycleCallback);
+    engine.startSession(100, PatternType::RNDP, 100, 67, 23.5, 4, true, 50, 50, false);
+    engine.update();
+    const uint64_t base = g_lastSentMacrocycle.baseTime;
+    engine.update();
+    mockSetMillis(2200); engine.pause();
+    mockAdvanceMillis(1000); engine.resume(); engine.update();
+    mockSetMillis(static_cast<uint32_t>((base+3340000+1000000-180000)/1000));
+    engine.update(); engine.update();
+    TEST_ASSERT_EQUAL_UINT64(base+3340000+1000000, g_lastSentMacrocycle.baseTime);
+}
+
+void test_onset_pause_while_active_shifts_grid_once(void) {
+    TherapyEngine engine;
+    engine.setSendMacrocycleCallback(mockCaptureMacrocycleCallback);
+    engine.setSchedulingCallbacks(mockScheduleActivationCallback, mockStartSchedulingCallback, mockIsSchedulingCompleteCallback);
+    g_schedulingComplete = false;
+    engine.startSession(100, PatternType::RNDP, 100, 67, 23.5, 4, true, 50, 50, false);
+    engine.update();
+    const uint64_t base = g_lastSentMacrocycle.baseTime;
+    const uint32_t sequenceId = g_lastSentMacrocycle.sequenceId;
+
+    engine.pause();
+    mockAdvanceMillis(1000);
+    engine.resume();
+    engine.update();  // Applies the pause; the queue is still draining
+    engine.update();  // Must not apply it again
+
+    g_schedulingComplete = true;
+    runToNextMacrocycle(engine, base + 3340000 + 1000000);
+
+    TEST_ASSERT_EQUAL_UINT32(sequenceId + 1, g_lastSentMacrocycle.sequenceId);
+    TEST_ASSERT_EQUAL_UINT64(base + 3340000 + 1000000, g_lastSentMacrocycle.baseTime);
+}
+
+void test_onset_macrocycle_grid_does_not_accumulate(void) {
+    TherapyEngine engine;
+    engine.setSendMacrocycleCallback(mockCaptureMacrocycleCallback);
+    engine.startSession(500, PatternType::RNDP, 100, 67, 23.5, 4, true, 50, 50, false);
+    engine.update();
+    const uint64_t base = g_lastSentMacrocycle.baseTime;
+    bool laterFirstShifted = false;
+    for (int m = 1; m <= 50; ++m) {
+        runToNextMacrocycle(engine, base + uint64_t(m)*3340000);
+        TEST_ASSERT_EQUAL_UINT64(base + uint64_t(m)*3340000, g_lastSentMacrocycle.baseTime);
+        laterFirstShifted |= g_lastSentMacrocycle.events[0].deltaTimeMs != 20;
+        for (int i = 0; i < 12; ++i)
+            TEST_ASSERT_TRUE(std::abs(double(g_lastSentMacrocycle.events[i].deltaTimeMs) - (20+i*167)) <= 20.123);
+    }
+    TEST_ASSERT_TRUE(laterFirstShifted);
+}
+
+void test_onset_late_dispatch_skips_without_rebasing(void) {
+    TherapyEngine engine;
+    engine.setSendMacrocycleCallback(mockCaptureMacrocycleCallback);
+    engine.startSession(100, PatternType::RNDP, 100, 67, 23.5, 4, true, 50, 50, false);
+    engine.update();
+    const uint64_t base = g_lastSentMacrocycle.baseTime;
+    engine.update();
+    mockSetMillis(static_cast<uint32_t>((base+3340000+100000)/1000));
+    engine.update(); engine.update();
+    TEST_ASSERT_EQUAL_UINT64(base + 6680000, g_lastSentMacrocycle.baseTime);
+}
+
+void test_onset_zero_jitter_and_fractional_slot(void) {
+    TherapyEngine engine;
+    engine.setSendMacrocycleCallback(mockCaptureMacrocycleCallback);
+    engine.startSession(100, PatternType::RNDP, 100, 66.666667f, 0, 4, true, 50, 50, false);
+    engine.update();
+    for (int i = 0; i < 12; ++i)
+        TEST_ASSERT_EQUAL_UINT16(std::lround(i * (100.0 + double(66.666667f))), g_lastSentMacrocycle.events[i].deltaTimeMs);
+}
+
+void test_onset_jitter_above_cap_keeps_minimum_gap(void) {
+    assertAdjacentOnsetsKeepMinimumGap(100, 67);
+    assertAdjacentOnsetsKeepMinimumGap(200, 30);
+}
+
+void test_onset_period_scales_with_finger_count(void) {
+    for (uint8_t numFingers = 1; numFingers <= MAX_ACTUATORS; ++numFingers) {
+        TherapyEngine engine;
+        engine.setSendMacrocycleCallback(mockCaptureMacrocycleCallback);
+        engine.startSession(100, PatternType::RNDP, 100, 67, 23.5, numFingers, true, 50, 50, false);
+        engine.update();
+        const uint64_t base = g_lastSentMacrocycle.baseTime;
+        const uint64_t periodUs = 5ULL * numFingers * 167000;
+
+        runToNextMacrocycle(engine, base + periodUs);
+
+        TEST_ASSERT_EQUAL_UINT64(base + periodUs, g_lastSentMacrocycle.baseTime);
+    }
+}
+
+void test_onset_uses_clamped_finger_count(void) {
+    TherapyEngine engine;
+    engine.setSendMacrocycleCallback(mockCaptureMacrocycleCallback);
+    const uint8_t present[] = {0, 1, 2, 3};
+    engine.setActiveFingers(present, 4);
+    TEST_ASSERT_EQUAL_UINT8(4, engine.getActiveFingerCount());
+
+    engine.startSession(100, PatternType::RNDP, 100, 67, 23.5, 5, true, 50, 50, false);
+    engine.update();
+
+    TEST_ASSERT_EQUAL_UINT8(12, g_lastSentMacrocycle.eventCount);
+    for (uint8_t i = 0; i < g_lastSentMacrocycle.eventCount; ++i) {
+        TEST_ASSERT_TRUE(g_lastSentMacrocycle.events[i].finger < 4);
+        TEST_ASSERT_TRUE(g_lastSentMacrocycle.events[i].primaryFinger < 4);
+    }
+
+    const uint64_t base = g_lastSentMacrocycle.baseTime;
+    runToNextMacrocycle(engine, base + 3340000);
+    TEST_ASSERT_EQUAL_UINT64(base + 3340000, g_lastSentMacrocycle.baseTime);
+}
+
+void test_onset_applies_to_every_pattern_type(void) {
+    const PatternType types[] = {PatternType::SEQUENTIAL, PatternType::MIRRORED};
+    for (const PatternType type : types) {
+        TherapyEngine engine;
+        engine.setSendMacrocycleCallback(mockCaptureMacrocycleCallback);
+        engine.startSession(500, type, 100, 67, 23.5, 4, true, 50, 50, false);
+        engine.update();
+        const uint64_t base = g_lastSentMacrocycle.baseTime;
+        bool shifted = false;
+        for (int m = 1; m <= 5; ++m) {
+            runToNextMacrocycle(engine, base + uint64_t(m) * 3340000);
+            for (int i = 0; i < 12; ++i) {
+                const int nominal = 20 + i * 167;
+                shifted |= g_lastSentMacrocycle.events[i].deltaTimeMs != nominal;
+                TEST_ASSERT_TRUE(std::abs(double(g_lastSentMacrocycle.events[i].deltaTimeMs) - nominal) <= 20.123);
+            }
+        }
+        TEST_ASSERT_TRUE(shifted);
+    }
+}
+
+void test_onset_restart_resets_grid(void) {
+    TherapyEngine engine;
+    engine.setSendMacrocycleCallback(mockCaptureMacrocycleCallback);
+    engine.startSession(500, PatternType::RNDP, 100, 67, 23.5, 4, true, 50, 50, false);
+    engine.update();
+    runToNextMacrocycle(engine, g_lastSentMacrocycle.baseTime + 3340000);
+
+    engine.stop();
+    const uint32_t restartMs = 20000;
+    mockSetMillis(restartMs);
+    engine.startSession(500, PatternType::RNDP, 100, 67, 23.5, 4, true, 50, 50, false);
+    engine.update();
+
+    TEST_ASSERT_EQUAL_UINT16(20, g_lastSentMacrocycle.events[0].deltaTimeMs);
+    TEST_ASSERT_EQUAL_UINT64(uint64_t(restartMs) * 1000 + SYNC_MIN_LEAD_TIME_US, g_lastSentMacrocycle.baseTime);
+}
+
+void test_onset_shortest_timing_never_skips(void) {
+    TherapyEngine engine;
+    engine.setSendMacrocycleCallback(mockCaptureMacrocycleCallback);
+    engine.setGetLeadTimeCallback(mockMaxLeadTimeCallback);
+    engine.startSession(100, PatternType::RNDP, 50, 30, 50, 1, true, 50, 50, false);
+    engine.update();
+    const uint64_t base = g_lastSentMacrocycle.baseTime;
+    for (int m = 1; m <= 20; ++m) {
+        mockSetMillis(static_cast<uint32_t>((base + uint64_t(m) * 400000 - ONSET_PREPARE_LEAD_US) / 1000));
+        engine.update();
+        engine.update();
+        engine.update();
+        TEST_ASSERT_EQUAL_UINT64(base + uint64_t(m) * 400000, g_lastSentMacrocycle.baseTime);
+    }
+}
+
 int main(int argc, char **argv) {
     UNITY_BEGIN();
 
@@ -1729,6 +1987,23 @@ int main(int argc, char **argv) {
     RUN_TEST(test_LastSession_failed_write_is_retried);
     RUN_TEST(test_LastSession_clear_forgets_and_deletes);
     RUN_TEST(test_LastSession_load_rejects_bad_file);
+
+    // Onset Timing Tests
+    RUN_TEST(test_onset_limit_matches_paper_at_defaults);
+    RUN_TEST(test_onset_limit_caps_to_keep_the_gap);
+    RUN_TEST(test_onset_bounds_and_bilateral_schedule);
+    RUN_TEST(test_onset_primary_uses_transmitted_timestamps);
+    RUN_TEST(test_onset_pause_shifts_future_grid_once);
+    RUN_TEST(test_onset_pause_while_active_shifts_grid_once);
+    RUN_TEST(test_onset_macrocycle_grid_does_not_accumulate);
+    RUN_TEST(test_onset_late_dispatch_skips_without_rebasing);
+    RUN_TEST(test_onset_zero_jitter_and_fractional_slot);
+    RUN_TEST(test_onset_jitter_above_cap_keeps_minimum_gap);
+    RUN_TEST(test_onset_period_scales_with_finger_count);
+    RUN_TEST(test_onset_uses_clamped_finger_count);
+    RUN_TEST(test_onset_applies_to_every_pattern_type);
+    RUN_TEST(test_onset_restart_resets_grid);
+    RUN_TEST(test_onset_shortest_timing_never_skips);
 
     return UNITY_END();
 }
