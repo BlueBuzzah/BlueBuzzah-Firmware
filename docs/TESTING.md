@@ -256,7 +256,7 @@ void test_TherapyEngine_setSendMacrocycleCallback(void) {
 }
 
 void test_generateRandomPermutation_produces_valid_pattern(void) {
-    Pattern p = generateRandomPermutation(4, 100.0f, 67.0f, 0.0f, true);
+    Pattern p = generateRandomPermutation(4, 100.0f, 67.0f, true);
 
     TEST_ASSERT_EQUAL_UINT8(4, p.numFingers);
     TEST_ASSERT_TRUE(isValidPermutation(p.primarySequence));

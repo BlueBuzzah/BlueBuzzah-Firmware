@@ -30,19 +30,6 @@ constexpr void shuffleArray(std::span<uint8_t> arr) {
     }
 }
 
-/**
- * @brief Jitter excursion applied to TIME_OFF, limited so the inter-burst gap can
- * never fall below MIN_INTER_BURST_GAP_MS. Consecutive bursts closer than that
- * mask one another perceptually, which defeats the purpose of the jitter.
- */
-float clampedJitterAmount(float cycleDurationMs, float timeOffMs, float jitterPercent) {
-    const float jitterAmount = cycleDurationMs * (jitterPercent / 100.0f) / 2.0f;
-    const float maxExcursion = (timeOffMs > MIN_INTER_BURST_GAP_MS)
-                                   ? (timeOffMs - MIN_INTER_BURST_GAP_MS)
-                                   : 0.0f;
-    return (jitterAmount > maxExcursion) ? maxExcursion : jitterAmount;
-}
-
 float onsetJitterLimitMs(float timeOnMs, float timeOffMs, float jitterPercent) {
     const float limit = (timeOnMs + timeOffMs) * (jitterPercent / 100.0f) / 2.0f;
     const float cap = (timeOffMs - MIN_INTER_BURST_GAP_MS - ONSET_ROUNDING_RESERVE_MS) / 2.0f;
@@ -58,7 +45,6 @@ Pattern generateRandomPermutation(
     uint8_t numFingers,
     float timeOnMs,
     float timeOffMs,
-    float jitterPercent,
     bool mirrorPattern
 ) {
     Pattern pattern = Pattern(numFingers);
@@ -89,21 +75,9 @@ Pattern generateRandomPermutation(
         shuffleArray(pattern.secondarySequence);
     }
 
-    // Calculate jitter amount per v1 formula: (TIME_ON + TIME_OFF) * jitter% / 100 / 2
-    // With 23.5% jitter: 167ms * 0.235 / 2 = 19.6ms
-    const float jitterAmount = clampedJitterAmount(cycleDurationMs, timeOffMs, jitterPercent);
-
-    // Apply jitter to TIME_OFF (67ms), NOT the inter-burst interval
-    // v1 behavior: TIME_OFF_actual = TIME_OFF ± jitter (range: 47-87ms with 23.5% jitter)
+    // OFF time is nominal; onset jitter is applied when the macrocycle is built
     for (uint8_t i = 0; i < numFingers; i++) {
-        float offTime = timeOffMs;
-        if (jitterPercent > 0) {
-            // Add random jitter to TIME_OFF
-            float jitter = static_cast<float>(random(-1000, 1001)) / 1000.0f * jitterAmount;
-            offTime += jitter;
-            if (offTime < 0) offTime = 0;
-        }
-        pattern.timeOffMs[i] = offTime;
+        pattern.timeOffMs[i] = timeOffMs;
     }
 
     return pattern;
@@ -113,7 +87,6 @@ Pattern generateSequentialPattern(
     uint8_t numFingers,
     float timeOnMs,
     float timeOffMs,
-    float jitterPercent,
     bool mirrorPattern,
     bool reverse
 ) {
@@ -147,18 +120,9 @@ Pattern generateSequentialPattern(
         }
     }
 
-    // Calculate jitter amount per v1 formula: (TIME_ON + TIME_OFF) * jitter% / 100 / 2
-    const float jitterAmount = clampedJitterAmount(cycleDurationMs, timeOffMs, jitterPercent);
-
-    // Apply jitter to TIME_OFF, NOT the inter-burst interval
+    // OFF time is nominal; onset jitter is applied when the macrocycle is built
     for (uint8_t i = 0; i < numFingers; i++) {
-        float offTime = timeOffMs;
-        if (jitterPercent > 0) {
-            float jitter = static_cast<float>(random(-1000, 1001)) / 1000.0f * jitterAmount;
-            offTime += jitter;
-            if (offTime < 0) offTime = 0;
-        }
-        pattern.timeOffMs[i] = offTime;
+        pattern.timeOffMs[i] = timeOffMs;
     }
 
     return pattern;
@@ -168,7 +132,6 @@ Pattern generateMirroredPattern(
     uint8_t numFingers,
     float timeOnMs,
     float timeOffMs,
-    float jitterPercent,
     bool randomize
 ) {
     Pattern pattern = Pattern(numFingers);
@@ -193,25 +156,12 @@ Pattern generateMirroredPattern(
         pattern.secondarySequence[i] = pattern.primarySequence[i];
     }
 
-    // Calculate jitter amount per v1 formula: (TIME_ON + TIME_OFF) * jitter% / 100 / 2
-    const float jitterAmount = clampedJitterAmount(cycleDurationMs, timeOffMs, jitterPercent);
-
-    // Apply jitter to TIME_OFF, NOT the inter-burst interval
+    // OFF time is nominal; onset jitter is applied when the macrocycle is built
     for (uint8_t i = 0; i < numFingers; i++) {
-        float offTime = timeOffMs;
-        if (jitterPercent > 0) {
-            float jitter = static_cast<float>(random(-1000, 1001)) / 1000.0f * jitterAmount;
-            offTime += jitter;
-            if (offTime < 0) offTime = 0;
-        }
-        pattern.timeOffMs[i] = offTime;
+        pattern.timeOffMs[i] = timeOffMs;
     }
 
     return pattern;
-}
-
-float calculateRelaxIntervalMs(uint8_t numFingers, float timeOnMs, float timeOffMs) {
-    return 2.0f * static_cast<float>(numFingers) * (timeOnMs + timeOffMs);
 }
 
 // =============================================================================
@@ -227,7 +177,6 @@ TherapyEngine::TherapyEngine() :
     _patternType(PatternType::RNDP),
     _timeOnMs(100.0f),
     _timeOffMs(67.0f),
-    _jitterPercent(0.0f),
     _numFingers(MAX_ACTUATORS),
     _mirrorPattern(false),
     _amplitudeMin(100),
@@ -244,7 +193,6 @@ TherapyEngine::TherapyEngine() :
     _totalActivations(0),
     _patternsInMacrocycle(0),
     _buzzFlowState(BuzzFlowState::IDLE),
-    _buzzSendTime(0),
     _activateCallback(nullptr),
     _deactivateCallback(nullptr),
     _cycleCompleteCallback(nullptr),
@@ -420,7 +368,6 @@ void TherapyEngine::startSession(
     _patternType = patternType;
     _timeOnMs = timeOnMs;
     _timeOffMs = timeOffMs;
-    _jitterPercent = jitterPercent;
     // Never more fingers than the active (physically present) set
     _numFingers = (numFingers < _fingerMapCount) ? numFingers : _fingerMapCount;
     _jitterLimitMs = onsetJitterLimitMs(timeOnMs, timeOffMs, jitterPercent);
@@ -443,7 +390,6 @@ void TherapyEngine::startSession(
 
     // Reset flow control state
     _buzzFlowState = BuzzFlowState::IDLE;
-    _buzzSendTime = 0;
 
     // Generate first pattern
     generateNextPattern();
@@ -666,7 +612,6 @@ void TherapyEngine::generateNextPattern() {
                 _numFingers,
                 _timeOnMs,
                 _timeOffMs,
-                _jitterPercent,
                 _mirrorPattern
             );
             break;
@@ -676,7 +621,6 @@ void TherapyEngine::generateNextPattern() {
                 _numFingers,
                 _timeOnMs,
                 _timeOffMs,
-                _jitterPercent,
                 _mirrorPattern,
                 false
             );
@@ -687,7 +631,6 @@ void TherapyEngine::generateNextPattern() {
                 _numFingers,
                 _timeOnMs,
                 _timeOffMs,
-                _jitterPercent,
                 true
             );
             break;
@@ -698,7 +641,6 @@ void TherapyEngine::generateNextPattern() {
                 _numFingers,
                 _timeOnMs,
                 _timeOffMs,
-                _jitterPercent,
                 _mirrorPattern
             );
             break;
@@ -715,7 +657,6 @@ void TherapyEngine::generateNextPattern() {
 
     // Reset flow control state for new pattern
     _buzzFlowState = BuzzFlowState::IDLE;
-    _buzzSendTime = millis();  // Allow immediate first buzz
 }
 
 // =============================================================================
@@ -745,16 +686,16 @@ Macrocycle TherapyEngine::generateMacrocycle() {
         Pattern pattern;
         switch (_patternType) {
             case PatternType::RNDP:
-                pattern = generateRandomPermutation(_numFingers, _timeOnMs, _timeOffMs, 0.0f, _mirrorPattern);
+                pattern = generateRandomPermutation(_numFingers, _timeOnMs, _timeOffMs, _mirrorPattern);
                 break;
             case PatternType::SEQUENTIAL:
-                pattern = generateSequentialPattern(_numFingers, _timeOnMs, _timeOffMs, 0.0f, _mirrorPattern, false);
+                pattern = generateSequentialPattern(_numFingers, _timeOnMs, _timeOffMs, _mirrorPattern, false);
                 break;
             case PatternType::MIRRORED:
-                pattern = generateMirroredPattern(_numFingers, _timeOnMs, _timeOffMs, 0.0f, true);
+                pattern = generateMirroredPattern(_numFingers, _timeOnMs, _timeOffMs, true);
                 break;
             default:
-                pattern = generateRandomPermutation(_numFingers, _timeOnMs, _timeOffMs, 0.0f, _mirrorPattern);
+                pattern = generateRandomPermutation(_numFingers, _timeOnMs, _timeOffMs, _mirrorPattern);
                 break;
         }
 
@@ -907,9 +848,6 @@ void TherapyEngine::executeMacrocycleStep() {
                 }
             }
 
-            // Record send time for tracking
-            _buzzSendTime = now;
-
             // Transition to ACTIVE - waiting for all events to complete
             _buzzFlowState = BuzzFlowState::ACTIVE;
             break;
@@ -926,7 +864,6 @@ void TherapyEngine::executeMacrocycleStep() {
             if (queueComplete) {
                 // Macrocycle execution complete on PRIMARY side
                 // Wait until it is time to prepare the next grid slot
-                _buzzSendTime = now;
                 _buzzFlowState = BuzzFlowState::WAITING_RELAX;
             }
             break;

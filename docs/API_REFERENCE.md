@@ -1177,7 +1177,7 @@ Pattern generation for bilateral therapy. Patterns are produced by free function
 struct Pattern {
     std::vector<uint8_t> primarySequence;
     std::vector<uint8_t> secondarySequence;
-    std::vector<float> timeOffMs;   // TIME_OFF + jitter for each finger
+    std::vector<float> timeOffMs;   // Nominal TIME_OFF for each finger
     uint8_t numFingers;
     float burstDurationMs;          // TIME_ON
     float interBurstIntervalMs;     // TIME_RELAX after the pattern cycle
@@ -1187,15 +1187,14 @@ struct Pattern {
 };
 
 Pattern generateRandomPermutation(uint8_t numFingers = MAX_ACTUATORS, float timeOnMs = 100.0f,
-                                  float timeOffMs = 67.0f, float jitterPercent = 0.0f,
+                                  float timeOffMs = 67.0f,
                                   bool mirrorPattern = false);
 Pattern generateSequentialPattern(uint8_t numFingers = MAX_ACTUATORS, float timeOnMs = 100.0f,
-                                  float timeOffMs = 67.0f, float jitterPercent = 0.0f,
+                                  float timeOffMs = 67.0f,
                                   bool mirrorPattern = false, bool reverse = false);
 Pattern generateMirroredPattern(uint8_t numFingers = MAX_ACTUATORS, float timeOnMs = 100.0f,
-                                float timeOffMs = 67.0f, float jitterPercent = 0.0f,
+                                float timeOffMs = 67.0f,
                                 bool randomize = true);
-float calculateRelaxIntervalMs(uint8_t numFingers, float timeOnMs, float timeOffMs);
 ```
 
 **Bilateral Mirroring:**

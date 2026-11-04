@@ -187,7 +187,7 @@ void test_Pattern_getFingerPair(void) {
 // =============================================================================
 
 void test_generateRandomPermutation_produces_valid_pattern(void) {
-    Pattern p = generateRandomPermutation(4, 100.0f, 67.0f, 0.0f, true);
+    Pattern p = generateRandomPermutation(4, 100.0f, 67.0f, true);
 
     TEST_ASSERT_EQUAL_UINT8(4, p.numFingers);
     TEST_ASSERT_TRUE(isValidPermutation(p.primarySequence));
@@ -195,7 +195,7 @@ void test_generateRandomPermutation_produces_valid_pattern(void) {
 }
 
 void test_generateRandomPermutation_mirrored(void) {
-    Pattern p = generateRandomPermutation(4, 100.0f, 67.0f, 0.0f, true);
+    Pattern p = generateRandomPermutation(4, 100.0f, 67.0f, true);
 
     // Mirrored: primary and secondary should be identical
     TEST_ASSERT_TRUE(std::ranges::equal(p.primarySequence, p.secondarySequence));
@@ -204,7 +204,7 @@ void test_generateRandomPermutation_mirrored(void) {
 void test_generateRandomPermutation_non_mirrored(void) {
     randomSeed(999);  // Seed to ensure different sequences
 
-    Pattern p = generateRandomPermutation(4, 100.0f, 67.0f, 0.0f, false);
+    Pattern p = generateRandomPermutation(4, 100.0f, 67.0f, false);
 
     // Both should still be valid permutations
     TEST_ASSERT_TRUE(isValidPermutation(p.primarySequence));
@@ -213,31 +213,22 @@ void test_generateRandomPermutation_non_mirrored(void) {
     // Note: They might be equal by chance, but usually won't be
 }
 
-void test_generateRandomPermutation_with_jitter(void) {
-    Pattern p = generateRandomPermutation(4, 100.0f, 67.0f, 23.5f, true);
-
-    // With jitter, timing values will vary but should be positive
-    for (int i = 0; i < 4; i++) {
-        TEST_ASSERT_TRUE(p.timeOffMs[i] >= 0.0f);
-    }
-}
-
 void test_generateRandomPermutation_partial_fingers(void) {
-    Pattern p = generateRandomPermutation(3, 100.0f, 67.0f, 0.0f, true);
+    Pattern p = generateRandomPermutation(3, 100.0f, 67.0f, true);
 
     TEST_ASSERT_EQUAL_UINT8(3, p.numFingers);
     TEST_ASSERT_TRUE(isValidPermutation(p.primarySequence));
 }
 
 void test_generateRandomPermutation_burst_duration(void) {
-    Pattern p = generateRandomPermutation(4, 150.0f, 50.0f, 0.0f, true);
+    Pattern p = generateRandomPermutation(4, 150.0f, 50.0f, true);
 
     TEST_ASSERT_FLOAT_WITHIN(0.1f, 150.0f, p.burstDurationMs);
 }
 
 void test_generateRandomPermutation_interBurstInterval(void) {
     // Inter-burst = 4 * (timeOn + timeOff) = 4 * (100 + 67) = 668
-    Pattern p = generateRandomPermutation(4, 100.0f, 67.0f, 0.0f, true);
+    Pattern p = generateRandomPermutation(4, 100.0f, 67.0f, true);
 
     TEST_ASSERT_FLOAT_WITHIN(0.1f, 668.0f, p.interBurstIntervalMs);
 }
@@ -247,7 +238,7 @@ void test_generateRandomPermutation_interBurstInterval(void) {
 // =============================================================================
 
 void test_generateSequentialPattern_forward(void) {
-    Pattern p = generateSequentialPattern(4, 100.0f, 67.0f, 0.0f, true, false);
+    Pattern p = generateSequentialPattern(4, 100.0f, 67.0f, true, false);
 
     // Sequential forward: 0, 1, 2, 3
     for (int i = 0; i < 4; i++) {
@@ -256,7 +247,7 @@ void test_generateSequentialPattern_forward(void) {
 }
 
 void test_generateSequentialPattern_reverse(void) {
-    Pattern p = generateSequentialPattern(4, 100.0f, 67.0f, 0.0f, true, true);
+    Pattern p = generateSequentialPattern(4, 100.0f, 67.0f, true, true);
 
     // Sequential reverse: 3, 2, 1, 0
     for (int i = 0; i < 4; i++) {
@@ -265,14 +256,14 @@ void test_generateSequentialPattern_reverse(void) {
 }
 
 void test_generateSequentialPattern_mirrored(void) {
-    Pattern p = generateSequentialPattern(4, 100.0f, 67.0f, 0.0f, true, false);
+    Pattern p = generateSequentialPattern(4, 100.0f, 67.0f, true, false);
 
     // Mirrored: primary and secondary identical
     TEST_ASSERT_TRUE(std::ranges::equal(p.primarySequence, p.secondarySequence));
 }
 
 void test_generateSequentialPattern_non_mirrored(void) {
-    Pattern p = generateSequentialPattern(4, 100.0f, 67.0f, 0.0f, false, false);
+    Pattern p = generateSequentialPattern(4, 100.0f, 67.0f, false, false);
 
     // Non-mirrored: secondary is opposite order of primary
     // Primary: 0,1,2,3  Secondary: 3,2,1,0
@@ -287,7 +278,7 @@ void test_generateSequentialPattern_non_mirrored(void) {
 // =============================================================================
 
 void test_generateMirroredPattern_not_randomized(void) {
-    Pattern p = generateMirroredPattern(4, 100.0f, 67.0f, 0.0f, false);
+    Pattern p = generateMirroredPattern(4, 100.0f, 67.0f, false);
 
     // Not randomized: sequential
     for (int i = 0; i < 4; i++) {
@@ -299,7 +290,7 @@ void test_generateMirroredPattern_not_randomized(void) {
 }
 
 void test_generateMirroredPattern_randomized(void) {
-    Pattern p = generateMirroredPattern(4, 100.0f, 67.0f, 0.0f, true);
+    Pattern p = generateMirroredPattern(4, 100.0f, 67.0f, true);
 
     // Randomized: valid permutation
     TEST_ASSERT_TRUE(isValidPermutation(p.primarySequence));
@@ -556,112 +547,9 @@ void test_TherapyEngine_fixed_amplitude(void) {
     TEST_ASSERT_TRUE(engine.isRunning());
 }
 
-// =============================================================================
-// JITTER EDGE CASE TESTS
-// =============================================================================
-
-void test_generateRandomPermutation_high_jitter(void) {
-    // Test with 50% jitter (extreme case)
-    Pattern p = generateRandomPermutation(4, 100.0f, 67.0f, 50.0f, true);
-
-    TEST_ASSERT_EQUAL_UINT8(4, p.numFingers);
-    // With high jitter, timing values should still be valid
-    for (int i = 0; i < 4; i++) {
-        TEST_ASSERT_TRUE(p.timeOffMs[i] >= 0.0f);
-    }
-}
-
-void test_generateRandomPermutation_gap_never_collapses_under_max_jitter(void) {
-    // Worst permitted combination: long burst, shortest gap, max jitter.
-    // Run many iterations because the jitter draw is random.
-    for (int iteration = 0; iteration < 500; iteration++) {
-        Pattern p = generateRandomPermutation(
-            4,       // numFingers
-            200.0f,  // timeOnMs  (PARAM_MAX_TIME_ON_MS)
-            30.0f,   // timeOffMs (PARAM_MIN_TIME_OFF_MS)
-            50.0f,   // jitterPercent (PARAM_MAX_JITTER_PCT)
-            false);  // mirrorPattern
-
-        for (uint8_t i = 0; i < 4; i++) {
-            TEST_ASSERT_TRUE_MESSAGE(p.timeOffMs[i] >= MIN_INTER_BURST_GAP_MS,
-                "inter-burst gap fell below MIN_INTER_BURST_GAP_MS under max jitter");
-        }
-    }
-}
-
-void test_generateSequentialPattern_gap_never_collapses_under_max_jitter(void) {
-    // Worst permitted combination: long burst, shortest gap, max jitter.
-    // Run many iterations because the jitter draw is random.
-    for (int iteration = 0; iteration < 500; iteration++) {
-        Pattern p = generateSequentialPattern(
-            4,       // numFingers
-            200.0f,  // timeOnMs  (PARAM_MAX_TIME_ON_MS)
-            30.0f,   // timeOffMs (PARAM_MIN_TIME_OFF_MS)
-            50.0f,   // jitterPercent (PARAM_MAX_JITTER_PCT)
-            false);  // mirrorPattern
-
-        for (uint8_t i = 0; i < 4; i++) {
-            TEST_ASSERT_TRUE_MESSAGE(p.timeOffMs[i] >= MIN_INTER_BURST_GAP_MS,
-                "inter-burst gap fell below MIN_INTER_BURST_GAP_MS under max jitter");
-        }
-    }
-}
-
-void test_generateMirroredPattern_gap_never_collapses_under_max_jitter(void) {
-    // Worst permitted combination: long burst, shortest gap, max jitter.
-    // Run many iterations because the jitter draw is random.
-    for (int iteration = 0; iteration < 500; iteration++) {
-        Pattern p = generateMirroredPattern(
-            4,       // numFingers
-            200.0f,  // timeOnMs  (PARAM_MAX_TIME_ON_MS)
-            30.0f,   // timeOffMs (PARAM_MIN_TIME_OFF_MS)
-            50.0f,   // jitterPercent (PARAM_MAX_JITTER_PCT)
-            false);  // mirrorPattern
-
-        for (uint8_t i = 0; i < 4; i++) {
-            TEST_ASSERT_TRUE_MESSAGE(p.timeOffMs[i] >= MIN_INTER_BURST_GAP_MS,
-                "inter-burst gap fell below MIN_INTER_BURST_GAP_MS under max jitter");
-        }
-    }
-}
-
-void test_generateRandomPermutation_jitter_still_varies_at_defaults(void) {
-    // The clamp must not suppress jitter at the default parameters,
-    // where jitterAmount (19.6ms) is well below OFF (67ms).
-    bool sawVariation = false;
-    Pattern first = generateRandomPermutation(
-        4, 100.0f, 67.0f, 23.5f, false);
-    for (int iteration = 0; iteration < 200 && !sawVariation; iteration++) {
-        Pattern p = generateRandomPermutation(
-            4, 100.0f, 67.0f, 23.5f, false);
-        for (uint8_t i = 0; i < 4; i++) {
-            if (p.timeOffMs[i] != first.timeOffMs[i]) {
-                sawVariation = true;
-            }
-        }
-    }
-    TEST_ASSERT_TRUE_MESSAGE(sawVariation,
-        "jitter produced no variation at default parameters");
-}
-
-void test_relax_interval_scales_with_finger_count(void) {
-    // The paper's 3:2 ON-OFF cycling means the relax interval must equal
-    // exactly two CR periods, and one CR period is numFingers * (ON + OFF).
-    const float onMs  = 100.0f;
-    const float offMs = 67.0f;
-
-    for (uint8_t fingers = 1; fingers <= MAX_ACTUATORS; fingers++) {
-        const float expectedRelaxMs = 2.0f * fingers * (onMs + offMs);
-        const float actualRelaxMs = calculateRelaxIntervalMs(fingers, onMs, offMs);
-
-        TEST_ASSERT_FLOAT_WITHIN_MESSAGE(0.01f, expectedRelaxMs, actualRelaxMs,
-            "relax interval is not two CR periods for this finger count");
-    }
-}
-
 void test_interBurstInterval_scales_with_finger_count_all_generators(void) {
     // Each generator independently sets pattern.interBurstIntervalMs = numFingers *
-    // (ON + OFF). Jitter is 0 so the value is deterministic. This pins all three
+    // (ON + OFF). This pins all three
     // sites directly, unlike test_generateRandomPermutation_interBurstInterval
     // (which hardcodes 4 fingers and can't distinguish numFingers * X from 4 * X).
     const float onMs  = 100.0f;
@@ -670,36 +558,17 @@ void test_interBurstInterval_scales_with_finger_count_all_generators(void) {
     for (uint8_t fingers = 1; fingers <= MAX_ACTUATORS; fingers++) {
         const float expected = static_cast<float>(fingers) * (onMs + offMs);
 
-        Pattern randomPermutation = generateRandomPermutation(fingers, onMs, offMs, 0.0f, true);
+        Pattern randomPermutation = generateRandomPermutation(fingers, onMs, offMs, true);
         TEST_ASSERT_FLOAT_WITHIN_MESSAGE(0.1f, expected, randomPermutation.interBurstIntervalMs,
             "generateRandomPermutation interBurstIntervalMs did not scale with finger count");
 
-        Pattern sequential = generateSequentialPattern(fingers, onMs, offMs, 0.0f, true, false);
+        Pattern sequential = generateSequentialPattern(fingers, onMs, offMs, true, false);
         TEST_ASSERT_FLOAT_WITHIN_MESSAGE(0.1f, expected, sequential.interBurstIntervalMs,
             "generateSequentialPattern interBurstIntervalMs did not scale with finger count");
 
-        Pattern mirrored = generateMirroredPattern(fingers, onMs, offMs, 0.0f, true);
+        Pattern mirrored = generateMirroredPattern(fingers, onMs, offMs, true);
         TEST_ASSERT_FLOAT_WITHIN_MESSAGE(0.1f, expected, mirrored.interBurstIntervalMs,
             "generateMirroredPattern interBurstIntervalMs did not scale with finger count");
-    }
-}
-
-void test_generateSequentialPattern_with_jitter(void) {
-    Pattern p = generateSequentialPattern(4, 100.0f, 67.0f, 23.5f, true, false);
-
-    TEST_ASSERT_EQUAL_UINT8(4, p.numFingers);
-    // Jitter should be applied to timing
-    for (int i = 0; i < 4; i++) {
-        TEST_ASSERT_TRUE(p.timeOffMs[i] >= 0.0f);
-    }
-}
-
-void test_generateMirroredPattern_with_jitter(void) {
-    Pattern p = generateMirroredPattern(4, 100.0f, 67.0f, 23.5f, true);
-
-    TEST_ASSERT_EQUAL_UINT8(4, p.numFingers);
-    for (int i = 0; i < 4; i++) {
-        TEST_ASSERT_TRUE(p.timeOffMs[i] >= 0.0f);
     }
 }
 
@@ -1903,7 +1772,6 @@ int main(int argc, char **argv) {
     RUN_TEST(test_generateRandomPermutation_produces_valid_pattern);
     RUN_TEST(test_generateRandomPermutation_mirrored);
     RUN_TEST(test_generateRandomPermutation_non_mirrored);
-    RUN_TEST(test_generateRandomPermutation_with_jitter);
     RUN_TEST(test_generateRandomPermutation_partial_fingers);
     RUN_TEST(test_generateRandomPermutation_burst_duration);
     RUN_TEST(test_generateRandomPermutation_interBurstInterval);
@@ -1956,15 +1824,7 @@ int main(int argc, char **argv) {
     RUN_TEST(test_TherapyEngine_fixed_amplitude);
 
     // Jitter Edge Case Tests
-    RUN_TEST(test_generateRandomPermutation_high_jitter);
-    RUN_TEST(test_generateRandomPermutation_gap_never_collapses_under_max_jitter);
-    RUN_TEST(test_generateSequentialPattern_gap_never_collapses_under_max_jitter);
-    RUN_TEST(test_generateMirroredPattern_gap_never_collapses_under_max_jitter);
-    RUN_TEST(test_generateRandomPermutation_jitter_still_varies_at_defaults);
-    RUN_TEST(test_relax_interval_scales_with_finger_count);
     RUN_TEST(test_interBurstInterval_scales_with_finger_count_all_generators);
-    RUN_TEST(test_generateSequentialPattern_with_jitter);
-    RUN_TEST(test_generateMirroredPattern_with_jitter);
 
     // Default Pattern Type Tests
     RUN_TEST(test_TherapyEngine_default_pattern_type_fallback);

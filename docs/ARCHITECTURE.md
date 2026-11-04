@@ -131,11 +131,11 @@ enum class PatternType {
 };
 
 Pattern generateRandomPermutation(uint8_t numFingers, float timeOnMs, float timeOffMs,
-                                  float jitterPercent, bool mirrorPattern);
+                                  bool mirrorPattern);
 Pattern generateSequentialPattern(uint8_t numFingers, float timeOnMs, float timeOffMs,
-                                  float jitterPercent, bool mirrorPattern, bool reverse);
+                                  bool mirrorPattern, bool reverse);
 Pattern generateMirroredPattern(uint8_t numFingers, float timeOnMs, float timeOffMs,
-                                float jitterPercent, bool randomize);
+                                bool randomize);
 ```
 
 A new pattern is a new generator function, a new `PatternType` value, and a new case in `TherapyEngine::generateMacrocycle()`. Existing generators stay untouched.
@@ -192,8 +192,8 @@ if (deviceRole == DeviceRole::PRIMARY)
 
 - **Session**: A therapy session from start to completion
 - **Cycle**: One pattern: every active finger buzzed once in the generated order (one CR period). `TherapyEngine`'s cycle counter counts macrocycles
-- **Burst**: One finger activation lasting TIME_ON (default 100ms), followed by TIME_OFF (default 67ms, plus jitter)
-- **Macrocycle**: Three patterns sent to the SECONDARY as one batch (12 events on v2, 15 on v3), followed by a relax interval of two CR periods (`calculateRelaxIntervalMs()`)
+- **Burst**: One finger activation lasting TIME_ON (default 100ms), followed by TIME_OFF (default 67ms)
+- **Macrocycle**: Three patterns sent to the SECONDARY as one batch (12 events on v2, 15 on v3), followed by two silent CR periods, so each macrocycle occupies a fixed grid slot of five CR periods
 - **Profile**: Configuration for a therapy protocol
 
 **Bounded Contexts**:
@@ -633,7 +633,7 @@ for (uint8_t i = 0; i < _currentMacrocycle.eventCount; i++) {
                                 evt.durationMs, evt.getFrequencyHz());
 }
 
-_buzzFlowState = BuzzFlowState::ACTIVE;   // then WAITING_RELAX (2x relax interval)
+_buzzFlowState = BuzzFlowState::ACTIVE;   // then WAITING_RELAX (until the next grid slot)
 ```
 
 The engine never blocks: `update()` advances this state machine on each `loop()` pass.
@@ -1334,16 +1334,16 @@ BlueBuzzah v3 has no battery ADC. All five DRV2605 drivers run directly off the 
 Pattern pattern;
 switch (_patternType) {
     case PatternType::RNDP:
-        pattern = generateRandomPermutation(_numFingers, _timeOnMs, _timeOffMs, _jitterPercent, _mirrorPattern);
+        pattern = generateRandomPermutation(_numFingers, _timeOnMs, _timeOffMs, _mirrorPattern);
         break;
     case PatternType::SEQUENTIAL:
-        pattern = generateSequentialPattern(_numFingers, _timeOnMs, _timeOffMs, _jitterPercent, _mirrorPattern, false);
+        pattern = generateSequentialPattern(_numFingers, _timeOnMs, _timeOffMs, _mirrorPattern, false);
         break;
     case PatternType::MIRRORED:
-        pattern = generateMirroredPattern(_numFingers, _timeOnMs, _timeOffMs, _jitterPercent, true);
+        pattern = generateMirroredPattern(_numFingers, _timeOnMs, _timeOffMs, true);
         break;
     default:
-        pattern = generateRandomPermutation(_numFingers, _timeOnMs, _timeOffMs, _jitterPercent, _mirrorPattern);
+        pattern = generateRandomPermutation(_numFingers, _timeOnMs, _timeOffMs, _mirrorPattern);
         break;
 }
 ```
@@ -1509,7 +1509,7 @@ sequenceDiagram
         TE->>B: MC to SECONDARY
         TE->>Q: Schedule activations at baseTime + delta
         Q->>Q: Activate and deactivate each motor on time
-        TE->>TE: Wait for queue to drain, then relax interval
+        TE->>TE: Wait for queue to drain, then wait for the next grid slot
     end
 
     TE->>L: Session time elapsed, isRunning() false
@@ -1805,7 +1805,7 @@ uint8_t HapticController::amplitudeToRTP(uint8_t amplitude) const {
 
 ```cpp
 Pattern generateCustomPattern(uint8_t numFingers, float timeOnMs, float timeOffMs,
-                              float jitterPercent, bool mirrorPattern) {
+                              bool mirrorPattern) {
     Pattern pattern(numFingers);
     pattern.burstDurationMs = timeOnMs;
     // Fill pattern.primarySequence / secondarySequence with slot indices

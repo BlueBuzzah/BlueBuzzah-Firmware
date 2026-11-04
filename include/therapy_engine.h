@@ -61,13 +61,14 @@ enum class PatternType{
  * Contains finger sequences for both hands with timing information.
  *
  * Timing model (matching v1 original):
- *   For each finger: MOTOR_ON(burstDurationMs) → MOTOR_OFF(timeOffMs[i] with jitter)
- *   After all fingers: Wait interBurstIntervalMs (TIME_RELAX = 668ms)
+ *   For each finger: MOTOR_ON(burstDurationMs) → MOTOR_OFF(timeOffMs[i], nominal)
+ *   Per-onset jitter is applied when the macrocycle is built, not here.
+ *   interBurstIntervalMs = numFingers * (TIME_ON + TIME_OFF) = 668ms at 4 fingers
  */
 struct [[nodiscard]] Pattern {
     std::vector<uint8_t> primarySequence;
     std::vector<uint8_t> secondarySequence;
-    std::vector<float> timeOffMs;   // TIME_OFF + jitter for each finger (v1: 67ms ± jitter)
+    std::vector<float> timeOffMs;   // Nominal TIME_OFF for each finger (v1: 67ms)
     uint8_t numFingers;
     float burstDurationMs;                  // TIME_ON (v1: 100ms)
     float interBurstIntervalMs;             // TIME_RELAX after pattern cycle (v1: 668ms fixed)
@@ -133,7 +134,6 @@ constexpr void shuffleArray(std::span<uint8_t> arr);
  * @param numFingers Number of fingers per hand (1-MAX_ACTUATORS)
  * @param timeOnMs Vibration burst duration
  * @param timeOffMs Time between bursts
- * @param jitterPercent Timing jitter percentage (0-100)
  * @param mirrorPattern If true, same finger on both hands (noisy vCR)
  * @return Generated pattern
  */
@@ -141,7 +141,6 @@ Pattern generateRandomPermutation(
     uint8_t numFingers = MAX_ACTUATORS,
     float timeOnMs = 100.0f,
     float timeOffMs = 67.0f,
-    float jitterPercent = 0.0f,
     bool mirrorPattern = false
 );
 
@@ -153,7 +152,6 @@ Pattern generateRandomPermutation(
  * @param numFingers Number of fingers per hand (1-MAX_ACTUATORS)
  * @param timeOnMs Vibration burst duration
  * @param timeOffMs Time between bursts
- * @param jitterPercent Timing jitter percentage (0-100)
  * @param mirrorPattern If true, same sequence for both hands
  * @param reverse If true, reverse order (3->0)
  * @return Generated pattern
@@ -162,7 +160,6 @@ Pattern generateSequentialPattern(
     uint8_t numFingers = MAX_ACTUATORS,
     float timeOnMs = 100.0f,
     float timeOffMs = 67.0f,
-    float jitterPercent = 0.0f,
     bool mirrorPattern = false,
     bool reverse = false
 );
@@ -175,7 +172,6 @@ Pattern generateSequentialPattern(
  * @param numFingers Number of fingers per hand (1-MAX_ACTUATORS)
  * @param timeOnMs Vibration burst duration
  * @param timeOffMs Time between bursts
- * @param jitterPercent Timing jitter percentage (0-100)
  * @param randomize If true, randomize sequence
  * @return Generated pattern
  */
@@ -183,23 +179,8 @@ Pattern generateMirroredPattern(
     uint8_t numFingers = MAX_ACTUATORS,
     float timeOnMs = 100.0f,
     float timeOffMs = 67.0f,
-    float jitterPercent = 0.0f,
     bool randomize = true
 );
-
-/**
- * @brief Relax interval between macrocycles: two full CR periods.
- *
- * One CR period is numFingers * (timeOnMs + timeOffMs), so this scales
- * with the number of active fingers -- 4 on BlueBuzzah, 5 on PentaBuzzer,
- * or fewer when the user restricts FINGERS.
- *
- * @param numFingers Number of active fingers
- * @param timeOnMs Vibration burst duration
- * @param timeOffMs Time between bursts
- * @return Relax interval in milliseconds
- */
-float calculateRelaxIntervalMs(uint8_t numFingers, float timeOnMs, float timeOffMs);
 
 /**
  * @brief Largest shift of a burst onset from its nominal grid slot.
@@ -591,7 +572,6 @@ private:
     PatternType _patternType;
     float _timeOnMs;
     float _timeOffMs;
-    float _jitterPercent;
     uint8_t _numFingers;
     bool _mirrorPattern;
 
@@ -627,7 +607,6 @@ private:
 
     // Flow control state machine (used by MACROCYCLE mode)
     BuzzFlowState _buzzFlowState;       // NOTE: Used by MACROCYCLE, not just BUZZ (legacy name)
-    uint32_t _buzzSendTime;             // Time tracking for state transitions
 
     // Callbacks
     ActivateCallback _activateCallback;
