@@ -1,4 +1,4 @@
-"""PlatformIO post-action: package PentaBuzzer (BlueBuzzah v3) flash images.
+"""PlatformIO post-action: package BlueBuzzah v3 flash images.
 
 Produces $BUILD_DIR/firmware-v3.zip containing every image `pio run -t upload`
 would flash (bootloader, partition table, boot_app0, application) plus a

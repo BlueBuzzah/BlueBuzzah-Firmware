@@ -4,7 +4,7 @@
  *
  * Exactly one board macro must be defined by the build environment:
  * - BOARD_BLUEBUZZAH_NRF52:    Adafruit Feather nRF52840 Express (4 motors)
- * - BOARD_PENTABUZZER_ESP32S3: Seeed XIAO ESP32-S3 (5 motors)
+ * - BOARD_PENTABUZZER_ESP32S3: ESP32-S3-WROOM-1U-N8R8 (5 motors)
  */
 
 #ifndef BOARD_CONFIG_H
@@ -39,8 +39,9 @@
   #define NEOPIXEL_PIN_OVERRIDE    4              // RGB LED data (GPIO4)
   #define SDA_PIN_OVERRIDE         5
   #define SCL_PIN_OVERRIDE         6
-  // Shared EN of all 5 DRV2605s + TCA9548A reset (NOT a power rail - the
-  // DRV2605s and LED run directly from VBat). A LOW->HIGH toggle resets every
+  // Shared EN of all 5 DRV2605s + TCA9548A reset + LED rail switch (the
+  // DRV2605s run directly from VBat, the LED only while this is HIGH). A
+  // LOW->HIGH toggle resets every
   // DRV2605 register to POR defaults; re-run haptic config after any toggle.
   #define ENABLE_PIN_OVERRIDE      1
   #define POWER_SWITCH_PIN_OVERRIDE 3             // strapping pin; sampled after boot only

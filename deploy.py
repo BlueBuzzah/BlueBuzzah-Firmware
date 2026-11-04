@@ -121,7 +121,7 @@ C = Colors()
 # Adafruit Vendor ID
 ADAFRUIT_VID = 0x239A
 
-# Espressif Vendor ID (XIAO ESP32-S3 hardware USB-CDC/JTAG = PentaBuzzer)
+# Espressif Vendor ID (v3 hardware USB-CDC/JTAG)
 ESPRESSIF_VID = 0x303A
 
 # Known Feather nRF52840 Product IDs
@@ -141,7 +141,7 @@ _port_envs = {}
 
 
 def find_devices():
-    """Find connected BlueBuzzah/PentaBuzzah devices (cross-platform)"""
+    """Find connected BlueBuzzah devices (cross-platform)"""
     devices = []
     _port_envs.clear()
     for port in serial.tools.list_ports.comports():
@@ -149,7 +149,7 @@ def find_devices():
         if port.vid == ADAFRUIT_VID and port.pid in FEATHER_PIDS:
             devices.append(port.device)
             _port_envs[port.device] = ENV_NRF52
-        # Espressif USB-CDC (PentaBuzzer XIAO ESP32-S3)
+        # Espressif USB-CDC (v3)
         elif port.vid == ESPRESSIF_VID:
             devices.append(port.device)
             _port_envs[port.device] = ENV_PENTA
