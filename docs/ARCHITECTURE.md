@@ -2,12 +2,12 @@
 
 This document provides a detailed explanation of the BlueBuzzah firmware architecture, design patterns, and component interactions. One codebase runs on both BlueBuzzah v2 and BlueBuzzah v3 hardware.
 
-**Platforms**: Arduino C++ on Adafruit Feather nRF52840 Express (BlueBuzzah v2, 4 motors) and Seeed XIAO ESP32-S3 (BlueBuzzah v3, 5 motors)
+**Platforms**: Arduino C++ on Adafruit Feather nRF52840 Express (BlueBuzzah v2, 4 motors) and ESP32-S3-WROOM-1U-N8R8 (BlueBuzzah v3, 5 motors)
 **Build System**: PlatformIO — one codebase, two device environments (`adafruit_feather_nrf52840`, `pentabuzzer_esp32s3`) selected by board macro
 
 Platform-specific code is isolated behind compile-time seams: `board_config.h` (pins, `MAX_ACTUATORS`, battery availability), `platform.h` (critical sections, memory barrier, system reset, RTOS headers), a split `BLEManager` backend (`ble_manager_nrf52.cpp` Bluefruit / `ble_manager_esp32.cpp` NimBLE — identical Nordic-UART protocol, MTU 200, 7.5-10 ms glove-link connection interval (30-50 ms requested for the phone link), 0 dBm TX, 2M PHY), an `fs_backend` filesystem shim, and a `build_src_filter`-selected `PowerController` (BlueBuzzah v3 power switch + deep sleep; no-op on nRF). Everything below the seams — therapy engine, sync protocol, state machine, menus, profiles — is shared and platform-neutral.
 
-**BlueBuzzah v3 power topology** (verified against the V2.2 PCB netlist): the ESP32-S3, TCA9548A mux, and IMU (an LSM6DS3 on SPI — present on the board but unused by firmware) run from the XIAO's onboard 3V3 LDO; the five DRV2605 drivers and the WS2812 LED run **directly from VBat**. There is no switched power rail. **Motors cannot run on USB alone** — without a battery, VBat is only the XIAO charger's current-limited output, and any LRA drive browns the drivers out to power-on defaults (standby → silent motors while I2C still works). GPIO1 is the shared DRV2605 EN + mux reset: a LOW→HIGH toggle resets every DRV2605 register, so any runtime toggle must be followed by full haptic reconfiguration. Motor JST ports are silk-labeled 1–5 in reverse of firmware channels (finger N ↔ port 5−N, `MOTOR_SILK_PORT()`). Serial QA commands `MOTOR_DIAG` (buzz every channel + supply-reset canary), `MOTOR_TEST:<n>` (single channel, 2 s), and `MOTOR_PRESENT` (per-port open-load probe via LRA auto-calibration) validate assembly. The presence probe also runs at every boot and feeds the therapy engine's active-finger map, so macrocycles skip motor ports found empty on the PRIMARY glove; fewer than 4 detected motors is signaled by a red double-blink LED at boot, then the glove enters `ERROR` until reboot (a probe skipped because the supply dipped doesn't count).
+**BlueBuzzah v3 power topology** (verified against the ESP32-S3-WROOM-1U-N8R8 board netlist in BlueBuzzah-Hardware): the ESP32-S3, TCA9548A mux, and IMU (an LSM6DS3 on SPI — present on the board but unused by firmware) run from an RT9080 3V3 LDO fed by USB or the battery. The five DRV2605 drivers run **directly from VBat**. The WS2812 LED runs from a VBat rail switched by GPIO1, so it stays dark while GPIO1 is LOW. **Motors cannot run on USB alone** — without a battery, VBat is only the MCP73831 charger's 100 mA current-limited output, and any LRA drive browns the drivers out to power-on defaults (standby → silent motors while I2C still works). GPIO1 is the shared DRV2605 EN + mux reset + LED rail switch: a LOW→HIGH toggle resets every DRV2605 register, so any runtime toggle must be followed by full haptic reconfiguration. Motor JST ports are silk-labeled 1–5 in reverse of firmware channels (finger N ↔ port 5−N, `MOTOR_SILK_PORT()`). Serial QA commands `MOTOR_DIAG` (buzz every channel + supply-reset canary), `MOTOR_TEST:<n>` (single channel, 2 s), and `MOTOR_PRESENT` (per-port open-load probe via LRA auto-calibration) validate assembly. The presence probe also runs at every boot and feeds the therapy engine's active-finger map, so macrocycles skip motor ports found empty on the PRIMARY glove; fewer than 4 detected motors is signaled by a red double-blink LED at boot, then the glove enters `ERROR` until reboot (a probe skipped because the supply dipped doesn't count).
 
 ## Table of Contents
 
@@ -2074,7 +2074,7 @@ The architecture enables confident refactoring, easy testing, and straightforwar
 
 ### Microcontroller
 
-| Specification | v2: nRF52840 (Feather nRF52840 Express) | v3: ESP32-S3 (XIAO ESP32-S3) |
+| Specification | v2: nRF52840 (Feather nRF52840 Express) | v3: ESP32-S3-WROOM-1U-N8R8 |
 |---------------|-------|-------|
 | **CPU** | ARM Cortex-M4F @ 64 MHz | Dual-core Xtensa LX7 @ 240 MHz |
 | **Flash** | 1 MB | 8 MB (6 MB app partition, `partitions_penta.csv`) |

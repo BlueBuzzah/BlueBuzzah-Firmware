@@ -200,14 +200,14 @@ constexpr uint32_t TEST_DURATION_SEC = 120;  // 2 minutes
 // ADC_MAX_VALUE, ADC_REFERENCE_VOLTAGE, BATTERY_VOLTAGE_DIVIDER).
 #define BATTERY_SAMPLE_COUNT 10         // Number of samples to average
 
-// DRV2605 VBAT backend (PentaBuzzer): number of readings taken per burst
+// DRV2605 VBAT backend (v3): number of readings taken per burst
 #define VBAT_BURST_SAMPLES 9
 
 // =============================================================================
 // HAPTIC CONFIGURATION
 // =============================================================================
 
-// MAX_ACTUATORS comes from board_config.h (4 on BlueBuzzah, 5 on PentaBuzzer)
+// MAX_ACTUATORS comes from board_config.h (4 on v2, 5 on v3)
 #define MAX_AMPLITUDE 100               // Maximum amplitude percentage (0-100)
 #define DRV2605_MAX_RTP 127             // DRV2605 RTP register max value
 
@@ -218,8 +218,7 @@ constexpr uint32_t TEST_DURATION_SEC = 120;  // 2 minutes
 
 // Therapy parameter bounds. These are the single source of truth for
 // PROFILE_CUSTOM / PARAM_SET validation and for load-time revalidation.
-// Anchored on Pfeifer et al. 2021 clinical values; see
-// docs/superpowers/specs/2026-07-27-custom-therapy-profile-design.md
+// Anchored on Pfeifer et al. 2021 clinical values.
 constexpr float    PARAM_MIN_TIME_ON_MS   = 50.0f;
 constexpr float    PARAM_MAX_TIME_ON_MS   = 200.0f;
 constexpr float    PARAM_MIN_TIME_OFF_MS  = 30.0f;

@@ -1,15 +1,15 @@
 /**
  * @file power_controller_esp32.cpp
- * @brief PentaBuzzer power path: slide switch, chip enables, deep sleep
+ * @brief v3 power path: slide switch, chip enables, deep sleep
  *
  * The power switch drives GPIO3 (strapping pin - read only after boot):
  * HIGH = on, LOW = shutdown request. Deep sleep wakes when the switch goes
  * HIGH again.
  *
- * GPIO1 is NOT a power-rail switch (there is no switched rail on this board;
- * the DRV2605s and LED run directly from VBat). It is the shared EN pin of
- * all five DRV2605s plus the TCA9548A reset. Driving it LOW puts the drivers
- * in shutdown and holds the mux in reset; driving it HIGH again RESETS EVERY
+ * GPIO1 is the shared EN pin of all five DRV2605s, the TCA9548A reset and the
+ * LED rail switch. The DRV2605s run directly from VBat; the LED has power only
+ * while GPIO1 is HIGH. Driving it LOW puts the drivers in shutdown, holds the
+ * mux in reset and cuts the LED rail; driving it HIGH again RESETS EVERY
  * DRV2605 REGISTER TO POR DEFAULTS - any runtime toggle must be followed by
  * re-running the full haptic configuration for all fingers.
  */
@@ -22,7 +22,7 @@
 
 void PowerController::begin() {
     pinMode(ENABLE_PIN_OVERRIDE, OUTPUT);
-    digitalWrite(ENABLE_PIN_OVERRIDE, HIGH);  // DRV2605 EN + mux out of reset
+    digitalWrite(ENABLE_PIN_OVERRIDE, HIGH);  // DRV2605 EN + mux out of reset + LED rail on
     pinMode(POWER_SWITCH_PIN_OVERRIDE, INPUT);
     pinMode(USB_POW_DETECT_PIN_OVERRIDE, INPUT);
     Serial.println(F("[POWER] Power controller initialized (motor drivers enabled)"));
@@ -41,7 +41,7 @@ void PowerController::enterDeepSleep(LEDController& led) {
     delay(150);
     led.off();
 
-    digitalWrite(ENABLE_PIN_OVERRIDE, LOW);  // DRV2605s to shutdown, mux in reset
+    digitalWrite(ENABLE_PIN_OVERRIDE, LOW);  // DRV2605s to shutdown, mux in reset, LED rail off
 
     // Wake when the power switch returns HIGH
     esp_sleep_enable_ext1_wakeup_io(1ULL << POWER_SWITCH_PIN_OVERRIDE,

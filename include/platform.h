@@ -4,7 +4,7 @@
  *        RTOS headers, and clock capability flags
  *
  * Exactly one branch is active per build:
- * - PentaBuzzer ESP32-S3 device build (FreeRTOS SMP: spinlock critical sections)
+ * - v3 ESP32-S3 device build (FreeRTOS SMP: spinlock critical sections)
  * - BlueBuzzah nRF52840 device build (single core: PRIMASK critical sections)
  * - Native test build (no-ops; RTOS types come from the test mock)
  */

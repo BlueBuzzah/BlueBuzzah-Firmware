@@ -2,7 +2,7 @@
  * @file hardware.h
  * @brief BlueBuzzah hardware abstraction layer - Class declarations
  * @version 2.0.0
- * @platform Adafruit Feather nRF52840 / Seeed XIAO ESP32-S3 (PentaBuzzer)
+ * @platform Adafruit Feather nRF52840 / ESP32-S3-WROOM-1U-N8R8 (v3)
  *
  * Hardware components:
  * - TCA9548A I2C multiplexer @ 0x70
@@ -297,7 +297,7 @@ private:
  *
  * Two backends selected by BATTERY_SENSE_ADC:
  * - ADC (nRF52840): VBAT divider sampled via analogRead
- * - DRV2605 VBAT register (PentaBuzzer): the haptic drivers run directly
+ * - DRV2605 VBAT register (v3): the haptic drivers run directly
  *   from VBat, so their supply monitor doubles as the battery voltmeter
  *   (attachHaptic() must be called before begin())
  * Both feed the same LiPo discharge curve for percentage estimation.

@@ -14,10 +14,10 @@ MCU (nRF52840 default pins / ESP32-S3 SDA=GPIO5, SCL=GPIO6)
         ├── Ch1: DRV2605 - Middle finger
         ├── Ch2: DRV2605 - Ring finger
         ├── Ch3: DRV2605 - Pinky finger
-        └── Ch4: DRV2605 - Thumb (PentaBuzzer only, MAX_ACTUATORS == 5)
+        └── Ch4: DRV2605 - Thumb (v3 only, MAX_ACTUATORS == 5)
 ```
 
-That's the PentaBuzzer (v3) wiring. The v2 PCB reverses channels 0-3 (Ch0 = pinky,
+That's the v3 wiring. The v2 PCB reverses channels 0-3 (Ch0 = pinky,
 Ch3 = index). Code works in fingers: `selectChannel()` maps finger N to
 `FINGER_CHANNEL(N)` (`board_config.h`), never open a raw channel number.
 
@@ -42,12 +42,13 @@ Different I2C paths need different settling times:
 - Standard channels: 5ms initialization delay
 - Channel 4 (longer PCB trace): 10ms initialization delay
 
-## PentaBuzzer Power / Assembly Facts
+## v3 Power / Assembly Facts
 
-- DRV2605s + WS2812 LED are powered **directly from VBat** (no switched rail).
+- DRV2605s are powered **directly from VBat**. The WS2812 LED runs from a VBat
+  rail switched by GPIO1, so it stays dark while GPIO1 is LOW.
   Motors need a battery: on USB alone, any LRA drive browns the drivers out
   to POR defaults (standby, silent) while I2C keeps working.
-- GPIO1 = shared DRV2605 EN + TCA9548A reset. LOW→HIGH **wipes all DRV2605
+- GPIO1 = shared DRV2605 EN + TCA9548A reset + LED rail switch. LOW→HIGH **wipes all DRV2605
   registers** — re-run haptic configuration after any toggle.
 - Motor JST silk labels 1–5 are **reversed** vs firmware channels:
   finger N ↔ port `5−N` (`MOTOR_SILK_PORT()` in `board_config.h`).

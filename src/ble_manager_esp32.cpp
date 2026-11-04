@@ -1,6 +1,6 @@
 /**
  * @file ble_manager_esp32.cpp
- * @brief BlueBuzzah BLE communication manager - NimBLE backend (PentaBuzzer ESP32-S3)
+ * @brief BlueBuzzah BLE communication manager - NimBLE backend (v3 ESP32-S3)
  * @version 2.0.0
  *
  * Implements the same BLEManager contract as ble_manager_nrf52.cpp using

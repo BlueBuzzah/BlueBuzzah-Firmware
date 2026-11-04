@@ -3,7 +3,7 @@
 **Comprehensive boot sequence documentation for bilateral haptic therapy system**
 
 Version: 2.0.0
-Platform: Arduino C++ on Adafruit Feather nRF52840 Express (v2) and Seeed XIAO ESP32-S3 / PentaBuzzer (v3)
+Platform: Arduino C++ on Adafruit Feather nRF52840 Express (v2) and ESP32-S3-WROOM-1U-N8R8 (v3)
 Last Updated: 2025-01-11
 
 ---
@@ -1062,7 +1062,7 @@ void setup()
         delay(10);
     }
 
-    power.begin();      // Penta: peripheral 3V3 rail (no-op on nRF)
+    power.begin();      // v3: GPIO1 enable + LED rail (no-op on nRF)
     led.begin();        // blue connect-blink
 
     // 1. Role (blocks with orange blink until SET_ROLE if none is stored)

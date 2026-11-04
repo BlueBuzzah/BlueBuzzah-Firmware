@@ -27,7 +27,7 @@ This document uses the following device role terminology:
 
 Both devices run identical firmware and advertise as "BlueBuzzah". Role is stored in `/settings.bin` (written by `ProfileManager::saveSettings()`, set over serial with `SET_ROLE:PRIMARY` / `SET_ROLE:SECONDARY`); a device with no stored role defaults to PRIMARY. Code examples use `DeviceRole::PRIMARY` or `DeviceRole::SECONDARY` for device role parameters.
 
-> **Motor counts:** BlueBuzzah v2 (Feather nRF52840) has 4 motors per glove; BlueBuzzah v3 (PentaBuzzer, XIAO ESP32-S3) has 5 (adds the thumb). Everything below scales with `MAX_ACTUATORS` from `board_config.h`. Examples use 4 fingers unless noted.
+> **Motor counts:** BlueBuzzah v2 (Feather nRF52840) has 4 motors per glove; BlueBuzzah v3 (ESP32-S3-WROOM-1U-N8R8) has 5 (adds the thumb). Everything below scales with `MAX_ACTUATORS` from `board_config.h`. Examples use 4 fingers unless noted.
 
 ---
 

@@ -62,7 +62,7 @@ jobs:
       - name: Build firmware (BlueBuzzah nRF52840)
         run: pio run -e adafruit_feather_nrf52840
 
-      - name: Build firmware (PentaBuzzer ESP32-S3 / v3)
+      - name: Build firmware (ESP32-S3 / v3)
         env:
           BLUEBUZZAH_VERSION: ${{ env.FIRMWARE_VERSION }}
         run: pio run -e pentabuzzer_esp32s3
