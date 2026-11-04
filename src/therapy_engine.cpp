@@ -353,6 +353,11 @@ void TherapyEngine::startSession(
     _patternsInMacrocycle = 0;
 
     // Store session parameters
+#if defined(NRF52840_XXAA) && !defined(NATIVE_TEST_BUILD)
+    // nRF52 rand() repeats after every boot. Never on ESP32: there, calling
+    // randomSeed() swaps the hardware RNG for a software one.
+    randomSeed(sessionEntropy());
+#endif
     _sessionStartTime = millis();
     // Test sessions are never reported, so they keep the last real id.
     // 31 bits so it prints as a positive int32 response value.
