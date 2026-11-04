@@ -632,7 +632,6 @@ private:
     double _gridPeriodUs = 0;            // CR_CYCLES_PER_MACROCYCLE * numFingers * (ON + OFF)
     float _jitterLimitMs = 0;            // Largest onset shift, see onsetJitterLimitMs()
     uint16_t _jitterGuardMs = 0;         // Base time sits this far before nominal, so deltas stay unsigned
-    bool _firstStimulusPending = true;   // The session's very first onset is not shifted
     uint32_t _appliedPauseMs = 0;        // Part of _pausedMs already moved into the grid
 
     // Internal methods

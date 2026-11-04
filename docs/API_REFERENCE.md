@@ -1195,6 +1195,7 @@ Pattern generateSequentialPattern(uint8_t numFingers = MAX_ACTUATORS, float time
 Pattern generateMirroredPattern(uint8_t numFingers = MAX_ACTUATORS, float timeOnMs = 100.0f,
                                 float timeOffMs = 67.0f,
                                 bool randomize = true);
+float onsetJitterLimitMs(float timeOnMs, float timeOffMs, float jitterPercent);
 ```
 
 **Bilateral Mirroring:**

@@ -9,7 +9,6 @@
 #include "sync_protocol.h"  // For getMicros() - overflow-safe 64-bit timestamp
 #include "fs_backend.h"
 #include "platform.h"
-#include <array>
 #include <span>
 #include <cmath>
 #if defined(NRF52840_XXAA) && !defined(NATIVE_TEST_BUILD)
@@ -309,7 +308,7 @@ void TherapyEngine::setFrequencyRandomization(bool enabled, uint16_t minHz, uint
 // THERAPY ENGINE - SESSION CONTROL
 // =============================================================================
 
-// Hardware entropy for session ids, which must not repeat across reboots
+// Hardware entropy for session ids, which must not repeat across reboots, and the nRF52 RNG seed
 static uint32_t sessionEntropy() {
 #if defined(BOARD_PENTABUZZER_ESP32S3) && !defined(NATIVE_TEST_BUILD)
     return esp_random();  // true RNG while the radio is on
@@ -322,7 +321,7 @@ static uint32_t sessionEntropy() {
     } while (err == NRF_ERROR_SOC_RAND_NOT_ENOUGH_VALUES);
     if (err != NRF_SUCCESS) {
         // Not random, but the start tap time varies run to run, unlike a fixed fallback
-        Serial.printf("[THERAPY] RNG error 0x%lX, session id from micros()\n", static_cast<unsigned long>(err));
+        Serial.printf("[THERAPY] RNG error 0x%lX, falling back to micros()\n", static_cast<unsigned long>(err));
         return micros();
     }
     return value;
@@ -343,8 +342,8 @@ void TherapyEngine::startSession(
     uint8_t amplitudeMax,
     bool isTestMode
 ) {
-    // Reset state
-    _isRunning = true;
+    // Reset state. _isRunning is set last: this can run on the BLE core, and
+    // update() must never see a running session with the last session's state.
     _isPaused = false;
     _shouldStop = false;
     _isTestMode = isTestMode;
@@ -380,7 +379,6 @@ void TherapyEngine::startSession(
     _gridPeriodUs = double(CR_CYCLES_PER_MACROCYCLE) * _numFingers * (double(_timeOnMs) + _timeOffMs) * 1000.0;
     _gridOriginUs = 0;
     _gridMacroIndex = 0;
-    _firstStimulusPending = true;
     _appliedPauseMs = 0;
     _mirrorPattern = mirrorPattern;
     _amplitudeMin = amplitudeMin;
@@ -398,6 +396,12 @@ void TherapyEngine::startSession(
 
     // Generate first pattern
     generateNextPattern();
+
+    {
+        PLATFORM_CRITICAL_ENTER();
+        _isRunning = true;
+        PLATFORM_CRITICAL_EXIT();
+    }
 
     // Notify macrocycle start (first macrocycle)
     if (_macrocycleStartCallback) {
@@ -678,12 +682,8 @@ Macrocycle TherapyEngine::generateMacrocycle() {
     mc.clockOffset = 0;  // Will be set by PRIMARY before sending (V2 format)
     mc.eventCount = 0;
 
-    // Timing draws are generated separately from finger/amplitude draws
-    std::array<double, MACROCYCLE_MAX_EVENTS> offsets = {};
-    for (uint8_t i = 0; i < 3 * _numFingers; ++i) {
-        offsets[i] = (_firstStimulusPending && i == 0) ? 0.0 :
-            (double(random(0, 1000001)) / 500000.0 - 1.0) * _jitterLimitMs;
-    }
+    // The session's very first onset stays on its slot
+    const bool firstMacrocycle = (_gridOriginUs == 0);
 
     // Generate 3 patterns
     for (uint8_t patternNum = 0; patternNum < PATTERNS_PER_MACROCYCLE; patternNum++) {
@@ -734,8 +734,10 @@ Macrocycle TherapyEngine::generateMacrocycle() {
             // In mirrored mode these are identical; in non-mirrored mode they differ
             // The guard moves the wire base earlier so negative onset offsets fit the
             // unsigned deltaTimeMs field. Both gloves use the same base and deltas.
+            const double onsetOffsetMs = (firstMacrocycle && mc.eventCount == 0) ? 0.0 :
+                (double(random(0, 1000001)) / 500000.0 - 1.0) * _jitterLimitMs;
             const uint16_t eventDelta = static_cast<uint16_t>(std::lround(
-                _jitterGuardMs + double(mc.eventCount) * (double(_timeOnMs) + _timeOffMs) + offsets[mc.eventCount]));
+                _jitterGuardMs + double(mc.eventCount) * (double(_timeOnMs) + _timeOffMs) + onsetOffsetMs));
             MacrocycleEvent evt(
                 eventDelta,
                 secondaryFinger,   // For SECONDARY (BLE transmission)
@@ -764,7 +766,7 @@ uint64_t TherapyEngine::gridSlotUs(uint64_t macroIndex) const {
 }
 
 bool TherapyEngine::isPreparePointReached(uint64_t macroIndex) const {
-    // 300 ms ahead of the slot's earliest possible onset
+    // The max lead plus the prepare margin ahead of the slot's earliest possible onset
     const uint64_t earliest = gridSlotUs(macroIndex) - uint64_t(_jitterGuardMs) * 1000ULL;
     return getMicros() + SYNC_MAX_LEAD_TIME_US + MACROCYCLE_PREPARE_MARGIN_US >= earliest;
 }
@@ -822,7 +824,6 @@ void TherapyEngine::executeMacrocycleStep() {
                 PLATFORM_CRITICAL_EXIT();
             }
             _macrocycleBaseTime = gridSlotUs(_gridMacroIndex) - guardUs;
-            _firstStimulusPending = false;
             _currentMacrocycle.baseTime = _macrocycleBaseTime;
 
             // Send macrocycle to SECONDARY
