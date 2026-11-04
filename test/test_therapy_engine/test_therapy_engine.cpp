@@ -1054,7 +1054,7 @@ void test_executeMacrocycleStep_transitions_to_waiting_relax(void) {
     mockAdvanceMillis(100);
     engine.update();  // ACTIVE -> WAITING_RELAX
 
-    // Reach the prepare point, 200 ms before the next grid slot
+    // Reach the prepare point, 300 ms before the next grid slot
     mockAdvanceMillis(3200);
     engine.update();  // WAITING_RELAX -> IDLE (cycle complete)
 
@@ -1084,7 +1084,7 @@ void test_executeMacrocycleStep_full_cycle(void) {
     mockAdvanceMillis(100);
     engine.update();  // ACTIVE -> WAITING_RELAX (since g_schedulingComplete = true)
 
-    mockAdvanceMillis(3200);  // Reach the prepare point, 200 ms before the next grid slot
+    mockAdvanceMillis(3200);  // Reach the prepare point, 300 ms before the next grid slot
     engine.update();  // WAITING_RELAX -> IDLE, cycle complete
 
     TEST_ASSERT_EQUAL_INT(1, g_cycleCompleteCallCount);
@@ -1454,7 +1454,7 @@ void test_LastSession_load_rejects_bad_file(void) {
 // ONSET TIMING TESTS
 // =============================================================================
 
-static const uint32_t ONSET_PREPARE_LEAD_US = 180000;  // Inside the 200 ms prepare window
+static const uint32_t ONSET_PREPARE_LEAD_US = 180000;  // Inside the 300 ms prepare window
 
 static std::vector<uint64_t> onsetScheduledTimes;
 static std::vector<uint16_t> onsetScheduledDurations;
@@ -1581,13 +1581,14 @@ void test_onset_macrocycle_grid_does_not_accumulate(void) {
     engine.startSession(500, PatternType::RNDP, 100, 67, 23.5, 4, true, 50, 50, false);
     engine.update();
     const uint64_t base = g_lastSentMacrocycle.baseTime;
+    const double limitMs = onsetJitterLimitMs(100, 67, 23.5f);
     bool laterFirstShifted = false;
     for (int m = 1; m <= 50; ++m) {
         runToNextMacrocycle(engine, base + uint64_t(m)*3340000);
         TEST_ASSERT_EQUAL_UINT64(base + uint64_t(m)*3340000, g_lastSentMacrocycle.baseTime);
-        laterFirstShifted |= g_lastSentMacrocycle.events[0].deltaTimeMs != 20;
+        laterFirstShifted |= std::abs(double(g_lastSentMacrocycle.events[0].deltaTimeMs) - 20) > limitMs / 2;
         for (int i = 0; i < 12; ++i)
-            TEST_ASSERT_TRUE(std::abs(double(g_lastSentMacrocycle.events[i].deltaTimeMs) - (20+i*167)) <= 20.123);
+            TEST_ASSERT_TRUE(std::abs(double(g_lastSentMacrocycle.events[i].deltaTimeMs) - (20+i*167)) <= limitMs + 0.5);
     }
     TEST_ASSERT_TRUE(laterFirstShifted);
 }
@@ -1632,7 +1633,7 @@ void test_onset_skip_on_long_period_holds_until_prepare_point(void) {
     g_cycleCompleteCallCount = 0;
     g_lastLeadTimeReturned = 0;
     engine.update();
-    mockSetMillis(static_cast<uint32_t>((nextBase - 201000) / 1000));
+    mockSetMillis(static_cast<uint32_t>((nextBase - SYNC_MAX_LEAD_TIME_US - MACROCYCLE_PREPARE_MARGIN_US - 1000) / 1000));
     engine.update();
 
     TEST_ASSERT_EQUAL_UINT32(sequenceId, g_lastSentMacrocycle.sequenceId);
@@ -1648,6 +1649,25 @@ void test_onset_skip_on_long_period_holds_until_prepare_point(void) {
     TEST_ASSERT_EQUAL_UINT32(sequenceId + 1, g_lastSentMacrocycle.sequenceId);
     TEST_ASSERT_EQUAL_UINT64(nextBase, g_lastSentMacrocycle.baseTime);
     TEST_ASSERT_TRUE(g_lastSentMacrocycle.baseTime - uint64_t(dispatchMs) * 1000 < 1000000);
+}
+
+void test_onset_stall_inside_prepare_window_does_not_skip(void) {
+    TherapyEngine engine;
+    engine.setSendMacrocycleCallback(mockCaptureMacrocycleCallback);
+    engine.setGetLeadTimeCallback(mockMaxLeadTimeCallback);
+    engine.startSession(100, PatternType::RNDP, 100, 67, 23.5, 4, true, 50, 50, false);
+    engine.update();
+    const uint64_t nextBase = g_lastSentMacrocycle.baseTime + 3340000;
+    const uint32_t sequenceId = g_lastSentMacrocycle.sequenceId;
+
+    engine.update();  // ACTIVE -> WAITING_RELAX
+    mockSetMillis(static_cast<uint32_t>((nextBase - SYNC_MAX_LEAD_TIME_US - MACROCYCLE_PREPARE_MARGIN_US) / 1000));
+    engine.update();  // WAITING_RELAX -> IDLE
+    mockAdvanceMillis(120);  // One stalled loop pass
+    engine.update();
+
+    TEST_ASSERT_EQUAL_UINT32(sequenceId + 1, g_lastSentMacrocycle.sequenceId);
+    TEST_ASSERT_EQUAL_UINT64(nextBase, g_lastSentMacrocycle.baseTime);
 }
 
 void test_onset_zero_jitter_and_fractional_slot(void) {
@@ -1708,13 +1728,14 @@ void test_onset_applies_to_every_pattern_type(void) {
         engine.startSession(500, type, 100, 67, 23.5, 4, true, 50, 50, false);
         engine.update();
         const uint64_t base = g_lastSentMacrocycle.baseTime;
+        const double limitMs = onsetJitterLimitMs(100, 67, 23.5f);
         bool shifted = false;
-        for (int m = 1; m <= 5; ++m) {
+        for (int m = 1; m <= 50; ++m) {
             runToNextMacrocycle(engine, base + uint64_t(m) * 3340000);
             for (int i = 0; i < 12; ++i) {
-                const int nominal = 20 + i * 167;
-                shifted |= g_lastSentMacrocycle.events[i].deltaTimeMs != nominal;
-                TEST_ASSERT_TRUE(std::abs(double(g_lastSentMacrocycle.events[i].deltaTimeMs) - nominal) <= 20.123);
+                const double offsetMs = std::abs(double(g_lastSentMacrocycle.events[i].deltaTimeMs) - (20 + i * 167));
+                shifted |= offsetMs > limitMs / 2;
+                TEST_ASSERT_TRUE(offsetMs <= limitMs + 0.5);
             }
         }
         TEST_ASSERT_TRUE(shifted);
@@ -1904,6 +1925,7 @@ int main(int argc, char **argv) {
     RUN_TEST(test_onset_macrocycle_grid_does_not_accumulate);
     RUN_TEST(test_onset_late_dispatch_skips_without_rebasing);
     RUN_TEST(test_onset_skip_on_long_period_holds_until_prepare_point);
+    RUN_TEST(test_onset_stall_inside_prepare_window_does_not_skip);
     RUN_TEST(test_onset_zero_jitter_and_fractional_slot);
     RUN_TEST(test_onset_jitter_above_cap_keeps_minimum_gap);
     RUN_TEST(test_onset_period_scales_with_finger_count);

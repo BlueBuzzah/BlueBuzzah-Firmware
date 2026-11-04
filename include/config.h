@@ -154,6 +154,10 @@
 #define SYNC_DRIFT_EMA_ALPHA 0.3f             // Drift rate EMA smoothing factor (α=0.3)
 #define SYNC_MIN_LEAD_TIME_US 70000           // 70ms minimum lead time for MACROCYCLE
 #define SYNC_MAX_LEAD_TIME_US 150000          // 150ms maximum lead time for MACROCYCLE
+// A macrocycle is prepared this far before the max lead, so a slow loop pass
+// can't lose it. Tunable: dispatch stays gated on the previous queue draining,
+// and SECONDARY accepts a baseTime up to 5 s ahead.
+#define MACROCYCLE_PREPARE_MARGIN_US 150000
 
 // Unified keepalive + clock sync (PING/PONG)
 #define KEEPALIVE_INTERVAL_MS 1000   // 1 second between PING messages (unified keepalive + clock sync)

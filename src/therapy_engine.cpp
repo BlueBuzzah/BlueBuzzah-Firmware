@@ -764,9 +764,9 @@ uint64_t TherapyEngine::gridSlotUs(uint64_t macroIndex) const {
 }
 
 bool TherapyEngine::isPreparePointReached(uint64_t macroIndex) const {
-    // 200 ms ahead of the slot's earliest possible onset
+    // 300 ms ahead of the slot's earliest possible onset
     const uint64_t earliest = gridSlotUs(macroIndex) - uint64_t(_jitterGuardMs) * 1000ULL;
-    return getMicros() + SYNC_MAX_LEAD_TIME_US + 50000ULL >= earliest;
+    return getMicros() + SYNC_MAX_LEAD_TIME_US + MACROCYCLE_PREPARE_MARGIN_US >= earliest;
 }
 
 void TherapyEngine::executeMacrocycleStep() {
