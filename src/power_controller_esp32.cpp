@@ -1,10 +1,14 @@
 /**
  * @file power_controller_esp32.cpp
- * @brief PentaBuzzer power path: slide switch, chip enables, deep sleep
+ * @brief v3 power path: slide switch, chip enables, deep sleep
  *
  * The power switch drives GPIO3 (strapping pin - read only after boot):
- * HIGH = on, LOW = shutdown request. Deep sleep wakes when the switch goes
- * HIGH again.
+ * HIGH = on, LOW = shutdown request. Sliding the switch off pulls GPIO3 low at
+ * once; the firmware stops the motors, saves the session, flashes the LED and
+ * deep sleeps. About 2 s after the slide an RC delay disables the 3.3 V
+ * regulator, so the board is then fully off (not sleeping). Sliding the switch
+ * on powers it up through a normal boot. The ext1 wake on GPIO3 HIGH only
+ * covers a quick off-on flip before the cut.
  *
  * GPIO1 is NOT a power-rail switch (there is no switched rail on this board;
  * the DRV2605s and LED run directly from VBat). It is the shared EN pin of
