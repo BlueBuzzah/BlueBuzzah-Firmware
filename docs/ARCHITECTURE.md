@@ -1782,8 +1782,8 @@ bool HapticController::selectChannel(uint8_t finger) {
         return false;
     }
 
-    // TCA9548A: open this finger's channel (TCA9548A library)
-    _tca.openChannel(FINGER_CHANNEL(finger));
+    // TCA9548A: open only this finger's channel
+    _tca.writeRegister(static_cast<uint8_t>(1u << FINGER_CHANNEL(finger)));
     return true;
 }
 
