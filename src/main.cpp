@@ -1661,6 +1661,7 @@ void onBLEConnect(uint16_t connHandle, ConnectionType type)
         // the motor queue with the PRIMARY's macrocycles.
         if (therapy.isRunning())
         {
+            Serial.println(F("[TEST] PRIMARY linked - ending standalone test"));
             therapy.stop();
             if (safetyShutdownSema)
             {
