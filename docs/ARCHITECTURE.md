@@ -326,7 +326,7 @@ if (deviceRole == DeviceRole::SECONDARY)
 // Both roles schedule local motors for standalone tests
 therapy.setSchedulingCallbacks(onScheduleActivation, onStartScheduling, onIsSchedulingComplete);
 
-// Only the PRIMARY generates macrocycles and sends them to the SECONDARY
+// In a bilateral session only the PRIMARY generates macrocycles and sends them to the SECONDARY
 if (deviceRole == DeviceRole::PRIMARY)
 {
     therapy.setSendMacrocycleCallback(onSendMacrocycle);

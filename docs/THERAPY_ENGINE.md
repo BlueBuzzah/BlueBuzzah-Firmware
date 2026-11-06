@@ -281,7 +281,7 @@ Both hands use finger indices `0..MAX_ACTUATORS-1`, with the hardware wiring ens
 
 **Why Needed?** Both gloves must play the same macrocycle for bilateral symmetry.
 
-The SECONDARY never generates patterns or random values. The PRIMARY generates every pattern, jitter offset and amplitude, then sends the complete macrocycle to the SECONDARY as one `MACROCYCLE` message. Each event carries the SECONDARY's finger index, so the SECONDARY plays exactly what the PRIMARY chose and no shared random seed is needed.
+In a bilateral session the SECONDARY never generates patterns or random values. The PRIMARY generates every pattern, jitter offset and amplitude, then sends the complete macrocycle to the SECONDARY as one `MACROCYCLE` message. Each event carries the SECONDARY's finger index, so the SECONDARY plays exactly what the PRIMARY chose and no shared random seed is needed.
 
 ```cpp
 // src/therapy_engine.cpp - generateMacrocycle()
@@ -521,13 +521,13 @@ bool initializeTherapy()
     // Set scheduling callbacks for FreeRTOS motor task. These are the engine's
     // only route to the motors, and both roles need them for standalone tests.
     therapy.setSchedulingCallbacks(onScheduleActivation, onStartScheduling, onIsSchedulingComplete);
+    // Set macrocycle start callback to recover any DRV2605 that reset
+    therapy.setMacrocycleStartCallback(onMacrocycleStart);
 
     // Set BLE sync callback (PRIMARY only - sends commands to SECONDARY)
     if (deviceRole == DeviceRole::PRIMARY)
     {
         therapy.setSendMacrocycleCallback(onSendMacrocycle);
-        // Set macrocycle start callback for PING/PONG latency measurement
-        therapy.setMacrocycleStartCallback(onMacrocycleStart);
         // Set adaptive lead time callback for RTT-based scheduling
         therapy.setGetLeadTimeCallback(onGetLeadTime);
     }

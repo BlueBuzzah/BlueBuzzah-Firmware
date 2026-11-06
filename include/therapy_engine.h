@@ -615,7 +615,7 @@ private:
     MacrocycleStartCallback _macrocycleStartCallback;
     SendMacrocycleCallback _sendMacrocycleCallback;
 
-    // FreeRTOS motor task scheduling callbacks (PRIMARY uses ActivationQueue)
+    // FreeRTOS motor task scheduling callbacks (local motors use ActivationQueue)
     ScheduleActivationCallback _scheduleActivationCallback;
     StartSchedulingCallback _startSchedulingCallback;
     IsSchedulingCompleteCallback _isSchedulingCompleteCallback;

@@ -422,7 +422,7 @@ void onDeactivate(uint8_t finger);
 void onCycleComplete(uint32_t cycleCount);
 void onMacrocycleStart(uint32_t macrocycleCount);
 
-// PRIMARY scheduling callbacks (FreeRTOS motor task)
+// Local scheduling callbacks (FreeRTOS motor task)
 void onScheduleActivation(uint64_t activateTimeUs, uint8_t finger, uint8_t amplitude, uint16_t durationMs, uint16_t frequencyHz);
 void onStartScheduling();
 bool onIsSchedulingComplete();
@@ -1552,13 +1552,13 @@ bool initializeTherapy()
     // Set scheduling callbacks for FreeRTOS motor task. These are the engine's
     // only route to the motors, and both roles need them for standalone tests.
     therapy.setSchedulingCallbacks(onScheduleActivation, onStartScheduling, onIsSchedulingComplete);
+    // Set macrocycle start callback to recover any DRV2605 that reset
+    therapy.setMacrocycleStartCallback(onMacrocycleStart);
 
     // Set BLE sync callback (PRIMARY only - sends commands to SECONDARY)
     if (deviceRole == DeviceRole::PRIMARY)
     {
         therapy.setSendMacrocycleCallback(onSendMacrocycle);
-        // Set macrocycle start callback for PING/PONG latency measurement
-        therapy.setMacrocycleStartCallback(onMacrocycleStart);
         // Set adaptive lead time callback for RTT-based scheduling
         therapy.setGetLeadTimeCallback(onGetLeadTime);
     }
@@ -1652,6 +1652,21 @@ void onBLEConnect(uint16_t connHandle, ConnectionType type)
         lastKeepaliveReceived = millis();
         // Report the battery now, not up to 60s later: the PRIMARY gates starts on it
         g_batteryCheckNow = true;
+
+        // Stopping scanning doesn't cancel a connect already in flight, so this
+        // link can land during a standalone test. End the test: it can't share
+        // the motor queue with the PRIMARY's macrocycles.
+        if (therapy.isRunning())
+        {
+            therapy.stop();
+            ble.setScannerAutoRestart(true);
+            if (safetyShutdownSema)
+            {
+                BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+                xSemaphoreGiveFromISR(safetyShutdownSema, &xHigherPriorityTaskWoken);
+                portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
+            }
+        }
     }
 
     // Update state machine on relevant connections
@@ -2863,14 +2878,6 @@ void startTherapyTest()
         patternType = PatternType::MIRRORED;
     }
 
-    // Stop scanning during standalone test (SECONDARY only)
-    if (deviceRole == DeviceRole::SECONDARY)
-    {
-        ble.setScannerAutoRestart(false); // Prevent health check from restarting
-        ble.stopScanning();
-        Serial.println(F("[TEST] Scanning paused for standalone test"));
-    }
-
     // Test sessions use fixed duration, not profile duration
     uint32_t durationSec = TEST_DURATION_SEC;
 
@@ -2888,6 +2895,15 @@ void startTherapyTest()
     {
         Serial.println(F("[TEST] Start aborted - state machine rejected START_SESSION"));
         return;
+    }
+
+    // Stop scanning during standalone test (SECONDARY only). After the check above:
+    // a rejected TEST must leave the scanner running or the glove never relinks.
+    if (deviceRole == DeviceRole::SECONDARY)
+    {
+        ble.setScannerAutoRestart(false); // Prevent health check from restarting
+        ble.stopScanning();
+        Serial.println(F("[TEST] Scanning paused for standalone test"));
     }
 
     // Notify SECONDARY of session start (enables pulsing LED on SECONDARY)
