@@ -623,7 +623,11 @@ bool HapticController::selectChannel(uint8_t finger) {
         return false;
     }
 
-    _tca.openChannel(FINGER_CHANNEL(finger));
+    // Write the mask rather than OR a channel in: two drivers at 0x5A must never be connected together
+    _tca.writeRegister(static_cast<uint8_t>(1u << FINGER_CHANNEL(finger)));
+    if (_preSelectedFinger != static_cast<int8_t>(finger)) {
+        _preSelectedFinger = -1;
+    }
     return true;
 }
 
@@ -830,8 +834,8 @@ bool HapticController::selectChannelPersistent(uint8_t finger) {
         return false;
     }
 
-    // Open channel and leave it open (no closeChannels call)
-    _tca.openChannel(FINGER_CHANNEL(finger));
+    // Open only this channel and leave it open (no closeChannels call)
+    selectChannel(finger);
     _preSelectedFinger = static_cast<int8_t>(finger);  // Track pre-selected channel
     return true;
 }
@@ -913,7 +917,7 @@ Result HapticController::activatePreSelected(uint8_t finger, uint8_t amplitude) 
         if (!selectChannel(finger)) {
             return Result::ERROR_HARDWARE;
         }
-        // Note: selectChannel() doesn't update _preSelectedFinger (it's for persistent selection)
+        // selectChannel() closes any other channel and clears a stale pre-selection
     }
 
     // Write RTP value (frequency was already set during pre-selection)

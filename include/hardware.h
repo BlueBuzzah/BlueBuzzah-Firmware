@@ -213,7 +213,7 @@ public:
      * @param finger Finger index (0 to MAX_ACTUATORS-1)
      * @return true if channel selected successfully
      *
-     * Unlike selectChannel(), this does NOT close the channel after use.
+     * Records the pre-selection so activation can skip re-selecting the channel.
      * Call closeChannels() explicitly when done with pre-selected operations.
      */
     bool selectChannelPersistent(uint8_t finger);
@@ -264,6 +264,9 @@ private:
 
     /**
      * @brief Select multiplexer channel and prepare for DRV2605 communication
+     *
+     * Opens only this channel (every other one is closed) and clears the
+     * pre-selection unless this finger is the pre-selected one.
      * @param finger Finger index (0 to MAX_ACTUATORS-1)
      * @return true if channel selected successfully
      */

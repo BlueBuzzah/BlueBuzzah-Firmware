@@ -44,9 +44,11 @@ void test_silkPort_v3_isFingerPlusOne(void) {
 
 #endif
 
-// hardware.cpp isn't built for native tests, so scan its source instead: every
-// mux channel it opens must go through FINGER_CHANNEL(), or fingers land on the wrong motors.
-void test_hardware_opensChannelsOnlyThroughFingerChannel(void) {
+// hardware.cpp isn't built for native tests, so scan its source instead. Mux
+// selection is exclusive (one channel open at a time, so two drivers at 0x5A are
+// never connected together) and goes through FINGER_CHANNEL(), or fingers land on
+// the wrong motors.
+void test_hardware_selectsOneChannelAtATime(void) {
     std::string path = __FILE__;
     path = path.substr(0, path.rfind("test/")) + "src/hardware.cpp";
     std::ifstream file(path);
@@ -55,14 +57,15 @@ void test_hardware_opensChannelsOnlyThroughFingerChannel(void) {
     buffer << file.rdbuf();
     const std::string source = buffer.str();
 
-    const std::string call = "openChannel(";
-    int calls = 0;
-    for (size_t at = source.find(call); at != std::string::npos; at = source.find(call, at + 1)) {
-        calls++;
-        TEST_ASSERT_EQUAL_STRING("FINGER_CHANNEL(",
-            source.substr(at + call.size(), 15).c_str());
-    }
-    TEST_ASSERT_GREATER_THAN(0, calls);
+    // openChannel() ORs into the open mask, which can connect two drivers at the same address
+    TEST_ASSERT_EQUAL(std::string::npos, source.find("_tca.openChannel("));
+
+    const std::string call = "_tca.writeRegister(";
+    size_t at = source.find(call);
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, at);
+    TEST_ASSERT_EQUAL_STRING("static_cast<uint8_t>(1u << FINGER_CHANNEL(",
+        source.substr(at + call.size(), 42).c_str());
+    TEST_ASSERT_EQUAL(std::string::npos, source.find(call, at + 1));  // selectChannel() is the only caller
 }
 
 int main(int argc, char **argv) {
@@ -73,6 +76,6 @@ int main(int argc, char **argv) {
     RUN_TEST(test_fingerChannel_v3_isReversed);
     RUN_TEST(test_silkPort_v3_isFingerPlusOne);
 #endif
-    RUN_TEST(test_hardware_opensChannelsOnlyThroughFingerChannel);
+    RUN_TEST(test_hardware_selectsOneChannelAtATime);
     return UNITY_END();
 }
