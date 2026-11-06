@@ -886,7 +886,8 @@ Wiring facts:
 
 - Motor JST ports are silk-labeled **1–5 in finger order**: firmware finger N ↔
   silk port `N+1` (`MOTOR_SILK_PORT()` in `board_config.h`), on mux channel `4−N`.
-  Schematic designators: J2=MOT_0 … J6=MOT_4; J1 is the battery.
+  Schematic designators: J2=MOT_0 … J6=MOT_4, where J2 is silk 5 on mux channel 0
+  and J6 is silk 1 on mux channel 4; J1 is the battery.
 - Motors run from **VBat**. A glove on USB without a charged battery cannot
   drive any motor — expect `CHIP RESET` canaries on every populated channel.
 - The DRV2605's built-in load diagnostics (MODE=6) report false failures with

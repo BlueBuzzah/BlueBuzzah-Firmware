@@ -28,8 +28,6 @@
   // Provisional ~40% on the discharge curve; calibrate per CALIBRATION_GUIDE.md
   // "Low-battery threshold" and update.
   #define BATTERY_LOW_VOLTAGE      3.80f
-  // The v2 PCB routes mux channel 0 to the pinky pads and channel 3 to the
-  // index pads (archived build guide and netlist), so finger N is channel 3 - N.
 #elif defined(BOARD_PENTABUZZER_ESP32S3)
   #define MAX_ACTUATORS            5
   #define HW_VERSION               3              // BlueBuzzah hardware generation
@@ -50,15 +48,17 @@
   // Provisional ~40% on the discharge curve; calibrate per CALIBRATION_GUIDE.md
   // "Low-battery threshold" and update.
   #define BATTERY_LOW_VOLTAGE      3.80f
-  // The v3 PCB routes mux channel 0 to the port labeled 5 and channel 4 to the
-  // port labeled 1, so finger N is channel 4 - N and the labels run in finger
-  // order: index is port 1, thumb is port 5.
-  #define MOTOR_SILK_PORT(finger)  ((finger) + 1)
+  // The PCB silk labels each motor port 5 minus its mux channel
+  #define MOTOR_SILK_PORT(finger)  (MAX_ACTUATORS - FINGER_CHANNEL(finger))
 #else
   #error "No board macro defined (BOARD_BLUEBUZZAH_NRF52 or BOARD_PENTABUZZER_ESP32S3)"
 #endif
 
-// Both PCBs route the mux channels in reverse of the finger order
+// Both PCBs route the mux channels in reverse of the finger order:
+// - v2: channel 0 is the pinky pads, channel 3 the index pads (archived build
+//   guide and netlist), so finger N is channel 3 - N
+// - v3: channel 0 is the port labeled 5, channel 4 the port labeled 1, so
+//   finger N is channel 4 - N and plugs into the port labeled N + 1
 #define FINGER_CHANNEL(finger)     (MAX_ACTUATORS - 1 - (finger))
 
 // I2C addresses are identical on both boards

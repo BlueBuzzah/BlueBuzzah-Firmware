@@ -1212,14 +1212,14 @@ IDENTIFY:SECONDARY
 [HapticController]
     └── I2C Bus (Wire @ 400kHz)
         └── TCA9548A Multiplexer (0x70)
-            ├── Port 0: DRV2605 (Thumb)   @ 0x5A   (v3 only)
-            ├── Port 1: DRV2605 (Pinky)   @ 0x5A
-            ├── Port 2: DRV2605 (Ring)    @ 0x5A
-            ├── Port 3: DRV2605 (Middle)  @ 0x5A
-            └── Port 4: DRV2605 (Index)   @ 0x5A
+            ├── Channel 0: DRV2605 (Thumb)   @ 0x5A   (v3 only)
+            ├── Channel 1: DRV2605 (Pinky)   @ 0x5A
+            ├── Channel 2: DRV2605 (Ring)    @ 0x5A
+            ├── Channel 3: DRV2605 (Middle)  @ 0x5A
+            └── Channel 4: DRV2605 (Index)   @ 0x5A
 ```
 
-That's v3. v2 has no thumb, so its four ports shift down (port 0 = pinky, port 3 = index). `selectChannel()` maps finger N to `FINGER_CHANNEL(N)` from `board_config.h`.
+That's v3. v2 has no thumb, so its four channels shift down (channel 0 = pinky, channel 3 = index). `selectChannel()` maps finger N to `FINGER_CHANNEL(N)` from `board_config.h`.
 
 ### I2C Initialization
 

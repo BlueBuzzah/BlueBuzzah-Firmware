@@ -930,14 +930,14 @@ closeChannels();
 MCU I2C Bus @ 400kHz (nRF52840 default pins / ESP32-S3 SDA=GPIO5, SCL=GPIO6)
   |
   +-- TCA9548A Multiplexer (0x70)
-        |-- Port 0: DRV2605 #1 (Thumb)   @ 0x5A  (v3 only)
-        |-- Port 1: DRV2605 #2 (Pinky)   @ 0x5A
-        |-- Port 2: DRV2605 #3 (Ring)    @ 0x5A
-        |-- Port 3: DRV2605 #4 (Middle)  @ 0x5A
-        +-- Port 4: DRV2605 #5 (Index)   @ 0x5A
+        |-- Channel 0: DRV2605 #1 (Thumb)   @ 0x5A  (v3 only)
+        |-- Channel 1: DRV2605 #2 (Pinky)   @ 0x5A
+        |-- Channel 2: DRV2605 #3 (Ring)    @ 0x5A
+        |-- Channel 3: DRV2605 #4 (Middle)  @ 0x5A
+        +-- Channel 4: DRV2605 #5 (Index)   @ 0x5A
 ```
 
-That's v3. v2 has no thumb, so its four ports shift down (port 0 = pinky, port 3 = index). Finger N uses port `FINGER_CHANNEL(N)` from `board_config.h`.
+That's v3. v2 has no thumb, so its four channels shift down (channel 0 = pinky, channel 3 = index). Finger N uses channel `FINGER_CHANNEL(N)` from `board_config.h`.
 
 **Why Multiplexer?** All DRV2605 chips have fixed address 0x5A. The multiplexer lets up to 8 chips share one bus (4 or 5 are used).
 
