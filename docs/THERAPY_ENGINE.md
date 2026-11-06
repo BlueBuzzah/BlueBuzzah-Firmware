@@ -273,7 +273,7 @@ struct [[nodiscard]] Pattern {
 };
 ```
 
-Both hands use finger indices `0..MAX_ACTUATORS-1`, with the hardware wiring ensuring each channel maps to the same anatomical finger on both gloves (channel 0 = index on both, etc.).
+Both hands use finger indices `0..MAX_ACTUATORS-1`, with the hardware wiring ensuring each finger index maps to the same anatomical finger on both gloves (finger 0 = index on both, etc.).
 
 **Active-finger remapping**: pattern sequences are slot indices `0..numFingers-1`. `remapPatternFingers()` maps them onto the physical fingers set by `setActiveFingers()`. On v3 the boot motor-presence probe calls `setActiveFingers()` with the ports that have a motor, so a missing motor is skipped on both gloves rather than getting a silent slot. `startSession()` caps `numFingers` at the active-finger count.
 
@@ -930,14 +930,14 @@ closeChannels();
 MCU I2C Bus @ 400kHz (nRF52840 default pins / ESP32-S3 SDA=GPIO5, SCL=GPIO6)
   |
   +-- TCA9548A Multiplexer (0x70)
-        |-- Port 0: DRV2605 #1 (Index)   @ 0x5A
-        |-- Port 1: DRV2605 #2 (Middle)  @ 0x5A
+        |-- Port 0: DRV2605 #1 (Thumb)   @ 0x5A  (v3 only)
+        |-- Port 1: DRV2605 #2 (Pinky)   @ 0x5A
         |-- Port 2: DRV2605 #3 (Ring)    @ 0x5A
-        |-- Port 3: DRV2605 #4 (Pinky)   @ 0x5A
-        +-- Port 4: DRV2605 #5 (Thumb)   @ 0x5A  (v3 only)
+        |-- Port 3: DRV2605 #4 (Middle)  @ 0x5A
+        +-- Port 4: DRV2605 #5 (Index)   @ 0x5A
 ```
 
-That's v3. The v2 PCB reverses ports 0–3 (port 0 = pinky); finger N uses port `FINGER_CHANNEL(N)` from `board_config.h`.
+That's v3. v2 has no thumb, so its four ports shift down (port 0 = pinky, port 3 = index). Finger N uses port `FINGER_CHANNEL(N)` from `board_config.h`.
 
 **Why Multiplexer?** All DRV2605 chips have fixed address 0x5A. The multiplexer lets up to 8 chips share one bus (4 or 5 are used).
 

@@ -52,11 +52,11 @@
   // Provisional ~40% on the discharge curve; calibrate per CALIBRATION_GUIDE.md
   // "Low-battery threshold" and update.
   #define BATTERY_LOW_VOLTAGE      3.80f
-  // Motor JST ports are silk-labeled 1-5 in REVERSE of firmware channels:
-  // firmware finger N drives the port labeled (5 - N). Wire the glove
-  // harness accordingly - therapy patterns are per-finger.
-  #define MOTOR_SILK_PORT(finger)  (5 - (finger))
-  #define FINGER_CHANNEL(finger)   (finger)       // finger N is mux channel N
+  // The v3 PCB routes mux channel 0 to the port labeled 5 and channel 4 to the
+  // port labeled 1, so finger N is channel 4 - N and the labels run in finger
+  // order: index is port 1, thumb is port 5.
+  #define MOTOR_SILK_PORT(finger)  ((finger) + 1)
+  #define FINGER_CHANNEL(finger)   (MAX_ACTUATORS - 1 - (finger))
 #else
   #error "No board macro defined (BOARD_BLUEBUZZAH_NRF52 or BOARD_PENTABUZZER_ESP32S3)"
 #endif
