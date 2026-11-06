@@ -1653,13 +1653,15 @@ void onBLEConnect(uint16_t connHandle, ConnectionType type)
         // Report the battery now, not up to 60s later: the PRIMARY gates starts on it
         g_batteryCheckNow = true;
 
+        // A test running at any point in this connect left the health check off
+        ble.setScannerAutoRestart(true);
+
         // Stopping scanning doesn't cancel a connect already in flight, so this
         // link can land during a standalone test. End the test: it can't share
         // the motor queue with the PRIMARY's macrocycles.
         if (therapy.isRunning())
         {
             therapy.stop();
-            ble.setScannerAutoRestart(true);
             if (safetyShutdownSema)
             {
                 BaseType_t xHigherPriorityTaskWoken = pdFALSE;
