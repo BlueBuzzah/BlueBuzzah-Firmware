@@ -177,11 +177,11 @@ typedef void (*ScheduleActivationCallback)(uint64_t activateTimeUs, uint8_t fing
 therapy.setActivateCallback(onActivate);
 therapy.setDeactivateCallback(onDeactivate);
 therapy.setCycleCompleteCallback(onCycleComplete);
+therapy.setSchedulingCallbacks(onScheduleActivation, onStartScheduling, onIsSchedulingComplete);
 
 if (deviceRole == DeviceRole::PRIMARY)
 {
     therapy.setSendMacrocycleCallback(onSendMacrocycle);
-    therapy.setSchedulingCallbacks(onScheduleActivation, onStartScheduling, onIsSchedulingComplete);
     therapy.setGetLeadTimeCallback(onGetLeadTime);
 }
 ```
@@ -323,11 +323,13 @@ if (deviceRole == DeviceRole::SECONDARY)
 }
 
 // Therapy Engine - src/main.cpp, initializeTherapy()
+// Both roles schedule local motors for standalone tests
+therapy.setSchedulingCallbacks(onScheduleActivation, onStartScheduling, onIsSchedulingComplete);
+
 // Only the PRIMARY generates macrocycles and sends them to the SECONDARY
 if (deviceRole == DeviceRole::PRIMARY)
 {
     therapy.setSendMacrocycleCallback(onSendMacrocycle);
-    therapy.setSchedulingCallbacks(onScheduleActivation, onStartScheduling, onIsSchedulingComplete);
 }
 ```
 

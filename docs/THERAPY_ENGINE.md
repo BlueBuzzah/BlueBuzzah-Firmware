@@ -514,10 +514,13 @@ TherapyEngine uses a **callback-driven architecture** where the engine generates
 ```cpp
 bool initializeTherapy()
 {
-    // Set local motor callbacks (both roles need these for standalone tests)
     therapy.setActivateCallback(onActivate);
     therapy.setDeactivateCallback(onDeactivate);
     therapy.setCycleCompleteCallback(onCycleComplete);
+
+    // Set scheduling callbacks for FreeRTOS motor task. These are the engine's
+    // only route to the motors, and both roles need them for standalone tests.
+    therapy.setSchedulingCallbacks(onScheduleActivation, onStartScheduling, onIsSchedulingComplete);
 
     // Set BLE sync callback (PRIMARY only - sends commands to SECONDARY)
     if (deviceRole == DeviceRole::PRIMARY)
@@ -525,8 +528,6 @@ bool initializeTherapy()
         therapy.setSendMacrocycleCallback(onSendMacrocycle);
         // Set macrocycle start callback for PING/PONG latency measurement
         therapy.setMacrocycleStartCallback(onMacrocycleStart);
-        // Set scheduling callbacks for FreeRTOS motor task
-        therapy.setSchedulingCallbacks(onScheduleActivation, onStartScheduling, onIsSchedulingComplete);
         // Set adaptive lead time callback for RTT-based scheduling
         therapy.setGetLeadTimeCallback(onGetLeadTime);
     }

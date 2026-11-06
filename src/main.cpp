@@ -1545,10 +1545,13 @@ bool initializeBLE()
 
 bool initializeTherapy()
 {
-    // Set local motor callbacks (both roles need these for standalone tests)
     therapy.setActivateCallback(onActivate);
     therapy.setDeactivateCallback(onDeactivate);
     therapy.setCycleCompleteCallback(onCycleComplete);
+
+    // Set scheduling callbacks for FreeRTOS motor task. These are the engine's
+    // only route to the motors, and both roles need them for standalone tests.
+    therapy.setSchedulingCallbacks(onScheduleActivation, onStartScheduling, onIsSchedulingComplete);
 
     // Set BLE sync callback (PRIMARY only - sends commands to SECONDARY)
     if (deviceRole == DeviceRole::PRIMARY)
@@ -1556,8 +1559,6 @@ bool initializeTherapy()
         therapy.setSendMacrocycleCallback(onSendMacrocycle);
         // Set macrocycle start callback for PING/PONG latency measurement
         therapy.setMacrocycleStartCallback(onMacrocycleStart);
-        // Set scheduling callbacks for FreeRTOS motor task
-        therapy.setSchedulingCallbacks(onScheduleActivation, onStartScheduling, onIsSchedulingComplete);
         // Set adaptive lead time callback for RTT-based scheduling
         therapy.setGetLeadTimeCallback(onGetLeadTime);
     }
@@ -2701,7 +2702,7 @@ void onDeactivate(uint8_t finger)
 }
 
 // =============================================================================
-// PRIMARY SCHEDULING CALLBACKS (FreeRTOS Motor Task)
+// LOCAL SCHEDULING CALLBACKS (FreeRTOS Motor Task)
 // =============================================================================
 
 void onScheduleActivation(uint64_t activateTimeUs, uint8_t finger, uint8_t amplitude,
@@ -2829,6 +2830,13 @@ void startTherapyTest()
         return;
     }
 
+    // The motor queue can't hold a local test and the PRIMARY's macrocycles
+    if (deviceRole == DeviceRole::SECONDARY && ble.isPrimaryConnected())
+    {
+        Serial.println(F("[TEST] Turn off the PRIMARY to test this glove"));
+        return;
+    }
+
     // Warn if sync not valid when SECONDARY is connected (timing may be off)
     if (deviceRole == DeviceRole::PRIMARY && ble.isSecondaryConnected() &&
         !syncProtocol.isClockSyncValid())
@@ -2916,8 +2924,9 @@ void startTherapyTest()
 
 void stopTherapyTest()
 {
-    // On a SECONDARY, therapy.isRunning() is always false — only the PRIMARY runs the
-    // engine; the SECONDARY plays macrocycle-driven motor events with the FSM in RUNNING.
+    // On a SECONDARY following a PRIMARY session, therapy.isRunning() is false: only a
+    // standalone test runs the engine there. Otherwise the SECONDARY plays
+    // macrocycle-driven motor events with the FSM in RUNNING.
     // So don't gate the stop on isRunning() alone, or a serial "stop" would silently do
     // nothing while motors are active. Proceed whenever the engine OR the FSM is active.
     // (On a SECONDARY following a live PRIMARY session the next macrocycle resumes
