@@ -912,7 +912,7 @@ Result HapticController::activatePreSelected(uint8_t finger, uint8_t amplitude) 
 
     // Only re-select channel if pre-selection was invalidated
     // Pre-selection is invalidated when closeChannels() or closeAllChannels() is called
-    // (e.g., by deactivate() on another motor)
+    // (e.g., by deactivate() on another motor), or when selectChannel() picks another finger
     if (_preSelectedFinger != static_cast<int8_t>(finger)) {
         if (!selectChannel(finger)) {
             return Result::ERROR_HARDWARE;
