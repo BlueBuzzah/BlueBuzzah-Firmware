@@ -1061,11 +1061,11 @@ public:
     // Event callbacks
     void setCycleCompleteCallback(CycleCompleteCallback callback);      // After each macrocycle
 
-    // Sync protocol callbacks (PRIMARY)
+    // Macrocycle callbacks
     void setMacrocycleStartCallback(MacrocycleStartCallback callback);  // Before macrocycle
-    void setSendMacrocycleCallback(SendMacrocycleCallback callback);    // To send batch
+    void setSendMacrocycleCallback(SendMacrocycleCallback callback);    // To send batch (PRIMARY)
 
-    // FreeRTOS scheduling callbacks (PRIMARY motor task)
+    // FreeRTOS scheduling callbacks (local motor task)
     void setSchedulingCallbacks(ScheduleActivationCallback scheduleCallback,
                                 StartSchedulingCallback startCallback,
                                 IsSchedulingCompleteCallback isCompleteCallback);
