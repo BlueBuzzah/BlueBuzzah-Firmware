@@ -53,7 +53,7 @@
 #define I2C_FREQUENCY 400000  // 400kHz Fast Mode
 
 // I2C timing
-#define I2C_INIT_DELAY_MS 5      // Delay after channel select (fingers 0-3)
+#define I2C_INIT_DELAY_MS 5      // Delay after channel select (channels 0-3)
 #define I2C_INIT_DELAY_CH4_MS 10 // Extended delay for channel 4 (longer I2C path)
 #define I2C_RETRY_COUNT 3        // Max retries for DRV2605 initialization
 #define I2C_RETRY_DELAY_MS 50    // Delay between retries

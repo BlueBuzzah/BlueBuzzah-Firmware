@@ -67,7 +67,7 @@ The board is selected by a build macro (`BOARD_BLUEBUZZAH_NRF52` / `BOARD_PENTAB
 - **`test_menu_controller` does not compile `menu_controller.cpp`.** It tests `TestMenuController`, a hand-maintained mirror; only `internal_messages.h` is real. Behavior changes in `MenuController` need the mirror updated or they go untested.
 - The exclusion list is copy-pasted across `native`, `native_coverage`, `native_coverage_gcc` (`native_penta` inherits). A new platform-specific `.cpp` must be excluded in all three, plus the other board's device env.
 - Mocks (`test/mocks/src/Arduino.h`): `mockAdvanceMicros()`, `mockEnableTimeAutoIncrement()`, `MockSerial`. Filesystem mocks are defined per test file.
-- CI (`test.yml`) runs only `native_coverage_gcc` (4-actuator). Run `native_penta` locally for anything touching `MAX_ACTUATORS`.
+- CI (`test.yml`) runs `native_coverage_gcc` (4-actuator) plus `test_board_config` on `native_penta`. Run `native_penta` locally for anything touching `MAX_ACTUATORS`.
 
 ## Gotchas
 

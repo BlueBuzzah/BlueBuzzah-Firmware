@@ -7,7 +7,7 @@ This document provides a detailed explanation of the BlueBuzzah firmware archite
 
 Platform-specific code is isolated behind compile-time seams: `board_config.h` (pins, `MAX_ACTUATORS`, battery availability), `platform.h` (critical sections, memory barrier, system reset, RTOS headers), a split `BLEManager` backend (`ble_manager_nrf52.cpp` Bluefruit / `ble_manager_esp32.cpp` NimBLE — identical Nordic-UART protocol, MTU 200, 7.5-10 ms glove-link connection interval (30-50 ms requested for the phone link), 0 dBm TX, 2M PHY), an `fs_backend` filesystem shim, and a `build_src_filter`-selected `PowerController` (BlueBuzzah v3 power switch + deep sleep; no-op on nRF). Everything below the seams — therapy engine, sync protocol, state machine, menus, profiles — is shared and platform-neutral.
 
-**BlueBuzzah v3 power topology** (verified against the V2.2 PCB netlist): the ESP32-S3, TCA9548A mux, and IMU (an LSM6DS3 on SPI — present on the board but unused by firmware) run from the XIAO's onboard 3V3 LDO; the five DRV2605 drivers and the WS2812 LED run **directly from VBat**. There is no switched power rail. **Motors cannot run on USB alone** — without a battery, VBat is only the XIAO charger's current-limited output, and any LRA drive browns the drivers out to power-on defaults (standby → silent motors while I2C still works). GPIO1 is the shared DRV2605 EN + mux reset: a LOW→HIGH toggle resets every DRV2605 register, so any runtime toggle must be followed by full haptic reconfiguration. Motor JST ports are silk-labeled 1–5 in reverse of firmware channels (finger N ↔ port 5−N, `MOTOR_SILK_PORT()`). Serial QA commands `MOTOR_DIAG` (buzz every channel + supply-reset canary), `MOTOR_TEST:<n>` (single channel, 2 s), and `MOTOR_PRESENT` (per-port open-load probe via LRA auto-calibration) validate assembly. The presence probe also runs at every boot and feeds the therapy engine's active-finger map, so macrocycles skip motor ports found empty on the PRIMARY glove; fewer than 4 detected motors is signaled by a red double-blink LED at boot, then the glove enters `ERROR` until reboot (a probe skipped because the supply dipped doesn't count).
+**BlueBuzzah v3 power topology** (verified against the V2.2 PCB netlist): the ESP32-S3, TCA9548A mux, and IMU (an LSM6DS3 on SPI — present on the board but unused by firmware) run from the XIAO's onboard 3V3 LDO; the five DRV2605 drivers and the WS2812 LED run **directly from VBat**. There is no switched power rail. **Motors cannot run on USB alone** — without a battery, VBat is only the XIAO charger's current-limited output, and any LRA drive browns the drivers out to power-on defaults (standby → silent motors while I2C still works). GPIO1 is the shared DRV2605 EN + mux reset: a LOW→HIGH toggle resets every DRV2605 register, so any runtime toggle must be followed by full haptic reconfiguration. Motor JST ports are silk-labeled 1–5 in finger order (finger N ↔ port N+1, `MOTOR_SILK_PORT()`). Serial QA commands `MOTOR_DIAG` (buzz every channel + supply-reset canary), `MOTOR_TEST:<n>` (single channel, 2 s), and `MOTOR_PRESENT` (per-port open-load probe via LRA auto-calibration) validate assembly. The presence probe also runs at every boot and feeds the therapy engine's active-finger map, so macrocycles skip motor ports found empty on the PRIMARY glove; fewer than 4 detected motors is signaled by a red double-blink LED at boot, then the glove enters `ERROR` until reboot (a probe skipped because the supply dipped doesn't count).
 
 ## Table of Contents
 
@@ -945,7 +945,7 @@ if (mirrorPattern) {
 
 `numFingers` is 4 on v2 and 5 on v3 by default (or fewer with the `FINGERS` parameter). `remapPatternFingers()` then maps these slots onto the physically present motors.
 
-**Hardware Note**: Both gloves use identical channel-to-finger mapping (channel 0 = index on both gloves; channel 4 = thumb on v3). Each macrocycle event carries both indices: `finger` (sent to the SECONDARY) and `primaryFinger` (used locally, never serialized). In mirrored mode they are equal.
+**Hardware Note**: Both gloves use identical channel-to-finger mapping (finger 0 = index on both gloves; finger 4 = thumb on v3). Each macrocycle event carries both indices: `finger` (sent to the SECONDARY) and `primaryFinger` (used locally, never serialized). In mirrored mode they are equal.
 
 ### Configuration System
 
@@ -1212,14 +1212,14 @@ IDENTIFY:SECONDARY
 [HapticController]
     └── I2C Bus (Wire @ 400kHz)
         └── TCA9548A Multiplexer (0x70)
-            ├── Port 0: DRV2605 (Index)   @ 0x5A
-            ├── Port 1: DRV2605 (Middle)  @ 0x5A
-            ├── Port 2: DRV2605 (Ring)    @ 0x5A
-            ├── Port 3: DRV2605 (Pinky)   @ 0x5A
-            └── Port 4: DRV2605 (Thumb)   @ 0x5A   (v3 only)
+            ├── Channel 0: DRV2605 (Thumb)   @ 0x5A   (v3 only)
+            ├── Channel 1: DRV2605 (Pinky)   @ 0x5A
+            ├── Channel 2: DRV2605 (Ring)    @ 0x5A
+            ├── Channel 3: DRV2605 (Middle)  @ 0x5A
+            └── Channel 4: DRV2605 (Index)   @ 0x5A
 ```
 
-That's v3. The v2 PCB reverses ports 0–3 (port 0 = pinky, port 3 = index); `selectChannel()` maps finger N to `FINGER_CHANNEL(N)` from `board_config.h`.
+That's v3. v2 has no thumb, so its four channels shift down (channel 0 = pinky, channel 3 = index). `selectChannel()` maps finger N to `FINGER_CHANNEL(N)` from `board_config.h`.
 
 ### I2C Initialization
 

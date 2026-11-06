@@ -646,7 +646,7 @@ Result: All fingers above detection, Finger 1 has optimal intensity
    #define I2C_RETRY_COUNT 3         // Max retries for DRV2605 initialization
    #define I2C_RETRY_DELAY_MS 50     // Delay between retries
    ```
-   Channel 4 (the thumb on BlueBuzzah v3) gets the longer initialization delay because of its longer I2C trace on the PCB
+   Channel 4 (the index finger on BlueBuzzah v3) gets the longer initialization delay because of its longer I2C trace on the PCB
 
 5. **Check motor wiring**:
    - Measure motor terminals with multimeter
@@ -879,14 +879,15 @@ assembled glove. Stop any running session first (they do it automatically).
 | Command | Effect |
 | --- | --- |
 | `MOTOR_DIAG` | Buzzes every channel alone (600 ms, full amplitude) and checks a per-chip reset canary afterward. `*** CHIP RESET` means the supply dipped mid-drive — check the battery (missing, discharged, or miswired). |
-| `MOTOR_TEST:<n>` | Drives finger `n` (`0`–`4`, 0 = index) for 2 s and prints the mux channel it used (and the silk port on v3). On v2 finger N is channel 3 − N, so `MOTOR_TEST:0` drives the index pads on channel 3. |
-| `MOTOR_PRESENT` | Open-load probe: runs LRA auto-calibration per channel (each present motor buzzes ~0.5 s) and prints `MOTOR PRESENT` / `NO MOTOR` per finger, with its channel (and silk port on v3). Also refreshes the therapy engine's active-finger map. Runs automatically at every boot; needs battery power (`SUPPLY DIP` output means the results were discarded). |
+| `MOTOR_TEST:<n>` | Drives finger `n` (`0`–`4`, 0 = index) for 2 s and prints the mux channel it used on v2, or the silk port on v3. Finger N is channel 3 − N on v2 and 4 − N on v3, so `MOTOR_TEST:0` drives the index finger on channel 3 or 4. |
+| `MOTOR_PRESENT` | Open-load probe: runs LRA auto-calibration per channel (each present motor buzzes ~0.5 s) and prints `MOTOR PRESENT` / `NO MOTOR` per finger, with its channel on v2 or its silk port on v3. Also refreshes the therapy engine's active-finger map. Runs automatically at every boot; needs battery power (`SUPPLY DIP` output means the results were discarded). |
 
 Wiring facts:
 
-- Motor JST ports are silk-labeled **1–5 in reverse** of firmware channels:
-  firmware finger N ↔ silk port `5−N` (`MOTOR_SILK_PORT()` in `board_config.h`).
-  Schematic designators: J2=MOT_0 … J6=MOT_4; J1 is the battery.
+- Motor JST ports are silk-labeled **1–5 in finger order**: firmware finger N ↔
+  silk port `N+1` (`MOTOR_SILK_PORT()` in `board_config.h`), on mux channel `4−N`.
+  Schematic designators: J2=MOT_0 … J6=MOT_4, where J2 is silk 5 on mux channel 0
+  and J6 is silk 1 on mux channel 4; J1 is the battery.
 - Motors run from **VBat**. A glove on USB without a charged battery cannot
   drive any motor — expect `CHIP RESET` canaries on every populated channel.
 - The DRV2605's built-in load diagnostics (MODE=6) report false failures with

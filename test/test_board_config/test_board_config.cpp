@@ -24,19 +24,28 @@ void test_fingerChannel_v2_isReversed(void) {
 
 #else
 
-// v3 PCB: finger N is channel N (its JST port labels are reversed instead)
-void test_fingerChannel_v3_isFingerIndex(void) {
-    TEST_ASSERT_EQUAL(0, FINGER_CHANNEL(FINGER_INDEX));
-    TEST_ASSERT_EQUAL(1, FINGER_CHANNEL(FINGER_MIDDLE));
+// v3 PCB: mux channel 0 is the port labeled 5, channel 4 the port labeled 1.
+// Reversing the channels keeps the labels in finger order: index is port 1.
+void test_fingerChannel_v3_isReversed(void) {
+    TEST_ASSERT_EQUAL(4, FINGER_CHANNEL(FINGER_INDEX));
+    TEST_ASSERT_EQUAL(3, FINGER_CHANNEL(FINGER_MIDDLE));
     TEST_ASSERT_EQUAL(2, FINGER_CHANNEL(FINGER_RING));
-    TEST_ASSERT_EQUAL(3, FINGER_CHANNEL(FINGER_PINKY));
-    TEST_ASSERT_EQUAL(4, FINGER_CHANNEL(FINGER_THUMB));
+    TEST_ASSERT_EQUAL(1, FINGER_CHANNEL(FINGER_PINKY));
+    TEST_ASSERT_EQUAL(0, FINGER_CHANNEL(FINGER_THUMB));
+}
+
+void test_silkPort_v3_isFingerPlusOne(void) {
+    TEST_ASSERT_EQUAL(1, MOTOR_SILK_PORT(FINGER_INDEX));
+    TEST_ASSERT_EQUAL(2, MOTOR_SILK_PORT(FINGER_MIDDLE));
+    TEST_ASSERT_EQUAL(3, MOTOR_SILK_PORT(FINGER_RING));
+    TEST_ASSERT_EQUAL(4, MOTOR_SILK_PORT(FINGER_PINKY));
+    TEST_ASSERT_EQUAL(5, MOTOR_SILK_PORT(FINGER_THUMB));
 }
 
 #endif
 
 // hardware.cpp isn't built for native tests, so scan its source instead: every
-// mux channel it opens must go through FINGER_CHANNEL(), or v2 fingers reverse.
+// mux channel it opens must go through FINGER_CHANNEL(), or fingers land on the wrong motors.
 void test_hardware_opensChannelsOnlyThroughFingerChannel(void) {
     std::string path = __FILE__;
     path = path.substr(0, path.rfind("test/")) + "src/hardware.cpp";
@@ -61,7 +70,8 @@ int main(int argc, char **argv) {
 #if defined(BOARD_BLUEBUZZAH_NRF52)
     RUN_TEST(test_fingerChannel_v2_isReversed);
 #else
-    RUN_TEST(test_fingerChannel_v3_isFingerIndex);
+    RUN_TEST(test_fingerChannel_v3_isReversed);
+    RUN_TEST(test_silkPort_v3_isFingerPlusOne);
 #endif
     RUN_TEST(test_hardware_opensChannelsOnlyThroughFingerChannel);
     return UNITY_END();
