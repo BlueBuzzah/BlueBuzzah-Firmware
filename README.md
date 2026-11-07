@@ -7,7 +7,7 @@
 [![Snyk Security](https://snyk.io/test/github/buzzahbuddy/bluebuzzah-firmware/badge.svg)](https://app.snyk.io/org/rbonestell/project/29618332-cdb9-45be-ba57-41da82771ad0)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-BlueBuzzah is a medical device research platform implementing vibrotactile Coordinated Reset (vCR) therapy for Parkinson's disease treatment. The system consists of two synchronized haptic gloves that deliver precisely timed vibration patterns to fingers, based on research showing therapeutic benefits from desynchronization of pathological neural oscillations.
+BlueBuzzah is an open-source research platform for vibrotactile Coordinated Reset (vCR) stimulation, inspired by published research in Parkinson's disease. The system consists of two synchronized haptic gloves that deliver precisely timed vibration patterns to the fingers.
 
 ## Hardware Targets
 
@@ -25,7 +25,7 @@ One codebase builds for two hardware generations, selected by PlatformIO environ
 ## Features
 
 - **Bilateral Synchronization**: PTP-inspired clock sync over BLE on a 1MHz hardware timebase; current acceptance target is <5ms clock-offset precision, pending re-validation (see [SYNC_VALIDATION.md](docs/SYNC_VALIDATION.md))
-- **Research-Based Therapy**: Six built-in profiles — Regular vCR, Noisy vCR, Hybrid vCR, Gentle, Quick Test, and a user-editable Custom vCR profile
+- **Research-Based Profiles**: Six built-in profiles — Regular vCR, Noisy vCR, Hybrid vCR, Gentle, Quick Test, and a user-editable Custom vCR profile
 - **Mobile Control**: Comprehensive BLE protocol for iOS/Android app integration
 - **Real-Time Session Management**: Pause, resume, and progress tracking
 - **Multi-Connection Support**: Simultaneous phone and glove connections
@@ -92,12 +92,12 @@ pio test -e native_penta    # Unit tests (5-actuator config)
 
 1. Power on both devices
 2. Wait for boot sequence (up to 30 seconds)
-3. Once the gloves pair (solid green LED), therapy begins automatically if no phone connects within the 30-second boot window
+3. Once the gloves pair (solid green LED), a session begins automatically if no phone connects within the 30-second boot window
 4. Connect phone via BLE to "BlueBuzzah" for mobile app control
 
 ## Configuration
 
-### Therapy Profiles
+### Profiles
 
 The six built-in profiles are defined in `src/profile_manager.cpp` and selected with `PROFILE_LOAD:<id>` over BLE or serial (`SET_PROFILE:REGULAR|NOISY|HYBRID|GENTLE` is a serial-only shortcut for four of them):
 
@@ -146,7 +146,7 @@ Board-specific values (pins, actuator count, battery availability, the `BATTERY_
 - Re-set role: `SET_ROLE:PRIMARY` or `SET_ROLE:SECONDARY`
 - Redeploy firmware: `pio run -e <env> -t upload`
 
-### Therapy Issues
+### Session Issues
 
 **Motors not vibrating:**
 
