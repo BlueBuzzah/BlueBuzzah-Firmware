@@ -20,7 +20,7 @@ One codebase builds for two hardware generations, selected by PlatformIO environ
 | **Motors** | 4 (index–pinky) | 5 (adds thumb) |
 | **BLE stack** | Bluefruit / SoftDevice | NimBLE-Arduino 2.x |
 | **Battery monitoring** | VBAT divider on ADC | DRV2605 VBAT register (0x21) over I2C |
-| **Power switch** | none | slide switch + deep sleep |
+| **Power switch** | none | slide switch; off cuts the 3.3 V supply |
 
 ## Features
 

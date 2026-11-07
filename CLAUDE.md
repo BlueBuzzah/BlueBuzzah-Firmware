@@ -39,7 +39,7 @@ The board is selected by a build macro (`BOARD_BLUEBUZZAH_NRF52` / `BOARD_PENTAB
 | `profile_manager.cpp`| Therapy profiles (via `fs_backend`)   |
 | `vbat_estimator.cpp` | Battery voltage from DRV2605 VBAT register (0x21) — median-of-burst + EMA; used where there is no battery ADC |
 | `fs_backend_*.cpp`   | Filesystem shim: InternalFS (nRF) / LittleFS (ESP32) / in-memory mock (native) |
-| `power_controller_*.cpp` | PentaBuzzer power switch + deep sleep; no-op on nRF |
+| `power_controller_*.cpp` | v3 power switch + deep sleep before the hardware cuts 3.3 V; no-op on nRF |
 | `latency_metrics.cpp`| Runtime latency measurement, RTT tracking, sync quality reporting |
 | `hires_clock.cpp`    | 1MHz timebase for sync timestamps: NRF_TIMER4 + HFXO on nRF (start after SoftDevice enable), `esp_timer` on ESP32 |
 | `radio_anchor.cpp`   | Hardware timestamps of BLE radio events via SoftDevice radio notifications (sync anchoring); inert stubs on Penta and native |
