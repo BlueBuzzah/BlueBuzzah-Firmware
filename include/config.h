@@ -218,8 +218,8 @@ constexpr uint32_t TEST_DURATION_SEC = 120;  // 2 minutes
 
 // Therapy parameter bounds. These are the single source of truth for
 // PROFILE_CUSTOM / PARAM_SET validation and for load-time revalidation.
-// Anchored on Pfeifer et al. 2021 clinical values; see
-// docs/superpowers/specs/2026-07-27-custom-therapy-profile-design.md
+// They are an engineering envelope around the built-in profiles, not values
+// a study tested.
 constexpr float    PARAM_MIN_TIME_ON_MS   = 50.0f;
 constexpr float    PARAM_MAX_TIME_ON_MS   = 200.0f;
 constexpr float    PARAM_MIN_TIME_OFF_MS  = 30.0f;

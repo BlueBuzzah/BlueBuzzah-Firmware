@@ -43,11 +43,11 @@ Both devices run identical firmware and advertise as "BlueBuzzah". Role is store
 - **Pattern**: Random permutations (RNDP) of all finger activations (4 on v2, 5 on v3)
 - **Timing**: 100ms ON, 67ms OFF per finger (configurable)
 - **Bilaterality**: Synchronized PRIMARY/SECONDARY glove stimulation
-- **Jitter**: Temporal randomization to prevent habituation (0-50%)
+- **Jitter**: random shift of each burst onset (0-50%)
 - **Mirror Mode**: Symmetric vs independent PRIMARY/SECONDARY patterns
 - **Session Duration**: 1-240 minutes (default: 120 minutes)
 
-**Therapeutic Goal**: Reduce motor symptoms through coordinated reset stimulation
+**Design**: vibrotactile coordinated reset (vCR) stimulation, following the patterns used in published vCR research
 
 ---
 
@@ -485,7 +485,7 @@ void HapticController::emergencyStop() {
 
 ### Random Frequency Reconfiguration
 
-**Feature**: Optionally randomize actuator frequency each pattern (Custom vCR in the original firmware)
+**Feature**: Optionally randomize actuator frequency each pattern (from Custom vCR in the original firmware; no built-in profile turns it on)
 
 When enabled with `setFrequencyRandomization(true, minHz, maxHz)`, `generateMacrocycle()` picks a new frequency per finger for each pattern, in 5 Hz steps from `minHz` up to but not including `maxHz` (like v1's `randrange`), and stores it in each event:
 
@@ -499,7 +499,7 @@ if (_frequencyRandomization) {
 }
 ```
 
-Every session start (phone `SESSION_START`, auto-start, `TEST`) applies the current profile's `frequencyRandomization`, `frequencyMin` and `frequencyMax`. Only `custom_vcr` has it on (210-260 Hz, so 210-255 Hz); the others play 250 Hz. Both gloves read each event's frequency from the macrocycle, and the motor task writes it to the LRA period register, OL_LRA_PERIOD (0x20, 98.49 µs units), during pre-selection after the previous burst, off the activation's critical path. The write is skipped when the frequency hasn't changed, so fixed-frequency profiles add no I2C traffic.
+Every session start (phone `SESSION_START`, auto-start, `TEST`) applies the current profile's `frequencyRandomization`, `frequencyMin` and `frequencyMax`. No built-in profile has it on, so every profile plays 250 Hz. Both gloves read each event's frequency from the macrocycle, and the motor task writes it to the LRA period register, OL_LRA_PERIOD (0x20, 98.49 µs units), during pre-selection after the previous burst, off the activation's critical path. The write is skipped when the frequency hasn't changed, so fixed-frequency profiles add no I2C traffic.
 
 ---
 
@@ -764,14 +764,14 @@ struct TherapyProfile {
     // Metadata
     bool isDefault;
 
-    // Frequency randomization (Custom vCR feature)
+    // Frequency randomization (engine capability; no built-in profile enables it)
     bool frequencyRandomization;
     uint16_t frequencyMin;  // Min frequency for randomization (Hz)
     uint16_t frequencyMax;  // Max frequency for randomization (Hz)
 };
 ```
 
-`actuatorType` and `frequencyHz` are stored and reported by `PROFILE_GET` but do not reach the DRV2605: the drivers are always configured as LRA, at 250 Hz unless the profile randomizes frequency.
+`actuatorType` and `frequencyHz` are stored and reported by `PROFILE_GET` but do not reach the DRV2605: the drivers are always configured as LRA, at 250 Hz, since no built-in profile randomizes frequency.
 
 ### Profile Comparison
 
@@ -780,9 +780,9 @@ Built-in profiles (`ProfileManager::initBuiltInProfiles()`). `PROFILE_LOAD` take
 | ID | Profile | TIME_ON | TIME_OFF | JITTER | MIRROR | PATTERN | AMPLITUDE | SESSION | Use Case |
 |----|---------|---------|----------|--------|--------|---------|-----------|---------|----------|
 | 1 | **Regular vCR** (`regular_vcr`) | 100ms | 67ms | 0% | False | rndp | 100% | 120 min | Standard protocol, independent L/R |
-| 2 | **Noisy vCR** (`noisy_vcr`) | 100ms | 67ms | 23.5% | True | rndp | 100% | 120 min | Prevents habituation |
+| 2 | **Noisy vCR** (`noisy_vcr`) | 100ms | 67ms | 23.5% | True | rndp | 100% | 120 min | Mirrored, with jitter (noisy vCR arm) |
 | 3 | **Hybrid vCR** (`hybrid_vcr`) | 100ms | 67ms | 23.5% | False | rndp | 100% | 120 min | Jitter with independent L/R |
-| 4 | **Custom vCR** (`custom_vcr`) | 100ms | 67ms | 23.5% | False | rndp | 70-100% | 120 min | User-editable (see below) |
+| 4 | **Custom vCR** (`custom_vcr`) | 100ms | 67ms | 0% | False | rndp | 100% | 120 min | User-editable; defaults match Regular vCR (see below) |
 | 5 | **Gentle** (`gentle`) | 80ms | 87ms | 15% | True | sequential | 30-70% | 60 min | Lower amplitude |
 | 6 | **Quick Test** (`quick_test`) | 100ms | 67ms | 23.5% | True | rndp | 50-100% | 5 min | Short test session |
 
@@ -1039,11 +1039,11 @@ All I2C access to the drivers takes the I2C mutex (`I2CMutexLock`), so the motor
 
 ### Therapeutic Parameters
 
-**Optimal Settings** (based on research):
+**Default settings**: Regular and Noisy vCR use the burst timing, jitter, mirroring and 250 Hz frequency of the regular and noisy vCR arms of Pfeifer et al. 2021 (four fingers per hand, no thumb; v3 adds the thumb by default). Regular's random order is independent per hand: non-mirrored, but it doesn't guarantee the study's non-coincident finger pairs. Custom vCR starts from Regular vCR's values. Hybrid vCR, Gentle and Quick Test were not studied.
 - **Frequency**: 250 Hz (matches LRA resonance)
-- **Amplitude**: 100% (maximum sensation without pain)
-- **ON/OFF ratio**: 100ms/67ms (3:2 ratio)
-- **Jitter**: 23.5% (prevents habituation)
+- **Amplitude**: 100% (a firmware drive level; the study reported vibration displacement in mm, so this percentage was not studied)
+- **ON/OFF**: 100ms/67ms
+- **Jitter**: 0% non-mirrored (regular vCR) or 23.5% mirrored (noisy vCR)
 - **Session duration**: 120 minutes (2 hours)
 - **Pattern**: Random permutations (non-predictable)
 
@@ -1058,7 +1058,7 @@ All I2C access to the drivers takes the I2C mutex (`I2CMutexLock`), so the motor
 
 ### Bilateral Synchronization
 
-**Importance**: Both hands must stimulate simultaneously for optimal neural desynchronization.
+**Why**: the study protocol delivered bursts to both hands at identical times, so the gloves keep their onsets aligned.
 
 **Achieved Synchronization**: <1ms bilateral sync (sub-millisecond precision via FreeRTOS motor task)
 

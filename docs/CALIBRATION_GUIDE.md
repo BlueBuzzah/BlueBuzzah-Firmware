@@ -14,7 +14,7 @@
 4. [Calibration Workflow](#calibration-workflow)
 5. [PRIMARY→SECONDARY Relay Protocol](#primarysecondary-relay-protocol)
 6. [Intensity Mapping](#intensity-mapping)
-7. [Clinical Tuning Guidelines](#clinical-tuning-guidelines)
+7. [Intensity Tuning](#intensity-tuning)
 8. [Troubleshooting](#troubleshooting)
 9. [Assembly QA (BlueBuzzah v3)](#assembly-qa-bluebuzzah-v3)
 10. [Low-battery threshold](#low-battery-threshold)
@@ -44,7 +44,7 @@ Both devices run identical firmware and advertise as "BlueBuzzah". Role is store
 
 Calibration mode allows individual finger motor testing for:
 - **Hardware Verification**: Confirm all 8 motors functional
-- **Intensity Tuning**: Find optimal vibration strength per finger
+- **Intensity Tuning**: Find a comfortable vibration strength per finger
 - **User Comfort**: Adjust for individual sensation thresholds
 - **Diagnostic Testing**: Identify motor failures or loose connections
 
@@ -439,34 +439,16 @@ return (uint8_t)((amplitude * DRV2605_MAX_RTP) / MAX_AMPLITUDE);  // integer div
 
 **Lookup Table**:
 
-| User % | DRV Value | Sensation | Clinical Use |
-|--------|-----------|-----------|--------------|
-| 0% | 0 | None | Motor off |
-| 10% | 12 | Barely perceptible | Detection threshold testing |
-| 25% | 31 | Light tap | Minimum therapeutic |
-| 50% | 63 | Moderate buzz | Typical therapy level |
-| 75% | 95 | Strong vibration | Higher therapeutic |
-| 100% | 127 | Maximum output | Intensity verification |
+| User % | DRV Value | Sensation |
+|--------|-----------|-----------|
+| 0% | 0 | None |
+| 10% | 12 | Barely perceptible |
+| 25% | 31 | Light tap |
+| 50% | 63 | Moderate buzz |
+| 75% | 95 | Strong vibration |
+| 100% | 127 | Maximum output |
 
-### Clinical Intensity Ranges
-
-**Recommended Therapy Intensities**:
-
-```
-Comfort Level          | Intensity Range | DRV Range
------------------------|-----------------|------------
-Sub-threshold          | 0-15%           | 0-19
-Detection threshold    | 15-25%          | 19-31
-Therapeutic minimum    | 25-50%          | 31-63
-Optimal therapeutic    | 50-75%          | 63-95
-Maximum therapeutic    | 75-90%          | 95-114
-Above comfort          | 90-100%         | 114-127
-```
-
-**Typical User Preferences**:
-- **Young adults**: 60-80% (comfortable vibration)
-- **Older adults**: 40-60% (reduced sensation sensitivity)
-- **Parkinson's patients**: 50-70% (based on tremor severity)
+Amplitude % is a firmware drive level that no study tested; the built-in vCR profiles run at 100%.
 
 ### Amplitude Scaling Factors
 
@@ -490,11 +472,11 @@ drv.writeRegister8(0x20, 40);  // OL_LRA_PERIOD: 1 / (250 * 0.00009849) ≈ 40
 // Far off-resonance (±100 Hz): ~80% reduced intensity
 ```
 
-**Recommendation**: Calibration and therapy use the same 250 Hz driver configuration, so intensities found here carry over to therapy directly. The exception is Custom vCR, which randomizes each burst between 210 and 255 Hz, so some bursts feel weaker than at 250 Hz.
+**Recommendation**: Calibration and therapy use the same 250 Hz driver configuration, so intensities found here carry over to therapy directly. No built-in profile randomizes frequency.
 
 ---
 
-## Clinical Tuning Guidelines
+## Intensity Tuning
 
 ### Initial Calibration Procedure
 
@@ -509,11 +491,6 @@ For each finger (0-7):
     5. Repeat 3 times, average result
 ```
 
-**Expected Thresholds**:
-- Healthy adults: 10-20%
-- Reduced sensation (aging/diabetes): 25-40%
-- Hypersensitive: 5-15%
-
 **Step 2: Comfort Maximum** (5-10 minutes per glove)
 
 ```
@@ -523,24 +500,6 @@ For each finger (0-7):
     3. Ask patient: "Is this comfortable?"
     4. Record last comfortable intensity
     5. This is the patient's maximum
-```
-
-**Expected Maximums**:
-- Healthy adults: 70-90%
-- Reduced sensation: 80-100%
-- Hypersensitive: 40-60%
-
-**Step 3: Therapeutic Intensity** (finalization)
-
-```
-For each finger (0-7):
-    Therapeutic intensity = Detection threshold + 50% of comfort range
-
-    Example:
-        Detection: 15%
-        Comfort max: 75%
-        Range: 75 - 15 = 60%
-        Therapeutic: 15 + (60 * 0.50) = 45%
 ```
 
 **Record in Patient Profile**:
@@ -566,7 +525,7 @@ Therapy amplitude is bounded to 20-100% (`PARAM_MIN_AMPLITUDE_PCT` in `config.h`
 2. Find finger with HIGHEST detection threshold (least sensitive)
 3. Set AMPMIN/AMPMAX based on that finger
 4. All fingers will be above detection for that patient
-5. Some fingers may be stronger, but therapy still effective
+5. Some fingers may feel stronger than others
 ```
 
 **Example**:
@@ -581,21 +540,12 @@ Detection Thresholds:
     Finger 6 (SECONDARY Ring): 11%
     Finger 7 (SECONDARY Pinky):   19%
 
-Set therapeutic intensity based on Finger 1 (20%):
+Set intensity based on Finger 1 (20%):
     AMPMIN = 20 + 30 = 50%
     AMPMAX = 50%
 
-Result: All fingers above detection, Finger 1 has optimal intensity
+Result: All fingers above detection
 ```
-
-### Session-to-Session Variability
-
-**Expected Variations**:
-- Day-to-day: ±5-10% intensity
-- Morning vs Evening: Up to ±15% (circadian effects)
-- Medication state: ±20% (Parkinson's patients)
-
-**Recommendation**: Re-calibrate every 4-6 weeks or when patient reports discomfort.
 
 ---
 
@@ -835,7 +785,7 @@ struct CalibrationLog {
     uint8_t sessionNumber;        // Session count
     uint8_t thresholds[8];        // Detection thresholds per finger
     uint8_t comfortMax[8];        // Comfort maximum per finger
-    uint8_t therapeutic[8];       // Final therapeutic intensity per finger
+    uint8_t chosen[8];            // Chosen intensity per finger
 };
 
 // Save to LittleFS
@@ -864,12 +814,9 @@ Update this document when:
 - Modifying calibration algorithms
 - Changing intensity mapping formulas
 - Adding new calibration features
-- Updating clinical protocols
 - Adding per-finger intensity support
 
 **Last Updated:** 2025-01-23
-**Clinical Protocol Version:** 1.0
-**Reviewed By:** Clinical Engineering Team
 
 ## Assembly QA (BlueBuzzah v3)
 
