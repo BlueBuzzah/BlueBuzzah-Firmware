@@ -979,6 +979,7 @@ bool ProfileManager::loadSettings() {
     _roleFromSettings = true;
 
     // Load profile, then apply saved values that pass the PARAM_* bounds
+    // (except Custom, whose parameters come from custom.bin only)
     if (data.profileId > 0 && data.profileId <= _profileCount) {
         _currentProfile = _builtInProfiles[data.profileId - 1];
         // ...

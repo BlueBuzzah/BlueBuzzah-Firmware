@@ -47,7 +47,7 @@ Both devices run identical firmware and advertise as "BlueBuzzah". Role is store
 - **Mirror Mode**: Symmetric vs independent PRIMARY/SECONDARY patterns
 - **Session Duration**: 1-240 minutes (default: 120 minutes)
 
-**Therapeutic Goal**: Reduce motor symptoms through coordinated reset stimulation
+**Design**: vibrotactile coordinated reset (vCR) stimulation, following the patterns used in published vCR research
 
 ---
 
@@ -1058,7 +1058,7 @@ All I2C access to the drivers takes the I2C mutex (`I2CMutexLock`), so the motor
 
 ### Bilateral Synchronization
 
-**Importance**: Both hands must stimulate simultaneously for optimal neural desynchronization.
+**Why**: the study protocol delivered bursts to both hands at identical times, so the gloves keep their onsets aligned.
 
 **Achieved Synchronization**: <1ms bilateral sync (sub-millisecond precision via FreeRTOS motor task)
 

@@ -14,7 +14,7 @@
 4. [Calibration Workflow](#calibration-workflow)
 5. [PRIMARY→SECONDARY Relay Protocol](#primarysecondary-relay-protocol)
 6. [Intensity Mapping](#intensity-mapping)
-7. [Clinical Tuning Guidelines](#clinical-tuning-guidelines)
+7. [Intensity Tuning](#intensity-tuning)
 8. [Troubleshooting](#troubleshooting)
 9. [Assembly QA (BlueBuzzah v3)](#assembly-qa-bluebuzzah-v3)
 10. [Low-battery threshold](#low-battery-threshold)
@@ -476,7 +476,7 @@ drv.writeRegister8(0x20, 40);  // OL_LRA_PERIOD: 1 / (250 * 0.00009849) ≈ 40
 
 ---
 
-## Clinical Tuning Guidelines
+## Intensity Tuning
 
 ### Initial Calibration Procedure
 
@@ -785,7 +785,7 @@ struct CalibrationLog {
     uint8_t sessionNumber;        // Session count
     uint8_t thresholds[8];        // Detection thresholds per finger
     uint8_t comfortMax[8];        // Comfort maximum per finger
-    uint8_t therapeutic[8];       // Final therapeutic intensity per finger
+    uint8_t chosen[8];            // Chosen intensity per finger
 };
 
 // Save to LittleFS
@@ -814,12 +814,9 @@ Update this document when:
 - Modifying calibration algorithms
 - Changing intensity mapping formulas
 - Adding new calibration features
-- Updating clinical protocols
 - Adding per-finger intensity support
 
 **Last Updated:** 2025-01-23
-**Clinical Protocol Version:** 1.0
-**Reviewed By:** Clinical Engineering Team
 
 ## Assembly QA (BlueBuzzah v3)
 
