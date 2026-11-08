@@ -25,7 +25,7 @@ One codebase builds for two hardware generations, selected by PlatformIO environ
 ## Features
 
 - **Bilateral Synchronization**: PTP-inspired clock sync over BLE on a 1MHz hardware timebase; current acceptance target is <5ms clock-offset precision, pending re-validation (see [SYNC_VALIDATION.md](docs/SYNC_VALIDATION.md))
-- **Built-in Profiles**: Six built-in profiles — Regular vCR, Noisy vCR, Hybrid vCR, Gentle, Quick Test, and a user-editable Custom vCR profile. Regular and Noisy vCR follow the two vCR arms of Pfeifer et al. 2021; Custom vCR starts from Regular vCR's values
+- **Built-in Profiles**: Six built-in profiles — Regular vCR, Noisy vCR, Hybrid vCR, Gentle, Quick Test, and a user-editable Custom vCR profile. Regular and Noisy vCR follow the timing, pattern and 250 Hz frequency of the two vCR arms of Pfeifer et al. 2021; Custom vCR starts from Regular vCR's values
 - **Mobile Control**: Comprehensive BLE protocol for iOS/Android app integration
 - **Real-Time Session Management**: Pause, resume, and progress tracking
 - **Multi-Connection Support**: Simultaneous phone and glove connections
