@@ -1454,7 +1454,7 @@ profiles.loadProfileByName("noisy_vcr");
 | 1 | `regular_vcr` | `rndp` | no | 0% | 100% |
 | 2 | `noisy_vcr` | `rndp` | yes | 23.5% | 100% |
 | 3 | `hybrid_vcr` | `rndp` | no | 23.5% | 100% |
-| 4 | `custom_vcr` | `rndp` | no | 23.5% | 70-100% |
+| 4 | `custom_vcr` | `rndp` | no | 0% | 100% |
 | 5 | `gentle` | `sequential` | yes | 15% | 30-70% |
 | 6 | `quick_test` | `rndp` | yes | 23.5% | 50-100% |
 
@@ -2164,7 +2164,7 @@ The architecture enables confident refactoring, easy testing, and straightforwar
 | BLE supervision timeout | 6s | Disconnect detection (`BLE_TIMEOUT_MS`) |
 | Therapy default ON | 100ms | Burst duration |
 | Therapy default OFF | 67ms | TIME_OFF between bursts |
-| Jitter | 0% / 23.5% | Regular vCR / Noisy, Hybrid and Custom vCR |
+| Jitter | 0% / 23.5% | Regular and Custom vCR / Noisy and Hybrid vCR |
 | Default session | 7200s | 2 hours (vCR profiles) |
 
 ### Memory Budget
