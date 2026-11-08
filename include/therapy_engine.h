@@ -393,7 +393,7 @@ public:
     [[nodiscard]] PatternType getPatternType() const { return _patternType; }
 
     /**
-     * @brief Enable/disable frequency randomization (Custom vCR feature)
+     * @brief Enable/disable frequency randomization (no built-in profile enables it)
      * @param enabled Enable frequency randomization
      * @param minHz Minimum frequency (default 210 Hz, v1 ACTUATOR_FREQL)
      * @param maxHz Upper bound, excluded like v1 randrange (default 260 Hz, so 210-255 Hz)
@@ -582,7 +582,7 @@ private:
     uint8_t _amplitudeMin;
     uint8_t _amplitudeMax;
 
-    // Frequency randomization (Custom vCR feature - v1 defaults_CustomVCR.py)
+    // Frequency randomization (from v1 defaults_CustomVCR.py; no built-in profile enables it)
     bool _frequencyRandomization;
     uint16_t _frequencyMin;     // 210 Hz (v1 ACTUATOR_FREQL)
     uint16_t _frequencyMax;     // 260 Hz, excluded like v1 randrange (so up to 255 Hz)

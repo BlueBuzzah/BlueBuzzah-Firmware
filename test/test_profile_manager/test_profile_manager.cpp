@@ -188,6 +188,23 @@ void test_getCurrentProfile_noisy_vcr_has_correct_defaults(void) {
     TEST_ASSERT_EQUAL_UINT8(MAX_ACTUATORS, p->numFingers);
 }
 
+void test_getCurrentProfile_custom_vcr_has_correct_defaults(void) {
+    profiles->loadProfile(4);  // custom_vcr defaults match regular_vcr
+    const TherapyProfile* p = profiles->getCurrentProfile();
+
+    TEST_ASSERT_FLOAT_WITHIN(0.1f, 100.0f, p->timeOnMs);
+    TEST_ASSERT_FLOAT_WITHIN(0.1f, 67.0f, p->timeOffMs);
+    TEST_ASSERT_FLOAT_WITHIN(0.1f, 0.0f, p->jitterPercent);
+    TEST_ASSERT_EQUAL_UINT8(100, p->amplitudeMin);
+    TEST_ASSERT_EQUAL_UINT8(100, p->amplitudeMax);
+    TEST_ASSERT_FALSE(p->mirrorPattern);
+    TEST_ASSERT_FALSE(p->frequencyRandomization);
+    TEST_ASSERT_EQUAL_UINT16(250, p->frequencyHz);
+    TEST_ASSERT_EQUAL_UINT16(120, p->sessionDurationMin);
+    TEST_ASSERT_EQUAL_STRING("rndp", p->patternType);
+    TEST_ASSERT_EQUAL_UINT8(MAX_ACTUATORS, p->numFingers);
+}
+
 void test_getCurrentProfile_gentle_has_correct_values(void) {
     profiles->loadProfile(5);  // gentle is now profile 5
     const TherapyProfile* p = profiles->getCurrentProfile();
@@ -733,7 +750,7 @@ void test_customOverride_absent_leaves_builtin_defaults(void) {
     // custom_vcr built-in defaults
     const TherapyProfile* profile = profiles->getCurrentProfile();
     TEST_ASSERT_EQUAL_FLOAT(100.0f, profile->timeOnMs);
-    TEST_ASSERT_EQUAL_UINT8(70, profile->amplitudeMin);
+    TEST_ASSERT_EQUAL_UINT8(100, profile->amplitudeMin);
 }
 
 void test_customOverride_does_not_affect_preset_profiles(void) {
@@ -903,6 +920,7 @@ int main(int argc, char **argv) {
     // Get Current Profile Tests
     RUN_TEST(test_getCurrentProfile_returns_profile_after_load);
     RUN_TEST(test_getCurrentProfile_noisy_vcr_has_correct_defaults);
+    RUN_TEST(test_getCurrentProfile_custom_vcr_has_correct_defaults);
     RUN_TEST(test_getCurrentProfile_gentle_has_correct_values);
     RUN_TEST(test_getCurrentProfile_quick_test_has_5_minute_duration);
     RUN_TEST(test_getCurrentProfile_returns_null_when_not_loaded);

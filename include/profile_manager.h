@@ -135,7 +135,7 @@ struct TherapyProfile {
     // Metadata
     bool isDefault;
 
-    // Frequency randomization (Custom vCR feature)
+    // Frequency randomization (engine capability; no built-in profile enables it)
     bool frequencyRandomization;
     uint16_t frequencyMin;  // Min frequency for randomization (Hz)
     uint16_t frequencyMax;  // Max frequency for randomization (Hz)

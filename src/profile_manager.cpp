@@ -61,7 +61,7 @@ void ProfileManager::initBuiltInProfiles() {
     _profileCount = 0;
 
     // =========================================================================
-    // V1 ORIGINAL PROFILES (research-based vCR therapy)
+    // V1 ORIGINAL PROFILES (vCR patterns from the v1 prototype)
     // =========================================================================
 
     // Profile 1: Regular vCR (Default) - Non-mirrored, no jitter
@@ -133,24 +133,24 @@ void ProfileManager::initBuiltInProfiles() {
     _profileNames[_profileCount] = _builtInProfiles[_profileCount].name;
     _profileCount++;
 
-    // Profile 4: Custom vCR - Non-mirrored, jitter, amplitude range, freq randomization
-    // Reference: Original v1 defaults_CustomVCR.py
+    // Profile 4: Custom vCR - user-editable; defaults match regular_vcr
+    // (Pfeifer et al. 2021 regular vCR timing and pattern, fixed 250 Hz)
     TherapyProfile& custom = _builtInProfiles[_profileCount];
     strcpy(custom.name, "custom_vcr");
-    strcpy(custom.description, "Custom vCR - variable amplitude & frequency");
+    strcpy(custom.description, "Custom vCR - user-editable");
     custom.actuatorType = ActuatorType::LRA;
     custom.frequencyHz = 250;
     custom.timeOnMs = 100.0f;
     custom.timeOffMs = 67.0f;
-    custom.jitterPercent = 23.5f;
-    custom.amplitudeMin = 70;
+    custom.jitterPercent = 0.0f;
+    custom.amplitudeMin = 100;
     custom.amplitudeMax = 100;
     custom.sessionDurationMin = 120;
     strcpy(custom.patternType, "rndp");
     custom.mirrorPattern = false;
     custom.numFingers = MAX_ACTUATORS;
     custom.isDefault = false;
-    custom.frequencyRandomization = true;
+    custom.frequencyRandomization = false;
     custom.frequencyMin = 210;
     custom.frequencyMax = 260;
     _profileNames[_profileCount] = _builtInProfiles[_profileCount].name;
