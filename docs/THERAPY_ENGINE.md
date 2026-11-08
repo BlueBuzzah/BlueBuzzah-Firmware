@@ -43,7 +43,7 @@ Both devices run identical firmware and advertise as "BlueBuzzah". Role is store
 - **Pattern**: Random permutations (RNDP) of all finger activations (4 on v2, 5 on v3)
 - **Timing**: 100ms ON, 67ms OFF per finger (configurable)
 - **Bilaterality**: Synchronized PRIMARY/SECONDARY glove stimulation
-- **Jitter**: Temporal randomization to prevent habituation (0-50%)
+- **Jitter**: random shift of each burst onset (0-50%)
 - **Mirror Mode**: Symmetric vs independent PRIMARY/SECONDARY patterns
 - **Session Duration**: 1-240 minutes (default: 120 minutes)
 
@@ -780,7 +780,7 @@ Built-in profiles (`ProfileManager::initBuiltInProfiles()`). `PROFILE_LOAD` take
 | ID | Profile | TIME_ON | TIME_OFF | JITTER | MIRROR | PATTERN | AMPLITUDE | SESSION | Use Case |
 |----|---------|---------|----------|--------|--------|---------|-----------|---------|----------|
 | 1 | **Regular vCR** (`regular_vcr`) | 100ms | 67ms | 0% | False | rndp | 100% | 120 min | Standard protocol, independent L/R |
-| 2 | **Noisy vCR** (`noisy_vcr`) | 100ms | 67ms | 23.5% | True | rndp | 100% | 120 min | Prevents habituation |
+| 2 | **Noisy vCR** (`noisy_vcr`) | 100ms | 67ms | 23.5% | True | rndp | 100% | 120 min | Mirrored, with jitter (noisy vCR arm) |
 | 3 | **Hybrid vCR** (`hybrid_vcr`) | 100ms | 67ms | 23.5% | False | rndp | 100% | 120 min | Jitter with independent L/R |
 | 4 | **Custom vCR** (`custom_vcr`) | 100ms | 67ms | 0% | False | rndp | 100% | 120 min | User-editable; defaults match Regular vCR (see below) |
 | 5 | **Gentle** (`gentle`) | 80ms | 87ms | 15% | True | sequential | 30-70% | 60 min | Lower amplitude |
@@ -1039,7 +1039,7 @@ All I2C access to the drivers takes the I2C mutex (`I2CMutexLock`), so the motor
 
 ### Therapeutic Parameters
 
-**Default settings**: Regular and Noisy vCR use the timing, pattern and frequency of the regular and noisy vCR arms of Pfeifer et al. 2021, and Custom vCR starts from Regular vCR's values. Hybrid vCR, Gentle and Quick Test were not studied.
+**Default settings**: Regular and Noisy vCR use the burst timing, jitter, mirroring and 250 Hz frequency of the regular and noisy vCR arms of Pfeifer et al. 2021 (four fingers per hand, no thumb; v3 adds the thumb by default). Regular's random order is independent per hand: non-mirrored, but it doesn't guarantee the study's non-coincident finger pairs. Custom vCR starts from Regular vCR's values. Hybrid vCR, Gentle and Quick Test were not studied.
 - **Frequency**: 250 Hz (matches LRA resonance)
 - **Amplitude**: 100% (a firmware drive level; the study reported vibration displacement in mm, so this percentage was not studied)
 - **ON/OFF**: 100ms/67ms

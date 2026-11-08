@@ -133,8 +133,11 @@ void ProfileManager::initBuiltInProfiles() {
     _profileNames[_profileCount] = _builtInProfiles[_profileCount].name;
     _profileCount++;
 
-    // Profile 4: Custom vCR - user-editable; defaults match regular_vcr
-    // (Pfeifer et al. 2021 regular vCR timing and pattern, fixed 250 Hz)
+    // Profile 4: Custom vCR - user-editable; defaults match regular_vcr, which uses
+    // the burst timing, jitter, mirroring and 250 Hz of the Pfeifer et al. 2021
+    // regular vCR arm (the study used four fingers, no thumb; v3 adds the thumb).
+    // These defaults differ from v1 defaults_CustomVCR.py (23.5% jitter,
+    // 70-100% amplitude, frequency randomization).
     TherapyProfile& custom = _builtInProfiles[_profileCount];
     strcpy(custom.name, "custom_vcr");
     strcpy(custom.description, "Custom vCR - user-editable");
