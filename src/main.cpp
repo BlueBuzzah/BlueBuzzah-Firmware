@@ -3051,9 +3051,9 @@ void autoStartTherapy()
     const TherapyProfile *profile = profiles.getCurrentProfile();
     if (!profile)
     {
-        // No profile loaded - fall back to built-in "noisy_vcr" (v1 defaults)
-        Serial.println(F("[AUTO] No profile loaded - loading noisy_vcr defaults"));
-        profiles.loadProfileByName("noisy_vcr");
+        // No profile loaded - fall back to built-in "regular_vcr" (boot default)
+        Serial.println(F("[AUTO] No profile loaded - loading regular_vcr (boot default)"));
+        profiles.loadProfileByName("regular_vcr");
         profile = profiles.getCurrentProfile();
 
         if (!profile)
