@@ -141,7 +141,12 @@ struct TherapyProfile {
     uint16_t frequencyMax;  // Max frequency for randomization (Hz)
 
     /**
-     * @brief Default constructor with noisy vCR defaults
+     * @brief Default constructor with placeholder values
+     *
+     * Field values match the noisy_vcr built-in; name is "default". They are
+     * placeholders: every built-in profile sets all fields, and loadProfile()
+     * replaces the current profile. The boot default is Regular vCR
+     * (profile 1, loaded in ProfileManager::begin()).
      */
     TherapyProfile() :
         actuatorType(ActuatorType::LRA),
