@@ -211,8 +211,8 @@ bool BLEManager::begin(DeviceRole role, const char* deviceName) {
 
     NimBLEDevice::init(_deviceName);
 
-    // MTU 200: a 100-byte chunk fits in one notification (protocol parity with
-    // the Bluefruit backend; the 23-byte default would fragment every chunk)
+    // MTU 200: each packet carries MTU-3 = 197 bytes (protocol parity with
+    // the Bluefruit backend; the 23-byte default would fragment every message)
     NimBLEDevice::setMTU(200);
 
     // TX power parity with Bluefruit.setTxPower(0)
@@ -799,13 +799,12 @@ void BLEManager::drainRing(TxRing& ring, uint8_t maxEntries) {
 }
 
 size_t BLEManager::tryWriteImmediate(uint16_t connHandle, const uint8_t* data, size_t len) {
-    // One packet per attempt, capped at the link's negotiated MTU: NimBLE
-    // truncates a notify to MTU-3, so a fixed 100-byte chunk on an
-    // un-negotiated (23) link silently lost the tail
+    // One packet per attempt, sized to the link's negotiated MTU: NimBLE
+    // truncates a notify to MTU-3, so a fixed size on an un-negotiated (23)
+    // link silently lost the tail. Receivers reassemble by EOT.
     uint16_t mtu = ble_att_mtu(connHandle);
     if (mtu < BLE_ATT_MTU_DFLT) return 0;  // 0 = no such connection
     size_t chunk = mtu - 3;
-    if (chunk > BLE_CHUNK_SIZE) chunk = BLE_CHUNK_SIZE;
     if (len < chunk) chunk = len;
 
     if (_role == DeviceRole::PRIMARY) {

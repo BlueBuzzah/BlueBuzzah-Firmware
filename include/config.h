@@ -94,7 +94,8 @@
 // blocking bug. The old code's delayMicroseconds() blocked BLE callbacks for ~300ms,
 // making it appear that MACROCYCLE transmission took much longer than it actually does.
 // MACROCYCLE delivery is covered by the RTT-based lead time calculation; at the
-// negotiated 200-byte MTU a macrocycle is one or two notifications.
+// negotiated 200-byte MTU (197-byte packets) a macrocycle is one or two
+// notifications on both boards.
 #define SYNC_MIN_VALID_SAMPLES 5     // Minimum samples before clock sync is valid
 #define SYNC_OFFSET_EMA_ALPHA_NUM 1  // Slow EMA α = 1/10 = 0.1 for continuous updates
 #define SYNC_OFFSET_EMA_ALPHA_DEN 10
@@ -291,7 +292,6 @@ constexpr float ONSET_ROUNDING_RESERVE_MS = 1.0f;
 // =============================================================================
 
 #define BLE_EOT_CHAR 0x04               // End of transmission marker (ASCII EOT)
-#define BLE_CHUNK_SIZE 100              // Max bytes per BLE packet
 #define BLE_MAX_MESSAGE_SIZE 512        // Max total message size
 #define BLE_NAME "BlueBuzzah"           // Default BLE device name
 
