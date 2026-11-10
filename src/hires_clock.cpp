@@ -85,8 +85,8 @@ uint32_t hiresClockRead32() {
 #elif defined(BOARD_PENTABUZZER_ESP32S3) && !defined(NATIVE_TEST_BUILD)
 
 // esp_timer is a free-running 64-bit 1MHz counter, always available - no
-// crystal request or watchdog needed. The low 32 bits wrap every ~71.6 min;
-// getMicros()'s overflow tracking handles the wrap.
+// crystal request or watchdog needed. getMicros() reads esp_timer_get_time()
+// directly on this board; hiresClockRead32() returns its low 32 bits.
 
 #include "esp_timer.h"
 

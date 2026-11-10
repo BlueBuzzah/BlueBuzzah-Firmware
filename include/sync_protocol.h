@@ -352,6 +352,8 @@ private:
  * Tracks overflow of the 32-bit micros() counter to provide a true 64-bit
  * timestamp. Must be called at least once per 71 minutes to detect overflow.
  * Safe for main loop context only (not ISR-safe).
+ * On v3 device builds it reads the 64-bit esp_timer directly: no wrap
+ * tracking and no lock.
  */
 uint64_t getMicros();
 

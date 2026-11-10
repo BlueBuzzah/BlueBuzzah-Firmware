@@ -12,6 +12,10 @@
 #include <stdlib.h>
 #include <cerrno>
 
+#if defined(BOARD_PENTABUZZER_ESP32S3) && !defined(NATIVE_TEST_BUILD)
+#include "esp_timer.h"
+#endif
+
 // =============================================================================
 // 64-BIT MICROSECOND TIMESTAMP WITH OVERFLOW TRACKING
 // =============================================================================
@@ -34,6 +38,11 @@ static inline uint32_t readMicrosSource(bool hires) {
 }
 
 uint64_t getMicros() {
+#if defined(BOARD_PENTABUZZER_ESP32S3) && !defined(NATIVE_TEST_BUILD)
+    // esp_timer is already a 64-bit 1MHz counter: no wrap to track, so no
+    // cross-core lock. Same values as the 32-bit path below would give.
+    return static_cast<uint64_t>(esp_timer_get_time());
+#else
     // Interrupt-safe: called from main loop, BLE task, motor task and (later)
     // the radio-notification ISR. The IRQ-off section makes overflow tracking
     // and the TIMER4 CC[5] capture register exclusive.
@@ -78,6 +87,7 @@ uint64_t getMicros() {
 
     // Combine overflow count (upper 32 bits) with current micros (lower 32 bits)
     return ((uint64_t)overflows << 32) | now;
+#endif
 }
 
 void resetMicrosOverflow() {

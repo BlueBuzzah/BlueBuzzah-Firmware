@@ -44,9 +44,10 @@ void hiresClockEnsureHfclk();
 /**
  * @brief Raw 32-bit microsecond counter (wraps every ~71.6 minutes)
  *
- * Callers must serialize access to the CC[5] capture register — getMicros()
- * does this inside its IRQ-off section, which also makes it safe when
- * invoked from ISRs (the IRQ-off section cannot be preempted).
+ * Callers must serialize access to the CC[5] capture register — on nRF,
+ * getMicros() does this inside its IRQ-off section, which also makes it safe
+ * when invoked from ISRs (the IRQ-off section cannot be preempted). On v3,
+ * getMicros() reads esp_timer directly and doesn't call this.
  */
 [[nodiscard]] uint32_t hiresClockRead32();
 
