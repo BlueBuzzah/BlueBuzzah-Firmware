@@ -18,10 +18,18 @@
   #include "freertos/FreeRTOS.h"
   #include "freertos/semphr.h"
   #include "esp_system.h"
+  #include "esp32-hal.h"
   // Single shared spinlock across all translation units (C++20 inline variable).
   inline portMUX_TYPE g_platformMux = portMUX_INITIALIZER_UNLOCKED;
   inline void platformSystemReset()   { esp_restart(); }
   inline void platformMemoryBarrier() { __sync_synchronize(); }
+  // Puts loop() under the 5s task watchdog; call last in setup()
+  inline void platformEnableLoopWatchdog() { enableLoopWDT(); }
+  // Lifts the watchdog for loop-context work that legitimately takes 5s or more
+  struct LoopWatchdogPause {
+      LoopWatchdogPause() { disableLoopWDT(); }
+      ~LoopWatchdogPause() { enableLoopWDT(); }
+  };
   #define PLATFORM_CRITICAL_ENTER()   portENTER_CRITICAL(&g_platformMux)
   #define PLATFORM_CRITICAL_EXIT()    portEXIT_CRITICAL(&g_platformMux)
   #define PLATFORM_HAS_HIRES_CLOCK    1
@@ -35,6 +43,8 @@
   #include "rtos.h"  // Adafruit nRF52 core FreeRTOS wrapper (SemaphoreHandle_t etc.)
   inline void platformSystemReset()   { NVIC_SystemReset(); }
   inline void platformMemoryBarrier() { __DMB(); }
+  inline void platformEnableLoopWatchdog() {}
+  struct LoopWatchdogPause { LoopWatchdogPause() {} };
   // NOTE: PLATFORM_CRITICAL_ENTER declares a local `_pm`. Each ENTER must be in
   // its own braced block scope; two ENTERs in one block would redeclare `_pm`.
   #define PLATFORM_CRITICAL_ENTER()   uint32_t _pm = __get_PRIMASK(); __disable_irq()
@@ -45,6 +55,8 @@
   // activation_queue.cpp) are excluded from native builds.
   inline void platformSystemReset()   {}
   inline void platformMemoryBarrier() {}
+  inline void platformEnableLoopWatchdog() {}
+  struct LoopWatchdogPause { LoopWatchdogPause() {} };
   #define PLATFORM_CRITICAL_ENTER()   do {} while (0)
   #define PLATFORM_CRITICAL_EXIT()    do {} while (0)
   #define PLATFORM_HAS_HIRES_CLOCK    0

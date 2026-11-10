@@ -24,6 +24,11 @@
 
 #include "esp_sleep.h"
 
+void PowerController::cutDrivers() {
+    pinMode(ENABLE_PIN_OVERRIDE, OUTPUT);
+    digitalWrite(ENABLE_PIN_OVERRIDE, LOW);
+}
+
 void PowerController::begin() {
     pinMode(ENABLE_PIN_OVERRIDE, OUTPUT);
     digitalWrite(ENABLE_PIN_OVERRIDE, HIGH);  // DRV2605 EN + mux out of reset

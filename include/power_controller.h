@@ -16,6 +16,13 @@ class LEDController;
 
 class PowerController {
 public:
+    /**
+     * Stop every motor without I2C by taking the DRV2605s to shutdown (v3); no-op
+     * on nRF. Call first in setup(): panic and watchdog restarts reset the CPU
+     * only, so EN stays HIGH and RTP keeps driving until begin() re-initialises.
+     */
+    void cutDrivers();
+
     /** Configure power pins (Penta); no-op on nRF. Call once in setup(). */
     void begin();
 
