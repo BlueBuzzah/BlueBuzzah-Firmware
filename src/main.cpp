@@ -836,8 +836,8 @@ void loop()
     {
         // Drop staged macrocycle events not yet forwarded, so a STOP_SESSION
         // can't be undone by the forwarding below. Here, not in
-        // safeMotorShutdown(): the staging buffer allows only one consumer -
-        // this loop.
+        // safeMotorShutdown(): only the emergency path should discard staged
+        // events, and this loop is the buffer's single consumer.
         StagedMotorEvent staged;
         while (motorEventBuffer.unstage(staged)) {}
         safeMotorShutdown();
@@ -1950,11 +1950,11 @@ void executeDeferredWork(DeferredWorkType type, uint8_t p1, uint8_t p2, uint32_t
 // as a freeze, as a garbled "Command: <junk>ION_START", and as a USB drop.
 //
 // So phone/menu commands are copied here and executed from loop() instead, which
-// is the pattern DeferredQueue already documents for BLE-callback work. So are
-// the TEST/STOP shortcuts and a SECONDARY's flash-saving setting syncs (see
-// onBLEMessage). The NimBLE host task on ESP32 gets the same treatment. Internal
-// PRIMARY<->SECONDARY sync traffic is deliberately NOT deferred: it is
-// hard-real-time and stays on its existing inline path.
+// is the pattern DeferredQueue already documents for BLE-callback work. The same
+// applies to the NimBLE host task on ESP32. So are the TEST/STOP shortcuts and a
+// SECONDARY's flash-saving setting syncs (see onBLEMessage). Timing-critical
+// PRIMARY<->SECONDARY traffic (PING/PONG, MC:, session control) is deliberately
+// NOT deferred: it is hard-real-time and stays on its existing inline path.
 //
 // One command executes per loop() pass, matching deferredQueue.processOne().
 static constexpr uint8_t MENU_CMD_QUEUE_DEPTH = 4;
@@ -2109,9 +2109,10 @@ void onBLEMessage(uint16_t connHandle, const char *message, uint64_t rxTimestamp
         (deviceRole == DeviceRole::SECONDARY && isSettingSync(message)) ||
         (deviceRole == DeviceRole::PRIMARY && (fromPhone || !menu.isInternalMessage(message))))
     {
-        // Returning unconditionally is safe: every PRIMARY-side handler below
-        // this point matches only internal messages (BATRESPONSE:, sync protocol), and an internal
-        // message only reaches here when it came from the phone.
+        // Returning unconditionally is safe: TEST/STOP and the setting syncs
+        // always returned. On a PRIMARY, every handler below matches only
+        // internal messages (BATRESPONSE:, sync protocol), and an internal
+        // message reaches the PRIMARY clause only from the phone.
         if (!enqueueMenuCommand(message, fromPhone))
         {
             Serial.println(F("[BLE] WARN: menu command queue full or oversized - dropped"));
@@ -2185,7 +2186,6 @@ void onBLEMessage(uint16_t connHandle, const char *message, uint64_t rxTimestamp
         return;
     }
 
-    // Handle DEBUG_SYNC from PRIMARY (SECONDARY only)
     // Handle MACROCYCLE messages (special format - not standard SyncCommand)
     // Format: MC:seq|baseTime|count|d,f,a,dur,fo|...
     if (strncmp(message, "MC:", 3) == 0)
