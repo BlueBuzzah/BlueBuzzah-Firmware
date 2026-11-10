@@ -106,6 +106,15 @@ static bool s_scanning = false;
 
 static void requestPhy2M(uint16_t connHandle);
 
+static const char* phyName(uint8_t phy) {
+    switch (phy) {
+        case BLE_GAP_LE_PHY_1M: return "1M";
+        case BLE_GAP_LE_PHY_2M: return "2M";
+        case BLE_GAP_LE_PHY_CODED: return "Coded";
+        default: return "?";
+    }
+}
+
 // Peripheral (PRIMARY) callbacks
 class BBServerCallbacks : public NimBLEServerCallbacks {
     void onConnect(NimBLEServer*, NimBLEConnInfo& connInfo) override {
@@ -116,6 +125,16 @@ class BBServerCallbacks : public NimBLEServerCallbacks {
     }
     void onMTUChange(uint16_t mtu, NimBLEConnInfo& connInfo) override {
         Serial.printf("[BLE] MTU negotiated: %u (handle=%d)\n", mtu, connInfo.getConnHandle());
+    }
+    void onPhyUpdate(NimBLEConnInfo& connInfo, uint8_t txPhy, uint8_t rxPhy) override {
+        Serial.printf("[BLE] PHY in effect: TX %s, RX %s (handle=%d)\n",
+                      phyName(txPhy), phyName(rxPhy), connInfo.getConnHandle());
+    }
+    void onConnParamsUpdate(NimBLEConnInfo& connInfo) override {
+        // Fires once the update is in effect, unlike the request-time log
+        Serial.printf("[BLE] Conn params in effect: interval %.2f ms, latency %u, timeout %u ms (handle=%d)\n",
+                      connInfo.getConnInterval() * 1.25f, connInfo.getConnLatency(),
+                      connInfo.getConnTimeout() * 10U, connInfo.getConnHandle());
     }
 };
 
@@ -146,6 +165,10 @@ class BBClientCallbacks : public NimBLEClientCallbacks {
     }
     void onDisconnect(NimBLEClient* client, int reason) override {
         BLEManager::_onCentralDisconnect(client->getConnHandle(), static_cast<uint8_t>(reason));
+    }
+    void onPhyUpdate(NimBLEClient* client, uint8_t txPhy, uint8_t rxPhy) override {
+        Serial.printf("[BLE] PHY in effect: TX %s, RX %s (handle=%d)\n",
+                      phyName(txPhy), phyName(rxPhy), client->getConnHandle());
     }
 };
 
