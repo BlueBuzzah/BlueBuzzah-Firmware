@@ -1681,6 +1681,7 @@ public:
     void setDeviceInfo(DeviceRole role, const char* firmwareVersion, const char* deviceName);
     void setSendCallback(SendResponseCallback callback);
     void setRestartCallback(RestartCallback callback);
+    void setSessionStopCallback(SessionStopCallback callback);  // required: SESSION_STOP ends the session on both gloves through it
 
     // Process an incoming command; the reply is sent through the send callback.
     // Returns false for internal (device-to-device) messages unless allowInternal is set,
@@ -1739,6 +1740,7 @@ menu.setDeviceInfo(deviceRole, FIRMWARE_VERSION, BLE_NAME);
 menu.setSendCallback(onMenuSendResponse);
 menu.setSendToSecondaryCallback(onMenuSendToSecondary);
 menu.setRestartCallback(restartAfterTxDrain);
+menu.setSessionStopCallback(stopSessionFromPhone);
 menu.setSyncReadyCallback(phoneStartSyncReady);
 
 // Process command string (reply arrives via onMenuSendResponse)
@@ -1902,6 +1904,7 @@ void setup() {
     menu.setSendCallback(onMenuSendResponse);
     menu.setSendToSecondaryCallback(onMenuSendToSecondary);
     menu.setRestartCallback(restartAfterTxDrain);
+    menu.setSessionStopCallback(stopSessionFromPhone);
     menu.setSyncReadyCallback(phoneStartSyncReady);
 
     // 8. Deferred work executor (BLE callback -> loop handoff)

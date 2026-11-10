@@ -28,6 +28,7 @@ MenuController::MenuController() :
     _role(DeviceRole::PRIMARY),
     _sendCallback(nullptr),
     _restartCallback(nullptr),
+    _sessionStopCallback(nullptr),
     _sendToSecondaryCallback(nullptr),
     _syncReadyCallback(nullptr),
     _batteryGateCallback(nullptr),
@@ -96,6 +97,10 @@ void MenuController::setSendCallback(SendResponseCallback callback) {
 
 void MenuController::setRestartCallback(RestartCallback callback) {
     _restartCallback = callback;
+}
+
+void MenuController::setSessionStopCallback(SessionStopCallback callback) {
+    _sessionStopCallback = callback;
 }
 
 void MenuController::setSendToSecondaryCallback(SendToSecondaryCallback callback) {
@@ -896,12 +901,10 @@ void MenuController::handleSessionResume() {
 }
 
 void MenuController::handleSessionStop() {
-    if (_therapy) {
-        _therapy->stop();
-    }
-
-    if (_haptic) {
-        _haptic->emergencyStop();
+    // Stops the engine, clears both queues and sends STOP_SESSION to a linked
+    // SECONDARY. ponytail: no fallback, setup() registers it before any command.
+    if (_sessionStopCallback) {
+        _sessionStopCallback();
     }
 
     if (_stateMachine) {
@@ -910,15 +913,6 @@ void MenuController::handleSessionStop() {
         // lingered in STOPPING after a phone-initiated stop.
         _stateMachine->transition(StateTrigger::STOP_SESSION);
         _stateMachine->transition(StateTrigger::STOPPED);
-    }
-
-    // Notify SECONDARY of session stop
-    if (_ble && _ble->isSecondaryConnected()) {
-        SyncCommand cmd = SyncCommand::createStopSession(0);
-        char buffer[64];
-        if (cmd.serialize(buffer, sizeof(buffer))) {
-            _ble->sendToSecondary(buffer);
-        }
     }
 
     beginResponse();

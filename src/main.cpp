@@ -435,6 +435,7 @@ void onStateChange(const StateTransition &transition);
 void onMenuSendResponse(const char *response);
 void onMenuSendToSecondary(const char *message);
 void restartAfterTxDrain();
+void stopSessionFromPhone();
 void resetDevice();
 bool phoneStartSyncReady();
 
@@ -771,6 +772,7 @@ void setup()
     menu.setSendCallback(onMenuSendResponse);
     menu.setSendToSecondaryCallback(onMenuSendToSecondary);
     menu.setRestartCallback(restartAfterTxDrain);
+    menu.setSessionStopCallback(stopSessionFromPhone);
     menu.setSyncReadyCallback(phoneStartSyncReady);
     menu.setBatteryGateCallback(batteryAllowsSession);
     menu.setGloveErrorCallback(gloveErrorReply);
@@ -1038,7 +1040,17 @@ void loop()
         }
         Serial.println(F("+============================================================+\n"));
 
-        haptic.emergencyStop();
+        // Drop the queued macrocycle and stop the SECONDARY too. After a stop
+        // that already did this, the second STOP_SESSION finds nothing to stop,
+        // and the engine keeps the first stop's reason.
+        if (deviceRole == DeviceRole::PRIMARY)
+        {
+            stopSessionFromPrimary(SessionEndReason::COMPLETED);
+        }
+        else
+        {
+            safeMotorShutdown();
+        }
         stateMachine.transition(StateTrigger::STOP_SESSION);
         stateMachine.transition(StateTrigger::STOPPED);
 
@@ -1852,7 +1864,10 @@ void onBLEDisconnect(uint16_t connHandle, ConnectionType type, uint8_t reason)
  */
 void executeDeferredWork(DeferredWorkType type, uint8_t p1, uint8_t p2, uint32_t p3)
 {
-    // SAFETY: Skip haptic operations in critical error states
+    // SAFETY: Skip feedback pulses in critical error states and during a session.
+    // A pulse mid-session buzzes one finger alone, and its turn-off can cut a
+    // therapy burst short. isRunning() covers PHONE_DISCONNECTED; isActiveState()
+    // covers PAUSED and a SECONDARY following the PRIMARY's session.
     // Note: CONNECTION_LOST is intentionally NOT blocked - disconnect feedback pulses
     // (queued AFTER safety shutdown semaphore is signaled) should still execute for user feedback
     // Note: HAPTIC_HEAL is intentionally exempt - it never drives amplitude
@@ -1865,6 +1880,11 @@ void executeDeferredWork(DeferredWorkType type, uint8_t p1, uint8_t p2, uint32_t
             currentState == TherapyState::CRITICAL_BATTERY)
         {
             Serial.println(F("[DEFERRED] Skipping haptic - safety state active"));
+            return;
+        }
+        if (therapy.isRunning() || isActiveState(currentState))
+        {
+            Serial.println(F("[DEFERRED] Skipping haptic - session active"));
             return;
         }
     }
@@ -2985,8 +3005,15 @@ void stopTherapyTest()
     Serial.println(F("|  STOPPING THERAPY TEST                                     |"));
     Serial.println(F("+============================================================+\n"));
 
-    therapy.stop();
-    safeMotorShutdown();
+    if (deviceRole == DeviceRole::PRIMARY)
+    {
+        stopSessionFromPrimary(SessionEndReason::STOPPED);
+    }
+    else
+    {
+        therapy.stop();
+        safeMotorShutdown();
+    }
 
     // Update state machine
     stateMachine.transition(StateTrigger::STOP_SESSION);
@@ -3340,6 +3367,12 @@ void onStateChange(const StateTransition &transition)
         // Emergency stop on error
         haptic.emergencyStop();
         therapy.stop(SessionEndReason::ERROR);
+        // emergencyStop() leaves queued macrocycle events that would buzz again;
+        // the loop's safety shutdown clears the queues
+        if (safetyShutdownSema)
+        {
+            xSemaphoreGive(safetyShutdownSema);
+        }
         break;
 
     case TherapyState::CRITICAL_BATTERY:
@@ -3386,6 +3419,12 @@ void onMenuSendResponse(const char *response)
     {
         ble.sendToPhone(response);
     }
+}
+
+// Phone SESSION_STOP (runs in loop(): menu commands are deferred there)
+void stopSessionFromPhone()
+{
+    stopSessionFromPrimary(SessionEndReason::STOPPED);
 }
 
 // Menu-initiated reboot (PROFILE_LOAD, RESTART). The handler queues
@@ -3549,7 +3588,15 @@ void handleSerialCommand(const char *command)
         // FSM and LED reflect reality and auto-start can't fire mid-diag
         if (therapy.isRunning())
         {
-            therapy.stop();
+            // Tell the SECONDARY before the blocking diagnostic below
+            if (deviceRole == DeviceRole::PRIMARY)
+            {
+                stopSessionFromPrimary(SessionEndReason::STOPPED);
+            }
+            else
+            {
+                therapy.stop();
+            }
             stateMachine.transition(StateTrigger::STOP_SESSION);
             stateMachine.transition(StateTrigger::STOPPED);
         }
@@ -3564,7 +3611,15 @@ void handleSerialCommand(const char *command)
     {
         if (therapy.isRunning())
         {
-            therapy.stop();
+            // Tell the SECONDARY before the blocking diagnostic below
+            if (deviceRole == DeviceRole::PRIMARY)
+            {
+                stopSessionFromPrimary(SessionEndReason::STOPPED);
+            }
+            else
+            {
+                therapy.stop();
+            }
             stateMachine.transition(StateTrigger::STOP_SESSION);
             stateMachine.transition(StateTrigger::STOPPED);
         }
@@ -3587,7 +3642,15 @@ void handleSerialCommand(const char *command)
         int n = atoi(arg);
         if (therapy.isRunning())
         {
-            therapy.stop();
+            // Tell the SECONDARY before the blocking diagnostic below
+            if (deviceRole == DeviceRole::PRIMARY)
+            {
+                stopSessionFromPrimary(SessionEndReason::STOPPED);
+            }
+            else
+            {
+                therapy.stop();
+            }
             stateMachine.transition(StateTrigger::STOP_SESSION);
             stateMachine.transition(StateTrigger::STOPPED);
         }

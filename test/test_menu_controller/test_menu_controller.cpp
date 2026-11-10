@@ -81,6 +81,7 @@ enum class StateTrigger {
     PAUSE_SESSION,
     RESUME_SESSION,
     STOP_SESSION,
+    STOPPED,
     SESSION_COMPLETE,
     BATTERY_CRITICAL,
     BATTERY_RECOVERED,
@@ -277,6 +278,7 @@ const char* deviceRoleToString(DeviceRole role) {
 
 typedef void (*SendResponseCallback)(const char* response);
 typedef void (*RestartCallback)();
+typedef void (*SessionStopCallback)();
 
 /**
  * @brief Test version of MenuController focusing on testable logic
@@ -297,6 +299,7 @@ public:
 
     SendResponseCallback _sendCallback;
     RestartCallback _restartCallback;
+    SessionStopCallback _sessionStopCallback;
 
     bool _isCalibrating;
     uint32_t _calibrationStartTime;
@@ -349,6 +352,7 @@ public:
         _role(DeviceRole::PRIMARY),
         _sendCallback(nullptr),
         _restartCallback(nullptr),
+        _sessionStopCallback(nullptr),
         _sendToSecondaryCallback(nullptr),
         _deferredCommand(DeferredCommand::NONE),
         _secondaryBatteryVoltage(0.0f),
@@ -398,6 +402,10 @@ public:
 
     void setRestartCallback(RestartCallback callback) {
         _restartCallback = callback;
+    }
+
+    void setSessionStopCallback(SessionStopCallback callback) {
+        _sessionStopCallback = callback;
     }
 
     bool isCalibrating() const { return _isCalibrating; }
@@ -859,6 +867,20 @@ public:
         }
     }
 
+    // Mirrors MenuController::handleSessionStop: the callback does the stop
+    void handleSessionStop() {
+        if (_sessionStopCallback) {
+            _sessionStopCallback();
+        }
+        if (_stateMachine) {
+            _stateMachine->transition(StateTrigger::STOP_SESSION);
+            _stateMachine->transition(StateTrigger::STOPPED);
+        }
+        beginResponse();
+        addResponseLine("SESSION_STATUS", "IDLE");
+        sendResponse();
+    }
+
     void handlePing() {
         beginResponse();
         addResponseLine("PONG", "");
@@ -993,6 +1015,11 @@ public:
 
         if (strcmp(command, "SESSION_START") == 0) {
             handleSessionStart();
+            return true;
+        }
+
+        if (strcmp(command, "SESSION_STOP") == 0) {
+            handleSessionStop();
             return true;
         }
 
@@ -1967,6 +1994,19 @@ void test_sessionStart_refused_when_state_machine_rejects() {
     TEST_ASSERT_FALSE(g_therapy->isRunning());  // the FSM is asked before therapy starts
 }
 
+static int g_sessionStopCount = 0;
+static void testSessionStop() { g_sessionStopCount++; }
+
+void test_sessionStop_invokes_stop_callback() {
+    g_sessionStopCount = 0;
+    g_menu->setSessionStopCallback(testSessionStop);
+
+    g_menu->handleCommand("SESSION_STOP");
+
+    TEST_ASSERT_EQUAL_INT(1, g_sessionStopCount);
+    TEST_ASSERT_NOT_NULL(strstr(g_lastResponse, "SESSION_STATUS:IDLE"));
+}
+
 void test_handleInfo_reports_secondary_link() {
     // Linked: present in the deferred reply, ahead of BATS
     g_menu->setSendToSecondaryCallback(testSendToSecondaryCallback);
@@ -2254,6 +2294,7 @@ int main(int argc, char **argv) {
     RUN_TEST(test_sessionStart_refused_on_glove_error_before_link_check);
     RUN_TEST(test_sessionStart_refused_on_secondary_glove_error);
     RUN_TEST(test_sessionStart_refused_when_state_machine_rejects);
+    RUN_TEST(test_sessionStop_invokes_stop_callback);
     RUN_TEST(test_handleInfo_reports_secondary_link);
     RUN_TEST(test_handleBattery_reports_critical_level);
     RUN_TEST(test_battery_level_omitted_without_reading);
