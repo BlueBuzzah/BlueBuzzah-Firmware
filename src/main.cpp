@@ -1572,11 +1572,12 @@ bool initializeBLE()
 #endif
 
 #if defined(BOARD_BLUEBUZZAH_NRF52)
-    // Register PHY change callback (both roles)
-    // Detects 1M -> 2M PHY upgrades so we can reset RTT statistics
-    // PRIMARY also uses RTT for adaptive lead time calculation
+    // Register the SoftDevice event callback (both roles). Required: it returns
+    // BLEManager's TX credits, without which every link stops sending after
+    // 8 packets. Also detects 1M -> 2M PHY upgrades so we can reset RTT
+    // statistics (PRIMARY also uses RTT for adaptive lead time calculation).
     Bluefruit.setEventCallback(onBLEEvent);
-    Serial.println(F("[BLE] PHY change event callback registered"));
+    Serial.println(F("[BLE] SoftDevice event callback registered"));
 #endif
 
     // Start scanning for SECONDARY role

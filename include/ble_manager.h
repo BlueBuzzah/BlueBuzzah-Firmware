@@ -252,8 +252,8 @@ public:
      * @brief Feed SoftDevice events to the TX gate and log link parameters
      *
      * Call from the Bluefruit event callback (BLE task). Returns TX queue
-     * credits on HVN/write-command completion, and logs the negotiated
-     * interval and supervision timeout on each parameter update.
+     * credits on HVN/write-command completion, and stashes the negotiated
+     * interval and supervision timeout for update() to log.
      */
     void onSoftDeviceEvent(ble_evt_t* evt);
 #endif
@@ -467,6 +467,13 @@ private:
 
     /** Return n TX credits to a slot, clamped at 0. */
     void _releaseTx(uint8_t slot, uint8_t n);
+
+    // Latest negotiated link parameters, stashed on the BLE task and printed
+    // from update(): a Serial write can block, and the BLE task must not
+    volatile bool _linkParamsPending = false;
+    uint16_t _linkParamsHandle = 0;
+    uint16_t _linkParamsInterval = 0;   // 1.25ms units
+    uint16_t _linkParamsTimeout = 0;    // 10ms units
 #endif
 
     // Callbacks

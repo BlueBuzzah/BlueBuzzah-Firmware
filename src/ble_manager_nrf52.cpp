@@ -261,6 +261,23 @@ void BLEManager::update() {
     // Process TX queue (non-blocking message transmission)
     processTxQueue();
 
+    // Log link parameters negotiated since the last pass
+    if (_linkParamsPending) {
+        uint16_t handle, interval, timeout;
+        {
+            PLATFORM_CRITICAL_ENTER();
+            handle = _linkParamsHandle;
+            interval = _linkParamsInterval;
+            timeout = _linkParamsTimeout;
+            _linkParamsPending = false;
+            PLATFORM_CRITICAL_EXIT();
+        }
+        uint32_t intervalUs = static_cast<uint32_t>(interval) * 1250;
+        Serial.printf("[BLE] Link params: handle=%d interval=%lu.%02lums timeout=%ums\n",
+                      handle, (unsigned long)(intervalUs / 1000),
+                      (unsigned long)((intervalUs % 1000) / 10), timeout * 10);
+    }
+
     // Periodic scanner health check for SECONDARY mode (only when disconnected)
     static uint32_t lastScanCheck = 0;
     if (_role == DeviceRole::SECONDARY && _scannerAutoRestartEnabled && (now - lastScanCheck >= 5000)) {
@@ -808,11 +825,12 @@ void BLEManager::onSoftDeviceEvent(ble_evt_t* evt) {
             break;
         case BLE_GAP_EVT_CONN_PARAM_UPDATE: {
             const ble_gap_conn_params_t& p = evt->evt.gap_evt.params.conn_param_update.conn_params;
-            uint32_t intervalUs = static_cast<uint32_t>(p.max_conn_interval) * 1250;
-            Serial.printf("[BLE] Link params: handle=%d interval=%lu.%02lums timeout=%ums\n",
-                          evt->evt.gap_evt.conn_handle,
-                          (unsigned long)(intervalUs / 1000), (unsigned long)((intervalUs % 1000) / 10),
-                          p.conn_sup_timeout * 10);
+            PLATFORM_CRITICAL_ENTER();
+            _linkParamsHandle = evt->evt.gap_evt.conn_handle;
+            _linkParamsInterval = p.max_conn_interval;
+            _linkParamsTimeout = p.conn_sup_timeout;
+            _linkParamsPending = true;
+            PLATFORM_CRITICAL_EXIT();
             return;
         }
         default:
