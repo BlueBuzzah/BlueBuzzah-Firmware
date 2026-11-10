@@ -9,6 +9,14 @@
 
 BlueBuzzah is an open-source research platform for vibrotactile Coordinated Reset (vCR) stimulation, inspired by published research in Parkinson's disease. The system consists of two synchronized haptic gloves that deliver precisely timed vibration patterns to the fingers.
 
+## Important notices
+
+BlueBuzzah devices are not FDA cleared or approved medical devices and not intended to diagnose, treat, cure, mitigate, or prevent any disease. The information provided through BlueBuzzah is for general wellness purposes only and not a substitute for professional medical advice, diagnosis, or treatment.
+
+**Important:** People with implanted electrodes from deep brain stimulation (DBS), heart pacemakers, or other internal electronic devices should take special precautions around all electronic devices, including BlueBuzzah. Consult your physician before use.
+
+Read the [terms and safety](https://bluebuzzah.com/terms) page before you build or wear a pair.
+
 ## Hardware Targets
 
 One codebase builds for two hardware generations, selected by PlatformIO environment:
@@ -208,6 +216,10 @@ serial every 60 seconds. Each glove's LED shows its own battery:
 ## License
 
 MIT License - see [LICENSE](LICENSE) for details.
+
+`docs/research/fphys-12-624317.md` is © 2021 Pfeifer et al., published under CC BY 4.0, and keeps that license. The libraries in `platformio.ini` keep their own licenses, including Adafruit NeoPixel (LGPL-3.0), arduino-esp32 (LGPL-2.1), and NimBLE-Arduino and TCA9548A (Apache-2.0).
+
+The BlueBuzzah and BuzzahBuddy names and logos are not covered by these licenses. See [Licenses and the BlueBuzzah name](https://bluebuzzah.com/terms#licenses).
 
 ## Contact
 
