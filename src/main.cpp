@@ -836,8 +836,8 @@ void loop()
     {
         // Drop staged macrocycle events not yet forwarded, so a STOP_SESSION
         // can't be undone by the forwarding below. Here, not in
-        // safeMotorShutdown(): that also runs on the BLE task (raw STOP), and
-        // the staging buffer allows only one consumer - this loop.
+        // safeMotorShutdown(): the staging buffer allows only one consumer -
+        // this loop.
         StagedMotorEvent staged;
         while (motorEventBuffer.unstage(staged)) {}
         safeMotorShutdown();
@@ -1950,7 +1950,9 @@ void executeDeferredWork(DeferredWorkType type, uint8_t p1, uint8_t p2, uint32_t
 // as a freeze, as a garbled "Command: <junk>ION_START", and as a USB drop.
 //
 // So phone/menu commands are copied here and executed from loop() instead, which
-// is the pattern DeferredQueue already documents for BLE-callback work. Internal
+// is the pattern DeferredQueue already documents for BLE-callback work. So are
+// the TEST/STOP shortcuts and a SECONDARY's flash-saving setting syncs (see
+// onBLEMessage). The NimBLE host task on ESP32 gets the same treatment. Internal
 // PRIMARY<->SECONDARY sync traffic is deliberately NOT deferred: it is
 // hard-real-time and stays on its existing inline path.
 //
@@ -1969,6 +1971,35 @@ struct PendingMenuCommand
 static bool isTestStart(const char *m) { return strcmp(m, "TEST") == 0 || strcmp(m, "test") == 0; }
 static bool isTestStop(const char *m) { return strcmp(m, "STOP") == 0 || strcmp(m, "stop") == 0; }
 
+// Settings the PRIMARY syncs to a SECONDARY (SECONDARY only)
+static bool isSettingSync(const char *m)
+{
+    return strncmp(m, "LED_OFF_SYNC:", 13) == 0 || strncmp(m, "DEBUG_SYNC:", 11) == 0;
+}
+
+static void applySettingSync(const char *m)
+{
+    if (strncmp(m, "LED_OFF_SYNC:", 13) == 0)
+    {
+        int value = atoi(m + 13);
+        profiles.setTherapyLedOff(value != 0);
+        profiles.saveSettings();
+        Serial.printf("[SYNC] LED_OFF_SYNC received: %d\n", value);
+
+        // Update LED immediately if currently running therapy
+        if (stateMachine.getCurrentState() == TherapyState::RUNNING)
+        {
+            applyLed();
+        }
+        return;
+    }
+
+    int value = atoi(m + 11);
+    profiles.setDebugMode(value != 0);
+    profiles.saveSettings();
+    Serial.printf("[SYNC] DEBUG_SYNC received: %d\n", value);
+}
+
 static PendingMenuCommand s_menuCmdQueue[MENU_CMD_QUEUE_DEPTH];
 static volatile uint8_t s_menuCmdHead = 0;
 static volatile uint8_t s_menuCmdTail = 0;
@@ -1977,9 +2008,11 @@ static volatile uint8_t s_menuCmdCount = 0;
 /**
  * @brief Copy a menu command for later execution in loop() context.
  *
- * Called from the Bluefruit callback task. Reserve-fill-publish: the slot is
- * claimed under a critical section, filled outside it, and only then marked
- * ready - so loop() can never read a half-written command.
+ * Called from the BLE callback (Bluefruit callback task / NimBLE host task) and
+ * from loop() via serial commands, so it must stay multi-producer safe.
+ * Reserve-fill-publish: the slot is claimed under a critical section, filled
+ * outside it, and only then marked ready - so loop() can never read a
+ * half-written command.
  *
  * @return false if the command is too long or the queue is full (caller warns).
  */
@@ -2039,6 +2072,10 @@ void processPendingMenuCommand()
     {
         stopTherapyTest();
     }
+    else if (deviceRole == DeviceRole::SECONDARY && isSettingSync(text))
+    {
+        applySettingSync(text);
+    }
     else
     {
         menu.handleCommand(text, s_menuCmdQueue[slot].allowInternal);
@@ -2059,51 +2096,25 @@ void onBLEMessage(uint16_t connHandle, const char *message, uint64_t rxTimestamp
     // (immediately when data is received in _onUartRx/_onClientUartRx)
     // This provides maximum accuracy for PTP clock synchronization
 
-    // Check for simple text commands first (for testing)
-    // Both PRIMARY and SECONDARY can run standalone tests for hardware verification.
-    // Deferred like menu commands: startTherapyTest() runs the same session-start
-    // chain that overflows the callback stack, and stopTherapyTest() does I2C.
-    if (isTestStart(message) || isTestStop(message))
-    {
-        if (!enqueueMenuCommand(message, false))
-        {
-            Serial.println(F("[BLE] WARN: menu command queue full or oversized - dropped"));
-        }
-        return;
-    }
-
-    // Try menu controller first for phone/BLE commands (PRIMARY only)
-    // Commands from an identified PHONE connection always dispatch, even if
-    // they happen to match an internal (PRIMARY<->SECONDARY sync) prefix.
+    // Deferred to loop(), not executed here (see MENU COMMAND DEFERRAL above):
+    // - TEST/STOP on either role: standalone hardware tests. startTherapyTest()
+    //   runs the session-start chain that overflows the callback stack, and
+    //   stopTherapyTest() does I2C.
+    // - LED_OFF_SYNC/DEBUG_SYNC on a SECONDARY: they save settings to flash.
+    // - Menu commands on a PRIMARY. Commands from an identified PHONE connection
+    //   always dispatch, even if they happen to match an internal
+    //   (PRIMARY<->SECONDARY sync) prefix.
     bool fromPhone = ble.getConnectionType(connHandle) == ConnectionType::PHONE;
-    if (deviceRole == DeviceRole::PRIMARY && (fromPhone || !menu.isInternalMessage(message)))
+    if (isTestStart(message) || isTestStop(message) ||
+        (deviceRole == DeviceRole::SECONDARY && isSettingSync(message)) ||
+        (deviceRole == DeviceRole::PRIMARY && (fromPhone || !menu.isInternalMessage(message))))
     {
-        // Deferred, not executed here: this runs on the 3KB Bluefruit callback
-        // task and handleCommand overflows it (see enqueueMenuCommand above).
-        //
-        // Returning unconditionally is safe where the original fell through on a
-        // false return: every PRIMARY-side handler below this point matches only
-        // internal messages (BATRESPONSE:, sync protocol), and an internal
+        // Returning unconditionally is safe: every PRIMARY-side handler below
+        // this point matches only internal messages (BATRESPONSE:, sync protocol), and an internal
         // message only reaches here when it came from the phone.
         if (!enqueueMenuCommand(message, fromPhone))
         {
             Serial.println(F("[BLE] WARN: menu command queue full or oversized - dropped"));
-        }
-        return;
-    }
-
-    // Handle LED_OFF_SYNC from PRIMARY (SECONDARY only)
-    if (deviceRole == DeviceRole::SECONDARY && strncmp(message, "LED_OFF_SYNC:", 13) == 0)
-    {
-        int value = atoi(message + 13);
-        profiles.setTherapyLedOff(value != 0);
-        profiles.saveSettings();
-        Serial.printf("[SYNC] LED_OFF_SYNC received: %d\n", value);
-
-        // Update LED immediately if currently running therapy
-        if (stateMachine.getCurrentState() == TherapyState::RUNNING)
-        {
-            applyLed();
         }
         return;
     }
@@ -2175,15 +2186,6 @@ void onBLEMessage(uint16_t connHandle, const char *message, uint64_t rxTimestamp
     }
 
     // Handle DEBUG_SYNC from PRIMARY (SECONDARY only)
-    if (deviceRole == DeviceRole::SECONDARY && strncmp(message, "DEBUG_SYNC:", 11) == 0)
-    {
-        int value = atoi(message + 11);
-        profiles.setDebugMode(value != 0);
-        profiles.saveSettings();
-        Serial.printf("[SYNC] DEBUG_SYNC received: %d\n", value);
-        return;
-    }
-
     // Handle MACROCYCLE messages (special format - not standard SyncCommand)
     // Format: MC:seq|baseTime|count|d,f,a,dur,fo|...
     if (strncmp(message, "MC:", 3) == 0)
