@@ -529,6 +529,16 @@ void BBScanCallbacks::match(const NimBLEAdvertisedDevice* device, bool allowName
     // ignores adverts until then.
 }
 
+// With no results stored, stop() frees every device on the calling (loop) core
+// while the host task may still be handling one. Keep them through the stop: a
+// running scan erases each on its next advert, and start() from idle clears them.
+static bool stopScanKeepingResults(NimBLEScan* scan) {
+    scan->setMaxResults(0xFF);
+    if (scan->stop()) return true;
+    scan->setMaxResults(0);  // still scanning: keep storing nothing
+    return false;
+}
+
 bool BLEManager::startScanning(const char* targetName) {
     if (_role != DeviceRole::SECONDARY) {
         Serial.println(F("[BLE] ERROR: Only SECONDARY can scan"));
@@ -539,6 +549,9 @@ bool BLEManager::startScanning(const char* targetName) {
     Serial.printf("[BLE] Starting scan for '%s'...\n", _targetName);
 
     NimBLEScan* scan = NimBLEDevice::getScan();
+    // A running scan restarts in place: start()'s own restart would free every
+    // device on this core, and so would clearing results after the stop
+    bool wasScanning = scan->isScanning() && stopScanKeepingResults(scan);
     scan->setScanCallbacks(&s_scanCallbacks, false);
     scan->setActiveScan(true);      // Request scan response for name
     // Store no results: the callback copies the address it needs, and a stored
@@ -552,19 +565,14 @@ bool BLEManager::startScanning(const char* targetName) {
     scan->setInterval(linkUp ? 200 : 100);  // ms
     scan->setWindow(linkUp ? 38 : 100);
 
-    bool started = scan->start(0, false);
+    bool started = scan->start(0, wasScanning);  // continue = keep (don't free) results
     s_scanning = started;
     Serial.println(started ? F("[BLE] Scanner started") : F("[BLE] ERROR: Failed to start scanner"));
     return started;
 }
 
 void BLEManager::stopScanning() {
-    NimBLEScan* scan = NimBLEDevice::getScan();
-    // With no results stored, stop() frees every device here (loop core)
-    // while the host task may still be handling one. Keep them through the
-    // stop; startScanning() sets 0 again and start() clears them first.
-    scan->setMaxResults(0xFF);
-    scan->stop();
+    stopScanKeepingResults(NimBLEDevice::getScan());
     s_scanning = false;
     Serial.println(F("[BLE] Scanning stopped"));
 }
