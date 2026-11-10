@@ -271,6 +271,10 @@ void BLEManager::setupSecondaryMode() {
     // connect() runs in loop(): NimBLE's 30s default froze the loop that long
     // when the PRIMARY vanished between scan and connect
     s_client->setConnectTimeout(3000);
+    // NimBLE retries a failed connect twice by default, tripling that block.
+    // A failed connect goes back to scanning instead, and the scan callback
+    // starts the next attempt.
+    s_client->setConnectRetries(0);
 }
 
 void BLEManager::setupAdvertising() {
@@ -318,7 +322,7 @@ void BLEManager::update() {
 
     // Deferred central connect (scan callback must not block the host task)
     if (s_pendingConnect) {
-        // connect() can take 9s with retries; discovery waits on the 30s ATT timeout
+        // connect() can take ~3 s; discovery waits on the 30s ATT timeout
         LoopWatchdogPause watchdogPause;
         PLATFORM_CRITICAL_ENTER();
         s_pendingConnect = false;
