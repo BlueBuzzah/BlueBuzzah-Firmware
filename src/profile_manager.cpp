@@ -61,7 +61,7 @@ void ProfileManager::initBuiltInProfiles() {
     _profileCount = 0;
 
     // =========================================================================
-    // V1 ORIGINAL PROFILES (research-based vCR therapy)
+    // V1 ORIGINAL PROFILES (vCR patterns from the v1 prototype)
     // =========================================================================
 
     // Profile 1: Regular vCR (Default) - Non-mirrored, no jitter
@@ -133,24 +133,27 @@ void ProfileManager::initBuiltInProfiles() {
     _profileNames[_profileCount] = _builtInProfiles[_profileCount].name;
     _profileCount++;
 
-    // Profile 4: Custom vCR - Non-mirrored, jitter, amplitude range, freq randomization
-    // Reference: Original v1 defaults_CustomVCR.py
+    // Profile 4: Custom vCR - user-editable; defaults match regular_vcr, which uses
+    // the burst timing, jitter, mirroring and 250 Hz of the Pfeifer et al. 2021
+    // regular vCR arm (the study used four fingers, no thumb; v3 adds the thumb).
+    // These defaults differ from v1 defaults_CustomVCR.py (23.5% jitter,
+    // 70-100% amplitude, frequency randomization).
     TherapyProfile& custom = _builtInProfiles[_profileCount];
     strcpy(custom.name, "custom_vcr");
-    strcpy(custom.description, "Custom vCR - variable amplitude & frequency");
+    strcpy(custom.description, "Custom vCR - user-editable");
     custom.actuatorType = ActuatorType::LRA;
     custom.frequencyHz = 250;
     custom.timeOnMs = 100.0f;
     custom.timeOffMs = 67.0f;
-    custom.jitterPercent = 23.5f;
-    custom.amplitudeMin = 70;
+    custom.jitterPercent = 0.0f;
+    custom.amplitudeMin = 100;
     custom.amplitudeMax = 100;
     custom.sessionDurationMin = 120;
     strcpy(custom.patternType, "rndp");
     custom.mirrorPattern = false;
     custom.numFingers = MAX_ACTUATORS;
     custom.isDefault = false;
-    custom.frequencyRandomization = true;
+    custom.frequencyRandomization = false;
     custom.frequencyMin = 210;
     custom.frequencyMax = 260;
     _profileNames[_profileCount] = _builtInProfiles[_profileCount].name;
@@ -457,59 +460,63 @@ bool ProfileManager::loadSettings() {
         _currentProfile = _builtInProfiles[data.profileId - 1];
         _currentProfileId = data.profileId;
 
-        // Apply saved customizations
-        _currentProfile.actuatorType = (data.actuatorType == 1) ? ActuatorType::ERM : ActuatorType::LRA;
+        // Apply saved customizations. Custom skips them: its parameters come
+        // from the built-in plus custom.bin (applied below), and settings.bin
+        // may hold stale Custom values from older firmware.
+        if (data.profileId != CUSTOM_PROFILE_ID) {
+            _currentProfile.actuatorType = (data.actuatorType == 1) ? ActuatorType::ERM : ActuatorType::LRA;
 
-        // Validate against the current parameter bounds - reject fields outside them.
-        // This protects against corrupted or stale settings from old firmware versions.
-        if (data.timeOnMs >= PARAM_MIN_TIME_ON_MS && data.timeOnMs <= PARAM_MAX_TIME_ON_MS) {
-            _currentProfile.timeOnMs = data.timeOnMs;
-        } else {
-            Serial.printf("[SETTINGS] WARNING: Invalid timeOnMs %.1f, keeping default %.1f\n",
-                          data.timeOnMs, _currentProfile.timeOnMs);
+            // Validate against the current parameter bounds - reject fields outside them.
+            // This protects against corrupted or stale settings from old firmware versions.
+            if (data.timeOnMs >= PARAM_MIN_TIME_ON_MS && data.timeOnMs <= PARAM_MAX_TIME_ON_MS) {
+                _currentProfile.timeOnMs = data.timeOnMs;
+            } else {
+                Serial.printf("[SETTINGS] WARNING: Invalid timeOnMs %.1f, keeping default %.1f\n",
+                              data.timeOnMs, _currentProfile.timeOnMs);
+            }
+            if (data.timeOffMs >= PARAM_MIN_TIME_OFF_MS && data.timeOffMs <= PARAM_MAX_TIME_OFF_MS) {
+                _currentProfile.timeOffMs = data.timeOffMs;
+            } else {
+                Serial.printf("[SETTINGS] WARNING: Invalid timeOffMs %.1f, keeping default %.1f\n",
+                              data.timeOffMs, _currentProfile.timeOffMs);
+            }
+            if (data.jitterPercent >= 0.0f && data.jitterPercent <= PARAM_MAX_JITTER_PCT) {
+                _currentProfile.jitterPercent = data.jitterPercent;
+            } else {
+                Serial.printf("[SETTINGS] WARNING: Invalid jitterPercent %.1f, keeping default %.1f\n",
+                              data.jitterPercent, _currentProfile.jitterPercent);
+            }
+            if (data.frequencyHz >= PARAM_MIN_FREQUENCY_HZ && data.frequencyHz <= PARAM_MAX_FREQUENCY_HZ) {
+                _currentProfile.frequencyHz = data.frequencyHz;
+            } else {
+                Serial.printf("[SETTINGS] WARNING: Invalid frequencyHz %d, keeping default %d\n",
+                              data.frequencyHz, _currentProfile.frequencyHz);
+            }
+            if (data.amplitudeMin >= PARAM_MIN_AMPLITUDE_PCT &&
+                data.amplitudeMax <= MAX_AMPLITUDE &&
+                data.amplitudeMin <= data.amplitudeMax) {
+                _currentProfile.amplitudeMin = data.amplitudeMin;
+                _currentProfile.amplitudeMax = data.amplitudeMax;
+            } else {
+                Serial.println(F("[SETTINGS] WARNING: Invalid amplitude range, keeping defaults"));
+            }
+            if (data.sessionDurationMin >= PARAM_MIN_SESSION_MIN &&
+                data.sessionDurationMin <= PARAM_MAX_SESSION_MIN) {
+                _currentProfile.sessionDurationMin = data.sessionDurationMin;
+            } else {
+                Serial.printf("[SETTINGS] WARNING: Invalid sessionDurationMin %d, keeping default %d\n",
+                              data.sessionDurationMin, _currentProfile.sessionDurationMin);
+            }
+            if (data.numFingers >= 1 && data.numFingers <= MAX_ACTUATORS) {
+                _currentProfile.numFingers = data.numFingers;
+            } else {
+                Serial.printf("[SETTINGS] WARNING: Invalid numFingers %d, keeping default %d\n",
+                              data.numFingers, _currentProfile.numFingers);
+            }
+            strncpy(_currentProfile.patternType, data.patternType, PATTERN_TYPE_MAX - 1);
+            _currentProfile.patternType[PATTERN_TYPE_MAX - 1] = '\0';
+            _currentProfile.mirrorPattern = (data.mirrorPattern != 0);
         }
-        if (data.timeOffMs >= PARAM_MIN_TIME_OFF_MS && data.timeOffMs <= PARAM_MAX_TIME_OFF_MS) {
-            _currentProfile.timeOffMs = data.timeOffMs;
-        } else {
-            Serial.printf("[SETTINGS] WARNING: Invalid timeOffMs %.1f, keeping default %.1f\n",
-                          data.timeOffMs, _currentProfile.timeOffMs);
-        }
-        if (data.jitterPercent >= 0.0f && data.jitterPercent <= PARAM_MAX_JITTER_PCT) {
-            _currentProfile.jitterPercent = data.jitterPercent;
-        } else {
-            Serial.printf("[SETTINGS] WARNING: Invalid jitterPercent %.1f, keeping default %.1f\n",
-                          data.jitterPercent, _currentProfile.jitterPercent);
-        }
-        if (data.frequencyHz >= PARAM_MIN_FREQUENCY_HZ && data.frequencyHz <= PARAM_MAX_FREQUENCY_HZ) {
-            _currentProfile.frequencyHz = data.frequencyHz;
-        } else {
-            Serial.printf("[SETTINGS] WARNING: Invalid frequencyHz %d, keeping default %d\n",
-                          data.frequencyHz, _currentProfile.frequencyHz);
-        }
-        if (data.amplitudeMin >= PARAM_MIN_AMPLITUDE_PCT &&
-            data.amplitudeMax <= MAX_AMPLITUDE &&
-            data.amplitudeMin <= data.amplitudeMax) {
-            _currentProfile.amplitudeMin = data.amplitudeMin;
-            _currentProfile.amplitudeMax = data.amplitudeMax;
-        } else {
-            Serial.println(F("[SETTINGS] WARNING: Invalid amplitude range, keeping defaults"));
-        }
-        if (data.sessionDurationMin >= PARAM_MIN_SESSION_MIN &&
-            data.sessionDurationMin <= PARAM_MAX_SESSION_MIN) {
-            _currentProfile.sessionDurationMin = data.sessionDurationMin;
-        } else {
-            Serial.printf("[SETTINGS] WARNING: Invalid sessionDurationMin %d, keeping default %d\n",
-                          data.sessionDurationMin, _currentProfile.sessionDurationMin);
-        }
-        if (data.numFingers >= 1 && data.numFingers <= MAX_ACTUATORS) {
-            _currentProfile.numFingers = data.numFingers;
-        } else {
-            Serial.printf("[SETTINGS] WARNING: Invalid numFingers %d, keeping default %d\n",
-                          data.numFingers, _currentProfile.numFingers);
-        }
-        strncpy(_currentProfile.patternType, data.patternType, PATTERN_TYPE_MAX - 1);
-        _currentProfile.patternType[PATTERN_TYPE_MAX - 1] = '\0';
-        _currentProfile.mirrorPattern = (data.mirrorPattern != 0);
 
         _profileLoaded = true;
 
@@ -517,8 +524,8 @@ bool ProfileManager::loadSettings() {
         Serial.printf("[SETTINGS] Timing: ON=%.1fms, OFF=%.1fms, Jitter=%.1f%%\n",
                       _currentProfile.timeOnMs, _currentProfile.timeOffMs, _currentProfile.jitterPercent);
 
-        // custom.bin is authoritative for the Custom profile: settings.bin's copy of
-        // the parameters is overwritten whenever another profile is loaded.
+        // custom.bin is authoritative for the Custom profile; without it Custom
+        // keeps its built-in defaults.
         if (_currentProfileId == CUSTOM_PROFILE_ID) {
             loadCustomOverride();
         }

@@ -318,6 +318,8 @@ void BLEManager::update() {
 
     // Deferred central connect (scan callback must not block the host task)
     if (s_pendingConnect) {
+        // connect() can take 9s with retries; discovery waits on the 30s ATT timeout
+        LoopWatchdogPause watchdogPause;
         PLATFORM_CRITICAL_ENTER();
         s_pendingConnect = false;
         NimBLEAddress pendingAddress = s_pendingAddress;

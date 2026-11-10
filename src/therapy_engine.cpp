@@ -730,7 +730,7 @@ Macrocycle TherapyEngine::generateMacrocycle() {
 
             // Create event with both finger indices:
             // - secondaryFinger: transmitted over BLE to SECONDARY device
-            // - primaryFinger: used locally on PRIMARY device
+            // - primaryFinger: used locally by the glove running this engine
             // In mirrored mode these are identical; in non-mirrored mode they differ
             // The guard moves the wire base earlier so negative onset offsets fit the
             // unsigned deltaTimeMs field. Both gloves use the same base and deltas.
@@ -741,7 +741,7 @@ Macrocycle TherapyEngine::generateMacrocycle() {
             MacrocycleEvent evt(
                 eventDelta,
                 secondaryFinger,   // For SECONDARY (BLE transmission)
-                primaryFinger,     // For PRIMARY (local scheduling)
+                primaryFinger,     // For this glove (local scheduling)
                 amplitude,
                 (uint8_t)pattern.burstDurationMs,
                 _currentFrequency[primaryFinger]  // Use PRIMARY finger for frequency lookup
@@ -831,15 +831,15 @@ void TherapyEngine::executeMacrocycleStep() {
                 _sendMacrocycleCallback(_currentMacrocycle);
             }
 
-            // Schedule all PRIMARY activations locally via ActivationQueue
+            // Schedule all local activations via ActivationQueue
             // FreeRTOS motor task handles timing with ~1ms precision
-            // Note: Use primaryFinger for local PRIMARY scheduling (finger is for SECONDARY)
+            // Note: Use primaryFinger for local scheduling (finger is for SECONDARY)
             if (_scheduleActivationCallback) {
                 for (uint8_t i = 0; i < _currentMacrocycle.eventCount; i++) {
                     const MacrocycleEvent& evt = _currentMacrocycle.events[i];
                     uint64_t activateTime = _macrocycleBaseTime + (evt.deltaTimeMs * 1000ULL);
 
-                    // Enqueue to ActivationQueue using PRIMARY's finger index
+                    // Enqueue to ActivationQueue using the local finger index
                     // Motor task handles timing and frequency via FreeRTOS
                     _scheduleActivationCallback(activateTime, evt.primaryFinger, evt.amplitude,
                                                 evt.durationMs, evt.getFrequencyHz());

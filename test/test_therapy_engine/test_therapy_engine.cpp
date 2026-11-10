@@ -840,7 +840,7 @@ void test_macrocycle_without_frequency_randomization_is_250hz(void) {
 }
 
 void test_fixed_session_after_randomized_session_is_250hz(void) {
-    // The engine outlives sessions: a Custom vCR session's last draws must
+    // The engine outlives sessions: a randomized session's last draws must
     // not carry into the next fixed-frequency session
     TherapyEngine engine;
     engine.setSendMacrocycleCallback(mockCaptureMacrocycleCallback);

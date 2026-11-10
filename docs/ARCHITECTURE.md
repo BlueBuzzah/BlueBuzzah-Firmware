@@ -7,7 +7,7 @@ This document provides a detailed explanation of the BlueBuzzah firmware archite
 
 Platform-specific code is isolated behind compile-time seams: `board_config.h` (pins, `MAX_ACTUATORS`, battery availability), `platform.h` (critical sections, memory barrier, system reset, RTOS headers), a split `BLEManager` backend (`ble_manager_nrf52.cpp` Bluefruit / `ble_manager_esp32.cpp` NimBLE — identical Nordic-UART protocol, MTU 200, 7.5-10 ms glove-link connection interval (30-50 ms requested for the phone link), 0 dBm TX, 2M PHY), an `fs_backend` filesystem shim, and a `build_src_filter`-selected `PowerController` (BlueBuzzah v3 power switch + deep sleep; no-op on nRF). Everything below the seams — therapy engine, sync protocol, state machine, menus, profiles — is shared and platform-neutral.
 
-**BlueBuzzah v3 power topology** (verified against the ESP32-S3-WROOM-1U-N8R8 board netlist in BlueBuzzah-Hardware): the ESP32-S3, TCA9548A mux, and IMU (an LSM6DS3 on SPI — present on the board but unused by firmware) run from an RT9080 3V3 LDO fed by USB or the battery. The five DRV2605 drivers run **directly from VBat**. The WS2812 LED runs from a VBat rail switched by GPIO1, so it stays dark while GPIO1 is LOW. **Motors cannot run on USB alone** — without a battery, VBat is only the MCP73831 charger's 100 mA current-limited output, and any LRA drive browns the drivers out to power-on defaults (standby → silent motors while I2C still works). GPIO1 is the shared DRV2605 EN + mux reset + LED rail switch: a LOW→HIGH toggle resets every DRV2605 register, so any runtime toggle must be followed by full haptic reconfiguration. Motor JST ports are silk-labeled 1–5 in reverse of firmware channels (finger N ↔ port 5−N, `MOTOR_SILK_PORT()`). Serial QA commands `MOTOR_DIAG` (buzz every channel + supply-reset canary), `MOTOR_TEST:<n>` (single channel, 2 s), and `MOTOR_PRESENT` (per-port open-load probe via LRA auto-calibration) validate assembly. The presence probe also runs at every boot and feeds the therapy engine's active-finger map, so macrocycles skip motor ports found empty on the PRIMARY glove; fewer than 4 detected motors is signaled by a red double-blink LED at boot, then the glove enters `ERROR` until reboot (a probe skipped because the supply dipped doesn't count).
+**BlueBuzzah v3 power topology** (verified against the ESP32-S3-WROOM-1U-N8R8 board netlist in BlueBuzzah-Hardware): the ESP32-S3, TCA9548A mux, and IMU (an LSM6DS3 on SPI — present on the board but unused by firmware) run from an RT9080 3V3 LDO fed by USB or the battery. The five DRV2605 drivers run **directly from VBat**. The WS2812 LED runs from a VBat rail switched by GPIO1, so it stays dark while GPIO1 is LOW. **Motors cannot run on USB alone** — without a battery, VBat is only the MCP73831 charger's 100 mA current-limited output, and any LRA drive browns the drivers out to power-on defaults (standby → silent motors while I2C still works). GPIO1 is the shared DRV2605 EN + mux reset + LED rail switch: a LOW→HIGH toggle resets every DRV2605 register, so any runtime toggle must be followed by full haptic reconfiguration. Motor JST ports are silk-labeled 1–5 in finger order (finger N ↔ port N+1, `MOTOR_SILK_PORT()`). Serial QA commands `MOTOR_DIAG` (buzz every channel + supply-reset canary), `MOTOR_TEST:<n>` (single channel, 2 s), and `MOTOR_PRESENT` (per-port open-load probe via LRA auto-calibration) validate assembly. The presence probe also runs at every boot and feeds the therapy engine's active-finger map, so macrocycles skip motor ports found empty on the PRIMARY glove; fewer than 4 detected motors is signaled by a red double-blink LED at boot, then the glove enters `ERROR` until reboot (a probe skipped because the supply dipped doesn't count).
 
 ## Table of Contents
 
@@ -177,11 +177,11 @@ typedef void (*ScheduleActivationCallback)(uint64_t activateTimeUs, uint8_t fing
 therapy.setActivateCallback(onActivate);
 therapy.setDeactivateCallback(onDeactivate);
 therapy.setCycleCompleteCallback(onCycleComplete);
+therapy.setSchedulingCallbacks(onScheduleActivation, onStartScheduling, onIsSchedulingComplete);
 
 if (deviceRole == DeviceRole::PRIMARY)
 {
     therapy.setSendMacrocycleCallback(onSendMacrocycle);
-    therapy.setSchedulingCallbacks(onScheduleActivation, onStartScheduling, onIsSchedulingComplete);
     therapy.setGetLeadTimeCallback(onGetLeadTime);
 }
 ```
@@ -323,11 +323,13 @@ if (deviceRole == DeviceRole::SECONDARY)
 }
 
 // Therapy Engine - src/main.cpp, initializeTherapy()
-// Only the PRIMARY generates macrocycles and sends them to the SECONDARY
+// Both roles schedule local motors for standalone tests
+therapy.setSchedulingCallbacks(onScheduleActivation, onStartScheduling, onIsSchedulingComplete);
+
+// In a bilateral session only the PRIMARY generates macrocycles and sends them to the SECONDARY
 if (deviceRole == DeviceRole::PRIMARY)
 {
     therapy.setSendMacrocycleCallback(onSendMacrocycle);
-    therapy.setSchedulingCallbacks(onScheduleActivation, onStartScheduling, onIsSchedulingComplete);
 }
 ```
 
@@ -420,6 +422,7 @@ SimpleSyncProtocol syncProtocol;
 
 void setup()
 {
+    power.cutDrivers();                 // v3: drivers off before anything else; no-op on v2
     Serial.begin(115200);               // waits up to 3s for USB serial
 
     power.begin();                      // v3 power path; no-op on v2
@@ -943,7 +946,7 @@ if (mirrorPattern) {
 
 `numFingers` is 4 on v2 and 5 on v3 by default (or fewer with the `FINGERS` parameter). `remapPatternFingers()` then maps these slots onto the physically present motors.
 
-**Hardware Note**: Both gloves use identical channel-to-finger mapping (channel 0 = index on both gloves; channel 4 = thumb on v3). Each macrocycle event carries both indices: `finger` (sent to the SECONDARY) and `primaryFinger` (used locally, never serialized). In mirrored mode they are equal.
+**Hardware Note**: Both gloves use identical channel-to-finger mapping (finger 0 = index on both gloves; finger 4 = thumb on v3). Each macrocycle event carries both indices: `finger` (sent to the SECONDARY) and `primaryFinger` (used locally, never serialized). In mirrored mode they are equal.
 
 ### Configuration System
 
@@ -977,6 +980,7 @@ bool ProfileManager::loadSettings() {
     _roleFromSettings = true;
 
     // Load profile, then apply saved values that pass the PARAM_* bounds
+    // (except Custom, whose parameters come from custom.bin only)
     if (data.profileId > 0 && data.profileId <= _profileCount) {
         _currentProfile = _builtInProfiles[data.profileId - 1];
         // ...
@@ -1210,14 +1214,14 @@ IDENTIFY:SECONDARY
 [HapticController]
     └── I2C Bus (Wire @ 400kHz)
         └── TCA9548A Multiplexer (0x70)
-            ├── Port 0: DRV2605 (Index)   @ 0x5A
-            ├── Port 1: DRV2605 (Middle)  @ 0x5A
-            ├── Port 2: DRV2605 (Ring)    @ 0x5A
-            ├── Port 3: DRV2605 (Pinky)   @ 0x5A
-            └── Port 4: DRV2605 (Thumb)   @ 0x5A   (v3 only)
+            ├── Channel 0: DRV2605 (Thumb)   @ 0x5A   (v3 only)
+            ├── Channel 1: DRV2605 (Pinky)   @ 0x5A
+            ├── Channel 2: DRV2605 (Ring)    @ 0x5A
+            ├── Channel 3: DRV2605 (Middle)  @ 0x5A
+            └── Channel 4: DRV2605 (Index)   @ 0x5A
 ```
 
-That's v3. The v2 PCB reverses ports 0–3 (port 0 = pinky, port 3 = index); `selectChannel()` maps finger N to `FINGER_CHANNEL(N)` from `board_config.h`.
+That's v3. v2 has no thumb, so its four channels shift down (channel 0 = pinky, channel 3 = index). `selectChannel()` maps finger N to `FINGER_CHANNEL(N)` from `board_config.h`.
 
 ### I2C Initialization
 
@@ -1452,7 +1456,7 @@ profiles.loadProfileByName("noisy_vcr");
 | 1 | `regular_vcr` | `rndp` | no | 0% | 100% |
 | 2 | `noisy_vcr` | `rndp` | yes | 23.5% | 100% |
 | 3 | `hybrid_vcr` | `rndp` | no | 23.5% | 100% |
-| 4 | `custom_vcr` | `rndp` | no | 23.5% | 70-100% |
+| 4 | `custom_vcr` | `rndp` | no | 0% | 100% |
 | 5 | `gentle` | `sequential` | yes | 15% | 30-70% |
 | 6 | `quick_test` | `rndp` | yes | 23.5% | 50-100% |
 
@@ -1780,8 +1784,8 @@ bool HapticController::selectChannel(uint8_t finger) {
         return false;
     }
 
-    // TCA9548A: open this finger's channel (TCA9548A library)
-    _tca.openChannel(FINGER_CHANNEL(finger));
+    // TCA9548A: open only this finger's channel
+    _tca.writeRegister(static_cast<uint8_t>(1u << FINGER_CHANNEL(finger)));
     return true;
 }
 
@@ -2162,7 +2166,7 @@ The architecture enables confident refactoring, easy testing, and straightforwar
 | BLE supervision timeout | 6s | Disconnect detection (`BLE_TIMEOUT_MS`) |
 | Therapy default ON | 100ms | Burst duration |
 | Therapy default OFF | 67ms | TIME_OFF between bursts |
-| Jitter | 0% / 23.5% | Regular vCR / Noisy, Hybrid and Custom vCR |
+| Jitter | 0% / 23.5% | Regular and Custom vCR / Noisy and Hybrid vCR |
 | Default session | 7200s | 2 hours (vCR profiles) |
 
 ### Memory Budget

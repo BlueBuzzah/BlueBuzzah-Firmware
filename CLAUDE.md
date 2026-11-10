@@ -39,7 +39,7 @@ The board is selected by a build macro (`BOARD_BLUEBUZZAH_NRF52` / `BOARD_PENTAB
 | `profile_manager.cpp`| Therapy profiles (via `fs_backend`)   |
 | `vbat_estimator.cpp` | Battery voltage from DRV2605 VBAT register (0x21) — median-of-burst + EMA; used where there is no battery ADC |
 | `fs_backend_*.cpp`   | Filesystem shim: InternalFS (nRF) / LittleFS (ESP32) / in-memory mock (native) |
-| `power_controller_*.cpp` | v3 power switch + deep sleep; no-op on nRF |
+| `power_controller_*.cpp` | v3 power switch + deep sleep before the hardware cuts 3.3 V; no-op on nRF |
 | `latency_metrics.cpp`| Runtime latency measurement, RTT tracking, sync quality reporting |
 | `hires_clock.cpp`    | 1MHz timebase for sync timestamps: NRF_TIMER4 + HFXO on nRF (start after SoftDevice enable), `esp_timer` on ESP32 |
 | `radio_anchor.cpp`   | Hardware timestamps of BLE radio events via SoftDevice radio notifications (sync anchoring); inert stubs on v3 and native |
@@ -67,12 +67,14 @@ The board is selected by a build macro (`BOARD_BLUEBUZZAH_NRF52` / `BOARD_PENTAB
 - **`test_menu_controller` does not compile `menu_controller.cpp`.** It tests `TestMenuController`, a hand-maintained mirror; only `internal_messages.h` is real. Behavior changes in `MenuController` need the mirror updated or they go untested.
 - The exclusion list is copy-pasted across `native`, `native_coverage`, `native_coverage_gcc` (`native_penta` inherits). A new platform-specific `.cpp` must be excluded in all three, plus the other board's device env.
 - Mocks (`test/mocks/src/Arduino.h`): `mockAdvanceMicros()`, `mockEnableTimeAutoIncrement()`, `MockSerial`. Filesystem mocks are defined per test file.
-- CI (`test.yml`) runs only `native_coverage_gcc` (4-actuator). Run `native_penta` locally for anything touching `MAX_ACTUATORS`.
+- CI (`test.yml`) runs `native_coverage_gcc` (4-actuator) plus `test_board_config` on `native_penta`. Run `native_penta` locally for anything touching `MAX_ACTUATORS`.
 
 ## Gotchas
 
 - **nRF-only code is gated on `NRF52840_XXAA`, not `BOARD_BLUEBUZZAH_NRF52`** (`radio_anchor.cpp`, `hires_clock.cpp`). Native envs define `BOARD_BLUEBUZZAH_NRF52` too; `NATIVE_TEST_BUILD` selects the no-op branches in `platform.h`.
-- **BLE callback context differs per board**: SoftDevice/ISR context on nRF, NimBLE host task (core 0) on ESP32. No I2C in callbacks — hand off through `MotorEventBuffer` / `DeferredQueue` (both single-producer/single-consumer) or a semaphore (`safetyShutdownSema`). Menu commands run synchronously in the NimBLE task, hence `CONFIG_BT_NIMBLE_HOST_TASK_STACK_SIZE=8192`.
+- **BLE callback context differs per board**: Bluefruit's 3KB "Callback" task on nRF (radio notifications in `radio_anchor.cpp` are true ISRs), NimBLE host task (core 0) on ESP32. No I2C in callbacks — hand off through `MotorEventBuffer` / `DeferredQueue` (both single-producer/single-consumer) or a semaphore (`safetyShutdownSema`). `MenuController::handleCommand()` never runs there: `onBLEMessage` copies menu commands, the `TEST`/`STOP` shortcuts and a SECONDARY's `LED_OFF_SYNC`/`DEBUG_SYNC` (flash saves) with `enqueueMenuCommand()`, and `loop()` runs them via `processPendingMenuCommand()` (see MENU COMMAND DEFERRAL in `main.cpp`). Everything else from the other glove still runs inline.
+- **`CONFIG_BT_NIMBLE_HOST_TASK_STACK_SIZE=8192` (v3) predates that deferral**: it was sized while menu commands ran in the NimBLE host task and hasn't been re-measured since.
+- **`loop()` runs under the 5 s task watchdog on v3** (enabled last in `setup()`). Wrap loop-context work that can legitimately block 5 s or more in a `LoopWatchdogPause` (`platform.h`), as `MOTOR_DIAG`, `MOTOR_PRESENT` and the SECONDARY connect do.
 - **FreeRTOS stack units differ**: words on nRF, bytes on ESP32 (`MOTOR_TASK_STACK`).
 - **`SYNC_DEBUG_GPIO_ENABLED=1` only builds on nRF** (`digitalToggle`, `PIN_A0`). Don't port it by using `A0` on v3: that's GPIO1, the shared DRV2605 enable line, and toggling it wipes every driver's registers.
 - **`BLE_USE_2M_PHY` is tested with `#ifdef`**: `-DBLE_USE_2M_PHY=0` does not disable 2M PHY. `DEBUG_ENABLED`, `SKIP_BOOT_SEQUENCE`, `SYNC_DEBUG_GPIO_ENABLED`, `SYNC_ANCHOR_TIMESTAMPING_ENABLED` are `#ifndef` defaults in `config.h` and are safe to override with `-D`.

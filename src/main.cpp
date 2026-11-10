@@ -422,7 +422,7 @@ void onDeactivate(uint8_t finger);
 void onCycleComplete(uint32_t cycleCount);
 void onMacrocycleStart(uint32_t macrocycleCount);
 
-// PRIMARY scheduling callbacks (FreeRTOS motor task)
+// Local scheduling callbacks (FreeRTOS motor task)
 void onScheduleActivation(uint64_t activateTimeUs, uint8_t finger, uint8_t amplitude, uint16_t durationMs, uint16_t frequencyHz);
 void onStartScheduling();
 bool onIsSchedulingComplete();
@@ -644,6 +644,9 @@ void reconcileBatteryState()
 
 void setup()
 {
+    // Before the serial wait below: a motor left on by a crash must not run through it
+    power.cutDrivers();
+
 #if defined(BOARD_BLUEBUZZAH_NRF52)
     // Configure USB device descriptors (must be before Serial.begin).
     // The ESP32-S3 hardware USB-CDC has fixed descriptors, so this is nRF-only.
@@ -820,6 +823,9 @@ void setup()
     // DEBUG: Confirm setup() completes
     Serial.println(F("[DEBUG] setup() complete - entering loop()"));
     Serial.flush();
+
+    // Last: setup() legitimately blocks longer than the 5s timeout
+    platformEnableLoopWatchdog();
 }
 
 // =============================================================================
@@ -836,8 +842,8 @@ void loop()
     {
         // Drop staged macrocycle events not yet forwarded, so a STOP_SESSION
         // can't be undone by the forwarding below. Here, not in
-        // safeMotorShutdown(): that also runs on the BLE task (raw STOP), and
-        // the staging buffer allows only one consumer - this loop.
+        // safeMotorShutdown(): only the emergency path should discard staged
+        // events, and this loop is the buffer's single consumer.
         StagedMotorEvent staged;
         while (motorEventBuffer.unstage(staged)) {}
         safeMotorShutdown();
@@ -1545,19 +1551,20 @@ bool initializeBLE()
 
 bool initializeTherapy()
 {
-    // Set local motor callbacks (both roles need these for standalone tests)
     therapy.setActivateCallback(onActivate);
     therapy.setDeactivateCallback(onDeactivate);
     therapy.setCycleCompleteCallback(onCycleComplete);
+
+    // Set scheduling callbacks for FreeRTOS motor task. These are the engine's
+    // only route to the motors, and both roles need them for standalone tests.
+    therapy.setSchedulingCallbacks(onScheduleActivation, onStartScheduling, onIsSchedulingComplete);
+    // Set macrocycle start callback to recover any DRV2605 that reset
+    therapy.setMacrocycleStartCallback(onMacrocycleStart);
 
     // Set BLE sync callback (PRIMARY only - sends commands to SECONDARY)
     if (deviceRole == DeviceRole::PRIMARY)
     {
         therapy.setSendMacrocycleCallback(onSendMacrocycle);
-        // Set macrocycle start callback for PING/PONG latency measurement
-        therapy.setMacrocycleStartCallback(onMacrocycleStart);
-        // Set scheduling callbacks for FreeRTOS motor task
-        therapy.setSchedulingCallbacks(onScheduleActivation, onStartScheduling, onIsSchedulingComplete);
         // Set adaptive lead time callback for RTT-based scheduling
         therapy.setGetLeadTimeCallback(onGetLeadTime);
     }
@@ -1651,6 +1658,24 @@ void onBLEConnect(uint16_t connHandle, ConnectionType type)
         lastKeepaliveReceived = millis();
         // Report the battery now, not up to 60s later: the PRIMARY gates starts on it
         g_batteryCheckNow = true;
+
+        // A test running at any point in this connect left the health check off
+        ble.setScannerAutoRestart(true);
+
+        // Stopping scanning doesn't cancel a connect already in flight, so this
+        // link can land during a standalone test. End the test: it can't share
+        // the motor queue with the PRIMARY's macrocycles.
+        if (therapy.isRunning())
+        {
+            Serial.println(F("[TEST] PRIMARY linked - ending standalone test"));
+            therapy.stop();
+            if (safetyShutdownSema)
+            {
+                BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+                xSemaphoreGiveFromISR(safetyShutdownSema, &xHigherPriorityTaskWoken);
+                portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
+            }
+        }
     }
 
     // Update state machine on relevant connections
@@ -1931,9 +1956,11 @@ void executeDeferredWork(DeferredWorkType type, uint8_t p1, uint8_t p2, uint32_t
 // as a freeze, as a garbled "Command: <junk>ION_START", and as a USB drop.
 //
 // So phone/menu commands are copied here and executed from loop() instead, which
-// is the pattern DeferredQueue already documents for BLE-callback work. Internal
-// PRIMARY<->SECONDARY sync traffic is deliberately NOT deferred: it is
-// hard-real-time and stays on its existing inline path.
+// is the pattern DeferredQueue already documents for BLE-callback work. The same
+// applies to the NimBLE host task on ESP32. So are the TEST/STOP shortcuts and a
+// SECONDARY's flash-saving setting syncs (see onBLEMessage). Timing-critical
+// PRIMARY<->SECONDARY traffic (PING/PONG, MC:, session control) is deliberately
+// NOT deferred: it is hard-real-time and stays on its existing inline path.
 //
 // One command executes per loop() pass, matching deferredQueue.processOne().
 static constexpr uint8_t MENU_CMD_QUEUE_DEPTH = 4;
@@ -1946,6 +1973,39 @@ struct PendingMenuCommand
     volatile bool ready;  // published last, after text is filled
 };
 
+// Bench test shortcuts, handled outside MenuController
+static bool isTestStart(const char *m) { return strcmp(m, "TEST") == 0 || strcmp(m, "test") == 0; }
+static bool isTestStop(const char *m) { return strcmp(m, "STOP") == 0 || strcmp(m, "stop") == 0; }
+
+// Settings the PRIMARY syncs to a SECONDARY (SECONDARY only)
+static bool isSettingSync(const char *m)
+{
+    return strncmp(m, "LED_OFF_SYNC:", 13) == 0 || strncmp(m, "DEBUG_SYNC:", 11) == 0;
+}
+
+static void applySettingSync(const char *m)
+{
+    if (strncmp(m, "LED_OFF_SYNC:", 13) == 0)
+    {
+        int value = atoi(m + 13);
+        profiles.setTherapyLedOff(value != 0);
+        profiles.saveSettings();
+        Serial.printf("[SYNC] LED_OFF_SYNC received: %d\n", value);
+
+        // Update LED immediately if currently running therapy
+        if (stateMachine.getCurrentState() == TherapyState::RUNNING)
+        {
+            applyLed();
+        }
+        return;
+    }
+
+    int value = atoi(m + 11);
+    profiles.setDebugMode(value != 0);
+    profiles.saveSettings();
+    Serial.printf("[SYNC] DEBUG_SYNC received: %d\n", value);
+}
+
 static PendingMenuCommand s_menuCmdQueue[MENU_CMD_QUEUE_DEPTH];
 static volatile uint8_t s_menuCmdHead = 0;
 static volatile uint8_t s_menuCmdTail = 0;
@@ -1954,9 +2014,11 @@ static volatile uint8_t s_menuCmdCount = 0;
 /**
  * @brief Copy a menu command for later execution in loop() context.
  *
- * Called from the Bluefruit callback task. Reserve-fill-publish: the slot is
- * claimed under a critical section, filled outside it, and only then marked
- * ready - so loop() can never read a half-written command.
+ * Called from the BLE callback (Bluefruit callback task / NimBLE host task) and
+ * from loop() via serial commands, so it must stay multi-producer safe.
+ * Reserve-fill-publish: the slot is claimed under a critical section, filled
+ * outside it, and only then marked ready - so loop() can never read a
+ * half-written command.
  *
  * @return false if the command is too long or the queue is full (caller warns).
  */
@@ -2007,7 +2069,23 @@ void processPendingMenuCommand()
     }
     platformMemoryBarrier();
 
-    menu.handleCommand(s_menuCmdQueue[slot].text, s_menuCmdQueue[slot].allowInternal);
+    const char *text = s_menuCmdQueue[slot].text;
+    if (isTestStart(text))
+    {
+        startTherapyTest();
+    }
+    else if (isTestStop(text))
+    {
+        stopTherapyTest();
+    }
+    else if (deviceRole == DeviceRole::SECONDARY && isSettingSync(text))
+    {
+        applySettingSync(text);
+    }
+    else
+    {
+        menu.handleCommand(text, s_menuCmdQueue[slot].allowInternal);
+    }
 
     s_menuCmdQueue[slot].ready = false;
     {
@@ -2024,52 +2102,26 @@ void onBLEMessage(uint16_t connHandle, const char *message, uint64_t rxTimestamp
     // (immediately when data is received in _onUartRx/_onClientUartRx)
     // This provides maximum accuracy for PTP clock synchronization
 
-    // Check for simple text commands first (for testing)
-    // Both PRIMARY and SECONDARY can run standalone tests for hardware verification
-    if (strcmp(message, "TEST") == 0 || strcmp(message, "test") == 0)
-    {
-        startTherapyTest();
-        return;
-    }
-
-    if (strcmp(message, "STOP") == 0 || strcmp(message, "stop") == 0)
-    {
-        stopTherapyTest();
-        return;
-    }
-
-    // Try menu controller first for phone/BLE commands (PRIMARY only)
-    // Commands from an identified PHONE connection always dispatch, even if
-    // they happen to match an internal (PRIMARY<->SECONDARY sync) prefix.
+    // Deferred to loop(), not executed here (see MENU COMMAND DEFERRAL above):
+    // - TEST/STOP on either role: standalone hardware tests. startTherapyTest()
+    //   runs the session-start chain that overflows the callback stack, and
+    //   stopTherapyTest() does I2C.
+    // - LED_OFF_SYNC/DEBUG_SYNC on a SECONDARY: they save settings to flash.
+    // - Menu commands on a PRIMARY. Commands from an identified PHONE connection
+    //   always dispatch, even if they happen to match an internal
+    //   (PRIMARY<->SECONDARY sync) prefix.
     bool fromPhone = ble.getConnectionType(connHandle) == ConnectionType::PHONE;
-    if (deviceRole == DeviceRole::PRIMARY && (fromPhone || !menu.isInternalMessage(message)))
+    if (isTestStart(message) || isTestStop(message) ||
+        (deviceRole == DeviceRole::SECONDARY && isSettingSync(message)) ||
+        (deviceRole == DeviceRole::PRIMARY && (fromPhone || !menu.isInternalMessage(message))))
     {
-        // Deferred, not executed here: this runs on the 3KB Bluefruit callback
-        // task and handleCommand overflows it (see enqueueMenuCommand above).
-        //
-        // Returning unconditionally is safe where the original fell through on a
-        // false return: every PRIMARY-side handler below this point matches only
+        // Returning unconditionally is safe: TEST/STOP and the setting syncs
+        // always returned. On a PRIMARY, every handler below matches only
         // internal messages (BATRESPONSE:, sync protocol), and an internal
-        // message only reaches here when it came from the phone.
+        // message reaches the PRIMARY clause only from the phone.
         if (!enqueueMenuCommand(message, fromPhone))
         {
             Serial.println(F("[BLE] WARN: menu command queue full or oversized - dropped"));
-        }
-        return;
-    }
-
-    // Handle LED_OFF_SYNC from PRIMARY (SECONDARY only)
-    if (deviceRole == DeviceRole::SECONDARY && strncmp(message, "LED_OFF_SYNC:", 13) == 0)
-    {
-        int value = atoi(message + 13);
-        profiles.setTherapyLedOff(value != 0);
-        profiles.saveSettings();
-        Serial.printf("[SYNC] LED_OFF_SYNC received: %d\n", value);
-
-        // Update LED immediately if currently running therapy
-        if (stateMachine.getCurrentState() == TherapyState::RUNNING)
-        {
-            applyLed();
         }
         return;
     }
@@ -2137,16 +2189,6 @@ void onBLEMessage(uint16_t connHandle, const char *message, uint64_t rxTimestamp
     {
         g_secondaryFault = true;
         Serial.println(F("[ERROR] SECONDARY reports a hardware fault - sessions refused"));
-        return;
-    }
-
-    // Handle DEBUG_SYNC from PRIMARY (SECONDARY only)
-    if (deviceRole == DeviceRole::SECONDARY && strncmp(message, "DEBUG_SYNC:", 11) == 0)
-    {
-        int value = atoi(message + 11);
-        profiles.setDebugMode(value != 0);
-        profiles.saveSettings();
-        Serial.printf("[SYNC] DEBUG_SYNC received: %d\n", value);
         return;
     }
 
@@ -2701,7 +2743,7 @@ void onDeactivate(uint8_t finger)
 }
 
 // =============================================================================
-// PRIMARY SCHEDULING CALLBACKS (FreeRTOS Motor Task)
+// LOCAL SCHEDULING CALLBACKS (FreeRTOS Motor Task)
 // =============================================================================
 
 void onScheduleActivation(uint64_t activateTimeUs, uint8_t finger, uint8_t amplitude,
@@ -2829,6 +2871,13 @@ void startTherapyTest()
         return;
     }
 
+    // The motor queue can't hold a local test and the PRIMARY's macrocycles
+    if (deviceRole == DeviceRole::SECONDARY && ble.isPrimaryConnected())
+    {
+        Serial.println(F("[TEST] Turn off the PRIMARY to test this glove"));
+        return;
+    }
+
     // Warn if sync not valid when SECONDARY is connected (timing may be off)
     if (deviceRole == DeviceRole::PRIMARY && ble.isSecondaryConnected() &&
         !syncProtocol.isClockSyncValid())
@@ -2855,14 +2904,6 @@ void startTherapyTest()
         patternType = PatternType::MIRRORED;
     }
 
-    // Stop scanning during standalone test (SECONDARY only)
-    if (deviceRole == DeviceRole::SECONDARY)
-    {
-        ble.setScannerAutoRestart(false); // Prevent health check from restarting
-        ble.stopScanning();
-        Serial.println(F("[TEST] Scanning paused for standalone test"));
-    }
-
     // Test sessions use fixed duration, not profile duration
     uint32_t durationSec = TEST_DURATION_SEC;
 
@@ -2880,6 +2921,15 @@ void startTherapyTest()
     {
         Serial.println(F("[TEST] Start aborted - state machine rejected START_SESSION"));
         return;
+    }
+
+    // Stop scanning during standalone test (SECONDARY only). After the check above:
+    // a rejected TEST must leave the scanner running or the glove never relinks.
+    if (deviceRole == DeviceRole::SECONDARY)
+    {
+        ble.setScannerAutoRestart(false); // Prevent health check from restarting
+        ble.stopScanning();
+        Serial.println(F("[TEST] Scanning paused for standalone test"));
     }
 
     // Notify SECONDARY of session start (enables pulsing LED on SECONDARY)
@@ -2916,8 +2966,9 @@ void startTherapyTest()
 
 void stopTherapyTest()
 {
-    // On a SECONDARY, therapy.isRunning() is always false — only the PRIMARY runs the
-    // engine; the SECONDARY plays macrocycle-driven motor events with the FSM in RUNNING.
+    // On a SECONDARY following a PRIMARY session, therapy.isRunning() is false: only a
+    // standalone test runs the engine there. Otherwise the SECONDARY plays
+    // macrocycle-driven motor events with the FSM in RUNNING.
     // So don't gate the stop on isRunning() alone, or a serial "stop" would silently do
     // nothing while motors are active. Proceed whenever the engine OR the FSM is active.
     // (On a SECONDARY following a live PRIMARY session the next macrocycle resumes
@@ -3023,9 +3074,9 @@ void autoStartTherapy()
     const TherapyProfile *profile = profiles.getCurrentProfile();
     if (!profile)
     {
-        // No profile loaded - fall back to built-in "noisy_vcr" (v1 defaults)
-        Serial.println(F("[AUTO] No profile loaded - loading noisy_vcr defaults"));
-        profiles.loadProfileByName("noisy_vcr");
+        // No profile loaded - fall back to built-in "regular_vcr" (boot default)
+        Serial.println(F("[AUTO] No profile loaded - loading regular_vcr (boot default)"));
+        profiles.loadProfileByName("regular_vcr");
         profile = profiles.getCurrentProfile();
 
         if (!profile)
@@ -3503,6 +3554,7 @@ void handleSerialCommand(const char *command)
             stateMachine.transition(StateTrigger::STOPPED);
         }
         safeMotorShutdown();
+        LoopWatchdogPause watchdogPause;  // sweep takes ~4.3s
         haptic.diagSweep();
         return;
     }
@@ -3517,6 +3569,7 @@ void handleSerialCommand(const char *command)
             stateMachine.transition(StateTrigger::STOPPED);
         }
         safeMotorShutdown();
+        LoopWatchdogPause watchdogPause;  // up to 2s per port
         haptic.probeMotorPresence();
         applyMotorPresenceToTherapy();
         return;

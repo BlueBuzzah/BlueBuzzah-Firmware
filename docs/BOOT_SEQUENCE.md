@@ -1053,6 +1053,7 @@ The boot sequence is orchestrated in `main.cpp`:
 
 void setup()
 {
+    power.cutDrivers(); // v3: GPIO1 LOW - stops any motor a crash left on (no-op on nRF)
     Serial.begin(115200);
 
     // Wait for serial with timeout
@@ -1088,6 +1089,8 @@ void setup()
     }
     menu.begin(&therapy, &battery, &haptic, &stateMachine, &profiles, &ble);
     deferredQueue.setExecutor(executeDeferredWork);
+
+    platformEnableLoopWatchdog();  // v3: loop() under the 5 s task watchdog; no-op on nRF
 }
 ```
 

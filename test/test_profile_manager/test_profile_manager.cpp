@@ -188,6 +188,23 @@ void test_getCurrentProfile_noisy_vcr_has_correct_defaults(void) {
     TEST_ASSERT_EQUAL_UINT8(MAX_ACTUATORS, p->numFingers);
 }
 
+void test_getCurrentProfile_custom_vcr_has_correct_defaults(void) {
+    profiles->loadProfile(4);  // custom_vcr defaults match regular_vcr
+    const TherapyProfile* p = profiles->getCurrentProfile();
+
+    TEST_ASSERT_FLOAT_WITHIN(0.1f, 100.0f, p->timeOnMs);
+    TEST_ASSERT_FLOAT_WITHIN(0.1f, 67.0f, p->timeOffMs);
+    TEST_ASSERT_FLOAT_WITHIN(0.1f, 0.0f, p->jitterPercent);
+    TEST_ASSERT_EQUAL_UINT8(100, p->amplitudeMin);
+    TEST_ASSERT_EQUAL_UINT8(100, p->amplitudeMax);
+    TEST_ASSERT_FALSE(p->mirrorPattern);
+    TEST_ASSERT_FALSE(p->frequencyRandomization);
+    TEST_ASSERT_EQUAL_UINT16(250, p->frequencyHz);
+    TEST_ASSERT_EQUAL_UINT16(120, p->sessionDurationMin);
+    TEST_ASSERT_EQUAL_STRING("rndp", p->patternType);
+    TEST_ASSERT_EQUAL_UINT8(MAX_ACTUATORS, p->numFingers);
+}
+
 void test_getCurrentProfile_gentle_has_correct_values(void) {
     profiles->loadProfile(5);  // gentle is now profile 5
     const TherapyProfile* p = profiles->getCurrentProfile();
@@ -733,7 +750,7 @@ void test_customOverride_absent_leaves_builtin_defaults(void) {
     // custom_vcr built-in defaults
     const TherapyProfile* profile = profiles->getCurrentProfile();
     TEST_ASSERT_EQUAL_FLOAT(100.0f, profile->timeOnMs);
-    TEST_ASSERT_EQUAL_UINT8(70, profile->amplitudeMin);
+    TEST_ASSERT_EQUAL_UINT8(100, profile->amplitudeMin);
 }
 
 void test_customOverride_does_not_affect_preset_profiles(void) {
@@ -867,6 +884,69 @@ void test_loadSettings_rejects_out_of_range_fields(void) {
     delete p;
 }
 
+// settings.bin as written by firmware whose Custom defaults were 23.5% jitter
+// and 70-100% amplitude.
+static void writeStaleCustomSettings(void) {
+    SettingsData data{};
+    data.magic              = SETTINGS_MAGIC;
+    data.version            = SETTINGS_VERSION;
+    data.role               = 1;  // SECONDARY
+    data.profileId          = CUSTOM_PROFILE_ID;
+    data.timeOnMs           = 100.0f;
+    data.timeOffMs          = 67.0f;
+    data.jitterPercent      = 23.5f;
+    data.amplitudeMin       = 70;
+    data.amplitudeMax       = 100;
+    data.sessionDurationMin = 120;
+    data.numFingers         = MAX_ACTUATORS;
+    data.frequencyHz        = 250;
+    strncpy(data.patternType, "rndp", sizeof(data.patternType) - 1);
+    fsb::writeFile(SETTINGS_FILE,
+                   reinterpret_cast<const uint8_t*>(&data), sizeof(data));
+}
+
+void test_loadSettings_custom_ignores_stale_settings_parameters(void) {
+    writeStaleCustomSettings();  // no custom.bin
+
+    ProfileManager* p = new ProfileManager();
+    p->begin(true);
+
+    const TherapyProfile* profile = p->getCurrentProfile();
+    TEST_ASSERT_EQUAL_UINT8(CUSTOM_PROFILE_ID, p->getCurrentProfileId());
+    TEST_ASSERT_EQUAL(DeviceRole::SECONDARY, p->getDeviceRole());
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, profile->jitterPercent);
+    TEST_ASSERT_EQUAL_UINT8(100,  profile->amplitudeMin);
+    TEST_ASSERT_EQUAL_UINT8(100,  profile->amplitudeMax);
+    delete p;
+}
+
+void test_loadSettings_custom_override_wins_over_settings(void) {
+    writeStaleCustomSettings();
+
+    CustomOverrideData custom{};
+    custom.magic              = CUSTOM_OVERRIDE_MAGIC;
+    custom.version            = CUSTOM_OVERRIDE_VERSION;
+    custom.timeOnMs           = 100.0f;
+    custom.timeOffMs          = 67.0f;
+    custom.jitterPercent      = 10.0f;
+    custom.amplitudeMin       = 60;
+    custom.amplitudeMax       = 90;
+    custom.sessionDurationMin = 120;
+    custom.numFingers         = MAX_ACTUATORS;
+    custom.mirrorPattern      = 0;
+    fsb::writeFile(CUSTOM_OVERRIDE_FILE,
+                   reinterpret_cast<const uint8_t*>(&custom), sizeof(custom));
+
+    ProfileManager* p = new ProfileManager();
+    p->begin(true);
+
+    const TherapyProfile* profile = p->getCurrentProfile();
+    TEST_ASSERT_EQUAL_FLOAT(10.0f, profile->jitterPercent);
+    TEST_ASSERT_EQUAL_UINT8(60,    profile->amplitudeMin);
+    TEST_ASSERT_EQUAL_UINT8(90,    profile->amplitudeMax);
+    delete p;
+}
+
 // =============================================================================
 // MAIN - RUN ALL TESTS
 // =============================================================================
@@ -903,6 +983,7 @@ int main(int argc, char **argv) {
     // Get Current Profile Tests
     RUN_TEST(test_getCurrentProfile_returns_profile_after_load);
     RUN_TEST(test_getCurrentProfile_noisy_vcr_has_correct_defaults);
+    RUN_TEST(test_getCurrentProfile_custom_vcr_has_correct_defaults);
     RUN_TEST(test_getCurrentProfile_gentle_has_correct_values);
     RUN_TEST(test_getCurrentProfile_quick_test_has_5_minute_duration);
     RUN_TEST(test_getCurrentProfile_returns_null_when_not_loaded);
@@ -1005,6 +1086,8 @@ int main(int argc, char **argv) {
     RUN_TEST(test_isStorageAvailable_false_when_mount_fails);
     RUN_TEST(test_settings_roundtrip_with_storage);
     RUN_TEST(test_loadSettings_rejects_out_of_range_fields);
+    RUN_TEST(test_loadSettings_custom_ignores_stale_settings_parameters);
+    RUN_TEST(test_loadSettings_custom_override_wins_over_settings);
     RUN_TEST(test_saveSettings_returns_false_without_storage);
     RUN_TEST(test_loadSettings_returns_false_without_storage);
 

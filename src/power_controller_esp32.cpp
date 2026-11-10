@@ -3,8 +3,12 @@
  * @brief v3 power path: slide switch, chip enables, deep sleep
  *
  * The power switch drives GPIO3 (strapping pin - read only after boot):
- * HIGH = on, LOW = shutdown request. Deep sleep wakes when the switch goes
- * HIGH again.
+ * HIGH = on, LOW = shutdown request. Sliding the switch off pulls GPIO3 low at
+ * once; the firmware stops the motors, saves the session, flashes the LED and
+ * deep sleeps. About 2 s after the slide an RC delay disables the 3.3 V
+ * regulator, so the board is then fully off (not sleeping). Sliding the switch
+ * on powers it up through a normal boot. The ext1 wake on GPIO3 HIGH only
+ * covers a quick off-on flip before the cut.
  *
  * GPIO1 is the shared EN pin of all five DRV2605s, the TCA9548A reset and the
  * LED rail switch. The DRV2605s run directly from VBat; the LED has power only
@@ -19,6 +23,11 @@
 #include "hardware.h"
 
 #include "esp_sleep.h"
+
+void PowerController::cutDrivers() {
+    pinMode(ENABLE_PIN_OVERRIDE, OUTPUT);
+    digitalWrite(ENABLE_PIN_OVERRIDE, LOW);
+}
 
 void PowerController::begin() {
     pinMode(ENABLE_PIN_OVERRIDE, OUTPUT);
@@ -41,7 +50,7 @@ void PowerController::enterDeepSleep(LEDController& led) {
     delay(150);
     led.off();
 
-    digitalWrite(ENABLE_PIN_OVERRIDE, LOW);  // DRV2605s to shutdown, mux in reset, LED rail off
+    cutDrivers();  // DRV2605s to shutdown, mux in reset, LED rail off
 
     // Wake when the power switch returns HIGH
     esp_sleep_enable_ext1_wakeup_io(1ULL << POWER_SWITCH_PIN_OVERRIDE,

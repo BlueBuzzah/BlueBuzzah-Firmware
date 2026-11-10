@@ -43,11 +43,11 @@ Both devices run identical firmware and advertise as "BlueBuzzah". Role is store
 - **Pattern**: Random permutations (RNDP) of all finger activations (4 on v2, 5 on v3)
 - **Timing**: 100ms ON, 67ms OFF per finger (configurable)
 - **Bilaterality**: Synchronized PRIMARY/SECONDARY glove stimulation
-- **Jitter**: Temporal randomization to prevent habituation (0-50%)
+- **Jitter**: random shift of each burst onset (0-50%)
 - **Mirror Mode**: Symmetric vs independent PRIMARY/SECONDARY patterns
 - **Session Duration**: 1-240 minutes (default: 120 minutes)
 
-**Therapeutic Goal**: Reduce motor symptoms through coordinated reset stimulation
+**Design**: vibrotactile coordinated reset (vCR) stimulation, following the patterns used in published vCR research
 
 ---
 
@@ -273,7 +273,7 @@ struct [[nodiscard]] Pattern {
 };
 ```
 
-Both hands use finger indices `0..MAX_ACTUATORS-1`, with the hardware wiring ensuring each channel maps to the same anatomical finger on both gloves (channel 0 = index on both, etc.).
+Both hands use finger indices `0..MAX_ACTUATORS-1`, with the hardware wiring ensuring each finger index maps to the same anatomical finger on both gloves (finger 0 = index on both, etc.).
 
 **Active-finger remapping**: pattern sequences are slot indices `0..numFingers-1`. `remapPatternFingers()` maps them onto the physical fingers set by `setActiveFingers()`. On v3 the boot motor-presence probe calls `setActiveFingers()` with the ports that have a motor, so a missing motor is skipped on both gloves rather than getting a silent slot. `startSession()` caps `numFingers` at the active-finger count.
 
@@ -281,7 +281,7 @@ Both hands use finger indices `0..MAX_ACTUATORS-1`, with the hardware wiring ens
 
 **Why Needed?** Both gloves must play the same macrocycle for bilateral symmetry.
 
-The SECONDARY never generates patterns or random values. The PRIMARY generates every pattern, jitter offset and amplitude, then sends the complete macrocycle to the SECONDARY as one `MACROCYCLE` message. Each event carries the SECONDARY's finger index, so the SECONDARY plays exactly what the PRIMARY chose and no shared random seed is needed.
+In a bilateral session the SECONDARY never generates patterns or random values. The PRIMARY generates every pattern, jitter offset and amplitude, then sends the complete macrocycle to the SECONDARY as one `MACROCYCLE` message. Each event carries the SECONDARY's finger index, so the SECONDARY plays exactly what the PRIMARY chose and no shared random seed is needed.
 
 ```cpp
 // src/therapy_engine.cpp - generateMacrocycle()
@@ -485,7 +485,7 @@ void HapticController::emergencyStop() {
 
 ### Random Frequency Reconfiguration
 
-**Feature**: Optionally randomize actuator frequency each pattern (Custom vCR in the original firmware)
+**Feature**: Optionally randomize actuator frequency each pattern (from Custom vCR in the original firmware; no built-in profile turns it on)
 
 When enabled with `setFrequencyRandomization(true, minHz, maxHz)`, `generateMacrocycle()` picks a new frequency per finger for each pattern, in 5 Hz steps from `minHz` up to but not including `maxHz` (like v1's `randrange`), and stores it in each event:
 
@@ -499,7 +499,7 @@ if (_frequencyRandomization) {
 }
 ```
 
-Every session start (phone `SESSION_START`, auto-start, `TEST`) applies the current profile's `frequencyRandomization`, `frequencyMin` and `frequencyMax`. Only `custom_vcr` has it on (210-260 Hz, so 210-255 Hz); the others play 250 Hz. Both gloves read each event's frequency from the macrocycle, and the motor task writes it to the LRA period register, OL_LRA_PERIOD (0x20, 98.49 µs units), during pre-selection after the previous burst, off the activation's critical path. The write is skipped when the frequency hasn't changed, so fixed-frequency profiles add no I2C traffic.
+Every session start (phone `SESSION_START`, auto-start, `TEST`) applies the current profile's `frequencyRandomization`, `frequencyMin` and `frequencyMax`. No built-in profile has it on, so every profile plays 250 Hz. Both gloves read each event's frequency from the macrocycle, and the motor task writes it to the LRA period register, OL_LRA_PERIOD (0x20, 98.49 µs units), during pre-selection after the previous burst, off the activation's critical path. The write is skipped when the frequency hasn't changed, so fixed-frequency profiles add no I2C traffic.
 
 ---
 
@@ -514,19 +514,20 @@ TherapyEngine uses a **callback-driven architecture** where the engine generates
 ```cpp
 bool initializeTherapy()
 {
-    // Set local motor callbacks (both roles need these for standalone tests)
     therapy.setActivateCallback(onActivate);
     therapy.setDeactivateCallback(onDeactivate);
     therapy.setCycleCompleteCallback(onCycleComplete);
+
+    // Set scheduling callbacks for FreeRTOS motor task. These are the engine's
+    // only route to the motors, and both roles need them for standalone tests.
+    therapy.setSchedulingCallbacks(onScheduleActivation, onStartScheduling, onIsSchedulingComplete);
+    // Set macrocycle start callback to recover any DRV2605 that reset
+    therapy.setMacrocycleStartCallback(onMacrocycleStart);
 
     // Set BLE sync callback (PRIMARY only - sends commands to SECONDARY)
     if (deviceRole == DeviceRole::PRIMARY)
     {
         therapy.setSendMacrocycleCallback(onSendMacrocycle);
-        // Set macrocycle start callback for PING/PONG latency measurement
-        therapy.setMacrocycleStartCallback(onMacrocycleStart);
-        // Set scheduling callbacks for FreeRTOS motor task
-        therapy.setSchedulingCallbacks(onScheduleActivation, onStartScheduling, onIsSchedulingComplete);
         // Set adaptive lead time callback for RTT-based scheduling
         therapy.setGetLeadTimeCallback(onGetLeadTime);
     }
@@ -763,14 +764,14 @@ struct TherapyProfile {
     // Metadata
     bool isDefault;
 
-    // Frequency randomization (Custom vCR feature)
+    // Frequency randomization (engine capability; no built-in profile enables it)
     bool frequencyRandomization;
     uint16_t frequencyMin;  // Min frequency for randomization (Hz)
     uint16_t frequencyMax;  // Max frequency for randomization (Hz)
 };
 ```
 
-`actuatorType` and `frequencyHz` are stored and reported by `PROFILE_GET` but do not reach the DRV2605: the drivers are always configured as LRA, at 250 Hz unless the profile randomizes frequency.
+`actuatorType` and `frequencyHz` are stored and reported by `PROFILE_GET` but do not reach the DRV2605: the drivers are always configured as LRA, at 250 Hz, since no built-in profile randomizes frequency.
 
 ### Profile Comparison
 
@@ -779,9 +780,9 @@ Built-in profiles (`ProfileManager::initBuiltInProfiles()`). `PROFILE_LOAD` take
 | ID | Profile | TIME_ON | TIME_OFF | JITTER | MIRROR | PATTERN | AMPLITUDE | SESSION | Use Case |
 |----|---------|---------|----------|--------|--------|---------|-----------|---------|----------|
 | 1 | **Regular vCR** (`regular_vcr`) | 100ms | 67ms | 0% | False | rndp | 100% | 120 min | Standard protocol, independent L/R |
-| 2 | **Noisy vCR** (`noisy_vcr`) | 100ms | 67ms | 23.5% | True | rndp | 100% | 120 min | Prevents habituation |
+| 2 | **Noisy vCR** (`noisy_vcr`) | 100ms | 67ms | 23.5% | True | rndp | 100% | 120 min | Mirrored, with jitter (noisy vCR arm) |
 | 3 | **Hybrid vCR** (`hybrid_vcr`) | 100ms | 67ms | 23.5% | False | rndp | 100% | 120 min | Jitter with independent L/R |
-| 4 | **Custom vCR** (`custom_vcr`) | 100ms | 67ms | 23.5% | False | rndp | 70-100% | 120 min | User-editable (see below) |
+| 4 | **Custom vCR** (`custom_vcr`) | 100ms | 67ms | 0% | False | rndp | 100% | 120 min | User-editable; defaults match Regular vCR (see below) |
 | 5 | **Gentle** (`gentle`) | 80ms | 87ms | 15% | True | sequential | 30-70% | 60 min | Lower amplitude |
 | 6 | **Quick Test** (`quick_test`) | 100ms | 67ms | 23.5% | True | rndp | 50-100% | 5 min | Short test session |
 
@@ -929,14 +930,14 @@ closeChannels();
 MCU I2C Bus @ 400kHz (nRF52840 default pins / ESP32-S3 SDA=GPIO5, SCL=GPIO6)
   |
   +-- TCA9548A Multiplexer (0x70)
-        |-- Port 0: DRV2605 #1 (Index)   @ 0x5A
-        |-- Port 1: DRV2605 #2 (Middle)  @ 0x5A
-        |-- Port 2: DRV2605 #3 (Ring)    @ 0x5A
-        |-- Port 3: DRV2605 #4 (Pinky)   @ 0x5A
-        +-- Port 4: DRV2605 #5 (Thumb)   @ 0x5A  (v3 only)
+        |-- Channel 0: DRV2605 #1 (Thumb)   @ 0x5A  (v3 only)
+        |-- Channel 1: DRV2605 #2 (Pinky)   @ 0x5A
+        |-- Channel 2: DRV2605 #3 (Ring)    @ 0x5A
+        |-- Channel 3: DRV2605 #4 (Middle)  @ 0x5A
+        +-- Channel 4: DRV2605 #5 (Index)   @ 0x5A
 ```
 
-That's v3. The v2 PCB reverses ports 0–3 (port 0 = pinky); finger N uses port `FINGER_CHANNEL(N)` from `board_config.h`.
+That's v3. v2 has no thumb, so its four channels shift down (channel 0 = pinky, channel 3 = index). Finger N uses channel `FINGER_CHANNEL(N)` from `board_config.h`.
 
 **Why Multiplexer?** All DRV2605 chips have fixed address 0x5A. The multiplexer lets up to 8 chips share one bus (4 or 5 are used).
 
@@ -947,7 +948,7 @@ bool HapticController::selectChannel(uint8_t finger) {
     if (finger >= MAX_ACTUATORS) {
         return false;
     }
-    _tca.openChannel(FINGER_CHANNEL(finger));
+    _tca.writeRegister(static_cast<uint8_t>(1u << FINGER_CHANNEL(finger)));
     return true;
 }
 
@@ -1038,11 +1039,11 @@ All I2C access to the drivers takes the I2C mutex (`I2CMutexLock`), so the motor
 
 ### Therapeutic Parameters
 
-**Optimal Settings** (based on research):
+**Default settings**: Regular and Noisy vCR use the burst timing, jitter, mirroring and 250 Hz frequency of the regular and noisy vCR arms of Pfeifer et al. 2021 (four fingers per hand, no thumb; v3 adds the thumb by default). Regular's random order is independent per hand: non-mirrored, but it doesn't guarantee the study's non-coincident finger pairs. Custom vCR starts from Regular vCR's values. Hybrid vCR, Gentle and Quick Test were not studied.
 - **Frequency**: 250 Hz (matches LRA resonance)
-- **Amplitude**: 100% (maximum sensation without pain)
-- **ON/OFF ratio**: 100ms/67ms (3:2 ratio)
-- **Jitter**: 23.5% (prevents habituation)
+- **Amplitude**: 100% (a firmware drive level; the study reported vibration displacement in mm, so this percentage was not studied)
+- **ON/OFF**: 100ms/67ms
+- **Jitter**: 0% non-mirrored (regular vCR) or 23.5% mirrored (noisy vCR)
 - **Session duration**: 120 minutes (2 hours)
 - **Pattern**: Random permutations (non-predictable)
 
@@ -1057,7 +1058,7 @@ All I2C access to the drivers takes the I2C mutex (`I2CMutexLock`), so the motor
 
 ### Bilateral Synchronization
 
-**Importance**: Both hands must stimulate simultaneously for optimal neural desynchronization.
+**Why**: the study protocol delivered bursts to both hands at identical times, so the gloves keep their onsets aligned.
 
 **Achieved Synchronization**: <1ms bilateral sync (sub-millisecond precision via FreeRTOS motor task)
 

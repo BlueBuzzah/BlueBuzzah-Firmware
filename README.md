@@ -7,7 +7,15 @@
 [![Snyk Security](https://snyk.io/test/github/buzzahbuddy/bluebuzzah-firmware/badge.svg)](https://app.snyk.io/org/rbonestell/project/29618332-cdb9-45be-ba57-41da82771ad0)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-BlueBuzzah is a medical device research platform implementing vibrotactile Coordinated Reset (vCR) therapy for Parkinson's disease treatment. The system consists of two synchronized haptic gloves that deliver precisely timed vibration patterns to fingers, based on research showing therapeutic benefits from desynchronization of pathological neural oscillations.
+BlueBuzzah is an open-source research platform for vibrotactile Coordinated Reset (vCR) stimulation, inspired by published research in Parkinson's disease. The system consists of two synchronized haptic gloves that deliver precisely timed vibration patterns to the fingers.
+
+## Important notices
+
+BlueBuzzah devices are not FDA cleared or approved medical devices and not intended to diagnose, treat, cure, mitigate, or prevent any disease. The information provided through BlueBuzzah is for general wellness purposes only and not a substitute for professional medical advice, diagnosis, or treatment.
+
+**Important:** People with implanted electrodes from deep brain stimulation (DBS), heart pacemakers, or other internal electronic devices should take special precautions around all electronic devices, including BlueBuzzah. Consult your physician before use.
+
+Read the [terms and safety](https://bluebuzzah.com/terms) page before you build or wear a pair.
 
 ## Hardware Targets
 
@@ -20,12 +28,12 @@ One codebase builds for two hardware generations, selected by PlatformIO environ
 | **Motors** | 4 (index–pinky) | 5 (adds thumb) |
 | **BLE stack** | Bluefruit / SoftDevice | NimBLE-Arduino 2.x |
 | **Battery monitoring** | VBAT divider on ADC | DRV2605 VBAT register (0x21) over I2C |
-| **Power switch** | none | slide switch + deep sleep |
+| **Power switch** | none | slide switch; off cuts the 3.3 V supply |
 
 ## Features
 
 - **Bilateral Synchronization**: PTP-inspired clock sync over BLE on a 1MHz hardware timebase; current acceptance target is <5ms clock-offset precision, pending re-validation (see [SYNC_VALIDATION.md](docs/SYNC_VALIDATION.md))
-- **Research-Based Therapy**: Six built-in profiles — Regular vCR, Noisy vCR, Hybrid vCR, Gentle, Quick Test, and a user-editable Custom vCR profile
+- **Built-in Profiles**: Six built-in profiles — Regular vCR, Noisy vCR, Hybrid vCR, Gentle, Quick Test, and a user-editable Custom vCR profile. Regular and Noisy vCR use the burst timing (100 ms on, 67 ms off), jitter, mirroring and 250 Hz frequency of the two vCR arms of Pfeifer et al. 2021 (four fingers per hand, no thumb; v3 adds the thumb by default). Regular's random order is independent per hand: non-mirrored, but it doesn't guarantee the study's non-coincident finger pairs. Custom vCR starts from Regular vCR's values
 - **Mobile Control**: Comprehensive BLE protocol for iOS/Android app integration
 - **Real-Time Session Management**: Pause, resume, and progress tracking
 - **Multi-Connection Support**: Simultaneous phone and glove connections
@@ -92,12 +100,12 @@ pio test -e native_penta    # Unit tests (5-actuator config)
 
 1. Power on both devices
 2. Wait for boot sequence (up to 30 seconds)
-3. Once the gloves pair (solid green LED), therapy begins automatically if no phone connects within the 30-second boot window
+3. Once the gloves pair (solid green LED), a session begins automatically if no phone connects within the 30-second boot window
 4. Connect phone via BLE to "BlueBuzzah" for mobile app control
 
 ## Configuration
 
-### Therapy Profiles
+### Profiles
 
 The six built-in profiles are defined in `src/profile_manager.cpp` and selected with `PROFILE_LOAD:<id>` over BLE or serial (`SET_PROFILE:REGULAR|NOISY|HYBRID|GENTLE` is a serial-only shortcut for four of them):
 
@@ -146,7 +154,7 @@ Board-specific values (pins, actuator count, battery availability, the `BATTERY_
 - Re-set role: `SET_ROLE:PRIMARY` or `SET_ROLE:SECONDARY`
 - Redeploy firmware: `pio run -e <env> -t upload`
 
-### Therapy Issues
+### Session Issues
 
 **Motors not vibrating:**
 
@@ -208,6 +216,10 @@ serial every 60 seconds. Each glove's LED shows its own battery:
 ## License
 
 MIT License - see [LICENSE](LICENSE) for details.
+
+`docs/research/fphys-12-624317.md` is © 2021 Pfeifer et al., published under CC BY 4.0, and keeps that license. The libraries in `platformio.ini` keep their own licenses, including Adafruit NeoPixel (LGPL-3.0), arduino-esp32 (LGPL-2.1), and NimBLE-Arduino and TCA9548A (Apache-2.0).
+
+The BlueBuzzah and BuzzahBuddy names and logos are not covered by these licenses. See [Licenses and the BlueBuzzah name](https://bluebuzzah.com/terms#licenses).
 
 ## Contact
 
