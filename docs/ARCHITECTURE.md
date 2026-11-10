@@ -1518,6 +1518,7 @@ sequenceDiagram
     end
 
     TE->>L: Session time elapsed, isRunning() false
+    L->>B: STOP_SESSION to SECONDARY (if linked), queues cleared
     L->>L: STOP_SESSION + STOPPED (state machine)
 ```
 

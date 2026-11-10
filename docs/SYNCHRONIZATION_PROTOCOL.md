@@ -493,7 +493,7 @@ COMMAND:field1|field2|field3|...
 | `RESUME_SESSION` | P → S | seq, timestamp | `RESUME_SESSION:0\|65000000` |
 | `STOP_SESSION` | P → S | seq, timestamp | `STOP_SESSION:99\|120000000` |
 
-The PRIMARY sends `STOP_SESSION` whenever its session ends while the SECONDARY is linked: phone stop, completion, `TEST` stop, battery, fault or keepalive timeout. Both gloves drop every already-scheduled macrocycle event and stop their motors at once.
+The PRIMARY sends `STOP_SESSION` whenever its session ends while the SECONDARY is linked: phone stop, completion, `TEST` stop, a serial motor diagnostic, battery, fault or keepalive timeout. Both gloves drop every already-scheduled macrocycle event and stop their motors at once. A reboot or power-off sends nothing: the SECONDARY sees the link drop instead.
 
 ### Synchronization Messages
 

@@ -97,7 +97,7 @@ stateDiagram-v2
 | `CONNECTION_LOST`    | Glove link lost; therapy stopped, purple blink, waits up to 30s for the peer |
 | `PHONE_DISCONNECTED` | PRIMARY only: phone lost from READY, RUNNING or LOW_BATTERY; informational, keeps the interrupted state's LED |
 
-**Ending a session:** every PRIMARY session end (phone stop, completion, `TEST` stop, battery, fault, keepalive timeout) sends `STOP_SESSION` while the SECONDARY is linked, and both gloves drop their queued macrocycle events and stop their motors at once. Connect and disconnect feedback pulses are skipped while a session is running or paused.
+**Ending a session:** every PRIMARY session end (phone stop, completion, `TEST` stop, a serial motor diagnostic, battery, fault, keepalive timeout) sends `STOP_SESSION` while the SECONDARY is linked, and both gloves drop their queued macrocycle events and stop their motors at once. A reboot or power-off sends nothing: the SECONDARY sees the link drop instead. Connect and disconnect feedback pulses are skipped while a session is running or paused.
 
 ---
 
@@ -812,9 +812,9 @@ sequenceDiagram
     Note over P,S: ... therapy continues ...
 
     Ph->>P: SESSION_STOP
+    P->>S: STOP_SESSION:seq|ts
     P->>P: Stop therapy, cancel pending events, motors off
     P->>P: State: RUNNING/PAUSED → STOPPING → IDLE
-    P->>S: STOP_SESSION:seq|ts
     S->>S: Cancel pending events, motors off
     S->>S: State: RUNNING/PAUSED → STOPPING → IDLE
     P->>Ph: SESSION_STATUS:IDLE
