@@ -3588,7 +3588,15 @@ void handleSerialCommand(const char *command)
         // FSM and LED reflect reality and auto-start can't fire mid-diag
         if (therapy.isRunning())
         {
-            therapy.stop();
+            // Tell the SECONDARY before the blocking diagnostic below
+            if (deviceRole == DeviceRole::PRIMARY)
+            {
+                stopSessionFromPrimary(SessionEndReason::STOPPED);
+            }
+            else
+            {
+                therapy.stop();
+            }
             stateMachine.transition(StateTrigger::STOP_SESSION);
             stateMachine.transition(StateTrigger::STOPPED);
         }
@@ -3603,7 +3611,15 @@ void handleSerialCommand(const char *command)
     {
         if (therapy.isRunning())
         {
-            therapy.stop();
+            // Tell the SECONDARY before the blocking diagnostic below
+            if (deviceRole == DeviceRole::PRIMARY)
+            {
+                stopSessionFromPrimary(SessionEndReason::STOPPED);
+            }
+            else
+            {
+                therapy.stop();
+            }
             stateMachine.transition(StateTrigger::STOP_SESSION);
             stateMachine.transition(StateTrigger::STOPPED);
         }
@@ -3626,7 +3642,15 @@ void handleSerialCommand(const char *command)
         int n = atoi(arg);
         if (therapy.isRunning())
         {
-            therapy.stop();
+            // Tell the SECONDARY before the blocking diagnostic below
+            if (deviceRole == DeviceRole::PRIMARY)
+            {
+                stopSessionFromPrimary(SessionEndReason::STOPPED);
+            }
+            else
+            {
+                therapy.stop();
+            }
             stateMachine.transition(StateTrigger::STOP_SESSION);
             stateMachine.transition(StateTrigger::STOPPED);
         }
