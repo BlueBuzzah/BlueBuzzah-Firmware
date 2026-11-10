@@ -489,7 +489,10 @@ void BBScanCallbacks::match(const NimBLEAdvertisedDevice* device, bool allowName
     s_pendingAddress = device->getAddress();
     s_pendingConnect = true;
     PLATFORM_CRITICAL_EXIT();
-    NimBLEDevice::getScan()->stop();
+    // No scan stop here: with no stored results, stop() deletes every device,
+    // including the one NimBLE is still handling after this callback returns.
+    // update() stops the scan before connecting; s_pendingConnect above
+    // ignores adverts until then.
 }
 
 bool BLEManager::startScanning(const char* targetName) {
@@ -504,6 +507,9 @@ bool BLEManager::startScanning(const char* targetName) {
     NimBLEScan* scan = NimBLEDevice::getScan();
     scan->setScanCallbacks(&s_scanCallbacks, false);
     scan->setActiveScan(true);      // Request scan response for name
+    // Store no results: the callback copies the address it needs, and a stored
+    // list grows with every rotating phone address until the scan restarts
+    scan->setMaxResults(0);
     // Continuous scan while disconnected: the old 19% duty cycle stretched
     // reconnects to seconds. A false keepalive timeout restarts scanning
     // with the link still up, though - keep the low duty cycle then so the
