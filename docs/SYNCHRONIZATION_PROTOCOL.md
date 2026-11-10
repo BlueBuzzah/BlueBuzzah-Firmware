@@ -331,6 +331,8 @@ lead_time = average_RTT + safety_margin + processing_overhead + generation_overh
 
 `average_RTT` is twice the smoothed one-way latency from PING/PONG (`calculateAdaptiveLeadTime()`). With no RTT samples yet the lead time is the 70ms minimum; the first sample already counts.
 
+Every macrocycle, including the first of a session, is sent at its prepare point, 300ms (`SYNC_MAX_LEAD_TIME_US + MACROCYCLE_PREPARE_MARGIN_US`) before its first onset. The adaptive lead time is the least a macrocycle must still have when it goes out; with less, PRIMARY skips it.
+
 | Parameter | Value | Purpose |
 |-----------|-------|---------|
 | Minimum lead time | 70ms | Covers RTT (~40ms) + variance (~5ms) + processing (10ms) + generation (5ms) + margin (10ms) |
@@ -595,6 +597,8 @@ The protocol includes several safety mechanisms to prevent incorrect synchroniza
 | Validation | Threshold | Action |
 |------------|-----------|--------|
 | baseTime freshness | ±5 seconds | SECONDARY plays nothing from a macrocycle whose local base time is further than this from now (still sends `MC_ACK`) |
+| Late event | More than 5ms past its time (`MACROCYCLE_LATE_EVENT_TOLERANCE_US`) | SECONDARY drops that event when the frame arrives and plays the rest, printing one `[MACROCYCLE] Dropped N late events` line. If every event is late, the previous macrocycle's queue is left alone. `MC_ACK` is still sent. Either glove's motor task also drops an activation that is this late when its turn comes (`loop()` prints `[MOTOR_TASK] Dropped N late activations`), e.g. after a `loop()` stall |
+| New macrocycle | Any | Replaces queued activations on both gloves. Pending turn-offs still run, so a motor that is on is never left on |
 | Critical battery | SECONDARY in `CRITICAL_BATTERY` | SECONDARY acknowledges each macrocycle but plays nothing until the PRIMARY ends the session |
 | Hardware fault | SECONDARY in `ERROR` (sent `GLOVE_ERROR`) | SECONDARY acknowledges each macrocycle but plays nothing. The PRIMARY refuses starts while linked to it (`Secondary glove error`, flag cleared on every SECONDARY connect) and ends a running session (not a bench `TEST`) with reason `ERROR` |
 | Drift rate (measured) | ±150 ppm | Cap measured drift for plausibility |
@@ -735,8 +739,9 @@ Sync state variables are accessed from both main loop and BLE callbacks. Key con
 | PING/PONG interval during therapy (`SYNC_ACTIVE_INTERVAL_MS`) | 250ms (4Hz) | Higher cadence while therapy is running |
 | Keepalive timeout (SECONDARY, `KEEPALIVE_TIMEOUT_MS`) | 6s | 6 missed PINGs = connection lost |
 | Keepalive timeout (PRIMARY, `PRIMARY_KEEPALIVE_TIMEOUT_MS`) | 6s | During therapy: sends `STOP_SESSION` and shuts down its motors |
-| Lead time range | 70-150ms | Adaptive scheduling window |
-| Initial lead time | 70ms | The minimum, used until the first RTT sample exists |
+| Lead time range | 70-150ms | Adaptive minimum lead: a macrocycle with less left when it goes out is skipped |
+| Initial lead time | 70ms | The adaptive minimum until the first RTT sample exists |
+| Send lead (`SYNC_MAX_LEAD_TIME_US + MACROCYCLE_PREPARE_MARGIN_US`) | 300ms | Every macrocycle, the first included, goes out at its prepare point this far before its first onset |
 | Processing overhead (`SYNC_PROCESSING_OVERHEAD_US`) | 10ms | SECONDARY processing time allowance |
 | Generation overhead (`SYNC_GENERATION_OVERHEAD_US`) | 5ms | PRIMARY macrocycle generation + serialization |
 | Max drift rate (measurement) (`SYNC_MAX_DRIFT_RATE_US_PER_MS`) | ±150 ppm | Measurement cap for plausibility |

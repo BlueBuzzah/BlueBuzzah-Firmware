@@ -812,13 +812,10 @@ void TherapyEngine::executeMacrocycleStep() {
             }
 
             if (!gridStarted) {
-                // Calculate lead time FIRST (callback takes 50-200µs)
-                // Falls back to the 70ms minimum if no callback registered
-                const uint32_t leadTimeUs = currentLeadTimeUs();
-
-                // CRITICAL: Capture timestamp AFTER lead time calculation to minimize staleness
-                // Lead time callback can take 50-200µs; capturing before causes systematic lateness
-                _gridOriginUs = getMicros() + leadTimeUs + guardUs;
+                // Same lead as every later macrocycle (sent at its prepare
+                // point), not the adaptive lead: that is usually the 70ms
+                // floor at session start, too tight for the SECONDARY
+                _gridOriginUs = getMicros() + SYNC_MAX_LEAD_TIME_US + MACROCYCLE_PREPARE_MARGIN_US + guardUs;
                 PLATFORM_CRITICAL_ENTER();
                 _appliedPauseMs = _pausedMs;
                 PLATFORM_CRITICAL_EXIT();

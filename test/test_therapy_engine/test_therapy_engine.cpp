@@ -694,21 +694,6 @@ void test_TherapyEngine_setSchedulingCallbacks(void) {
     TEST_ASSERT_EQUAL_INT(12, g_scheduleActivationCallCount);
 }
 
-void test_TherapyEngine_setGetLeadTimeCallback(void) {
-    TherapyEngine engine;
-    engine.setGetLeadTimeCallback(mockGetLeadTimeCallback);
-    engine.setSendMacrocycleCallback(mockSendMacrocycleCallback);
-
-    g_lastLeadTimeReturned = 0;
-    mockSetMillis(1000);
-
-    engine.startSession(100, PatternType::RNDP, 100.0f, 67.0f, 0.0f, 4, true, 100, 100, false);
-    engine.update();
-
-    // Lead time callback should have been called
-    TEST_ASSERT_EQUAL_UINT32(50000, g_lastLeadTimeReturned);
-}
-
 // =============================================================================
 // MACROCYCLE GENERATION TESTS (via callbacks)
 // =============================================================================
@@ -981,7 +966,7 @@ void test_macrocycle_sequence_id_increments(void) {
     // Complete first cycle
     mockAdvanceMillis(100);
     engine.update();  // ACTIVE -> WAITING_RELAX
-    mockAdvanceMillis(3200);
+    mockAdvanceMillis(3240);
     engine.update();  // WAITING_RELAX -> IDLE
 
     // Second macrocycle
@@ -1055,7 +1040,7 @@ void test_executeMacrocycleStep_transitions_to_waiting_relax(void) {
     engine.update();  // ACTIVE -> WAITING_RELAX
 
     // Reach the prepare point, 300 ms before the next grid slot
-    mockAdvanceMillis(3200);
+    mockAdvanceMillis(3240);
     engine.update();  // WAITING_RELAX -> IDLE (cycle complete)
 
     TEST_ASSERT_EQUAL_INT(1, g_cycleCompleteCallCount);
@@ -1084,7 +1069,7 @@ void test_executeMacrocycleStep_full_cycle(void) {
     mockAdvanceMillis(100);
     engine.update();  // ACTIVE -> WAITING_RELAX (since g_schedulingComplete = true)
 
-    mockAdvanceMillis(3200);  // Reach the prepare point, 300 ms before the next grid slot
+    mockAdvanceMillis(3240);  // Reach the prepare point, 300 ms before the next grid slot
     engine.update();  // WAITING_RELAX -> IDLE, cycle complete
 
     TEST_ASSERT_EQUAL_INT(1, g_cycleCompleteCallCount);
@@ -1756,7 +1741,27 @@ void test_onset_restart_resets_grid(void) {
     engine.update();
 
     TEST_ASSERT_EQUAL_UINT16(20, g_lastSentMacrocycle.events[0].deltaTimeMs);
-    TEST_ASSERT_EQUAL_UINT64(uint64_t(restartMs) * 1000 + SYNC_MIN_LEAD_TIME_US, g_lastSentMacrocycle.baseTime);
+    TEST_ASSERT_EQUAL_UINT64(uint64_t(restartMs) * 1000 + SYNC_MAX_LEAD_TIME_US + MACROCYCLE_PREPARE_MARGIN_US,
+                             g_lastSentMacrocycle.baseTime);
+}
+
+// The first macrocycle gets the same lead as every later one, whatever the
+// adaptive lead says; later macrocycles still consult it
+void test_first_macrocycle_has_full_prepare_lead(void) {
+    TherapyEngine engine;
+    engine.setSendMacrocycleCallback(mockCaptureMacrocycleCallback);
+    engine.setGetLeadTimeCallback(mockGetLeadTimeCallback);
+    g_lastLeadTimeReturned = 0;
+    mockSetMillis(1000);
+    engine.startSession(500, PatternType::RNDP, 100, 67, 23.5, 4, true, 50, 50, false);
+    engine.update();
+
+    TEST_ASSERT_EQUAL_UINT64(1000000 + SYNC_MAX_LEAD_TIME_US + MACROCYCLE_PREPARE_MARGIN_US,
+                             g_lastSentMacrocycle.baseTime);
+    TEST_ASSERT_EQUAL_UINT32(0, g_lastLeadTimeReturned);
+
+    runToNextMacrocycle(engine, g_lastSentMacrocycle.baseTime + 3340000);
+    TEST_ASSERT_EQUAL_UINT32(50000, g_lastLeadTimeReturned);
 }
 
 void test_onset_shortest_timing_never_skips(void) {
@@ -1860,7 +1865,6 @@ int main(int argc, char **argv) {
     RUN_TEST(test_TherapyEngine_setMacrocycleStartCallback);
     RUN_TEST(test_TherapyEngine_setSendMacrocycleCallback);
     RUN_TEST(test_TherapyEngine_setSchedulingCallbacks);
-    RUN_TEST(test_TherapyEngine_setGetLeadTimeCallback);
 
     // Macrocycle Generation Tests (via callbacks)
     RUN_TEST(test_macrocycle_creates_12_events);
@@ -1932,6 +1936,7 @@ int main(int argc, char **argv) {
     RUN_TEST(test_onset_uses_clamped_finger_count);
     RUN_TEST(test_onset_applies_to_every_pattern_type);
     RUN_TEST(test_onset_restart_resets_grid);
+    RUN_TEST(test_first_macrocycle_has_full_prepare_lead);
     RUN_TEST(test_onset_shortest_timing_never_skips);
 
     return UNITY_END();

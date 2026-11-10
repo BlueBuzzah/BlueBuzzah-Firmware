@@ -158,6 +158,10 @@
 // can't lose it. Tunable: dispatch stays gated on the previous queue draining,
 // and SECONDARY accepts a baseTime up to 5 s ahead.
 #define MACROCYCLE_PREPARE_MARGIN_US 150000
+// A macrocycle activation already this far past its time is dropped, never
+// played late: by SECONDARY when staging a frame, and by either glove's motor
+// task (PRIMARY never sends a late macrocycle either)
+#define MACROCYCLE_LATE_EVENT_TOLERANCE_US 5000
 
 // Unified keepalive + clock sync (PING/PONG)
 #define KEEPALIVE_INTERVAL_MS 1000   // 1 second between PING messages (unified keepalive + clock sync)

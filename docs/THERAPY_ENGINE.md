@@ -430,11 +430,9 @@ Result HapticController::activate(uint8_t finger, uint8_t amplitude) {
 The engine schedules activations via callbacks rather than executing them directly with blocking delays. In the `IDLE` state of `executeMacrocycleStep()`:
 
 ```cpp
-// First macrocycle only: the grid origin is now + lead time + jitter guard.
-// The lead time callback takes 50-200µs, so it runs before the clock is read.
-// Falls back to the 70ms minimum if no callback registered
-const uint32_t leadTimeUs = currentLeadTimeUs();
-_gridOriginUs = getMicros() + leadTimeUs + guardUs;
+// First macrocycle only: the grid origin is now + the same 300ms lead every
+// later macrocycle gets (sent at its prepare point) + jitter guard
+_gridOriginUs = getMicros() + SYNC_MAX_LEAD_TIME_US + MACROCYCLE_PREPARE_MARGIN_US + guardUs;
 
 // Every macrocycle: baseTime is its grid slot minus the jitter guard
 _macrocycleBaseTime = gridSlotUs(_gridMacroIndex) - guardUs;
@@ -711,7 +709,7 @@ Buzz Sequence 3: 4 bursts, onsets at 8T .. 11T (each ±19.6ms)
 Silent: 2 CR periods (8T) before the next grid slot
 
 Grid period: 5 × 4 × 167ms = 3340ms
-Lead time before the first event: 70-150ms (adaptive)
+Lead time before the first event: 300ms (SYNC_MAX_LEAD_TIME_US + MACROCYCLE_PREPARE_MARGIN_US)
 ```
 
 With 5 fingers (v3) each sequence is 5 buzzes, TIME_RELAX is 835ms, the grid period is 4175ms, and a macrocycle has 15 events (`MACROCYCLE_MAX_EVENTS = 3 * MAX_ACTUATORS`).

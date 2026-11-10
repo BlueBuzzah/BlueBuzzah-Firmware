@@ -198,7 +198,7 @@ flowchart TD
 
     B --> C["Generate all 12 events<br/>with delta times from baseTime<br/>(each onset within ±A of its slot)"]
 
-    C --> D["Calculate baseTime<br/>= grid slot - jitter guard<br/>(first slot = now + lead_time + guard;<br/>lead_time = RTT + 3σ margin + overheads)"]
+    C --> D["Calculate baseTime<br/>= grid slot - jitter guard<br/>(first slot = now + 300ms + guard;<br/>300ms = SYNC_MAX_LEAD_TIME_US + MACROCYCLE_PREPARE_MARGIN_US)"]
 
     D --> E["Serialize MACROCYCLE message<br/>MC:seq|baseHigh|baseLow|offHigh|offLow|dur|count|events..."]
 
@@ -430,9 +430,9 @@ How both gloves achieve sub-2ms synchronization despite BLE latency:
 flowchart LR
     subgraph PRIMARY["PRIMARY (0ms reference)"]
         A["1. Generate macrocycle<br/>t=500ms"]
-        B["2. baseTime<br/>= 500ms + lead_time<br/>= 570ms"]
+        B["2. baseTime<br/>= 500ms + 300ms lead<br/>= 800ms"]
         C["3. Send MACROCYCLE<br/>(12 events)"]
-        D["4. Schedule all in queue<br/>baseTime=570ms"]
+        D["4. Schedule all in queue<br/>baseTime=800ms"]
     end
 
     subgraph BLE["Bluetooth Latency<br/>(~7.5-20ms)"]
@@ -440,10 +440,10 @@ flowchart LR
     end
 
     subgraph SECONDARY["SECONDARY (offset=-1ms)"]
-        F["5. Receive MACROCYCLE<br/>(570ms PRIMARY time,<br/>offset carried in MC:)"]
-        G["6. Convert to LOCAL<br/>time = 570ms + (-1ms)<br/>= 569ms"]
-        H["7. Schedule all in queue<br/>baseTime=569ms"]
-        I["8. Wait for 569ms"]
+        F["5. Receive MACROCYCLE<br/>(800ms PRIMARY time,<br/>offset carried in MC:)"]
+        G["6. Convert to LOCAL<br/>time = 800ms + (-1ms)<br/>= 799ms"]
+        H["7. Schedule all in queue<br/>baseTime=799ms"]
+        I["8. Wait for 799ms"]
     end
 
     subgraph EXECUTION["Motor Activation"]
@@ -452,8 +452,8 @@ flowchart LR
 
     A --> B --> C --> E --> F --> G --> H --> I --> J
     C --> D --> J
-    D -.->|Waits for<br/>570ms| J
-    I -.->|Waits for<br/>569ms| J
+    D -.->|Waits for<br/>800ms| J
+    I -.->|Waits for<br/>799ms| J
 ```
 
 **Key Insight:** By scheduling events with absolute activation times (in PRIMARY's timebase) and applying clock offset conversion on SECONDARY, the system decouples synchronization accuracy from BLE transmission latency.
@@ -698,7 +698,7 @@ flowchart TD
 
     F["Clamp to bounds<br/>70ms (SYNC_MIN_LEAD_TIME_US) ≤ lead_time<br/>≤ 150ms (SYNC_MAX_LEAD_TIME_US)"]
 
-    G["Use for the first MACROCYCLE<br/>first slot = now + lead_time + jitter guard"]
+    G["Minimum lead a MACROCYCLE must still have<br/>when it goes out (less: PRIMARY skips it)"]
 
     A --> B --> C --> D --> E --> F --> G
 
@@ -849,7 +849,7 @@ sequenceDiagram
 | --------------------- | ------- | ----------------------------------------- |
 | TIME_ON               | 100ms   | Motor activation duration (per event)     |
 | TIME_OFF              | 67ms    | Inter-burst interval (base value)         |
-| Lead time             | 70-150ms | Adaptive scheduling margin (config.h bounds) |
+| Lead time             | 300ms   | Every macrocycle goes out at its prepare point; the adaptive 70-150ms lead is the minimum before PRIMARY skips one |
 | Pattern duration      | ~668ms  | 4 events × (TIME_ON + TIME_OFF) slot spacing |
 | Macrocycle duration   | 3.34s   | Fixed grid period, 3 patterns + inter-macrocycle relaxation |
 | Relaxation period     | ~1336ms | 2× pattern duration (between macrocycles) |

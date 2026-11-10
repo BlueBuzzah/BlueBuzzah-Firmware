@@ -1400,8 +1400,11 @@ public:
     // Initialize queue
     void begin(HapticController* haptic, TaskHandle_t motorTaskHandle);
 
-    // Clear all scheduled events
+    // Clear all scheduled events (session stop)
     void clear();
+
+    // Clear scheduled activations, keeping pending deactivations (new macrocycle)
+    void clearActivations();
 
     // Add motor activation (auto-enqueues corresponding deactivation)
     bool enqueue(uint64_t activateTimeUs, uint8_t finger, uint8_t amplitude,
@@ -1504,7 +1507,7 @@ motorEventBuffer.stage(timeUs, finger, amp, dur, freq, isLast);
 StagedMotorEvent event;
 while (motorEventBuffer.unstage(event)) {
     if (event.isMacrocycleFirst) {
-        activationQueue.clear();  // New macrocycle replaces old events
+        activationQueue.clearActivations();  // New macrocycle replaces queued activations; pending turn-offs still run
     }
     activationQueue.enqueue(event.activateTimeUs, event.finger,
                             event.amplitude, event.durationMs, event.frequencyHz);

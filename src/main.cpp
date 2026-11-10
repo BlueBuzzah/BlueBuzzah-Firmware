@@ -17,6 +17,7 @@
  */
 
 #include <Arduino.h>
+#include <atomic>
 #include "platform.h"  // Platform primitives + FreeRTOS for motor task
 #include "fs_backend.h"
 #include "power_controller.h"
@@ -297,6 +298,28 @@ static void executeMotorEvent(const MotorEvent& event) {
     (void)beforeOp;  // Suppress unused warning if debug mode off
 }
 
+// Late activations the motor task dropped. Reported from loop(): a USB
+// serial write can block, and the motor task must never wait on it
+static std::atomic<uint32_t> g_lateActivationsDropped{0};
+
+/**
+ * @brief Execute an event, unless it is an activation more than
+ * MACROCYCLE_LATE_EVENT_TOLERANCE_US late (e.g. loop() stalled before
+ * forwarding it): the other glove played it on time, so it is dropped. Its
+ * deactivation still runs, harmless on a motor that is off.
+ */
+static void executeOrDropMotorEvent(const MotorEvent& event) {
+    const int64_t lateUs = static_cast<int64_t>(getMicros() - event.timeUs);
+    if (event.type == MotorEventType::ACTIVATE && lateUs > MACROCYCLE_LATE_EVENT_TOLERANCE_US) {
+        if (latencyMetrics.enabled) {
+            latencyMetrics.recordExecution(static_cast<int32_t>(lateUs));
+        }
+        g_lateActivationsDropped.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    executeMotorEvent(event);
+}
+
 /**
  * @brief High-priority motor task for event-driven activations/deactivations
  *
@@ -336,7 +359,7 @@ static void motorTask(void* pvParameters) {
         if (delayUs <= 0) {
             // Event time already passed - execute immediately
             if (activationQueue.dequeueNextEvent(event)) {
-                executeMotorEvent(event);
+                executeOrDropMotorEvent(event);
             }
             continue;
         }
@@ -383,7 +406,7 @@ static void motorTask(void* pvParameters) {
 
         // Execute event - dequeue first to ensure we get the same event we peeked
         if (activationQueue.dequeueNextEvent(event)) {
-            executeMotorEvent(event);
+            executeOrDropMotorEvent(event);
         }
     }
 }
@@ -855,6 +878,15 @@ void loop()
     // Motor events (activations AND deactivations) handled by motor task
     // No polling needed - motor task uses FreeRTOS timing
 
+    // Report late activations the motor task dropped (it never prints itself)
+    static uint32_t lateDropsReported = 0;
+    const uint32_t lateDrops = g_lateActivationsDropped.load(std::memory_order_relaxed);
+    if (lateDrops != lateDropsReported) {
+        Serial.printf("[MOTOR_TASK] Dropped %lu late activations\n",
+                      static_cast<unsigned long>(lateDrops - lateDropsReported));
+        lateDropsReported = lateDrops;
+    }
+
     // TP-1: Process staged motor events from BLE callbacks
     // Forward from lock-free staging buffer to mutex-protected activationQueue
     // Defensive check: only process if motor task is initialized
@@ -864,12 +896,13 @@ void loop()
         uint8_t eventsForwarded = 0;
         StagedMotorEvent staged;
         while (motorEventBuffer.unstage(staged)) {
-            // A new macrocycle replaces the previous one. Cleared when its
+            // A new macrocycle replaces the previous one's activations (pending
+            // turn-offs still run). Cleared when its
             // first event is unstaged: on dual-core ESP32 the loop can see a
             // half-staged batch, and clearing on the pending flag wiped the
             // events already forwarded.
             if (staged.isMacrocycleFirst) {
-                activationQueue.clear();
+                activationQueue.clearActivations();
             }
             activationQueue.enqueue(staged.activateTimeUs, staged.finger, staged.amplitude,
                                    staged.durationMs, staged.frequencyHz);
@@ -2265,11 +2298,12 @@ void onBLEMessage(uint16_t connHandle, const char *message, uint64_t rxTimestamp
                                   (long)(timeUntilExec / 1000));
                 }
                 int64_t timeDiff = static_cast<int64_t>(localBaseTime) - static_cast<int64_t>(nowUs);
-                // Corruption guard: legitimate values are 70-300ms ahead,
-                // the adaptive lead time up to the macrocycle prepare point,
-                // plus BLE delivery jitter. 5s is well clear of that while
-                // still rejecting a corrupt offset/baseTime that would
-                // otherwise schedule far-off activations.
+                // Corruption guard: legitimate values are about 300ms ahead
+                // (every macrocycle goes out at its prepare point), minus BLE
+                // delivery time. 5s is well clear of that while still
+                // rejecting a corrupt offset/baseTime that would otherwise
+                // schedule far-off activations. Late events are dropped one
+                // by one below.
                 constexpr int64_t MAX_TIME_DIFF = 5000000LL;  // 5 seconds
                 if (timeDiff > MAX_TIME_DIFF || timeDiff < -MAX_TIME_DIFF)
                 {
@@ -2304,19 +2338,57 @@ void onBLEMessage(uint16_t connHandle, const char *message, uint64_t rxTimestamp
 
                 // TP-1: Stage all events via lock-free buffer (ISR-safe)
                 // Main loop will forward to activationQueue and call scheduleNext()
-                motorEventBuffer.beginMacrocycle();
+                //
+                // Skip invalid events (garbage from truncated messages) and
+                // events already past their time: the PRIMARY played them on
+                // time, so playing them now would put this hand out of step
+                auto isValid = [](const MacrocycleEvent& evt) {
+                    return evt.amplitude > 0 && evt.finger < MAX_ACTUATORS;
+                };
+                // Fresh clock: debug logging above may have taken a few ms.
+                // Signed difference, so a localBaseTime just below zero (glove
+                // booted under 5 s ago) still counts as late
+                const uint64_t stageNowUs = getMicros();
+                auto isLate = [&](const MacrocycleEvent& evt) {
+                    uint64_t localActivateTime = localBaseTime + (evt.deltaTimeMs * 1000ULL);
+                    return static_cast<int64_t>(localActivateTime - stageNowUs) <
+                           -static_cast<int64_t>(MACROCYCLE_LATE_EVENT_TOLERANCE_US);
+                };
+                auto isPlayable = [&](const MacrocycleEvent& evt) {
+                    return isValid(evt) && !isLate(evt);
+                };
+
                 uint8_t validEvents = 0;
                 uint8_t lastValidIndex = 0;
+                uint8_t lateEvents = 0;
 
                 // First pass: count valid events to mark the last one
                 for (uint8_t i = 0; i < mc.eventCount; i++)
                 {
                     const MacrocycleEvent& evt = mc.events[i];
-                    if (evt.amplitude > 0 && evt.finger < MAX_ACTUATORS)
+                    if (!isValid(evt))
                     {
-                        lastValidIndex = i;
-                        validEvents++;
+                        continue;
                     }
+                    if (isLate(evt))
+                    {
+                        lateEvents++;
+                        continue;
+                    }
+                    lastValidIndex = i;
+                    validEvents++;
+                }
+
+                if (lateEvents > 0)
+                {
+                    Serial.printf("[MACROCYCLE] Dropped %u late events (seq=%lu)\n",
+                                  lateEvents, (unsigned long)mc.sequenceId);
+                }
+
+                // Only a macrocycle with something to play replaces the queue
+                if (validEvents > 0)
+                {
+                    motorEventBuffer.beginMacrocycle();
                 }
 
                 // Second pass: stage all valid events
@@ -2324,9 +2396,7 @@ void onBLEMessage(uint16_t connHandle, const char *message, uint64_t rxTimestamp
                 for (uint8_t i = 0; i < mc.eventCount; i++)
                 {
                     const MacrocycleEvent& evt = mc.events[i];
-
-                    // Skip invalid events (garbage from truncated messages)
-                    if (evt.amplitude == 0 || evt.finger >= MAX_ACTUATORS)
+                    if (!isPlayable(evt))
                     {
                         continue;
                     }
@@ -2700,8 +2770,9 @@ void onSendMacrocycle(const Macrocycle& macrocycle)
         return;
     }
 
-    // Clear activation queue for new macrocycle (PRIMARY will enqueue via callbacks)
-    activationQueue.clear();
+    // A new macrocycle replaces queued activations; pending turn-offs still
+    // run, so a motor that is on is never stranded (PRIMARY will enqueue via callbacks)
+    activationQueue.clearActivations();
 
     // Make a local copy to set clock offset (callback receives const reference)
     Macrocycle mcCopy = macrocycle;

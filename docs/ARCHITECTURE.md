@@ -349,7 +349,7 @@ SECONDARY -> PRIMARY: MC_ACK:seq
 Benefits:
 
 - Eliminates clock drift over 2-hour sessions: every macrocycle carries the current PTP clock offset
-- Absorbs BLE latency: events are scheduled at an absolute `baseTime` one adaptive lead time (70-150ms, `SYNC_MIN_LEAD_TIME_US`/`SYNC_MAX_LEAD_TIME_US`) in the future
+- Absorbs BLE latency: events are scheduled at an absolute `baseTime` about 300ms in the future (each macrocycle goes out at its prepare point, `SYNC_MAX_LEAD_TIME_US + MACROCYCLE_PREPARE_MARGIN_US`); one with less than the adaptive lead (70-150ms, `SYNC_MIN_LEAD_TIME_US`/`SYNC_MAX_LEAD_TIME_US`) left is skipped
 - Simplifies error recovery (SECONDARY stops its motors if PRIMARY disconnects or its keepalive times out)
 
 ### Multi-Connection Support (PRIMARY Only)
@@ -618,7 +618,8 @@ void TherapyEngine::startSession(
 // Generate pattern (domain logic)
 _currentMacrocycle = generateMacrocycle();   // 3 patterns x numFingers events
 
-// Schedule against the fixed grid. The first slot is now + adaptive lead time + jitter guard;
+// Schedule against the fixed grid. The first slot is now + SYNC_MAX_LEAD_TIME_US +
+// MACROCYCLE_PREPARE_MARGIN_US + jitter guard;
 // later slots are the grid origin plus whole periods. baseTime is the slot minus the guard,
 // and each event runs at baseTime + deltaTimeMs.
 _macrocycleBaseTime = gridSlotUs(_gridMacroIndex) - guardUs;

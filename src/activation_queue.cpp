@@ -100,6 +100,17 @@ void ActivationQueue::clear() {
     }
 }
 
+void ActivationQueue::clearActivations() {
+    QueueMutexLock lock(_queueMutex);
+    // Proceed even if lock not acquired, as clear() does
+
+    for (uint8_t i = 0; i < MAX_EVENTS; i++) {
+        if (_events[i].type == MotorEventType::ACTIVATE) {
+            _events[i].clear();
+        }
+    }
+}
+
 int8_t ActivationQueue::findEmptySlot() const {
     // NOTE: Caller must hold mutex
     for (uint8_t i = 0; i < MAX_EVENTS; i++) {
