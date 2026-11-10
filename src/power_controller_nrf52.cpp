@@ -5,6 +5,8 @@
 
 #include "power_controller.h"
 
+void PowerController::cutDrivers() {}
+
 void PowerController::begin() {}
 
 bool PowerController::powerOffRequested() {

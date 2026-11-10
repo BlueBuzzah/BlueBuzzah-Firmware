@@ -1856,6 +1856,7 @@ ProfileManager profiles;
 SimpleSyncProtocol syncProtocol;
 
 void setup() {
+    power.cutDrivers();  // v3: GPIO1 LOW, drivers off; no-op on nRF
     Serial.begin(115200);
 
     power.begin();  // PentaBuzzer power path; no-op on nRF

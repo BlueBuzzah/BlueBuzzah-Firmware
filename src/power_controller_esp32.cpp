@@ -24,6 +24,11 @@
 
 #include "esp_sleep.h"
 
+void PowerController::cutDrivers() {
+    pinMode(ENABLE_PIN_OVERRIDE, OUTPUT);
+    digitalWrite(ENABLE_PIN_OVERRIDE, LOW);
+}
+
 void PowerController::begin() {
     pinMode(ENABLE_PIN_OVERRIDE, OUTPUT);
     digitalWrite(ENABLE_PIN_OVERRIDE, HIGH);  // DRV2605 EN + mux out of reset
@@ -45,7 +50,7 @@ void PowerController::enterDeepSleep(LEDController& led) {
     delay(150);
     led.off();
 
-    digitalWrite(ENABLE_PIN_OVERRIDE, LOW);  // DRV2605s to shutdown, mux in reset
+    cutDrivers();  // DRV2605s to shutdown, mux in reset
 
     // Wake when the power switch returns HIGH
     esp_sleep_enable_ext1_wakeup_io(1ULL << POWER_SWITCH_PIN_OVERRIDE,
