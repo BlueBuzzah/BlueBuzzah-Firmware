@@ -262,7 +262,7 @@ The +473µs / +500µs average execution drift figures recorded in the December 2
 | **Drift anchor** | A dedicated anchor pair measures drift over windows ≥ `SYNC_MIN_DRIFT_INTERVAL_MS` (500ms), preventing 4Hz cadence from stalling drift estimation. |
 | **4Hz therapy cadence** | `SYNC_ACTIVE_INTERVAL_MS` = 250ms (was 1s for all states). |
 | **Motor path** | First macrocycle event gets I2C pre-selection in the motor task idle window; removed blocking serial read and critical-path `[LEADTIME]` printf from the therapy loop. |
-| **GPIO ground truth** | `SYNC_DEBUG_GPIO_ENABLED` toggles pin A0 on each ACTIVATE; see `docs/SYNC_VALIDATION.md` for the measurement protocol. |
+| **GPIO ground truth** | `SYNC_DEBUG_GPIO_ENABLED` toggles a debug pin (A0 on v2, GPIO40 on v3) on each ACTIVATE; see `docs/SYNC_VALIDATION.md` for the measurement protocol. |
 | **Anchor timestamping (experimental)** | Radio-notification ISR (SWI1, 800µs pre-event) anchors in a 16-slot ring; SECONDARY attaches its rx anchor to PONGs (6-field wire format); PRIMARY pairs with its first post-T1 tx anchor within 25ms; `anchorOffset = secondaryAnchor - primaryAnchor - SYNC_ANCHOR_BIAS_US` replaces PTP when within the 1.5ms pre-filter; PTP fallback per sample. Disabled by default (`SYNC_ANCHOR_TIMESTAMPING_ENABLED 0`). |
 
 ### Expected Outcomes
