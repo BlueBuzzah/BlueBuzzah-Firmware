@@ -19,6 +19,11 @@ BLEManager* g_bleManager = nullptr;
 // packets. The SECONDARY (GATT client) requests it on connect.
 static constexpr uint16_t BLE_MTU = 200;
 
+// SoftDevice TX queue per connection: notifications (PRIMARY) and write
+// commands (SECONDARY). tryWriteImmediate gates on these.
+static constexpr uint8_t BLE_HVN_QSIZE = 8;      // Handle notification bursts without overflow
+static constexpr uint8_t BLE_WRCMD_QSIZE = 8;    // Match for write commands
+
 // =============================================================================
 // CONSTRUCTOR
 // =============================================================================
@@ -43,6 +48,7 @@ BLEManager::BLEManager() :
     // Initialize connections
     for (int i = 0; i < MAX_CONNECTIONS; i++) {
         _connections[i].reset();
+        _txInFlight[i] = 0;
     }
 
     // Initialize both TX lanes
@@ -116,9 +122,6 @@ bool BLEManager::begin(DeviceRole role, const char* deviceName) {
     constexpr uint16_t BLE_EVENT_LEN = 3;
     static_assert(2 * BLE_EVENT_LEN * 1.25f <= BLE_INTERVAL_MIN_MS,
                   "Two concurrent links must fit inside the minimum connection interval");
-
-    const uint8_t  BLE_HVN_QSIZE = 8;      // Handle notification bursts without overflow
-    const uint8_t  BLE_WRCMD_QSIZE = 8;    // Match for write commands
 
     // API: configPrphConn(mtu_max, event_len, hvn_qsize, wrcmd_qsize)
     if (role == DeviceRole::PRIMARY) {
@@ -257,6 +260,23 @@ void BLEManager::update() {
 
     // Process TX queue (non-blocking message transmission)
     processTxQueue();
+
+    // Log link parameters negotiated since the last pass
+    if (_linkParamsPending) {
+        uint16_t handle, interval, timeout;
+        {
+            PLATFORM_CRITICAL_ENTER();
+            handle = _linkParamsHandle;
+            interval = _linkParamsInterval;
+            timeout = _linkParamsTimeout;
+            _linkParamsPending = false;
+            PLATFORM_CRITICAL_EXIT();
+        }
+        uint32_t intervalUs = static_cast<uint32_t>(interval) * 1250;
+        Serial.printf("[BLE] Link params: handle=%d interval=%lu.%02lums timeout=%ums\n",
+                      handle, (unsigned long)(intervalUs / 1000),
+                      (unsigned long)((intervalUs % 1000) / 10), timeout * 10);
+    }
 
     // Periodic scanner health check for SECONDARY mode (only when disconnected)
     static uint32_t lastScanCheck = 0;
@@ -751,19 +771,74 @@ size_t BLEManager::tryWriteImmediate(uint16_t connHandle, const uint8_t* data, s
     // whole message let notify() silently cut it at the characteristic's
     // 200-byte max (EOT included), and a mid-message failure returned 0 so
     // drainRing resent the frame from byte 0 - duplicated fragments.
-    // ponytail: still waits up to 100ms in getHvnPacket() if the SoftDevice
-    // queue is full; gate on BLE_GATTS_EVT_HVN_TX_COMPLETE if that shows up.
+    //
+    // Bluefruit waits up to 100ms for a free SoftDevice buffer before each
+    // packet. When a fading link fills the queue, that wait would stall loop()
+    // on every drain, so count our own packets in flight and return 0 (retry
+    // next pass) at the queue size instead of asking. Credits come back in
+    // onSoftDeviceEvent().
+    BBConnection* conn = findConnection(connHandle);
     BLEConnection* bleConn = Bluefruit.Connection(connHandle);
-    if (!bleConn) return 0;
+    if (!conn || !bleConn) return 0;
+    uint8_t slot = static_cast<uint8_t>(conn - _connections);
     size_t chunk = bleConn->getMtu() - 3;
     if (len < chunk) chunk = len;
 
-    // Per-connection overload for PRIMARY targets the right recipient
-    if (_role == DeviceRole::PRIMARY) {
-        return _uartService.write(connHandle, data, chunk);
-    } else {
-        return _clientUart.write(data, chunk);
+    // Reserve before writing: the BLE task preempts loop(), so a completion
+    // can land before an increment made after the write, leaking the credit
+    const uint8_t qsize = (_role == DeviceRole::PRIMARY) ? BLE_HVN_QSIZE : BLE_WRCMD_QSIZE;
+    bool full;
+    {
+        PLATFORM_CRITICAL_ENTER();
+        full = _txInFlight[slot] >= qsize;
+        if (!full) _txInFlight[slot] = _txInFlight[slot] + 1;
+        PLATFORM_CRITICAL_EXIT();
     }
+    if (full) return 0;
+
+    // Per-connection overload for PRIMARY targets the right recipient
+    size_t written = (_role == DeviceRole::PRIMARY)
+                         ? _uartService.write(connHandle, data, chunk)
+                         : _clientUart.write(data, chunk);
+    if (written == 0) _releaseTx(slot, 1);
+    return written;
+}
+
+void BLEManager::_releaseTx(uint8_t slot, uint8_t n) {
+    PLATFORM_CRITICAL_ENTER();
+    uint8_t cur = _txInFlight[slot];
+    _txInFlight[slot] = (cur > n) ? static_cast<uint8_t>(cur - n) : 0;
+    PLATFORM_CRITICAL_EXIT();
+}
+
+void BLEManager::onSoftDeviceEvent(ble_evt_t* evt) {
+    uint16_t connHandle;
+    uint8_t completed;
+    switch (evt->header.evt_id) {
+        case BLE_GATTS_EVT_HVN_TX_COMPLETE:
+            connHandle = evt->evt.gatts_evt.conn_handle;
+            completed = evt->evt.gatts_evt.params.hvn_tx_complete.count;
+            break;
+        case BLE_GATTC_EVT_WRITE_CMD_TX_COMPLETE:
+            connHandle = evt->evt.gattc_evt.conn_handle;
+            completed = evt->evt.gattc_evt.params.write_cmd_tx_complete.count;
+            break;
+        case BLE_GAP_EVT_CONN_PARAM_UPDATE: {
+            const ble_gap_conn_params_t& p = evt->evt.gap_evt.params.conn_param_update.conn_params;
+            PLATFORM_CRITICAL_ENTER();
+            _linkParamsHandle = evt->evt.gap_evt.conn_handle;
+            _linkParamsInterval = p.max_conn_interval;
+            _linkParamsTimeout = p.conn_sup_timeout;
+            _linkParamsPending = true;
+            PLATFORM_CRITICAL_EXIT();
+            return;
+        }
+        default:
+            return;
+    }
+
+    BBConnection* conn = findConnection(connHandle);
+    if (conn) _releaseTx(static_cast<uint8_t>(conn - _connections), completed);
 }
 
 bool BLEManager::sendToSecondary(const char* message) {
@@ -1164,6 +1239,7 @@ void BLEManager::_onPeriphConnect(uint16_t connHandleParam) {
     conn->pendingIdentify = true;
     conn->identifyStartTime = millis();
     conn->rxIndex = 0;
+    g_bleManager->_txInFlight[conn - g_bleManager->_connections] = 0;
 
     Serial.println(F("[BLE] Waiting for IDENTIFY message (1000ms timeout)..."));
 
@@ -1188,6 +1264,8 @@ void BLEManager::_onPeriphDisconnect(uint16_t connHandle, uint8_t reason) {
     BBConnection* conn = g_bleManager->findConnection(connHandle);
     if (conn) {
         ConnectionType type = conn->type;
+        // The SoftDevice drops queued packets on disconnect without a completion
+        g_bleManager->_txInFlight[conn - g_bleManager->_connections] = 0;
         conn->reset();
         if (type == ConnectionType::SECONDARY) {
             g_bleManager->updateAdvertisingInterval();
@@ -1236,6 +1314,7 @@ void BLEManager::_onCentralConnect(uint16_t connHandle) {
     conn->isConnected = true;
     conn->connectedAt = millis();
     conn->rxIndex = 0;
+    g_bleManager->_txInFlight[conn - g_bleManager->_connections] = 0;
 
     // Data length extension lets each larger ATT packet (see the MTU exchange
     // below) go in one radio PDU
@@ -1265,18 +1344,10 @@ void BLEManager::_onCentralConnect(uint16_t connHandle) {
     // Request BLE_TIMEOUT_MS supervision timeout: Bluefruit's central hardcodes
     // its 2s default at connect time (no setter), and the central's parameters
     // govern the link. Keep the negotiated 7.5-10ms interval range - the
-    // requestConnectionParameter() helper would force min == max.
-    {
-        ble_gap_conn_params_t connParams = {
-            .min_conn_interval = static_cast<uint16_t>((BLE_INTERVAL_MIN_MS * 1000) / 1250),
-            .max_conn_interval = (BLE_INTERVAL_MAX_MS * 1000) / 1250,
-            .slave_latency = 0,
-            .conn_sup_timeout = BLE_TIMEOUT_MS / 10,
-        };
-        if (sd_ble_gap_conn_param_update(connHandle, &connParams) != NRF_SUCCESS) {
-            Serial.println(F("[BLE] WARN: supervision timeout update request failed"));
-        }
-    }
+    // requestConnectionParameter() helper would force min == max. This runs
+    // right after the PHY, data-length and MTU requests, so a BUSY refusal is
+    // likely; requestLinkConnParams retries it from update().
+    g_bleManager->requestLinkConnParams(connHandle, ConnectionType::PRIMARY);
 
     // Query and log connection interval
     g_bleManager->queryConnectionInterval(connHandle);
@@ -1295,6 +1366,8 @@ void BLEManager::_onCentralDisconnect(uint16_t connHandle, uint8_t reason) {
     // Find and clear connection
     BBConnection* conn = g_bleManager->findConnection(connHandle);
     if (conn) {
+        // The SoftDevice drops queued packets on disconnect without a completion
+        g_bleManager->_txInFlight[conn - g_bleManager->_connections] = 0;
         conn->reset();
 
         // Notify callback

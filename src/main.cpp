@@ -1572,11 +1572,12 @@ bool initializeBLE()
 #endif
 
 #if defined(BOARD_BLUEBUZZAH_NRF52)
-    // Register PHY change callback (both roles)
-    // Detects 1M -> 2M PHY upgrades so we can reset RTT statistics
-    // PRIMARY also uses RTT for adaptive lead time calculation
+    // Register the SoftDevice event callback (both roles). Required: it returns
+    // BLEManager's TX credits, without which every link stops sending after
+    // 8 packets. Also detects 1M -> 2M PHY upgrades so we can reset RTT
+    // statistics (PRIMARY also uses RTT for adaptive lead time calculation).
     Bluefruit.setEventCallback(onBLEEvent);
-    Serial.println(F("[BLE] PHY change event callback registered"));
+    Serial.println(F("[BLE] SoftDevice event callback registered"));
 #endif
 
     // Start scanning for SECONDARY role
@@ -3556,9 +3557,10 @@ void onMenuSendToSecondary(const char *message)
 
 #if defined(BOARD_BLUEBUZZAH_NRF52)
 /**
- * @brief BLE event callback for PHY change detection
+ * @brief BLE event callback: TX gate credits, link-parameter log, PHY change detection
  *
- * Runs in SoftDevice context - only sets flags, no I2C/Serial.
+ * Runs on Bluefruit's BLE task, which holds the only event-callback slot, so
+ * BLEManager's SoftDevice handling is chained from here. No I2C.
  * When PHY upgrades from 1M to 2M, RTT changes significantly (~20ms to ~10-15ms).
  * This callback detects the transition so main loop can reset RTT statistics.
  * (NimBLE requests 2M at connect time before sync traffic starts, so the
@@ -3566,6 +3568,8 @@ void onMenuSendToSecondary(const char *message)
  */
 void onBLEEvent(ble_evt_t* evt)
 {
+    ble.onSoftDeviceEvent(evt);
+
     if (evt->header.evt_id != BLE_GAP_EVT_PHY_UPDATE) return;
 
     ble_gap_evt_phy_update_t* phy = &evt->evt.gap_evt.params.phy_update;
