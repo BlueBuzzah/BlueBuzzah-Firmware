@@ -644,6 +644,9 @@ void reconcileBatteryState()
 
 void setup()
 {
+    // Before the serial wait below: a motor left on by a crash must not run through it
+    power.cutDrivers();
+
 #if defined(BOARD_BLUEBUZZAH_NRF52)
     // Configure USB device descriptors (must be before Serial.begin).
     // The ESP32-S3 hardware USB-CDC has fixed descriptors, so this is nRF-only.
@@ -820,6 +823,9 @@ void setup()
     // DEBUG: Confirm setup() completes
     Serial.println(F("[DEBUG] setup() complete - entering loop()"));
     Serial.flush();
+
+    // Last: setup() legitimately blocks longer than the 5s timeout
+    platformEnableLoopWatchdog();
 }
 
 // =============================================================================
@@ -3548,6 +3554,7 @@ void handleSerialCommand(const char *command)
             stateMachine.transition(StateTrigger::STOPPED);
         }
         safeMotorShutdown();
+        LoopWatchdogPause watchdogPause;  // sweep takes ~4.3s
         haptic.diagSweep();
         return;
     }
@@ -3562,6 +3569,7 @@ void handleSerialCommand(const char *command)
             stateMachine.transition(StateTrigger::STOPPED);
         }
         safeMotorShutdown();
+        LoopWatchdogPause watchdogPause;  // up to 2s per port
         haptic.probeMotorPresence();
         applyMotorPresenceToTherapy();
         return;

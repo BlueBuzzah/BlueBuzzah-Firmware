@@ -422,6 +422,7 @@ SimpleSyncProtocol syncProtocol;
 
 void setup()
 {
+    power.cutDrivers();                 // v3: drivers off before anything else; no-op on v2
     Serial.begin(115200);               // waits up to 3s for USB serial
 
     power.begin();                      // v3 power path; no-op on v2
