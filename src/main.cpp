@@ -17,6 +17,7 @@
  */
 
 #include <Arduino.h>
+#include <atomic>
 #include "platform.h"  // Platform primitives + FreeRTOS for motor task
 #include "fs_backend.h"
 #include "power_controller.h"
@@ -297,6 +298,28 @@ static void executeMotorEvent(const MotorEvent& event) {
     (void)beforeOp;  // Suppress unused warning if debug mode off
 }
 
+// Late activations the motor task dropped. Reported from loop(): a USB
+// serial write can block, and the motor task must never wait on it
+static std::atomic<uint32_t> g_lateActivationsDropped{0};
+
+/**
+ * @brief Execute an event, unless it is an activation more than
+ * MACROCYCLE_LATE_EVENT_TOLERANCE_US late (e.g. loop() stalled before
+ * forwarding it): the other glove played it on time, so it is dropped. Its
+ * deactivation still runs, harmless on a motor that is off.
+ */
+static void executeOrDropMotorEvent(const MotorEvent& event) {
+    const int64_t lateUs = static_cast<int64_t>(getMicros() - event.timeUs);
+    if (event.type == MotorEventType::ACTIVATE && lateUs > MACROCYCLE_LATE_EVENT_TOLERANCE_US) {
+        if (latencyMetrics.enabled) {
+            latencyMetrics.recordExecution(static_cast<int32_t>(lateUs));
+        }
+        g_lateActivationsDropped.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    executeMotorEvent(event);
+}
+
 /**
  * @brief High-priority motor task for event-driven activations/deactivations
  *
@@ -334,19 +357,9 @@ static void motorTask(void* pvParameters) {
         int64_t delayUs = static_cast<int64_t>(event.timeUs - now);
 
         if (delayUs <= 0) {
-            // Event time already passed - execute immediately, unless it is an
-            // activation more than the tolerance late (e.g. loop() stalled
-            // before forwarding it): the other glove played it on time, so it
-            // is dropped. Its deactivation still runs, harmless on a motor that is off
+            // Event time already passed - execute immediately
             if (activationQueue.dequeueNextEvent(event)) {
-                const int64_t lateUs = static_cast<int64_t>(getMicros() - event.timeUs);
-                if (event.type == MotorEventType::ACTIVATE &&
-                    lateUs > MACROCYCLE_LATE_EVENT_TOLERANCE_US) {
-                    Serial.printf("[MOTOR_TASK] Dropped late ACTIVATE F%d (%ldus late)\n",
-                                  event.finger, static_cast<long>(lateUs));
-                } else {
-                    executeMotorEvent(event);
-                }
+                executeOrDropMotorEvent(event);
             }
             continue;
         }
@@ -393,7 +406,7 @@ static void motorTask(void* pvParameters) {
 
         // Execute event - dequeue first to ensure we get the same event we peeked
         if (activationQueue.dequeueNextEvent(event)) {
-            executeMotorEvent(event);
+            executeOrDropMotorEvent(event);
         }
     }
 }
@@ -864,6 +877,15 @@ void loop()
 
     // Motor events (activations AND deactivations) handled by motor task
     // No polling needed - motor task uses FreeRTOS timing
+
+    // Report late activations the motor task dropped (it never prints itself)
+    static uint32_t lateDropsReported = 0;
+    const uint32_t lateDrops = g_lateActivationsDropped.load(std::memory_order_relaxed);
+    if (lateDrops != lateDropsReported) {
+        Serial.printf("[MOTOR_TASK] Dropped %lu late activations\n",
+                      static_cast<unsigned long>(lateDrops - lateDropsReported));
+        lateDropsReported = lateDrops;
+    }
 
     // TP-1: Process staged motor events from BLE callbacks
     // Forward from lock-free staging buffer to mutex-protected activationQueue
