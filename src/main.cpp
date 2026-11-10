@@ -864,12 +864,13 @@ void loop()
         uint8_t eventsForwarded = 0;
         StagedMotorEvent staged;
         while (motorEventBuffer.unstage(staged)) {
-            // A new macrocycle replaces the previous one. Cleared when its
+            // A new macrocycle replaces the previous one's activations (pending
+            // turn-offs still run). Cleared when its
             // first event is unstaged: on dual-core ESP32 the loop can see a
             // half-staged batch, and clearing on the pending flag wiped the
             // events already forwarded.
             if (staged.isMacrocycleFirst) {
-                activationQueue.clear();
+                activationQueue.clearActivations();
             }
             activationQueue.enqueue(staged.activateTimeUs, staged.finger, staged.amplitude,
                                    staged.durationMs, staged.frequencyHz);
@@ -2265,9 +2266,9 @@ void onBLEMessage(uint16_t connHandle, const char *message, uint64_t rxTimestamp
                                   (long)(timeUntilExec / 1000));
                 }
                 int64_t timeDiff = static_cast<int64_t>(localBaseTime) - static_cast<int64_t>(nowUs);
-                // Corruption guard: legitimate values are 70-300ms ahead,
-                // the adaptive lead time up to the macrocycle prepare point,
-                // plus BLE delivery jitter. 5s is well clear of that while
+                // Corruption guard: legitimate values are about 300ms ahead
+                // (every macrocycle goes out at its prepare point), minus BLE
+                // delivery time. Late events are dropped one by one below. 5s is well clear of that while
                 // still rejecting a corrupt offset/baseTime that would
                 // otherwise schedule far-off activations.
                 constexpr int64_t MAX_TIME_DIFF = 5000000LL;  // 5 seconds
@@ -2304,7 +2305,20 @@ void onBLEMessage(uint16_t connHandle, const char *message, uint64_t rxTimestamp
 
                 // TP-1: Stage all events via lock-free buffer (ISR-safe)
                 // Main loop will forward to activationQueue and call scheduleNext()
-                motorEventBuffer.beginMacrocycle();
+                //
+                // Skip invalid events (garbage from truncated messages) and
+                // events already past their time: the PRIMARY played them on
+                // time, so playing them now would put this hand out of step
+                uint8_t lateEvents = 0;
+                auto isPlayable = [&](const MacrocycleEvent& evt) {
+                    if (evt.amplitude == 0 || evt.finger >= MAX_ACTUATORS)
+                    {
+                        return false;
+                    }
+                    uint64_t localActivateTime = localBaseTime + (evt.deltaTimeMs * 1000ULL);
+                    return localActivateTime + MACROCYCLE_LATE_EVENT_TOLERANCE_US >= nowUs;
+                };
+
                 uint8_t validEvents = 0;
                 uint8_t lastValidIndex = 0;
 
@@ -2312,11 +2326,27 @@ void onBLEMessage(uint16_t connHandle, const char *message, uint64_t rxTimestamp
                 for (uint8_t i = 0; i < mc.eventCount; i++)
                 {
                     const MacrocycleEvent& evt = mc.events[i];
-                    if (evt.amplitude > 0 && evt.finger < MAX_ACTUATORS)
+                    if (isPlayable(evt))
                     {
                         lastValidIndex = i;
                         validEvents++;
                     }
+                    else if (evt.amplitude > 0 && evt.finger < MAX_ACTUATORS)
+                    {
+                        lateEvents++;
+                    }
+                }
+
+                if (lateEvents > 0)
+                {
+                    Serial.printf("[MACROCYCLE] Dropped %u late events (seq=%lu)\n",
+                                  lateEvents, (unsigned long)mc.sequenceId);
+                }
+
+                // Only a macrocycle with something to play replaces the queue
+                if (validEvents > 0)
+                {
+                    motorEventBuffer.beginMacrocycle();
                 }
 
                 // Second pass: stage all valid events
@@ -2324,9 +2354,7 @@ void onBLEMessage(uint16_t connHandle, const char *message, uint64_t rxTimestamp
                 for (uint8_t i = 0; i < mc.eventCount; i++)
                 {
                     const MacrocycleEvent& evt = mc.events[i];
-
-                    // Skip invalid events (garbage from truncated messages)
-                    if (evt.amplitude == 0 || evt.finger >= MAX_ACTUATORS)
+                    if (!isPlayable(evt))
                     {
                         continue;
                     }
@@ -2700,8 +2728,9 @@ void onSendMacrocycle(const Macrocycle& macrocycle)
         return;
     }
 
-    // Clear activation queue for new macrocycle (PRIMARY will enqueue via callbacks)
-    activationQueue.clear();
+    // A new macrocycle replaces queued activations; pending turn-offs still
+    // run, so a motor that is on is never stranded (PRIMARY will enqueue via callbacks)
+    activationQueue.clearActivations();
 
     // Make a local copy to set clock offset (callback receives const reference)
     Macrocycle mcCopy = macrocycle;

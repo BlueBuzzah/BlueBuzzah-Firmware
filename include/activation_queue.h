@@ -94,6 +94,14 @@ public:
     void clear();
 
     /**
+     * @brief Clear scheduled activations, keeping pending deactivations
+     *
+     * For a new macrocycle replacing the previous one: a motor that is on
+     * still gets its turn-off.
+     */
+    void clearActivations();
+
+    /**
      * @brief Add a motor activation (auto-enqueues corresponding deactivation)
      * @param activateTimeUs Absolute activation time (local clock, microseconds)
      * @param finger Motor index (0 to MAX_ACTUATORS-1)
