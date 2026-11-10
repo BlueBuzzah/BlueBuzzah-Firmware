@@ -1965,6 +1965,10 @@ struct PendingMenuCommand
     volatile bool ready;  // published last, after text is filled
 };
 
+// Bench test shortcuts, handled outside MenuController
+static bool isTestStart(const char *m) { return strcmp(m, "TEST") == 0 || strcmp(m, "test") == 0; }
+static bool isTestStop(const char *m) { return strcmp(m, "STOP") == 0 || strcmp(m, "stop") == 0; }
+
 static PendingMenuCommand s_menuCmdQueue[MENU_CMD_QUEUE_DEPTH];
 static volatile uint8_t s_menuCmdHead = 0;
 static volatile uint8_t s_menuCmdTail = 0;
@@ -2026,7 +2030,19 @@ void processPendingMenuCommand()
     }
     platformMemoryBarrier();
 
-    menu.handleCommand(s_menuCmdQueue[slot].text, s_menuCmdQueue[slot].allowInternal);
+    const char *text = s_menuCmdQueue[slot].text;
+    if (isTestStart(text))
+    {
+        startTherapyTest();
+    }
+    else if (isTestStop(text))
+    {
+        stopTherapyTest();
+    }
+    else
+    {
+        menu.handleCommand(text, s_menuCmdQueue[slot].allowInternal);
+    }
 
     s_menuCmdQueue[slot].ready = false;
     {
@@ -2044,16 +2060,15 @@ void onBLEMessage(uint16_t connHandle, const char *message, uint64_t rxTimestamp
     // This provides maximum accuracy for PTP clock synchronization
 
     // Check for simple text commands first (for testing)
-    // Both PRIMARY and SECONDARY can run standalone tests for hardware verification
-    if (strcmp(message, "TEST") == 0 || strcmp(message, "test") == 0)
+    // Both PRIMARY and SECONDARY can run standalone tests for hardware verification.
+    // Deferred like menu commands: startTherapyTest() runs the same session-start
+    // chain that overflows the callback stack, and stopTherapyTest() does I2C.
+    if (isTestStart(message) || isTestStop(message))
     {
-        startTherapyTest();
-        return;
-    }
-
-    if (strcmp(message, "STOP") == 0 || strcmp(message, "stop") == 0)
-    {
-        stopTherapyTest();
+        if (!enqueueMenuCommand(message, false))
+        {
+            Serial.println(F("[BLE] WARN: menu command queue full or oversized - dropped"));
+        }
         return;
     }
 
