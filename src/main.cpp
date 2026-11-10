@@ -334,9 +334,19 @@ static void motorTask(void* pvParameters) {
         int64_t delayUs = static_cast<int64_t>(event.timeUs - now);
 
         if (delayUs <= 0) {
-            // Event time already passed - execute immediately
+            // Event time already passed - execute immediately, unless it is an
+            // activation more than the tolerance late (e.g. loop() stalled
+            // before forwarding it): the other glove played it on time, so it
+            // is dropped. Its deactivation still runs, harmless on a motor that is off
             if (activationQueue.dequeueNextEvent(event)) {
-                executeMotorEvent(event);
+                const int64_t lateUs = static_cast<int64_t>(getMicros() - event.timeUs);
+                if (event.type == MotorEventType::ACTIVATE &&
+                    lateUs > MACROCYCLE_LATE_EVENT_TOLERANCE_US) {
+                    Serial.printf("[MOTOR_TASK] Dropped late ACTIVATE F%d (%ldus late)\n",
+                                  event.finger, static_cast<long>(lateUs));
+                } else {
+                    executeMotorEvent(event);
+                }
             }
             continue;
         }
@@ -2268,9 +2278,10 @@ void onBLEMessage(uint16_t connHandle, const char *message, uint64_t rxTimestamp
                 int64_t timeDiff = static_cast<int64_t>(localBaseTime) - static_cast<int64_t>(nowUs);
                 // Corruption guard: legitimate values are about 300ms ahead
                 // (every macrocycle goes out at its prepare point), minus BLE
-                // delivery time. Late events are dropped one by one below. 5s is well clear of that while
-                // still rejecting a corrupt offset/baseTime that would
-                // otherwise schedule far-off activations.
+                // delivery time. 5s is well clear of that while still
+                // rejecting a corrupt offset/baseTime that would otherwise
+                // schedule far-off activations. Late events are dropped one
+                // by one below.
                 constexpr int64_t MAX_TIME_DIFF = 5000000LL;  // 5 seconds
                 if (timeDiff > MAX_TIME_DIFF || timeDiff < -MAX_TIME_DIFF)
                 {
@@ -2309,32 +2320,41 @@ void onBLEMessage(uint16_t connHandle, const char *message, uint64_t rxTimestamp
                 // Skip invalid events (garbage from truncated messages) and
                 // events already past their time: the PRIMARY played them on
                 // time, so playing them now would put this hand out of step
-                uint8_t lateEvents = 0;
-                auto isPlayable = [&](const MacrocycleEvent& evt) {
-                    if (evt.amplitude == 0 || evt.finger >= MAX_ACTUATORS)
-                    {
-                        return false;
-                    }
+                auto isValid = [](const MacrocycleEvent& evt) {
+                    return evt.amplitude > 0 && evt.finger < MAX_ACTUATORS;
+                };
+                // Fresh clock: debug logging above may have taken a few ms.
+                // Signed difference, so a localBaseTime just below zero (glove
+                // booted under 5 s ago) still counts as late
+                const uint64_t stageNowUs = getMicros();
+                auto isLate = [&](const MacrocycleEvent& evt) {
                     uint64_t localActivateTime = localBaseTime + (evt.deltaTimeMs * 1000ULL);
-                    return localActivateTime + MACROCYCLE_LATE_EVENT_TOLERANCE_US >= nowUs;
+                    return static_cast<int64_t>(localActivateTime - stageNowUs) <
+                           -static_cast<int64_t>(MACROCYCLE_LATE_EVENT_TOLERANCE_US);
+                };
+                auto isPlayable = [&](const MacrocycleEvent& evt) {
+                    return isValid(evt) && !isLate(evt);
                 };
 
                 uint8_t validEvents = 0;
                 uint8_t lastValidIndex = 0;
+                uint8_t lateEvents = 0;
 
                 // First pass: count valid events to mark the last one
                 for (uint8_t i = 0; i < mc.eventCount; i++)
                 {
                     const MacrocycleEvent& evt = mc.events[i];
-                    if (isPlayable(evt))
+                    if (!isValid(evt))
                     {
-                        lastValidIndex = i;
-                        validEvents++;
+                        continue;
                     }
-                    else if (evt.amplitude > 0 && evt.finger < MAX_ACTUATORS)
+                    if (isLate(evt))
                     {
                         lateEvents++;
+                        continue;
                     }
+                    lastValidIndex = i;
+                    validEvents++;
                 }
 
                 if (lateEvents > 0)
