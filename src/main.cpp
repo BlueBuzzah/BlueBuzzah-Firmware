@@ -217,7 +217,10 @@ static void preSelectNextActivation() {
 static void executeMotorEvent(const MotorEvent& event) {
 #if SYNC_DEBUG_GPIO_ENABLED
     if (event.type == MotorEventType::ACTIVATE) {
-        digitalToggle(SYNC_DEBUG_GPIO_PIN);
+        // Tracked level instead of digitalToggle(): the ESP32 core has none.
+        static bool syncDebugLevel = false;
+        syncDebugLevel = !syncDebugLevel;
+        digitalWrite(SYNC_DEBUG_GPIO_PIN, syncDebugLevel ? HIGH : LOW);
     }
 #endif
     uint64_t beforeOp = getMicros();
