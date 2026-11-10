@@ -331,6 +331,8 @@ lead_time = average_RTT + safety_margin + processing_overhead + generation_overh
 
 `average_RTT` is twice the smoothed one-way latency from PING/PONG (`calculateAdaptiveLeadTime()`). With no RTT samples yet the lead time is the 70ms minimum; the first sample already counts.
 
+Every macrocycle, including the first of a session, is sent at its prepare point, 300ms (`SYNC_MAX_LEAD_TIME_US + MACROCYCLE_PREPARE_MARGIN_US`) before its first onset. The adaptive lead time is the least a macrocycle must still have when it goes out; with less, PRIMARY skips it.
+
 | Parameter | Value | Purpose |
 |-----------|-------|---------|
 | Minimum lead time | 70ms | Covers RTT (~40ms) + variance (~5ms) + processing (10ms) + generation (5ms) + margin (10ms) |
@@ -595,6 +597,8 @@ The protocol includes several safety mechanisms to prevent incorrect synchroniza
 | Validation | Threshold | Action |
 |------------|-----------|--------|
 | baseTime freshness | ±5 seconds | SECONDARY plays nothing from a macrocycle whose local base time is further than this from now (still sends `MC_ACK`) |
+| Late event | More than 5ms past its time (`MACROCYCLE_LATE_EVENT_TOLERANCE_US`) | SECONDARY drops that event and plays the rest of the frame, printing one `[MACROCYCLE] Dropped N late events` line. If every event is late, the previous macrocycle's queue is left alone. `MC_ACK` is still sent |
+| New macrocycle | Any | Replaces queued activations on both gloves. Pending turn-offs still run, so a motor that is on is never left on |
 | Critical battery | SECONDARY in `CRITICAL_BATTERY` | SECONDARY acknowledges each macrocycle but plays nothing until the PRIMARY ends the session |
 | Hardware fault | SECONDARY in `ERROR` (sent `GLOVE_ERROR`) | SECONDARY acknowledges each macrocycle but plays nothing. The PRIMARY refuses starts while linked to it (`Secondary glove error`, flag cleared on every SECONDARY connect) and ends a running session (not a bench `TEST`) with reason `ERROR` |
 | Drift rate (measured) | ±150 ppm | Cap measured drift for plausibility |
