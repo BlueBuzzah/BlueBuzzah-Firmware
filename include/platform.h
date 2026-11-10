@@ -25,10 +25,13 @@
   inline void platformMemoryBarrier() { __sync_synchronize(); }
   // Puts loop() under the 5s task watchdog; call last in setup()
   inline void platformEnableLoopWatchdog() { enableLoopWDT(); }
-  // Lifts the watchdog for loop-context work that legitimately takes 5s or more
+  // Lifts the watchdog for loop-context work that legitimately takes 5s or more,
+  // then restores the state it found (never turns it on early or when nested)
+  extern bool loopTaskWDTEnabled;  // arduino-esp32 core, set by enableLoopWDT()
   struct LoopWatchdogPause {
+      const bool wasEnabled = loopTaskWDTEnabled;
       LoopWatchdogPause() { disableLoopWDT(); }
-      ~LoopWatchdogPause() { enableLoopWDT(); }
+      ~LoopWatchdogPause() { if (wasEnabled) enableLoopWDT(); }
   };
   #define PLATFORM_CRITICAL_ENTER()   portENTER_CRITICAL(&g_platformMux)
   #define PLATFORM_CRITICAL_EXIT()    portEXIT_CRITICAL(&g_platformMux)

@@ -73,6 +73,7 @@ The board is selected by a build macro (`BOARD_BLUEBUZZAH_NRF52` / `BOARD_PENTAB
 
 - **nRF-only code is gated on `NRF52840_XXAA`, not `BOARD_BLUEBUZZAH_NRF52`** (`radio_anchor.cpp`, `hires_clock.cpp`). Native envs define `BOARD_BLUEBUZZAH_NRF52` too; `NATIVE_TEST_BUILD` selects the no-op branches in `platform.h`.
 - **BLE callback context differs per board**: SoftDevice/ISR context on nRF, NimBLE host task (core 0) on ESP32. No I2C in callbacks — hand off through `MotorEventBuffer` / `DeferredQueue` (both single-producer/single-consumer) or a semaphore (`safetyShutdownSema`). Menu commands run synchronously in the NimBLE task, hence `CONFIG_BT_NIMBLE_HOST_TASK_STACK_SIZE=8192`.
+- **`loop()` runs under the 5 s task watchdog on v3** (enabled last in `setup()`). Wrap loop-context work that can legitimately block 5 s or more in a `LoopWatchdogPause` (`platform.h`), as `MOTOR_DIAG`, `MOTOR_PRESENT` and the SECONDARY connect do.
 - **FreeRTOS stack units differ**: words on nRF, bytes on ESP32 (`MOTOR_TASK_STACK`).
 - **`SYNC_DEBUG_GPIO_ENABLED=1` only builds on nRF** (`digitalToggle`, `PIN_A0`). Don't port it by using `A0` on Penta: that's GPIO1, the shared DRV2605 enable line, and toggling it wipes every driver's registers.
 - **`BLE_USE_2M_PHY` is tested with `#ifdef`**: `-DBLE_USE_2M_PHY=0` does not disable 2M PHY. `DEBUG_ENABLED`, `SKIP_BOOT_SEQUENCE`, `SYNC_DEBUG_GPIO_ENABLED`, `SYNC_ANCHOR_TIMESTAMPING_ENABLED` are `#ifndef` defaults in `config.h` and are safe to override with `-D`.
