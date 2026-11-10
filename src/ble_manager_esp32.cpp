@@ -344,15 +344,22 @@ void BLEManager::update() {
     processTxQueue();
 
     // Deferred central connect (scan callback must not block the host task)
+    if (s_pendingConnect && s_client->isConnected()) {
+        // An advert handled as the scan stopped re-armed the flag; connecting
+        // again would be rejected and mark the live client disconnected
+        s_pendingConnect = false;
+    }
     if (s_pendingConnect) {
         // connect() can take ~3 s; discovery waits on the 30s ATT timeout
         LoopWatchdogPause watchdogPause;
+        // Stop the scan before clearing the flag: the scan callback doesn't
+        // stop it, so an advert in between would re-arm the connect
+        stopScanning();
         PLATFORM_CRITICAL_ENTER();
         s_pendingConnect = false;
         NimBLEAddress pendingAddress = s_pendingAddress;
         PLATFORM_CRITICAL_EXIT();
         Serial.println(F("[BLE] Connecting to PRIMARY..."));
-        stopScanning();
         if (!s_client->connect(pendingAddress)) {
             Serial.println(F("[BLE] ERROR: Connect to PRIMARY failed"));
             if (_scannerAutoRestartEnabled) {
@@ -552,7 +559,12 @@ bool BLEManager::startScanning(const char* targetName) {
 }
 
 void BLEManager::stopScanning() {
-    NimBLEDevice::getScan()->stop();
+    NimBLEScan* scan = NimBLEDevice::getScan();
+    // With no results stored, stop() frees every device here (loop core)
+    // while the host task may still be handling one. Keep them through the
+    // stop; startScanning() sets 0 again and start() clears them first.
+    scan->setMaxResults(0xFF);
+    scan->stop();
     s_scanning = false;
     Serial.println(F("[BLE] Scanning stopped"));
 }
