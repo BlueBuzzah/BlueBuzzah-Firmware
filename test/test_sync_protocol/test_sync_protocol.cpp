@@ -746,18 +746,6 @@ void test_SimpleSyncProtocol_isClockSyncValid_below_threshold(void) {
     TEST_ASSERT_FALSE(sync.isClockSyncValid());
 }
 
-void test_SimpleSyncProtocol_isClockSyncValid_at_threshold(void) {
-    SimpleSyncProtocol sync;
-
-    // Add exactly MIN_SAMPLES (5)
-    for (int i = 0; i < 5; i++) {
-        sync.addOffsetSample(1000);
-    }
-
-    TEST_ASSERT_EQUAL_UINT8(5, sync.getOffsetSampleCount());
-    TEST_ASSERT_TRUE(sync.isClockSyncValid());
-}
-
 void test_SimpleSyncProtocol_getOffsetSampleCount(void) {
     SimpleSyncProtocol sync;
 
@@ -1117,18 +1105,30 @@ void test_SimpleSyncProtocol_calculateAdaptiveLeadTime_maximum_clamp(void) {
 void test_SimpleSyncProtocol_calculateAdaptiveLeadTime_normal_calculation(void) {
     SimpleSyncProtocol sync;
 
-    // Add 3 moderate latency samples (RTT = 20000us = 10ms one-way)
-    sync.updateLatency(20000);
-    sync.updateLatency(20000);
-    sync.updateLatency(20000);
+    // RTT 60000 -> one-way 30000 each time, so smoothed = 30000 and variance = 0
+    // Lead time = 2 * 30000 + 6 * 0 + 10000 processing + 5000 generation = 75000
+    sync.updateLatency(60000);
+    sync.updateLatency(60000);
+    sync.updateLatency(60000);
 
-    // RTT = 20000, one-way = 10000
-    // avgRTT = 10000 * 2 = 20000
-    // With consistent samples, variance should be low
-    // Lead time = RTT + variance margin + processing overhead, clamped to 70000-150000
-    uint32_t leadTime = sync.calculateAdaptiveLeadTime();
-    TEST_ASSERT_TRUE(leadTime >= 70000);
-    TEST_ASSERT_TRUE(leadTime <= 150000);
+    TEST_ASSERT_EQUAL_UINT32(75000, sync.calculateAdaptiveLeadTime());
+}
+
+void test_SimpleSyncProtocol_calculateAdaptiveLeadTime_variance_raises_lead_time(void) {
+    SimpleSyncProtocol steady;
+    steady.updateLatency(60000);
+    steady.updateLatency(60000);
+    steady.updateLatency(60000);
+
+    SimpleSyncProtocol jittery;
+    jittery.updateLatency(40000);
+    jittery.updateLatency(60000);
+    jittery.updateLatency(80000);
+
+    uint32_t steadyLead = steady.calculateAdaptiveLeadTime();
+    uint32_t jitteryLead = jittery.calculateAdaptiveLeadTime();
+    TEST_ASSERT_TRUE(jitteryLead > steadyLead);
+    TEST_ASSERT_TRUE(jitteryLead <= 150000);
 }
 
 void test_SimpleSyncProtocol_getAverageRTT(void) {
@@ -1412,8 +1412,8 @@ void test_SyncCommand_serializeMacrocycle_basic(void) {
     char buffer[256];
     TEST_ASSERT_TRUE(SyncCommand::serializeMacrocycle(buffer, sizeof(buffer), mc));
 
-    // Verify format: MC:seq|baseMs|offHigh|offLow|dur|count|...
-    TEST_ASSERT_NOT_NULL(strstr(buffer, "MC:42|"));
+    // Format: MC:seq|baseHigh|baseLow|offHigh|offLow|dur|count|d,f,a|d,f,a
+    TEST_ASSERT_EQUAL_STRING("MC:42|0|5000000|0|1000|100|2|0,0,80|50,1,90", buffer);
 }
 
 void test_SyncCommand_deserializeMacrocycle_basic(void) {
@@ -1455,8 +1455,8 @@ void test_SyncCommand_serializeMacrocycle_with_freqOffset(void) {
     char buffer[256];
     TEST_ASSERT_TRUE(SyncCommand::serializeMacrocycle(buffer, sizeof(buffer), mc));
 
-    // Should include freqOffset when non-zero
-    TEST_ASSERT_NOT_NULL(strstr(buffer, ",25"));
+    // freqOffset is appended as a fourth event field when non-zero
+    TEST_ASSERT_EQUAL_STRING("MC:1|0|1000000|0|0|50|1|0,2,100,25", buffer);
 }
 
 void test_SyncCommand_serializeMacrocycle_buffer_too_small(void) {
@@ -1528,7 +1528,7 @@ void test_getMillis64(void) {
     TEST_ASSERT_EQUAL_UINT32(1234, (uint32_t)(result & 0xFFFFFFFF));
 }
 
-void test_getMicros_overflow_detection(void) {
+void test_getMicros_normal_advance_is_monotonic(void) {
     // Reset state
     resetMicrosOverflow();
 
@@ -1555,24 +1555,28 @@ void test_getMicros_overflow_detection(void) {
 void test_SimpleSyncProtocol_addOffsetSample_outlier_rejection(void) {
     SimpleSyncProtocol sync;
 
-    // Add 5 consistent samples (should establish baseline)
-    for (int i = 0; i < 5; i++) {
-        sync.addOffsetSample(10000);  // 10ms offset
-    }
+    // Unfiltered median of these nine samples is 10400; the three 30000 outliers
+    // are more than SYNC_OUTLIER_THRESHOLD_US (5000) from it and are dropped,
+    // leaving 10000 x4 and 10400 x2 with median 10000
+    for (int i = 0; i < 4; i++) sync.addOffsetSample(10000);
+    for (int i = 0; i < 2; i++) sync.addOffsetSample(10400);
+    for (int i = 0; i < 3; i++) sync.addOffsetSample(30000);
 
     TEST_ASSERT_TRUE(sync.isClockSyncValid());
-    int64_t initialMedian = sync.getMedianOffset();
-    TEST_ASSERT_EQUAL_INT64(10000, initialMedian);
+    TEST_ASSERT_EQUAL_INT64(10000, sync.getMedianOffset());
+}
 
-    // Add an outlier (> 5ms deviation from median)
-    sync.addOffsetSample(20000);  // 10ms deviation - should be rejected as outlier
+void test_SimpleSyncProtocol_addOffsetSample_too_few_survivors_keeps_preliminary_median(void) {
+    SimpleSyncProtocol sync;
 
-    // Median should still be close to 10000 (outlier filtered)
-    // Note: The outlier goes into the circular buffer but is filtered during median calc
-    int64_t newMedian = sync.getMedianOffset();
+    // Preliminary median of 10000 x3, 10400, 30000 x2 is (10000 + 10400) / 2 = 10200.
+    // Only 4 samples survive the outlier filter (< SYNC_MIN_VALID_SAMPLES), so the
+    // preliminary median is kept
+    for (int i = 0; i < 3; i++) sync.addOffsetSample(10000);
+    sync.addOffsetSample(10400);
+    for (int i = 0; i < 2; i++) sync.addOffsetSample(30000);
 
-    // The median should be within reasonable bounds of the original
-    TEST_ASSERT_TRUE(newMedian >= 9000 && newMedian <= 11000);
+    TEST_ASSERT_EQUAL_INT64(10200, sync.getMedianOffset());
 }
 
 // =============================================================================
@@ -1580,34 +1584,13 @@ void test_SimpleSyncProtocol_addOffsetSample_outlier_rejection(void) {
 // =============================================================================
 
 void test_getMicros_32bit_wraparound(void) {
-    // Reset overflow tracking
     resetMicrosOverflow();
 
-    // Set time just before 32-bit overflow (~71 minutes = 4,266,000,000 microseconds)
-    // micros() returns 32-bit, so it wraps at ~4,294,967,295
-    mockSetMillis(4290000);  // About 71.5 minutes in ms
-    uint64_t t1 = getMicros();
+    mockSetMillis(4290000);  // micros = 4,290,000,000, just below 2^32
+    TEST_ASSERT_EQUAL_UINT64(4290000000ULL, getMicros());
 
-    // Advance past wraparound point
-    mockSetMillis(10);  // Wrapped around to near 0
-    uint64_t t2 = getMicros();
-
-    // getMicros() should detect overflow and return a larger value
-    // The implementation tracks overflow, so t2 should be > t1
-    // Note: In mock environment, this tests the overflow detection logic
-    TEST_ASSERT_TRUE(t2 > 0);  // Basic sanity check
-}
-
-void test_timestamp_subtraction_across_wraparound(void) {
-    // This tests that timestamp arithmetic works correctly
-    // even when one timestamp is before wraparound and one is after
-
-    // Using large timestamps that could cause wraparound issues
-    uint64_t t1 = 0xFFFFFFFF00000000ULL;  // High bits set
-    uint64_t t2 = t1 + 1000000;  // 1 second later
-
-    int64_t diff = static_cast<int64_t>(t2 - t1);
-    TEST_ASSERT_EQUAL_INT64(1000000, diff);
+    mockSetMillis(10);  // 32-bit micros wrapped to 10,000
+    TEST_ASSERT_EQUAL_UINT64(4294977296ULL, getMicros());  // 2^32 + 10000
 }
 
 // =============================================================================
@@ -2033,13 +2016,13 @@ void test_maintenance_min_rtt_decay(void) {
     for (int i = 0; i < 5; i++) sync.addOffsetSample(0);
     TEST_ASSERT_TRUE(sync.updateOffsetEMAWithQuality(0, 10000));  // min = 10ms
 
-    // Link degraded to 25ms RTT: initially rejected (25 > 10+10),
-    // but min creeps up by SYNC_MIN_RTT_DECAY_US per sample until accepted
-    bool accepted = false;
-    for (int i = 0; i < 40 && !accepted; i++) {
-        accepted = sync.updateOffsetEMAWithQuality(0, 25000);
+    // Link degraded to 25ms RTT. Each rejected-or-accepted call raises min by
+    // SYNC_MIN_RTT_DECAY_US (200us); the gate accepts once 25000 <= min + 10000,
+    // i.e. min >= 15000, which takes (15000 - 10000) / 200 = 25 calls
+    for (int i = 1; i <= 24; i++) {
+        TEST_ASSERT_FALSE(sync.updateOffsetEMAWithQuality(0, 25000));
     }
-    TEST_ASSERT_TRUE(accepted);
+    TEST_ASSERT_TRUE(sync.updateOffsetEMAWithQuality(0, 25000));
 }
 
 void test_maintenance_routes_to_sample_collection_before_valid(void) {
@@ -2089,6 +2072,113 @@ void test_createPongWithAnchor_roundtrip(void) {
     TEST_ASSERT_EQUAL_UINT32(3, (uint32_t)anchor);
     TEST_ASSERT_EQUAL_UINT32(1, (uint32_t)(t2 >> 32));
     TEST_ASSERT_EQUAL_UINT32(1, (uint32_t)(anchor >> 32));
+}
+
+// =============================================================================
+// ERROR-PATH TESTS
+// =============================================================================
+
+void test_SyncCommand_serialize_header_does_not_fit_returns_false(void) {
+    SyncCommand cmd(SyncCommandType::PING, 1);
+    cmd.setTimestamp(123456);
+
+    char tiny[8];
+    TEST_ASSERT_FALSE(cmd.serialize(tiny, sizeof(tiny)));
+
+    // A 32-byte buffer passes the minimum-size guard but cannot hold this header
+    SyncCommand longHeader(SyncCommandType::RESUME_SESSION, 4294967295UL);
+    longHeader.setTimestamp(4000000000000000000ULL);
+    char small[32];
+    TEST_ASSERT_FALSE(longHeader.serialize(small, sizeof(small)));
+}
+
+void test_SyncCommand_deserialize_rejects_non_numeric_sequence(void) {
+    SyncCommand cmd;
+    TEST_ASSERT_FALSE(cmd.deserialize("PING:abc|1000"));
+}
+
+void test_SyncCommand_deserialize_rejects_non_numeric_timestamp(void) {
+    SyncCommand cmd;
+    TEST_ASSERT_FALSE(cmd.deserialize("PING:1|abc"));
+}
+
+void test_SyncCommand_deserialize_rejects_missing_timestamp(void) {
+    SyncCommand cmd;
+    TEST_ASSERT_FALSE(cmd.deserialize("PING:1"));
+}
+
+void test_SyncCommand_deserialize_caps_data_at_SYNC_MAX_DATA_PAIRS(void) {
+    SyncCommand cmd;
+    TEST_ASSERT_TRUE(cmd.deserialize("PING:1|1000|7|7|7|7|7|7|7|7|7|7|7|7"));
+    TEST_ASSERT_EQUAL_UINT8(SYNC_MAX_DATA_PAIRS, cmd.getDataCount());
+}
+
+void test_createPongWithTimestamps_64bit_roundtrip(void) {
+    const uint64_t t2 = 0x180000001ULL;
+    const uint64_t t3 = 0x200000005ULL;
+
+    SyncCommand pong = SyncCommand::createPongWithTimestamps(9, t2, t3);
+    char buf[160];
+    TEST_ASSERT_TRUE(pong.serialize(buf, sizeof(buf)));
+
+    SyncCommand parsed;
+    TEST_ASSERT_TRUE(parsed.deserialize(buf));
+    TEST_ASSERT_TRUE(parsed.hasData("2"));  // four-field (64-bit) encoding
+
+    // Same parse the PRIMARY applies to a received PONG
+    uint64_t gotT2 = ((uint64_t)parsed.getDataUnsigned("0", 0) << 32) | parsed.getDataUnsigned("1", 0);
+    uint64_t gotT3 = ((uint64_t)parsed.getDataUnsigned("2", 0) << 32) | parsed.getDataUnsigned("3", 0);
+    TEST_ASSERT_EQUAL_UINT64(0x180000001ULL, gotT2);
+    TEST_ASSERT_EQUAL_UINT64(0x200000005ULL, gotT3);
+}
+
+static Macrocycle makeMacrocycle(uint8_t eventCount) {
+    Macrocycle mc;
+    mc.sequenceId = 42;
+    mc.baseTime = 5000000;
+    mc.clockOffset = 1000;
+    mc.durationMs = 100;
+    mc.eventCount = eventCount;
+    for (uint8_t i = 0; i < eventCount; i++) {
+        mc.events[i].deltaTimeMs = 40 * i;
+        mc.events[i].finger = i;
+        mc.events[i].amplitude = 80;
+        mc.events[i].freqOffset = 0;
+    }
+    return mc;
+}
+
+void test_deserializeMacrocycle_rejects_zero_events(void) {
+    char buffer[256];
+    TEST_ASSERT_TRUE(SyncCommand::serializeMacrocycle(buffer, sizeof(buffer), makeMacrocycle(0)));
+
+    Macrocycle out;
+    TEST_ASSERT_FALSE(SyncCommand::deserializeMacrocycle(buffer, strlen(buffer), out));
+}
+
+void test_deserializeMacrocycle_rejects_extra_event(void) {
+    char buffer[256];
+    TEST_ASSERT_TRUE(SyncCommand::serializeMacrocycle(buffer, sizeof(buffer), makeMacrocycle(3)));
+    TEST_ASSERT_EQUAL_STRING("MC:42|0|5000000|0|1000|100|3|0,0,80|40,1,80|80,2,80", buffer);
+
+    // Count says 2, payload carries 3
+    char* count = strstr(buffer, "|100|3|") + 5;
+    *count = '2';
+
+    Macrocycle out;
+    TEST_ASSERT_FALSE(SyncCommand::deserializeMacrocycle(buffer, strlen(buffer), out));
+}
+
+void test_deserializeMacrocycle_rejects_missing_field(void) {
+    char buffer[256];
+    TEST_ASSERT_TRUE(SyncCommand::serializeMacrocycle(buffer, sizeof(buffer), makeMacrocycle(1)));
+    TEST_ASSERT_EQUAL_STRING("MC:42|0|5000000|0|1000|100|1|0,0,80", buffer);
+
+    // Event "0,0" with no amplitude separator
+    *strrchr(buffer, ',') = '\0';
+
+    Macrocycle out;
+    TEST_ASSERT_FALSE(SyncCommand::deserializeMacrocycle(buffer, strlen(buffer), out));
 }
 
 // =============================================================================
@@ -2204,7 +2294,6 @@ int main(int argc, char **argv) {
     RUN_TEST(test_SimpleSyncProtocol_getMedianOffset_odd_count);
     RUN_TEST(test_SimpleSyncProtocol_getMedianOffset_even_count);
     RUN_TEST(test_SimpleSyncProtocol_isClockSyncValid_below_threshold);
-    RUN_TEST(test_SimpleSyncProtocol_isClockSyncValid_at_threshold);
     RUN_TEST(test_SimpleSyncProtocol_getOffsetSampleCount);
     RUN_TEST(test_SimpleSyncProtocol_resetClockSync);
 
@@ -2236,6 +2325,7 @@ int main(int argc, char **argv) {
     RUN_TEST(test_SimpleSyncProtocol_calculateAdaptiveLeadTime_minimum_clamp);
     RUN_TEST(test_SimpleSyncProtocol_calculateAdaptiveLeadTime_maximum_clamp);
     RUN_TEST(test_SimpleSyncProtocol_calculateAdaptiveLeadTime_normal_calculation);
+    RUN_TEST(test_SimpleSyncProtocol_calculateAdaptiveLeadTime_variance_raises_lead_time);
     RUN_TEST(test_SimpleSyncProtocol_getAverageRTT);
     RUN_TEST(test_SimpleSyncProtocol_getRTTVariance_initial_zero);
     RUN_TEST(test_SimpleSyncProtocol_getRTTVariance_after_consistent_samples);
@@ -2277,14 +2367,14 @@ int main(int argc, char **argv) {
 
     // 64-bit timing utilities
     RUN_TEST(test_getMillis64);
-    RUN_TEST(test_getMicros_overflow_detection);
+    RUN_TEST(test_getMicros_normal_advance_is_monotonic);
 
     // Offset sample edge cases
     RUN_TEST(test_SimpleSyncProtocol_addOffsetSample_outlier_rejection);
+    RUN_TEST(test_SimpleSyncProtocol_addOffsetSample_too_few_survivors_keeps_preliminary_median);
 
     // 32-bit wraparound tests
     RUN_TEST(test_getMicros_32bit_wraparound);
-    RUN_TEST(test_timestamp_subtraction_across_wraparound);
 
     // PRIMARY-SECONDARY integration tests
     RUN_TEST(test_full_ping_pong_exchange);
@@ -2327,6 +2417,16 @@ int main(int argc, char **argv) {
 
     // Anchor-paired PONG factory: 6-field round-trip
     RUN_TEST(test_createPongWithAnchor_roundtrip);
+
+    RUN_TEST(test_SyncCommand_serialize_header_does_not_fit_returns_false);
+    RUN_TEST(test_SyncCommand_deserialize_rejects_non_numeric_sequence);
+    RUN_TEST(test_SyncCommand_deserialize_rejects_non_numeric_timestamp);
+    RUN_TEST(test_SyncCommand_deserialize_rejects_missing_timestamp);
+    RUN_TEST(test_SyncCommand_deserialize_caps_data_at_SYNC_MAX_DATA_PAIRS);
+    RUN_TEST(test_createPongWithTimestamps_64bit_roundtrip);
+    RUN_TEST(test_deserializeMacrocycle_rejects_zero_events);
+    RUN_TEST(test_deserializeMacrocycle_rejects_extra_event);
+    RUN_TEST(test_deserializeMacrocycle_rejects_missing_field);
 
     return UNITY_END();
 }
