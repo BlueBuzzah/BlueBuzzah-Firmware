@@ -579,7 +579,7 @@ void TherapyEngine::startSession(
     _sessionStartTime = millis();
     _sessionDurationSec = durationSec;
     _patternType = patternType;
-    // Never more fingers than the active (physically present) set
+    // Never more fingers than the active set (setActiveFingers)
     _numFingers = (numFingers < _fingerMapCount) ? numFingers : _fingerMapCount;
     // ... additional parameters
 

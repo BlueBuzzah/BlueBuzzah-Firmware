@@ -360,11 +360,10 @@ public:
     /**
      * @brief Restrict pattern generation to a set of physical fingers
      *
-     * Pattern permutation slots are mapped onto these finger indices, so a
-     * missing motor (e.g. unpopulated thumb port) is skipped entirely rather
-     * than getting a silent slot. Set on PRIMARY from the boot motor-presence
-     * probe; the mapped indices flow to SECONDARY inside macrocycle events,
-     * so both gloves skip the same finger. Defaults to all MAX_ACTUATORS.
+     * Pattern permutation slots are mapped onto these finger indices. On v3
+     * the PRIMARY sets index to pinky, plus the thumb only when its boot motor
+     * check found it; the mapped indices flow to SECONDARY inside macrocycle
+     * events, so both gloves use the same fingers. Defaults to all MAX_ACTUATORS.
      *
      * @param fingers Physical finger indices to use (each < MAX_ACTUATORS)
      * @param count Number of entries (1 to MAX_ACTUATORS); invalid input

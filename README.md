@@ -150,7 +150,7 @@ Board-specific values (pins, actuator count, battery availability, the `BATTERY_
 
 **Red double blink for 5 seconds at boot (v3):**
 
-- The motor check found a finger that didn't respond (`[WARN] Motor check:` on serial). A warning only: boot continues. Check that finger's JST connection; `INFO` `MOTP`/`MOTS` show which fingers
+- The motor check found a finger that didn't respond (`[WARN] Motor check:` on serial). A warning only: boot continues. Check that finger's JST connection; `INFO` `MOTP`/`MOTS` show which fingers didn't respond
 
 **Breathing blue indefinitely (gloves never pair):**
 
