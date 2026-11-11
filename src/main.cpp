@@ -1915,14 +1915,11 @@ void onBLEConnect(uint16_t connHandle, ConnectionType type)
             lastSecondaryKeepalive = millis();
             g_secondaryConnectedAt = millis();
 
-            // Unknown until this SECONDARY reports (it does on connect)
+            // Unknown until this SECONDARY reports (it does on connect).
+            // The fault and motor check are cleared on disconnect instead: after
+            // a late IDENTIFY this callback runs from update(), once the
+            // SECONDARY's GLOVE_ERROR and MOTOR_STATUS have already arrived
             g_secondaryBatteryLevel = BatteryLevel::NORMAL;
-            g_secondaryFault = false;
-            {
-                PLATFORM_CRITICAL_ENTER();
-                g_secondaryMotorChecks[0] = '\0';
-                PLATFORM_CRITICAL_EXIT();
-            }
 
             // Reset clock sync state
             syncProtocol.resetClockSync();
@@ -2039,7 +2036,9 @@ void onBLEDisconnect(uint16_t connHandle, ConnectionType type, uint8_t reason)
         if (deviceRole == DeviceRole::PRIMARY)
         {
             g_autoStartRetryCount = 0;
-            // INFO stops reporting MOTS until the next SECONDARY reports
+            // The next SECONDARY starts with no fault, and INFO stops
+            // reporting MOTS, until it reports
+            g_secondaryFault = false;
             {
                 PLATFORM_CRITICAL_ENTER();
                 g_secondaryMotorChecks[0] = '\0';
