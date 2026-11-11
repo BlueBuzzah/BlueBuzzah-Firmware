@@ -73,6 +73,7 @@ struct BBConnection {
     uint32_t connectedAt;
     volatile bool pendingIdentify;       // Waiting for IDENTIFY message
     uint32_t identifyStartTime; // When identification period started
+    volatile bool lateIdentifySecondary; // Reclassified after the timeout; update() finishes it
 
     // Message receive buffer
     char rxBuffer[RX_BUFFER_SIZE];
@@ -99,6 +100,7 @@ struct BBConnection {
         connectedAt(0),
         pendingIdentify(false),
         identifyStartTime(0),
+        lateIdentifySecondary(false),
         rxIndex(0),
         rxTimestamp(0),
         rxDiscard(false),
@@ -119,6 +121,7 @@ struct BBConnection {
         connectedAt = 0;
         pendingIdentify = false;
         identifyStartTime = 0;
+        lateIdentifySecondary = false;
         rxIndex = 0;
         rxTimestamp = 0;
         rxDiscard = false;
