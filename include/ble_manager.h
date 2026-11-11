@@ -23,6 +23,7 @@
 #endif
 
 #include "config.h"
+#include "platform.h"
 #include "types.h"
 
 // =============================================================================
@@ -129,6 +130,22 @@ struct BBConnection {
         pendingDataLength = false;
         linkRetryAt = 0;
         memset(rxBuffer, 0, sizeof(rxBuffer));
+    }
+
+    // Clear pendingIdentify and set type as one unit. update()'s IDENTIFY
+    // timeout (loop) and deliverMessage() (BLE callback) race to classify the
+    // link: only the side that gets true goes on to fire the connect callback,
+    // and the loser sees the winner's type (so a late IDENTIFY:SECONDARY after
+    // the timeout reaches the reclassify path).
+    bool claimPendingIdentify(ConnectionType classifiedAs) {
+        PLATFORM_CRITICAL_ENTER();
+        const bool claimed = pendingIdentify;
+        if (claimed) {
+            pendingIdentify = false;
+            type = classifiedAs;
+        }
+        PLATFORM_CRITICAL_EXIT();
+        return claimed;
     }
 };
 

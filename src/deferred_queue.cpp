@@ -23,6 +23,12 @@ DeferredQueue::DeferredQueue()
 }
 
 bool DeferredQueue::enqueue(DeferredWorkType type, uint8_t param1, uint8_t param2, uint32_t param3) {
+    // Two producers (loop() and the BLE callback, on different cores on v3):
+    // the full check, slot write and head update must be one unit, or both
+    // claim the same slot and one item is lost.
+    bool queued = false;
+    PLATFORM_CRITICAL_ENTER();
+
     // Calculate next head position
     uint8_t nextHead = static_cast<uint8_t>((_head + 1) % MAX_WORK);
 
@@ -30,23 +36,23 @@ bool DeferredQueue::enqueue(DeferredWorkType type, uint8_t param1, uint8_t param
     platformMemoryBarrier();
 
     // Check if queue is full
-    if (nextHead == _tail) {
-        return false;  // Queue full
+    if (nextHead != _tail) {
+        // Store work item
+        _queue[_head].type = type;
+        _queue[_head].param1 = param1;
+        _queue[_head].param2 = param2;
+        _queue[_head].param3 = param3;
+
+        // Memory barrier to ensure stores complete before head update
+        platformMemoryBarrier();
+
+        // Advance head (makes item visible to consumer)
+        _head = nextHead;
+        queued = true;
     }
 
-    // Store work item
-    _queue[_head].type = type;
-    _queue[_head].param1 = param1;
-    _queue[_head].param2 = param2;
-    _queue[_head].param3 = param3;
-
-    // Memory barrier to ensure stores complete before head update
-    platformMemoryBarrier();
-
-    // Advance head (makes item visible to consumer)
-    _head = nextHead;
-
-    return true;
+    PLATFORM_CRITICAL_EXIT();
+    return queued;
 }
 
 bool DeferredQueue::processOne() {

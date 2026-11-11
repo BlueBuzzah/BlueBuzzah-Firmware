@@ -295,7 +295,8 @@ bool SyncCommand::deserialize(const char* message) {
     }
 
     // Parse sequence ID (first pipe-delimited token)
-    char* token = strtok(params, "|");
+    char* save = nullptr;
+    char* token = strtok_r(params, "|", &save);
     if (!token) {
         return false;
     }
@@ -308,7 +309,7 @@ bool SyncCommand::deserialize(const char* message) {
     }
 
     // Parse timestamp (second pipe-delimited token)
-    token = strtok(nullptr, "|");
+    token = strtok_r(nullptr, "|", &save);
     if (!token) {
         return false;
     }
@@ -322,12 +323,12 @@ bool SyncCommand::deserialize(const char* message) {
     // Parse remaining pipe-delimited data parameters
     uint8_t index = 0;
     char indexKey[4];
-    token = strtok(nullptr, "|");
+    token = strtok_r(nullptr, "|", &save);
     while (token && _dataCount < SYNC_MAX_DATA_PAIRS) {
         snprintf(indexKey, sizeof(indexKey), "%d", index);
         setData(indexKey, token);
         index++;
-        token = strtok(nullptr, "|");
+        token = strtok_r(nullptr, "|", &save);
     }
 
     return true;
@@ -354,7 +355,8 @@ bool SyncCommand::parseData(const char* dataStr) {
     buffer[sizeof(buffer) - 1] = '\0';
 
     // Parse pipe-delimited positional values
-    char* token = strtok(buffer, "|");
+    char* save = nullptr;
+    char* token = strtok_r(buffer, "|", &save);
     uint8_t index = 0;
     char indexKey[4];
 
@@ -362,7 +364,7 @@ bool SyncCommand::parseData(const char* dataStr) {
         snprintf(indexKey, sizeof(indexKey), "%d", index);
         setData(indexKey, token);
         index++;
-        token = strtok(nullptr, "|");
+        token = strtok_r(nullptr, "|", &save);
     }
 
     return true;

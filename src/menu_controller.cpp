@@ -277,7 +277,8 @@ bool MenuController::parseCommand(const char* message, char* command, char param
 
     // Split on colon
     paramCount = 0;
-    char* token = strtok(p, ":");
+    char* save = nullptr;
+    char* token = strtok_r(p, ":", &save);
 
     if (!token) {
         return false;
@@ -293,7 +294,7 @@ bool MenuController::parseCommand(const char* message, char* command, char param
     }
 
     // Remaining tokens are parameters
-    while ((token = strtok(nullptr, ":")) != nullptr && paramCount < MAX_COMMAND_PARAMS) {
+    while ((token = strtok_r(nullptr, ":", &save)) != nullptr && paramCount < MAX_COMMAND_PARAMS) {
         strncpy(params[paramCount], token, PARAM_BUFFER_SIZE - 1);
         params[paramCount][PARAM_BUFFER_SIZE - 1] = '\0';
         paramCount++;

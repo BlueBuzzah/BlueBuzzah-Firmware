@@ -3542,12 +3542,13 @@ void sendPing()
 void onTxStamped(TxStampKind kind, uint32_t seqId, uint64_t txTimeUs)
 {
     // Runs in main-loop context (processTxQueue via ble.update()), FreeRTOS
-    // loop task (prio 1). The PONG handler runs in the higher-priority BLE
-    // task (prio 3) and can preempt this code mid-update. pingT1 and pingSeq
+    // loop task (prio 1). The PONG handler runs in the BLE callback (on v2,
+    // Bluefruit's Callback task, prio 2; on v3, the NimBLE host task) and can
+    // preempt this code mid-update. pingT1 and pingSeq
     // must be published as ONE unit: a split update would let the reader pair
     // a stale PONG (matching the old pingSeq) with the freshly written T1.
     // A single critical section masks the PendSV context switch (PRIMASK), so
-    // the BLE task cannot observe the triple half-updated. Per-store atomicity
+    // the BLE callback cannot observe the triple half-updated. Per-store atomicity
     // (atomicWrite64) is insufficient here — the invariant spans variables.
     if (kind == TxStampKind::PING_T1)
     {
@@ -3701,11 +3702,10 @@ void onStateChange(const StateTransition &transition)
         {
             therapy.stop(SessionEndReason::CONNECTION_LOST);
         }
-        // Always call emergencyStop - motors can be active without therapy running
-        // (e.g., from deferred queue connect/disconnect pulses)
-        // Note: safeMotorShutdown() will also run from loop() via safety shutdown semaphore
-        // but this provides immediate belt-and-suspenders safety
-        haptic.emergencyStop();
+        // No motor stop here: this can run on the BLE callback (onBLEDisconnect),
+        // where I2C isn't allowed. onBLEDisconnect gives safetyShutdownSema and
+        // handleKeepaliveTimeout calls safeMotorShutdown() first, so loop() stops
+        // the motors either way.
         break;
 
     default:

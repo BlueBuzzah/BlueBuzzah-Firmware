@@ -40,9 +40,9 @@ enum class DeferredWorkType : uint8_t {
  *   // In main loop:
  *   deferredQueue.processOne();  // Executes one item per loop iteration
  *
- * CONSTRAINT: single-producer / single-consumer. The lock-free ring buffer
- * is only safe with ONE producing context (the BLE callback task) and ONE
- * consuming context (the main loop). Do not enqueue from any other task.
+ * Multi-producer / single-consumer. enqueue() runs inside a critical section,
+ * so the BLE callback and the main loop can both produce. Only the main loop
+ * consumes (processOne(), clear()).
  */
 class DeferredQueue {
 public:
@@ -56,7 +56,7 @@ public:
      * @param param3 Third parameter (work-type specific)
      * @return true if enqueued successfully, false if queue full
      *
-     * ISR-safe: Uses lock-free ring buffer
+     * ISR-safe: claims the slot inside a critical section
      */
     bool enqueue(DeferredWorkType type, uint8_t param1 = 0, uint8_t param2 = 0, uint32_t param3 = 0);
 

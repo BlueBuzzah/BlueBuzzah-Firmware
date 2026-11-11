@@ -300,11 +300,9 @@ void BLEManager::update() {
         BBConnection* conn = &_connections[i];
         if (conn->isConnected && conn->pendingIdentify) {
             // Check if timeout elapsed
-            if (timeoutNow - conn->identifyStartTime >= IDENTIFY_TIMEOUT_MS) {
+            if (timeoutNow - conn->identifyStartTime >= IDENTIFY_TIMEOUT_MS && conn->claimPendingIdentify(ConnectionType::PHONE)) {
                 // No IDENTIFY message received - classify as PHONE
                 Serial.println(F("[BLE] IDENTIFY timeout - classifying as PHONE"));
-                conn->type = ConnectionType::PHONE;
-                conn->pendingIdentify = false;
 
                 // Query and log connection interval
                 queryConnectionInterval(conn->connHandle);
@@ -1116,20 +1114,16 @@ void BLEManager::processIncomingData(uint16_t connHandleParam, const uint8_t* da
 void BLEManager::deliverMessage(BBConnection* conn, uint16_t connHandleParam) {
     // Check for IDENTIFY messages (handshake protocol)
     if (conn->pendingIdentify) {
-        if (strcmp(conn->rxBuffer, "IDENTIFY:SECONDARY") == 0) {
+        if (strcmp(conn->rxBuffer, "IDENTIFY:SECONDARY") == 0 && conn->claimPendingIdentify(ConnectionType::SECONDARY)) {
             Serial.println(F("[BLE] Received IDENTIFY:SECONDARY"));
-            conn->type = ConnectionType::SECONDARY;
-            conn->pendingIdentify = false;
             queryConnectionInterval(connHandleParam);
             updateAdvertisingInterval();
             if (_connectCallback) {
                 _connectCallback(connHandleParam, ConnectionType::SECONDARY);
             }
             return;
-        } else if (strcmp(conn->rxBuffer, "IDENTIFY:PHONE") == 0) {
+        } else if (strcmp(conn->rxBuffer, "IDENTIFY:PHONE") == 0 && conn->claimPendingIdentify(ConnectionType::PHONE)) {
             Serial.println(F("[BLE] Received IDENTIFY:PHONE"));
-            conn->type = ConnectionType::PHONE;
-            conn->pendingIdentify = false;
             queryConnectionInterval(connHandleParam);
             requestLinkConnParams(connHandleParam, ConnectionType::PHONE);
             if (_connectCallback) {
