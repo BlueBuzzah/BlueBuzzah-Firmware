@@ -30,11 +30,11 @@ enum class DeferredWorkType : uint8_t {
  * @class DeferredQueue
  * @brief ISR-safe queue for deferring work to main loop
  *
- * BLE callbacks run in SoftDevice context where blocking operations
- * (I2C, delays) aren't allowed. This queue allows safe deferral.
+ * BLE callbacks (Bluefruit's Callback task on v2, the NimBLE host task on v3)
+ * must not block (I2C, delays). This queue allows safe deferral.
  *
  * Usage:
- *   // In BLE callback (ISR context):
+ *   // In a BLE callback:
  *   deferredQueue.enqueue(DeferredWorkType::HAPTIC_PULSE, finger, amplitude, durationMs);
  *
  *   // In main loop:

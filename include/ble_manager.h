@@ -140,7 +140,7 @@ struct BBConnection {
     // link: only the side that gets true goes on to fire the connect callback,
     // and the loser sees the winner's type (so a late IDENTIFY:SECONDARY after
     // the timeout reaches the reclassify path).
-    bool claimPendingIdentify(ConnectionType classifiedAs) {
+    [[nodiscard]] bool claimPendingIdentify(ConnectionType classifiedAs) {
         PLATFORM_CRITICAL_ENTER();
         const bool claimed = pendingIdentify;
         if (claimed) {

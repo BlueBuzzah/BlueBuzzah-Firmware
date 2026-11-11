@@ -1421,7 +1421,8 @@ void onStateChange(const StateTransition &transition)
         haptic.emergencyStop();
         therapy.stop(SessionEndReason::BATTERY);
         break;
-    // ... motor stops for ERROR and CONNECTION_LOST
+    // ... motor stop for ERROR; CONNECTION_LOST leaves the stop to loop()
+    // (safetyShutdownSema / safeMotorShutdown), since it can run on the BLE callback
     }
 }
 
