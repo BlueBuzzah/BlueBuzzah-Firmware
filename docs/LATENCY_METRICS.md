@@ -98,7 +98,7 @@ drift = actualExecutionTime - scheduledExecutionTime
 
 ### Sync Quality (RTT Probing)
 
-**Not populated by current firmware.** `LatencyMetrics::recordSyncProbe()` and `finalizeSyncProbing()` exist, but nothing calls them: clock sync uses the unified PING/PONG exchange (see [Configuration Constants](#configuration-constants)), not a separate probing phase. The report always prints `(no sync probing data)` here. Use the `GET_SYNC_STATS` serial command for clock sync status (offset, drift, RTT, adaptive lead time).
+**Not populated by current firmware.** `LatencyMetrics::recordSyncProbe()` and `finalizeSyncProbing()` exist, but nothing calls them: clock sync uses the unified PING/PONG exchange (see [Configuration Constants](#configuration-constants)), not a separate probing phase. The report always prints `(no sync probing data)` here. Use the `GET_SYNC_STATS` serial command for clock sync status (offset, RTT, adaptive lead time).
 
 The fields below describe what the section would show if probes were recorded.
 

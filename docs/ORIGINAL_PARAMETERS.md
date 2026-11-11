@@ -485,7 +485,7 @@ This section maps original V1 CircuitPython concepts to V2 C++ implementation.
 |--------|----|----|
 | Clock sync method | Single timestamp + fixed 21ms offset | IEEE 1588 PTP 4-timestamp |
 | Sync accuracy | ~20-50ms estimated | <2ms measured |
-| Drift compensation | None | EMA smoothing + drift rate tracking |
+| Drift compensation | None | Continuous offset EMA |
 | Sync frequency | Per-macrocycle | Continuous PING/PONG (1s idle, 250ms during therapy, 70ms until sync converges) |
 | Warm-start recovery | None | 15s cache validity |
 

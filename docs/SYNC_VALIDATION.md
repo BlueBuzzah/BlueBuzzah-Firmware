@@ -229,9 +229,6 @@ standard deviation, the mean and P95 of the gap's size, and the worst case.
   consecutive buzzes of any finger. The default suits the 250 Hz preset
   profiles. If one buzz comes out as several pairs, raise it.
 
-Don't use the asymmetry figures in `GET_SYNC_STATS` to check these results:
-they measure twice the clock offset.
-
 ## Acceptance gates
 
 Measured on the firmware trigger offset, on either hardware version. "Avg
@@ -258,7 +255,7 @@ Run an 8-hour session at about 2 m separation. Check:
 - No sync resets: `[SYNC] Clock sync reset` never appears.
 - No keepalive timeouts.
 - No late-event spikes in latencyMetrics.
-- Skew stays stable from start to end, showing drift compensation works.
+- Skew stays stable from start to end, showing the offset EMA tracks drift.
 
 ## Record results
 

@@ -202,9 +202,8 @@ T1 (PING sent) and T3 (PONG sent) are stamped at **BLE-stack handoff** (SoftDevi
 
 - **Initial sync:** Acquire-rate PINGs (70ms) accumulate samples, median offset selected
 - **Minimum valid:** At least 5 good samples required (~350ms after connect: PINGs run every 70ms, `SYNC_ACQUIRE_INTERVAL_MS`, until sync is valid)
-- **Drift compensation:** Ongoing sync at 4Hz during therapy / 1Hz idle corrects for crystal drift
+- **Continuous maintenance:** Ongoing sync at 4Hz during therapy / 1Hz idle keeps the offset current; the offset EMA follows crystal drift between the gloves
 - **Smoothing:** Exponential moving average prevents sudden jumps
-- **Drift rate capping:** Dual caps for safety (see below)
 
 #### Maintenance Sample Quality Gates
 
@@ -215,10 +214,6 @@ Three gates are applied in order before a maintenance sample updates the EMA:
 2. **Lucky-packet gate (decaying minimum RTT):** A tracked per-session minimum RTT (`minRTT`) is maintained and decays upward by `SYNC_MIN_RTT_DECAY_US` (200µs) per sample to allow gradual adaptation. Only exchanges with `RTT <= minRTT + SYNC_LUCKY_RTT_MARGIN_US` (10ms) are accepted. This gate selects low-jitter "lucky" packets whose round-trip approximates the true one-way propagation time, providing better offset estimates.
 
 3. **Innovation gate with hard re-anchor on persistence:** If a candidate offset deviates from the current EMA by more than `SYNC_INNOVATION_GATE_US` (5ms) it is initially rejected. After `SYNC_INNOVATION_REJECT_LIMIT` (5) such rejections with no accepted sample in between, the next deviating sample is treated as a true step change (e.g., from a long disconnect or oscillator retrim) and **hard re-anchors** the offset to the new value rather than blending it in via EMA. This prevents the EMA from chasing transient noise while still tracking genuine clock jumps.
-
-#### Dedicated Drift-Measurement Anchor
-
-Drift rate is measured over wall-time windows of at least `SYNC_MIN_DRIFT_INTERVAL_MS` (500ms) using a dedicated anchor pair (`_driftAnchorOffset` / `_driftAnchorTime`). This is separate from the EMA update path, so the 4Hz sync cadence during therapy does not stall drift estimation by providing too-short intervals.
 
 ### Outlier Rejection
 
@@ -231,29 +226,6 @@ The clock sync algorithm uses MAD (Median Absolute Deviation) to filter outliers
 
 This improves robustness against BLE retransmissions and RF interference that cause anomalous RTT measurements.
 
-### Drift Rate Caps (Dual)
-
-The protocol uses **two separate drift rate caps** for safety:
-
-| Cap | Value | Application | Purpose |
-|-----|-------|-------------|---------|
-| Measurement cap | ±150 ppm (0.15 µs/ms) | `updateOffsetEMA()` (before drift EMA smoothing) | Clamp implausible measurements |
-| Applied cap | ±100 ppm (0.10 µs/ms) | `getCorrectedOffset()`, `getProjectedOffset()` | Conservative correction limit |
-
-**Why two caps?**
-
-1. **Measurement cap (150 ppm):** Clamps measurements that exceed typical crystal drift (±20-50 ppm) before they enter the drift EMA. A measurement of 150 ppm indicates BLE anomalies, not actual clock drift.
-
-2. **Applied cap (100 ppm):** More conservative limit for actual corrections. Even if measured drift is valid, applying too large a correction can cause over-compensation and oscillation.
-
-```cpp
-// From config.h:
-#define SYNC_MAX_DRIFT_RATE_US_PER_MS 0.15f       // Measurement cap (150 ppm)
-#define SYNC_MAX_APPLIED_DRIFT_RATE_US_PER_MS 0.1f  // Applied cap (100 ppm)
-```
-
-Typical nRF52840 crystal drift is ±20-50 ppm. The 100 ppm applied cap provides ~2× headroom while preventing runaway drift compensation.
-
 ### Warm-Start Sync (Quick Reconnection)
 
 Brief BLE disconnections (interference, range limits) can recover quickly using cached sync state:
@@ -261,16 +233,16 @@ Brief BLE disconnections (interference, range limits) can recover quickly using 
 | Scenario | Samples Required | Recovery Time |
 |----------|------------------|---------------|
 | Cold start (first connect) | 5 | ~350ms |
-| Warm start (reconnect <15s after the last cached sample) | 3 confirmatory | ~210ms (macrocycles carry the projected offset once the first confirmatory sample agrees) |
+| Warm start (reconnect <15s after the last cached sample) | 3 confirmatory | ~210ms (macrocycles carry the cached offset once the first confirmatory sample agrees) |
 | Long disconnect (cache older than 15s) | 5 | ~350ms |
 
 **Warm-start process:**
-1. On valid sync, cache current offset + drift rate with a timestamp (updated by every accepted sample)
+1. On valid sync, cache the current offset with a timestamp (updated by every accepted sample)
 2. On disconnect, the cache is preserved
 3. On reconnect within 15 seconds of the cache timestamp:
-   - Project cached offset forward using drift rate
+   - Seed the offset with the cached value
    - Enter warm-start mode
-   - Require 3 confirmatory samples within 5ms of projection
+   - Require 3 confirmatory samples within 5ms of the cached offset
 4. If a single sample diverges >5ms, abort to cold start (safety fallback)
 
 This shortens re-sync after brief BLE interference events from ~350ms (cold start) to ~210ms.
@@ -524,7 +496,7 @@ The protocol uses a single unified mechanism for both keepalive and clock synchr
 - **Continuous sync:** Clock offset is maintained throughout all states
 - **No separate keepalive:** PING/PONG serves both purposes efficiently
 
-This unified approach provides continuous clock synchronization throughout all session states. The increased 4Hz cadence during therapy reduces the maximum interval between offset updates from 1s to 250ms, improving drift-compensation responsiveness.
+This unified approach provides continuous clock synchronization throughout all session states. The increased 4Hz cadence during therapy reduces the maximum interval between offset updates from 1s to 250ms, so the offset EMA follows crystal drift more closely.
 
 ### Therapy Messages
 
@@ -584,7 +556,7 @@ None are sent. `PARAM_UPDATE`, `SEED`, `SEED_ACK` and `ACK_PARAM_UPDATE` survive
 | `DEBUG_SYNC` | P → S | 0 or 1 (mirrors `DEBUG`) | `DEBUG_SYNC:1` |
 | `CALIB_BUZZ` | P → S | finger, intensity, duration (relayed `CALIBRATE_BUZZ`) | `CALIB_BUZZ:1:80:500` |
 | `CALIB_STOP` | P → S | (none) | `CALIB_STOP` |
-| `DEBUG_FLASH` | P → S | seq, timestamp, flash time (sent at each macrocycle start, debug mode only) | `DEBUG_FLASH:7\|5000000\|5070000` |
+| `DEBUG_FLASH` | P → S | seq, timestamp, flash time on the SECONDARY's clock (the PRIMARY adds its clock offset; sent at each macrocycle start, debug mode only) | `DEBUG_FLASH:7\|5000000\|5070000` |
 
 These are plain colon-delimited strings, except `DEBUG_FLASH`, which is a `SyncCommand` frame.
 
@@ -601,9 +573,6 @@ The protocol includes several safety mechanisms to prevent incorrect synchroniza
 | New macrocycle | Any | Replaces queued activations on both gloves. Pending turn-offs still run, so a motor that is on is never left on |
 | Critical battery | SECONDARY in `CRITICAL_BATTERY` | SECONDARY acknowledges each macrocycle but plays nothing until the PRIMARY ends the session |
 | Hardware fault | SECONDARY in `ERROR` (sent `GLOVE_ERROR`) | SECONDARY acknowledges each macrocycle but plays nothing. The PRIMARY refuses starts while linked to it (`Secondary glove error`, flag cleared on every SECONDARY connect) and ends a running session (not a bench `TEST`) with reason `ERROR` |
-| Drift rate (measured) | ±150 ppm | Cap measured drift for plausibility |
-| Drift rate (applied) | ±100 ppm | Cap corrections to prevent oscillation |
-| Elapsed time | 10 seconds max | Cap EMA time delta to prevent overflow |
 | RTT quality | 60ms | Reject samples affected by retransmissions |
 
 These validations ensure that BLE interference or momentary disconnects don't cause the sync system to make large erroneous corrections.
@@ -744,15 +713,12 @@ Sync state variables are accessed from both main loop and BLE callbacks. Key con
 | Send lead (`SYNC_MAX_LEAD_TIME_US + MACROCYCLE_PREPARE_MARGIN_US`) | 300ms | Every macrocycle, the first included, goes out at its prepare point this far before its first onset |
 | Processing overhead (`SYNC_PROCESSING_OVERHEAD_US`) | 10ms | SECONDARY processing time allowance |
 | Generation overhead (`SYNC_GENERATION_OVERHEAD_US`) | 5ms | PRIMARY macrocycle generation + serialization |
-| Max drift rate (measurement) (`SYNC_MAX_DRIFT_RATE_US_PER_MS`) | ±150 ppm | Measurement cap for plausibility |
-| Max drift rate (applied) (`SYNC_MAX_APPLIED_DRIFT_RATE_US_PER_MS`) | ±100 ppm | Conservative correction limit |
 | Warm-start validity (`SYNC_WARM_START_VALIDITY_MS`) | 15s | Cache valid for this long after its last update |
 | BLE connection interval (glove link) | 7.5-10ms | Low-latency communication (6-8 BLE units); phone link requests 30-50ms |
 | Lucky-packet RTT margin (`SYNC_LUCKY_RTT_MARGIN_US`) | 10ms | Accept only RTT ≤ minRTT + 10ms |
 | Minimum RTT decay (`SYNC_MIN_RTT_DECAY_US`) | 200µs/sample | Per-sample upward creep of tracked minRTT |
 | Innovation gate (`SYNC_INNOVATION_GATE_US`) | 5ms | Reject offset jumps larger than this threshold |
 | Innovation reject limit (`SYNC_INNOVATION_REJECT_LIMIT`) | 5 samples | Persistent deviation triggers hard re-anchor |
-| Min drift measurement interval (`SYNC_MIN_DRIFT_INTERVAL_MS`) | 500ms | Minimum window for drift rate estimation |
 | Anchor ring size (`SYNC_ANCHOR_RING_SIZE`) [experimental] | 16 slots | Radio-notification timestamps retained |
 | Anchor RX window (`SYNC_ANCHOR_RX_WINDOW_US`) [experimental] | 15ms | Max age of rx anchor vs rx callback |
 | Anchor TX window (`SYNC_ANCHOR_TX_WINDOW_US`) [experimental] | 25ms | Max lookahead from PING handoff to tx anchor |

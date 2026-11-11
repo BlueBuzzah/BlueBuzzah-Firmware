@@ -351,7 +351,7 @@ sequenceDiagram
 
     Note over P,S: SCENARIO: Brief BLE disconnect (<15s)
 
-    Note over P: Sync cache (refreshed on every accepted sample):<br/>• Last clock offset<br/>• Last drift rate<br/>• Cached timestamp
+    Note over P: Sync cache (refreshed on every accepted sample):<br/>• Last clock offset<br/>• Cached timestamp
     P->>P: Connection lost
     S->>S: Connection lost
     Note over S: Wait for reconnection
@@ -392,7 +392,6 @@ sequenceDiagram
 // include/sync_protocol.h
 struct WarmStartCache {
     int64_t cachedOffset;        // Last known median offset
-    float cachedDriftRate;       // Last known drift rate (us/ms)
     uint32_t cacheTimestamp;     // syncNowMs() epoch (getMicros()/1000) when cached
     bool isValid;                // Cache contains usable data
 };

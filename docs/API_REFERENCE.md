@@ -1286,8 +1286,7 @@ public:
 
     bool isClockSyncValid() const;          // SYNC_MIN_VALID_SAMPLES accepted, or warm start confirmed
     int64_t getMedianOffset() const;
-    int64_t getCorrectedOffset() const;     // median offset + drift correction
-    float getDriftRate() const;
+    int64_t getCorrectedOffset() const;     // filtered offset (median, then offset EMA)
     uint32_t getAverageRTT() const;
     uint32_t calculateAdaptiveLeadTime() const;  // RTT + 3σ + overheads, clamped
     uint64_t primaryToLocalTime(uint64_t primaryTime) const;

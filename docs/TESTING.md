@@ -162,7 +162,7 @@ Open `coverage/index.html` in a browser for visual coverage.
 
 | Module | Test Suite | Key Tests |
 |--------|------------|-----------|
-| `sync_protocol.cpp` | `test_sync_protocol` | PTP offset calculation, drift tracking, warm-start recovery |
+| `sync_protocol.cpp` | `test_sync_protocol` | PTP offset calculation, offset EMA, warm-start recovery |
 | `therapy_engine.cpp` | `test_therapy_engine` | Pattern generation, callback invocation, session timing |
 | `state_machine.cpp` | `test_state_machine` | FSM transitions, state validation |
 | `menu_controller.cpp` (via `TestMenuController` mirror) | `test_menu_controller` | Command parsing, response formatting |
@@ -176,7 +176,7 @@ Open `coverage/index.html` in a browser for visual coverage.
 ### Tested Functionality
 
 - ✓ IEEE 1588 PTP clock offset calculation
-- ✓ Drift rate tracking and compensation
+- ✓ Offset EMA maintenance
 - ✓ Warm-start sync recovery logic
 - ✓ Therapy state machine transitions
 - ✓ Pattern generation (random permutation, sequential)
