@@ -850,21 +850,26 @@ void test_settings_roundtrip_with_storage(void) {
     TEST_ASSERT_EQUAL(DeviceRole::SECONDARY, pm2.getDeviceRole());
 }
 
-void test_loadSettings_rejects_out_of_range_fields(void) {
-    // Hand-craft a settings block holding values that predate the current bounds.
+void test_loadSettings_preset_ignores_saved_parameters(void) {
+    // settings.bin from a firmware whose Noisy defaults differed: every
+    // parameter is in range but none matches the current built-in.
     SettingsData data{};
     data.magic              = SETTINGS_MAGIC;
     data.version            = SETTINGS_VERSION;
-    data.profileId          = 1;
-    data.timeOnMs           = 900.0f;   // above PARAM_MAX_TIME_ON_MS
-    data.timeOffMs          = 67.0f;    // valid
-    data.jitterPercent      = 95.0f;    // above PARAM_MAX_JITTER_PCT
-    data.amplitudeMin       = 5;        // below PARAM_MIN_AMPLITUDE_PCT
-    data.amplitudeMax       = 100;
-    data.sessionDurationMin = 120;
-    data.numFingers         = MAX_ACTUATORS;
-    data.frequencyHz        = 400;      // above PARAM_MAX_FREQUENCY_HZ
-    strncpy(data.patternType, "rndp", sizeof(data.patternType) - 1);
+    data.role               = 1;  // SECONDARY
+    data.profileId          = 2;  // Noisy vCR
+    data.actuatorType       = 1;  // ERM
+    data.timeOnMs           = 150.0f;
+    data.timeOffMs          = 120.0f;
+    data.jitterPercent      = 10.0f;
+    data.amplitudeMin       = 60;
+    data.amplitudeMax       = 80;
+    data.sessionDurationMin = 60;
+    data.numFingers         = 2;
+    data.frequencyHz        = 200;
+    data.mirrorPattern      = 0;
+    data.therapyLedOff      = 1;
+    strncpy(data.patternType, "seq", sizeof(data.patternType) - 1);
 
     fsb::writeFile(SETTINGS_FILE,
                    reinterpret_cast<const uint8_t*>(&data), sizeof(data));
@@ -872,14 +877,24 @@ void test_loadSettings_rejects_out_of_range_fields(void) {
     ProfileManager* p = new ProfileManager();
     p->begin(true);  // Load from storage
 
-    // Out-of-range fields must fall back to the built-in profile's values.
+    // Role, profile and flags come from settings.bin...
+    TEST_ASSERT_EQUAL_UINT8(2, p->getCurrentProfileId());
+    TEST_ASSERT_EQUAL(DeviceRole::SECONDARY, p->getDeviceRole());
+    TEST_ASSERT_TRUE(p->getTherapyLedOff());
+
+    // ...parameters come from the built-in Noisy profile only.
     const TherapyProfile* profile = p->getCurrentProfile();
+    TEST_ASSERT_EQUAL(ActuatorType::LRA, profile->actuatorType);
     TEST_ASSERT_EQUAL_FLOAT(100.0f, profile->timeOnMs);
-    TEST_ASSERT_EQUAL_FLOAT(0.0f,   profile->jitterPercent);
-    TEST_ASSERT_EQUAL_UINT8(100,    profile->amplitudeMin);
-    TEST_ASSERT_EQUAL_UINT16(250,   profile->frequencyHz);
-    // In-range fields are honoured.
     TEST_ASSERT_EQUAL_FLOAT(67.0f,  profile->timeOffMs);
+    TEST_ASSERT_EQUAL_FLOAT(23.5f,  profile->jitterPercent);
+    TEST_ASSERT_EQUAL_UINT8(100,    profile->amplitudeMin);
+    TEST_ASSERT_EQUAL_UINT8(100,    profile->amplitudeMax);
+    TEST_ASSERT_EQUAL_UINT16(120,   profile->sessionDurationMin);
+    TEST_ASSERT_EQUAL_UINT8(MAX_ACTUATORS, profile->numFingers);
+    TEST_ASSERT_EQUAL_UINT16(250,   profile->frequencyHz);
+    TEST_ASSERT_TRUE(profile->mirrorPattern);
+    TEST_ASSERT_EQUAL_STRING("rndp", profile->patternType);
     delete p;
 }
 
@@ -1084,7 +1099,7 @@ int main(int argc, char **argv) {
     // Storage Tests
     RUN_TEST(test_isStorageAvailable_false_when_mount_fails);
     RUN_TEST(test_settings_roundtrip_with_storage);
-    RUN_TEST(test_loadSettings_rejects_out_of_range_fields);
+    RUN_TEST(test_loadSettings_preset_ignores_saved_parameters);
     RUN_TEST(test_loadSettings_custom_ignores_stale_settings_parameters);
     RUN_TEST(test_loadSettings_custom_override_wins_over_settings);
     RUN_TEST(test_saveSettings_returns_false_without_storage);
