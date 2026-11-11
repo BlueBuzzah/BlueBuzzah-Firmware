@@ -1034,7 +1034,7 @@ int64_t SimpleSyncProtocol::getCorrectedOffset() const {
     // far better estimate than 0 for macrocycles sent while it is being
     // confirmed. Not before: if the SECONDARY rebooted inside the warm-start
     // window, the cached offset is off by its whole previous uptime.
-    if (!_clockSyncValid && !(_warmStartMode && _warmStartConfirmed > 0)) {
+    if (!hasUsableOffset()) {
         return 0;
     }
 

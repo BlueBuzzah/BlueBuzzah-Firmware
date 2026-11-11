@@ -677,6 +677,14 @@ public:
     int64_t getCorrectedOffset() const;
 
     /**
+     * @brief True when getCorrectedOffset() is a real estimate (sync valid,
+     *        or a warm-start offset a fresh sample has confirmed), not 0
+     */
+    bool hasUsableOffset() const {
+        return _clockSyncValid || (_warmStartMode && _warmStartConfirmed > 0);
+    }
+
+    /**
      * @brief Get average RTT in microseconds
      */
     uint32_t getAverageRTT() const { return _smoothedLatencyUs * 2; }

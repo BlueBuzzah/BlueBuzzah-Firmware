@@ -101,7 +101,7 @@ MacrocycleAckStash g_ackStash = {};
 // ACK never clears a newer macrocycle's events
 uint32_t g_lastSentMacrocycleSeq = 0;
 uint64_t g_lastSentMacrocycleBaseUs = 0;
-uint8_t g_consecutiveRejections = 0;
+uint8_t g_consecutiveRejections = 0;  // rejected, or never sent for lack of clock sync
 
 uint32_t lastKeepalive = 0;        // Time of last keepalive PING sent (PRIMARY)
 uint32_t lastStatusPrint = 0;
@@ -939,21 +939,11 @@ void loop()
             }
         }
 
-        // Nothing but rejections means no stimulation: end the session rather
-        // than let it count silent time. Refusals end through the battery and
-        // fault paths instead
+        // Refusals don't count: they end through the battery and fault paths
         if (ack.status == MacrocycleAckStatus::SCHEDULED) {
             g_consecutiveRejections = 0;
-        } else if (rejected && therapy.isRunning() &&
-                   ++g_consecutiveRejections >= MACROCYCLE_REJECT_LIMIT) {
-            g_consecutiveRejections = 0;
-            Serial.printf("[ERROR] SECONDARY rejected %u macrocycles in a row - stopping therapy\n",
-                          MACROCYCLE_REJECT_LIMIT);
-            if (therapy.isTestMode()) {
-                stopTherapyTest();
-            } else {
-                stopSessionFromPrimary(SessionEndReason::ERROR);
-            }
+        } else if (rejected && g_consecutiveRejections < UINT8_MAX) {
+            g_consecutiveRejections++;
         }
 
         if (ack.status == MacrocycleAckStatus::SCHEDULED &&
@@ -965,6 +955,20 @@ void loop()
             Serial.printf("[MACROCYCLE] ACK seq=%lu status=%u margin=%ldms\n",
                           static_cast<unsigned long>(ack.seq), static_cast<unsigned>(ack.status),
                           static_cast<long>(ack.marginMs));
+        }
+    }
+
+    // Nothing but skipped macrocycles (rejected, or never sent for lack of
+    // clock sync) means no stimulation: end the session rather than let it
+    // count silent time
+    if (g_consecutiveRejections >= MACROCYCLE_REJECT_LIMIT && therapy.isRunning()) {
+        g_consecutiveRejections = 0;
+        Serial.printf("[ERROR] %u macrocycles in a row skipped - stopping therapy\n",
+                      MACROCYCLE_REJECT_LIMIT);
+        if (therapy.isTestMode()) {
+            stopTherapyTest();
+        } else {
+            stopSessionFromPrimary(SessionEndReason::ERROR);
         }
     }
 
@@ -2877,6 +2881,20 @@ void onSendMacrocycle(const Macrocycle& macrocycle)
         return;
     }
 
+    // No clock offset to send (sync not converged yet): the SECONDARY would
+    // play at an arbitrary time, so neither glove plays this one
+    if (!syncProtocol.hasUsableOffset())
+    {
+        g_skipLocalMacrocycle = true;
+        if (g_consecutiveRejections < UINT8_MAX)
+        {
+            g_consecutiveRejections++;
+        }
+        Serial.printf("[MACROCYCLE] No clock sync - skipping seq=%lu on both gloves\n",
+                      (unsigned long)macrocycle.sequenceId);
+        return;
+    }
+
     // A new macrocycle replaces queued activations; pending turn-offs still
     // run, so a motor that is on is never stranded (PRIMARY will enqueue via callbacks)
     activationQueue.clearActivations();
@@ -3083,7 +3101,7 @@ void startTherapyTest()
     if (deviceRole == DeviceRole::PRIMARY && ble.isSecondaryConnected() &&
         !syncProtocol.isClockSyncValid())
     {
-        Serial.println(F("[WARN] Starting test with invalid sync - timing may be misaligned"));
+        Serial.println(F("[WARN] Starting test with invalid sync - motors stay off until it is valid"));
     }
 
     // Get current profile
@@ -3257,8 +3275,9 @@ void autoStartTherapy()
     {
         if (++g_autoStartRetryCount > 10)
         {
-            // Give up waiting for sync after 10 seconds - start anyway (degraded mode)
-            Serial.println(F("[AUTO] Sync not valid after 10s - starting therapy (timing may be degraded)"));
+            // Give up waiting for sync after 10 seconds - start anyway; macrocycles
+            // are skipped until sync is valid
+            Serial.println(F("[AUTO] Sync not valid after 10s - starting therapy (motors stay off until it is valid)"));
             g_autoStartRetryCount = 0;
             // Fall through to start therapy
         }
@@ -3632,7 +3651,7 @@ void resetDevice()
 }
 
 // Gate for a phone SESSION_START while the SECONDARY is connected. Same
-// degraded-mode fallback as autoStartTherapy(): if sync still hasn't
+// fallback as autoStartTherapy(): if sync still hasn't
 // converged SYNC_START_FALLBACK_MS after the glove connected (noisy RF,
 // every PONG over the RTT quality threshold), start anyway rather than
 // refuse until a glove is power-cycled.
@@ -3644,7 +3663,7 @@ bool phoneStartSyncReady()
     }
     if (millis() - g_secondaryConnectedAt >= SYNC_START_FALLBACK_MS)
     {
-        Serial.println(F("[SYNC] Not valid after fallback window - starting phone session (timing may be degraded)"));
+        Serial.println(F("[SYNC] Not valid after fallback window - starting phone session (motors stay off until it is valid)"));
         return true;
     }
     return false;

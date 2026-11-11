@@ -41,7 +41,7 @@ The BlueBuzzah boot sequence (`setup()` in `src/main.cpp`) initializes the LED, 
 - **Time-bounded auto-start**: 30-second phone window (`STARTUP_WINDOW_MS`), started when the SECONDARY connects
 - **Phone optional**: the gloves run therapy on their own
 - **User-friendly**: Clear LED indicators at each stage
-- **Sync-gated start**: with the SECONDARY connected, therapy start waits for clock sync, falling back to a degraded start after ~10 seconds
+- **Sync-gated start**: with the SECONDARY connected, therapy start waits for clock sync, starting anyway after ~10 seconds (motors stay off until sync is valid)
 - **Graceful degradation**: Default therapy if phone not connected
 
 ---
@@ -716,7 +716,7 @@ When the window expires with the SECONDARY connected and no phone, `autoStartThe
 3. **Pattern**: The profile's pattern type, timing, jitter and mirroring
 4. **Glove error gate**: If either glove is in `ERROR` (a boot hardware fault, reported by the SECONDARY with `GLOVE_ERROR`), it doesn't start (`[AUTO] Primary glove error - not starting` or `[AUTO] Secondary glove error - not starting`)
 5. **Battery gate**: If either glove's battery is low (below `BATTERY_LOW_VOLTAGE`), it doesn't start (`[AUTO] Battery too low - not starting`) and auto-start doesn't run again this boot
-6. **Sync gate**: If clock sync isn't valid yet it retries every second; after 10 retries it starts anyway (`[AUTO] Sync not valid after 10s - starting therapy (timing may be degraded)`)
+6. **Sync gate**: If clock sync isn't valid yet it retries every second; after 10 retries it starts anyway (`[AUTO] Sync not valid after 10s - starting therapy (motors stay off until it is valid)`). Both gloves stay silent until sync is valid, and the session ends with reason `ERROR` if 5 macrocycles in a row are skipped
 7. **No User Intervention**: Therapy begins automatically when the 30-second window expires without a phone connection
 
 This "auto-start" behavior allows the system to function as a standalone therapy device without requiring a phone app. Users can simply power on both devices and therapy will begin about 30 seconds after the gloves pair.
@@ -1163,7 +1163,7 @@ The BlueBuzzah boot sequence is a **safety-critical** operation that establishes
 - **No boot timeout** - devices advertise/scan until the pair connects
 - **30-second phone window** after pairing, then auto-start
 - **Clear LED feedback** at every stage
-- **Sync-gated start** - therapy waits for clock sync, with a degraded-mode fallback after ~10 seconds
+- **Sync-gated start** - therapy waits for clock sync, starting anyway after ~10 seconds with motors off until sync is valid
 - **Graceful degradation** - default therapy if phone not connected
 - **Comprehensive error handling** with recovery guidance
 
