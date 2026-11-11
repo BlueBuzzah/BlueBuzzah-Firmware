@@ -91,6 +91,7 @@ typedef bool (*SyncReadyCallback)();
 typedef bool (*BatteryGateCallback)();  // true if both gloves' batteries allow a session
 typedef const char* (*GloveErrorCallback)();  // SESSION_START error when a glove is in ERROR, else nullptr
 typedef BatteryLevel (*BatteryLevelCallback)(bool secondary);  // a glove's level, as the start gate sees it
+typedef const char* (*MotorCheckCallback)(bool secondary);  // a glove's boot motor check tokens, else nullptr
 
 // =============================================================================
 // MENU CONTROLLER CLASS
@@ -205,6 +206,13 @@ public:
     void setBatteryLevelCallback(BatteryLevelCallback callback);
 
     /**
+     * @brief Set callback that reports each glove's boot motor check for
+     *        INFO (MOTP/MOTS). Unset on boards with no boot check, so INFO
+     *        sends neither key there.
+     */
+    void setMotorCheckCallback(MotorCheckCallback callback);
+
+    /**
      * @brief Set SECONDARY battery voltage from ISR/BLE callback context
      * @param voltage Battery voltage from SECONDARY glove
      *
@@ -284,6 +292,7 @@ private:
     BatteryGateCallback _batteryGateCallback;
     GloveErrorCallback _gloveErrorCallback;
     BatteryLevelCallback _batteryLevelCallback;
+    MotorCheckCallback _motorCheckCallback;
 
     // Deferred command tracking for SECONDARY battery query
     enum class DeferredCommand : uint8_t {

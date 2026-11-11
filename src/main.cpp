@@ -87,6 +87,11 @@ volatile BatteryLevel g_secondaryBatteryLevel = BatteryLevel::NORMAL;
 bool g_hardwareFault = false;
 volatile bool g_secondaryFault = false;
 
+// The SECONDARY's boot motor check (PRIMARY, v3), reported as INFO MOTS.
+// Empty until it reports. The BLE task writes it and loop() reads it, both
+// inside a critical section.
+char g_secondaryMotorChecks[MOTOR_CHECKS_BUFFER_SIZE] = "";
+
 // Latest MC_ACK (PRIMARY). The BLE task only stashes it; loop() takes it, acts
 // and prints. Both sides copy the whole struct inside a critical section.
 // ponytail: one slot. A second ACK before loop() runs replaces the first,
@@ -509,6 +514,7 @@ void safeMotorShutdown(SessionEndReason reason = SessionEndReason::STOPPED);
 void stopSessionFromPrimary(SessionEndReason reason);
 bool batteryAllowsSession();
 const char *gloveErrorReply();
+const char *motorCheckReply(bool secondary);
 BatteryLevel batteryLevelOf(bool secondary);
 void reconcileBatteryState();
 void applyLed();
@@ -534,6 +540,7 @@ void waitForRoleConfiguration()
     Serial.println(F("  SET_ROLE:SECONDARY"));
     Serial.println(F("\nDevice will reboot after configuration."));
     Serial.println(F("========================================\n"));
+    Serial.println(F("[READY]"));  // the Updater waits for this before SET_ROLE
 
     // Use slow blink orange pattern for unconfigured state
     led.setPattern(Colors::ORANGE, LEDPattern::BLINK_SLOW);
@@ -640,6 +647,50 @@ const char *gloveErrorReply()
     }
     return nullptr;
 }
+
+// This glove's boot motor check as comma-separated tokens
+static void formatOwnMotorChecks(char *out, size_t len)
+{
+    MotorCheck checks[MAX_ACTUATORS];
+    for (uint8_t f = 0; f < MAX_ACTUATORS; f++)
+    {
+        checks[f] = haptic.getMotorCheck(f);
+    }
+    formatMotorChecks(checks, MAX_ACTUATORS, out, len);
+}
+
+// INFO MOTP (false) / MOTS (true); nullptr until the SECONDARY reports.
+// Runs from loop() only (menu commands are deferred), so the static
+// buffers are never shared between calls in flight.
+const char *motorCheckReply(bool secondary)
+{
+    if (!secondary)
+    {
+        static char own[MOTOR_CHECKS_BUFFER_SIZE];
+        formatOwnMotorChecks(own, sizeof(own));
+        return own;
+    }
+    static char copy[MOTOR_CHECKS_BUFFER_SIZE];
+    {
+        PLATFORM_CRITICAL_ENTER();
+        memcpy(copy, g_secondaryMotorChecks, sizeof(copy));
+        PLATFORM_CRITICAL_EXIT();
+    }
+    return copy[0] != '\0' ? copy : nullptr;
+}
+
+#if defined(BOARD_PENTABUZZER_ESP32S3)
+// SECONDARY -> PRIMARY: this glove's boot motor check, for the app (INFO MOTS).
+// No I2C, so it's safe from the BLE connect callback.
+static void sendMotorStatusToPrimary()
+{
+    char tokens[MOTOR_CHECKS_BUFFER_SIZE];
+    formatOwnMotorChecks(tokens, sizeof(tokens));
+    char message[sizeof("MOTOR_STATUS:") + MOTOR_CHECKS_BUFFER_SIZE];
+    snprintf(message, sizeof(message), "MOTOR_STATUS:%s", tokens);
+    ble.sendToPrimary(message);
+}
+#endif
 
 BatteryLevel batteryLevelOf(bool secondary)
 {
@@ -822,6 +873,9 @@ void setup()
     menu.setBatteryGateCallback(batteryAllowsSession);
     menu.setGloveErrorCallback(gloveErrorReply);
     menu.setBatteryLevelCallback(batteryLevelOf);
+#if defined(BOARD_PENTABUZZER_ESP32S3)
+    menu.setMotorCheckCallback(motorCheckReply);  // v2 runs no boot motor check
+#endif
     Serial.println(F("[SUCCESS] Menu controller initialized"));
 
     // Initialize Deferred Queue (for ISR-safe callback operations)
@@ -873,6 +927,9 @@ void setup()
 
     // Last: setup() legitimately blocks longer than the 5s timeout
     platformEnableLoopWatchdog();
+
+    // The Updater waits for this before sending settings
+    Serial.println(F("[READY]"));
 }
 
 // =============================================================================
@@ -1377,6 +1434,13 @@ void loop()
         {
             ble.sendToPrimary("GLOVE_ERROR");
         }
+#if defined(BOARD_PENTABUZZER_ESP32S3)
+        // Same for the motor check, which is a warning, not a fault
+        if (deviceRole == DeviceRole::SECONDARY && ble.isPrimaryConnected())
+        {
+            sendMotorStatusToPrimary();
+        }
+#endif
         BatteryStatus status = battery.getStatus();
         Serial.printf("[BATTERY] %.2fV | %d%% | Status: %s\n",
                       status.voltage, status.percentage, status.statusString());
@@ -1782,6 +1846,9 @@ void onBLEConnect(uint16_t connHandle, ConnectionType type)
         {
             ble.sendToPrimary("GLOVE_ERROR");  // the PRIMARY refuses starts while linked to us
         }
+#if defined(BOARD_PENTABUZZER_ESP32S3)
+        sendMotorStatusToPrimary();  // for the app's INFO MOTS
+#endif
         // Start keepalive timeout tracking
         lastKeepaliveReceived = millis();
         // Report the battery now, not up to 60s later: the PRIMARY gates starts on it
@@ -1838,6 +1905,11 @@ void onBLEConnect(uint16_t connHandle, ConnectionType type)
             // Unknown until this SECONDARY reports (it does on connect)
             g_secondaryBatteryLevel = BatteryLevel::NORMAL;
             g_secondaryFault = false;
+            {
+                PLATFORM_CRITICAL_ENTER();
+                g_secondaryMotorChecks[0] = '\0';
+                PLATFORM_CRITICAL_EXIT();
+            }
 
             // Reset clock sync state
             syncProtocol.resetClockSync();
@@ -1954,6 +2026,12 @@ void onBLEDisconnect(uint16_t connHandle, ConnectionType type, uint8_t reason)
         if (deviceRole == DeviceRole::PRIMARY)
         {
             g_autoStartRetryCount = 0;
+            // INFO stops reporting MOTS until the next SECONDARY reports
+            {
+                PLATFORM_CRITICAL_ENTER();
+                g_secondaryMotorChecks[0] = '\0';
+                PLATFORM_CRITICAL_EXIT();
+            }
         }
     }
     else if (deviceRole == DeviceRole::PRIMARY && type == ConnectionType::PHONE)
@@ -2325,6 +2403,24 @@ void onBLEMessage(uint16_t connHandle, const char *message, uint64_t rxTimestamp
     {
         g_secondaryFault = true;
         Serial.println(F("[ERROR] SECONDARY reports a hardware fault - sessions refused"));
+        return;
+    }
+
+    // SECONDARY's boot motor check, for INFO MOTS (PRIMARY only). A warning,
+    // not a fault. No Serial here (BLE task): store it for loop() under the
+    // lock; a malformed list is dropped.
+    if (deviceRole == DeviceRole::PRIMARY && strncmp(message, "MOTOR_STATUS:", 13) == 0)
+    {
+        MotorCheck checks[MAX_ACTUATORS];
+        char tokens[MOTOR_CHECKS_BUFFER_SIZE];
+        if (ble.getConnectionType(connHandle) == ConnectionType::SECONDARY &&
+            parseMotorChecks(message + 13, checks, MAX_ACTUATORS) &&
+            formatMotorChecks(checks, MAX_ACTUATORS, tokens, sizeof(tokens)))
+        {
+            PLATFORM_CRITICAL_ENTER();
+            memcpy(g_secondaryMotorChecks, tokens, sizeof(tokens));
+            PLATFORM_CRITICAL_EXIT();
+        }
         return;
     }
 
@@ -3826,6 +3922,12 @@ void handleSerialCommand(const char *command)
         LoopWatchdogPause watchdogPause;  // up to 2s per port
         haptic.probeMotorPresence();
         applyMotorPresenceToTherapy();
+#if defined(BOARD_PENTABUZZER_ESP32S3)
+        if (deviceRole == DeviceRole::SECONDARY && ble.isPrimaryConnected())
+        {
+            sendMotorStatusToPrimary();  // keep the PRIMARY's INFO MOTS current
+        }
+#endif
         return;
     }
 

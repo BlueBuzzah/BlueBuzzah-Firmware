@@ -55,7 +55,7 @@ The board is selected by a build macro (`BOARD_BLUEBUZZAH_NRF52` / `BOARD_PENTAB
 ## Cross-Repo Contracts
 
 - **`INTERNAL_MESSAGES[]` is a trapdoor.** Any command *not* matched by a prefix in `include/internal_messages.h` reaches `MenuController::handleCommand()`, which is how the desktop Updater (over USB serial) and the mobile app reach the menu. Adding `INFO`, `PROFILE_LOAD`, `PROFILE_GET`, or `PROFILE_CUSTOM` there silently severs the Updater with no compile error — `test_menu_controller` guards exactly this.
-- **Serial response markers are a wire format.** `[MENU-TX]` (`menu_controller.cpp`), plus `[CONFIG]`, `[ERROR]`, `[BOOT]` and the `"Role set to"` / `"Profile set to"` strings from `main.cpp`, are parsed verbatim by BlueBuzzah-Updater. Rewording either side breaks the other. The Updater also scans for `[SETTING]`, `[READY]`, and `[INIT]`, which this firmware no longer emits — it treats their absence as success, so don't reintroduce them expecting a behavior change.
+- **Serial response markers are a wire format.** `[MENU-TX]` (`menu_controller.cpp`), plus `[CONFIG]`, `[ERROR]`, `[BOOT]` and the `"Role set to"` / `"Profile set to"` strings from `main.cpp`, are parsed verbatim by BlueBuzzah-Updater. Rewording either side breaks the other. `[READY]` is printed as the last line of `setup()` and after the `DEVICE NOT CONFIGURED` banner; the Updater's boot drain waits for it before sending settings, so keep it last. The Updater also scans for `[SETTING]` and `[INIT]`, which this firmware no longer emits — it treats their absence as success, so don't reintroduce them expecting a behavior change.
 - **Firmware is the sole validator of therapy parameters.** The `PARAM_*` bounds in `config.h` are mirrored into the Updater (`src/lib/therapy-bounds.ts`) for input constraint only; that copy can never widen what the device accepts. Changing a bound here means updating the mirror.
 - **v3 package manifest**: `scripts/package_penta.py` produces the schema `esp/manifest.rs` in the Updater parses — keep the two in sync on any field change.
 - **Release asset names are a contract.** `.github/workflows/release.yml` (runs when a GitHub release is published) renames builds to `BlueBuzzah-Firmware-<tag>-<sha7>.zip` (nRF DFU) and `BlueBuzzah-Firmware-v3-<tag>-<sha7>.zip`; the Updater picks the board from that name.
@@ -67,7 +67,7 @@ The board is selected by a build macro (`BOARD_BLUEBUZZAH_NRF52` / `BOARD_PENTAB
 - **`test_menu_controller` does not compile `menu_controller.cpp`.** It tests `TestMenuController`, a hand-maintained mirror; only `internal_messages.h` is real. Behavior changes in `MenuController` need the mirror updated or they go untested.
 - The exclusion list is copy-pasted across `native`, `native_coverage`, `native_coverage_gcc` (`native_penta` inherits). A new platform-specific `.cpp` must be excluded in all three, plus the other board's device env.
 - Mocks (`test/mocks/src/Arduino.h`): `mockAdvanceMicros()`, `mockEnableTimeAutoIncrement()`, `MockSerial`. Filesystem mocks are defined per test file.
-- CI (`test.yml`) runs `native_coverage_gcc` (4-actuator) plus `test_board_config` on `native_penta`. Run `native_penta` locally for anything touching `MAX_ACTUATORS`.
+- CI (`test.yml`) runs `native_coverage_gcc` (4-actuator) plus `test_board_config`, `test_motor_check` and `test_menu_controller` on `native_penta`. Run `native_penta` locally for anything touching `MAX_ACTUATORS`.
 
 ## Gotchas
 

@@ -34,6 +34,7 @@ MenuController::MenuController() :
     _batteryGateCallback(nullptr),
     _gloveErrorCallback(nullptr),
     _batteryLevelCallback(nullptr),
+    _motorCheckCallback(nullptr),
     _deferredCommand(DeferredCommand::NONE),
     _secondaryBatteryVoltage(0.0f),
     _waitingForSecondaryBattery(false),
@@ -121,6 +122,10 @@ void MenuController::setGloveErrorCallback(GloveErrorCallback callback) {
 
 void MenuController::setBatteryLevelCallback(BatteryLevelCallback callback) {
     _batteryLevelCallback = callback;
+}
+
+void MenuController::setMotorCheckCallback(MotorCheckCallback callback) {
+    _motorCheckCallback = callback;
 }
 
 // =============================================================================
@@ -446,6 +451,18 @@ void MenuController::handleInfo() {
     addResponseLine("FW", _firmwareVersion);
     addResponseLine("HW", HW_VERSION_STRING);
     addResponseLine("MOTORS", static_cast<int32_t>(MAX_ACTUATORS));
+    // Boot motor check per finger (a warning, never a fault). Before any
+    // early return, so the immediate and deferred replies both carry it.
+    if (_motorCheckCallback) {
+        if (const char* own = _motorCheckCallback(false)) {
+            addResponseLine("MOTP", own);
+        }
+        if (_ble && _ble->isSecondaryConnected()) {
+            if (const char* secondary = _motorCheckCallback(true)) {
+                addResponseLine("MOTS", secondary);
+            }
+        }
+    }
     if (_profiles) {
         char profLine[48];
         snprintf(profLine, sizeof(profLine), "%d:%s",
