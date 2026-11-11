@@ -1545,10 +1545,11 @@ DeviceRole determineRole()
     return DeviceRole::PRIMARY;
 }
 
+#if defined(BOARD_PENTABUZZER_ESP32S3)
 /**
- * @brief Feed the last motor check into pattern generation
+ * @brief Feed the boot motor check into pattern generation (once, at boot)
  *
- * Sessions always play index to little, whatever the check found: it can
+ * Sessions always play index to pinky, whatever the check found: it can
  * misreport a working motor, so it only warns. The thumb is added on boards
  * that have one only when the check found it, since 4-motor v3 gloves leave
  * that port empty. PRIMARY is the source of truth: those physical indices
@@ -1567,10 +1568,11 @@ static void applyMotorPresenceToTherapy()
     therapy.setActiveFingers(fingers, count);
     if (MAX_ACTUATORS > MOTOR_CHECK_BASE_FINGERS)
     {
-        Serial.println(thumb ? F("[THERAPY] Patterns use index to little plus thumb")
-                             : F("[THERAPY] Patterns use index to little (no thumb found)"));
+        Serial.println(thumb ? F("[THERAPY] Patterns use index to pinky plus thumb")
+                             : F("[THERAPY] Patterns use index to pinky (no thumb found)"));
     }
 }
+#endif // BOARD_PENTABUZZER_ESP32S3
 
 bool initializeHardware()
 {
@@ -1604,18 +1606,25 @@ bool initializeHardware()
         // A warning only, never a fault: auto-cal can misreport a working
         // motor. The per-port result goes to the app (INFO MOTP/MOTS) and
         // decides only whether the thumb plays.
+        // Warns by the per-finger rule the app shares (isMotorCheckProblem):
+        // index to pinky OPEN or NODRIVER, or the thumb NODRIVER. An empty
+        // thumb port (4-motor glove) and UNKNOWN never warn.
         // v3 only: the auto-cal presence method is validated on this
         // board's LRAs. On nRF v2 gloves the probe stays available via the
         // MOTOR_PRESENT serial command but never runs automatically at boot.
-        constexpr uint8_t MIN_REQUIRED_MOTORS = 4;
         uint8_t motorsPresent = haptic.probeMotorPresence();
+        MotorCheck checks[MAX_ACTUATORS];
+        for (uint8_t f = 0; f < MAX_ACTUATORS; f++)
+        {
+            checks[f] = haptic.getMotorCheck(f);
+        }
         if (haptic.lastProbeSupplyDipped())
         {
             // USB-only bench boot: cal drive browned the chips out, so the
             // verdicts are garbage. Don't alarm on healthy hardware.
             Serial.println(F("[WARN] Motor check skipped: supply dipped during probe (USB-only power?)"));
         }
-        else if (motorsPresent < MIN_REQUIRED_MOTORS)
+        else if (countMotorCheckProblems(checks, MAX_ACTUATORS) > 0)
         {
             Serial.printf("[WARN] Motor check: %u/%u motors responded - check JST connections\n",
                           motorsPresent, MAX_ACTUATORS);
@@ -3920,8 +3929,7 @@ void handleSerialCommand(const char *command)
         }
         safeMotorShutdown();
         LoopWatchdogPause watchdogPause;  // up to 2s per port
-        haptic.probeMotorPresence();
-        applyMotorPresenceToTherapy();
+        haptic.probeMotorPresence();  // updates INFO MOTP; patterns keep the boot check's thumb decision
 #if defined(BOARD_PENTABUZZER_ESP32S3)
         if (deviceRole == DeviceRole::SECONDARY && ble.isPrimaryConnected())
         {

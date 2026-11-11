@@ -2,7 +2,7 @@
  * @file motor_check.h
  * @brief Per-finger result of the boot motor check, and its wire format
  *
- * One token per finger, in finger order (index, middle, ring, little, thumb),
+ * One token per finger, in finger order (index, middle, ring, pinky, thumb),
  * joined by commas: "OK,OK,OPEN,OPEN,OPEN". The SECONDARY sends its list to
  * the PRIMARY as MOTOR_STATUS:<tokens>; INFO reports both as MOTP / MOTS.
  *
@@ -26,7 +26,7 @@ enum class MotorCheck : uint8_t {
     UNKNOWN    // not checked, probe timed out, mux select failed, or supply dipped
 };
 
-// Fingers every session plays, on both boards (index to little)
+// Fingers every session plays, on both boards (index to pinky)
 constexpr uint8_t MOTOR_CHECK_BASE_FINGERS = 4;
 
 // Longest list: MAX_ACTUATORS x "NODRIVER" + commas + NUL
@@ -110,7 +110,38 @@ inline bool parseMotorChecks(const char* text, MotorCheck* out, uint8_t count) {
 }
 
 /**
- * @brief Fingers therapy patterns use: index to little, plus the thumb on
+ * @brief Whether a finger's check result warns (boot [WARN] + red double
+ *        blink, and the app's warning: the same rule on both sides)
+ *
+ * Index to pinky warn on OPEN or NODRIVER. The thumb warns only on NODRIVER:
+ * 4-motor v3 gloves leave that port empty, so OPEN there is normal. UNKNOWN
+ * never warns.
+ */
+inline bool isMotorCheckProblem(uint8_t finger, MotorCheck check) {
+    if (finger < MOTOR_CHECK_BASE_FINGERS) {
+        return check == MotorCheck::OPEN || check == MotorCheck::NODRIVER;
+    }
+    return check == MotorCheck::NODRIVER;
+}
+
+/**
+ * @brief Number of fingers whose check result warns (see isMotorCheckProblem)
+ */
+inline uint8_t countMotorCheckProblems(const MotorCheck* checks, uint8_t count) {
+    if (checks == nullptr) {
+        return 0;
+    }
+    uint8_t problems = 0;
+    for (uint8_t f = 0; f < count; f++) {
+        if (isMotorCheckProblem(f, checks[f])) {
+            problems++;
+        }
+    }
+    return problems;
+}
+
+/**
+ * @brief Fingers therapy patterns use: index to pinky, plus the thumb on
  *        boards that have one when the check found it
  */
 constexpr uint8_t therapyFingerCount(bool thumbPresent) {
