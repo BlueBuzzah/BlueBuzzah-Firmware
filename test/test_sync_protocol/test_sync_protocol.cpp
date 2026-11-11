@@ -972,10 +972,12 @@ void test_SimpleSyncProtocol_warmStart_validates_confirmatory_samples(void) {
 
     TEST_ASSERT_TRUE(sync.isWarmStartMode());
     TEST_ASSERT_FALSE(sync.isClockSyncValid());
+    TEST_ASSERT_FALSE(sync.hasUsableOffset());   // Cached offset unconfirmed
 
     // Add confirmatory samples close to the cached offset
     sync.addOffsetSample(10050);  // Within 5ms tolerance
     TEST_ASSERT_FALSE(sync.isClockSyncValid());  // Not yet valid (need 3)
+    TEST_ASSERT_TRUE(sync.hasUsableOffset());    // One confirmation is enough to send
 
     sync.addOffsetSample(9980);
     TEST_ASSERT_FALSE(sync.isClockSyncValid());  // Still need 1 more
