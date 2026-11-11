@@ -1207,7 +1207,7 @@ public:
     static SyncCommand createPongWithAnchor(uint32_t sequenceId, uint64_t t2, uint64_t t3, uint64_t anchorUs);
     static SyncCommand createDebugFlash(uint32_t sequenceId);
     static SyncCommand createDebugFlashWithTime(uint32_t sequenceId, uint64_t flashTime);
-    static SyncCommand createMacrocycleAck(uint32_t sequenceId);
+    static SyncCommand createMacrocycleAck(uint32_t sequenceId, MacrocycleAckStatus status, int32_t marginMs);
 
     // Macrocycle batch (compact MC: format)
     static bool serializeMacrocycle(char* buffer, size_t bufferSize, const Macrocycle& macrocycle);
@@ -1286,7 +1286,7 @@ START_SESSION:1|1234567890
 MC:42|0|5000000|0|1250|100|12|0,0,100|167,1,100|...
 PING:7|1234567890
 PONG:7|1234567990|1234567925|1234567950
-MC_ACK:42|5001200
+MC_ACK:42|5001200|0|287
 ```
 
 See [SYNCHRONIZATION_PROTOCOL.md](SYNCHRONIZATION_PROTOCOL.md) for timing, lead time and the full message reference.

@@ -498,7 +498,7 @@ graph TD
     C --> C2["PONG:seq|tx_micros|T2|T3<br/>(response)"]
 
     D --> D2["MC:seq|baseHigh|baseLow|offHigh|offLow|dur|count|events<br/>(batched, 3 patterns)"]
-    D --> D3["MC_ACK:seq|ts<br/>(acknowledgment)"]
+    D --> D3["MC_ACK:seq|ts|status|margin<br/>(acknowledgment)"]
 
     E --> E1["GET_BATTERY"]
     E --> E2["BATRESPONSE:voltage (reply)<br/>BATRESPONSE:voltage|level<br/>(after every SECONDARY battery check)"]
@@ -781,7 +781,7 @@ sequenceDiagram
     loop Every ~3.3s (pattern execution)
         alt Batching Mode
             P->>S: MC:seq|baseHigh|baseLow|offHigh|offLow|dur|count|...
-            S->>P: MC_ACK:seq|ts
+            S->>P: MC_ACK:seq|ts|status|margin
         end
 
         P->>P: Schedule all 12 events in ActivationQueue

@@ -387,7 +387,7 @@ PRIMARY sends all of a macrocycle's events in a single MACROCYCLE message. This 
 - **Single clock offset application** — less computation, fewer rounding errors
 - **Cleaner architecture** — macrocycle as atomic unit
 
-SECONDARY's `ActivationQueue` schedules all events with their local activation times, then processes them as time elapses. PRIMARY does not wait for `MC_ACK`: it enqueues its own events right after sending, and any `MC_ACK` only refreshes its SECONDARY keepalive timer. If the macrocycle can't be queued for the SECONDARY, PRIMARY skips it locally too.
+SECONDARY's `ActivationQueue` schedules all events with their local activation times, then processes them as time elapses. PRIMARY does not wait for `MC_ACK`: it enqueues its own events right after sending. Every `MC_ACK` refreshes its SECONDARY keepalive timer and reports what the SECONDARY did with the macrocycle (scheduled, rejected or refused) and how much margin it had. If the SECONDARY rejected the last macrocycle sent, or the macrocycle can't be queued for the SECONDARY, PRIMARY skips it locally too, so one hand never plays alone.
 
 ---
 
@@ -503,10 +503,14 @@ This unified approach provides continuous clock synchronization throughout all s
 | Message | Direction | Fields | Example |
 |---------|-----------|--------|---------|
 | `MACROCYCLE` | P → S | seq, baseTime, count, events... | See below |
-| `MACROCYCLE_ACK` | S → P | seq, tx_micros | `MC_ACK:42\|5050120` |
+| `MACROCYCLE_ACK` | S → P | seq, tx_micros, status, margin_ms | `MC_ACK:42\|5050120\|0\|287` |
 | `DEACTIVATE` (reserved) | — | seq, tx_micros | `DEACTIVATE:43\|5050120` |
 
-> **`serialize()` always emits the `seq|timestamp` pair**, and the timestamp is the message construction time (`getMicros()`), **never `0`**. The 2-arg `SyncCommand` constructor calls `setTimestampNow()`, so `createMacrocycleAck` produces `MC_ACK:42|<micros>` (not `MC_ACK:42` and not `MC_ACK:42|0`). PRIMARY ignores the field for `MC_ACK` and does no ACK matching or retransmission: an `MC_ACK` only refreshes its SECONDARY keepalive timer (`seq` is logged in debug mode).
+> **`serialize()` always emits the `seq|timestamp` pair**, and the timestamp is the message construction time (`getMicros()`), **never `0`**. The 2-arg `SyncCommand` constructor calls `setTimestampNow()`, so `createMacrocycleAck(seq, status, marginMs)` produces `MC_ACK:42|<micros>|<status>|<margin_ms>`. PRIMARY ignores the timestamp field for `MC_ACK`.
+>
+> **`status`** says what the SECONDARY did with the macrocycle: `0` scheduled, `1` rejected (local base time more than 5 s from its clock), `2` refused (SECONDARY in `CRITICAL_BATTERY` or `ERROR`). **`margin_ms`** is the signed time in ms from receipt to the earliest event the SECONDARY scheduled; it is `0` when status isn't `0`, or when no event was scheduled.
+>
+> Every `MC_ACK` refreshes the PRIMARY's SECONDARY keepalive timer. If status is `1` and `seq` is the last macrocycle sent, PRIMARY drops that macrocycle's queued activations too and prints `[MACROCYCLE] SECONDARY rejected seq=N - skipping it on both gloves`. If status is `0` and the margin is under 20 ms (`MACROCYCLE_ACK_LOW_MARGIN_MS`), it prints `[WARN] MC_ACK seq=N margin=Mms`. In debug mode it logs every ACK as `[MACROCYCLE] ACK seq=N status=S margin=Mms`. Status `2` needs no PRIMARY action. There is no retransmission. The BLE task only stores the ACK; `loop()` acts on it and prints.
 >
 > **`DEACTIVATE` is reserved/unused.** The `SyncCommandType::DEACTIVATE` value and `createDeactivate()` factory exist, but no `DEACTIVATE` message is sent over BLE: SECONDARY turns motors off locally via its paired activate/deactivate `ActivationQueue`. The factory does not override the construction timestamp, so if it were ever serialized it would be `DEACTIVATE:43|<micros>`. The same applies to the `BUZZ` type, which was superseded by `MACROCYCLE` batching.
 
@@ -568,11 +572,11 @@ The protocol includes several safety mechanisms to prevent incorrect synchroniza
 
 | Validation | Threshold | Action |
 |------------|-----------|--------|
-| baseTime freshness | ±5 seconds | SECONDARY plays nothing from a macrocycle whose local base time is further than this from now (still sends `MC_ACK`) |
-| Late event | More than 5ms past its time (`MACROCYCLE_LATE_EVENT_TOLERANCE_US`) | SECONDARY drops that event when the frame arrives and plays the rest, printing one `[MACROCYCLE] Dropped N late events` line. If every event is late, the previous macrocycle's queue is left alone. `MC_ACK` is still sent. Either glove's motor task also drops an activation that is this late when its turn comes (`loop()` prints `[MOTOR_TASK] Dropped N late activations`), e.g. after a `loop()` stall |
+| baseTime freshness | ±5 seconds | SECONDARY plays nothing from a macrocycle whose local base time is further than this from now and sends `MC_ACK` status `1`. PRIMARY skips that macrocycle too |
+| Late event | More than 5ms past its time (`MACROCYCLE_LATE_EVENT_TOLERANCE_US`) | SECONDARY drops that event when the frame arrives and plays the rest, printing one `[MACROCYCLE] Dropped N late events` line. If every event is late, the previous macrocycle's queue is left alone. `MC_ACK` still has status `0`, with the margin taken from the first scheduled event (`0` if none was). Either glove's motor task also drops an activation that is this late when its turn comes (`loop()` prints `[MOTOR_TASK] Dropped N late activations`), e.g. after a `loop()` stall |
 | New macrocycle | Any | Replaces queued activations on both gloves. Pending turn-offs still run, so a motor that is on is never left on |
-| Critical battery | SECONDARY in `CRITICAL_BATTERY` | SECONDARY acknowledges each macrocycle but plays nothing until the PRIMARY ends the session |
-| Hardware fault | SECONDARY in `ERROR` (sent `GLOVE_ERROR`) | SECONDARY acknowledges each macrocycle but plays nothing. The PRIMARY refuses starts while linked to it (`Secondary glove error`, flag cleared on every SECONDARY connect) and ends a running session (not a bench `TEST`) with reason `ERROR` |
+| Critical battery | SECONDARY in `CRITICAL_BATTERY` | SECONDARY acknowledges each macrocycle with `MC_ACK` status `2` but plays nothing until the PRIMARY ends the session |
+| Hardware fault | SECONDARY in `ERROR` (sent `GLOVE_ERROR`) | SECONDARY acknowledges each macrocycle with `MC_ACK` status `2` but plays nothing. The PRIMARY refuses starts while linked to it (`Secondary glove error`, flag cleared on every SECONDARY connect) and ends a running session (not a bench `TEST`) with reason `ERROR` |
 | RTT quality | 60ms | Reject samples affected by retransmissions |
 
 These validations ensure that BLE interference or momentary disconnects don't cause the sync system to make large erroneous corrections.

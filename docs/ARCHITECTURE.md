@@ -343,7 +343,7 @@ PRIMARY explicitly commands SECONDARY for every action using the sync protocol:
 PRIMARY -> SECONDARY: MC:seq|baseHigh|baseLow|offHigh|offLow|dur|count|d,f,a[,fo]|...
 PRIMARY: <enqueues all events to its ActivationQueue>
 SECONDARY: <receives macrocycle, converts baseTime to its own clock, enqueues all events>
-SECONDARY -> PRIMARY: MC_ACK:seq
+SECONDARY -> PRIMARY: MC_ACK:seq|micros|status|margin_ms
 ```
 
 Benefits:
@@ -1203,7 +1203,7 @@ START_SESSION:7|81234567
 MC:42|0|5000000|0|1250|100|12|0,2,100|167,0,100|334,3,100|...
 PING:1|1234567890
 PONG:1|1234567925|1234567900|1234567950
-MC_ACK:42|5070210
+MC_ACK:42|5070210|0|287
 IDENTIFY:SECONDARY
 ```
 
@@ -1603,7 +1603,7 @@ BLE callbacks never touch I2C. A disconnect callback signals `safetyShutdownSema
 
 **Level 2: Recoverable Errors** (Log + Continue)
 
-- Macrocycle with an implausible `baseTime` (>5s from now) -> Log `[ERROR]`, still send `MC_ACK`, skip it
+- Macrocycle with an implausible `baseTime` (>5s from now) -> Log `[ERROR]`, send `MC_ACK` status `1`, skip it; the PRIMARY skips it too
 - Macrocycle that cannot be queued for the SECONDARY -> Skipped on both gloves
 - SECONDARY battery query unanswered within 1s -> Reply with `BATS:0.00`
 - DRV2605 reset by a supply brownout -> Detected by `verifyAndHeal()`, all drivers reconfigured
