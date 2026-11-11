@@ -411,15 +411,27 @@ void BLEManager::update() {
     for (int i = 0; i < MAX_CONNECTIONS; i++) {
         BBConnection* conn = &_connections[i];
         if (conn->isConnected && conn->pendingIdentify) {
-            if (timeoutNow - conn->identifyStartTime >= IDENTIFY_TIMEOUT_MS) {
+            if (timeoutNow - conn->identifyStartTime >= IDENTIFY_TIMEOUT_MS && conn->claimPendingIdentify(ConnectionType::PHONE)) {
                 Serial.println(F("[BLE] IDENTIFY timeout - classifying as PHONE"));
-                conn->type = ConnectionType::PHONE;
-                conn->pendingIdentify = false;
                 queryConnectionInterval(conn->connHandle);
                 requestLinkConnParams(conn->connHandle, ConnectionType::PHONE);
                 if (_connectCallback) {
                     _connectCallback(conn->connHandle, ConnectionType::PHONE);
                 }
+            }
+        }
+
+        // Late IDENTIFY:SECONDARY: deliverMessage() already set the type. Its
+        // link requests and connect callback run here, after the IDENTIFY
+        // timeout above, so the timeout's PHONE requests can't come last.
+        if (conn->isConnected && conn->lateIdentifySecondary) {
+            conn->lateIdentifySecondary = false;
+            Serial.println(F("[BLE] Late IDENTIFY:SECONDARY - reclassifying from PHONE"));
+            requestLinkConnParams(conn->connHandle, ConnectionType::SECONDARY);
+            queryConnectionInterval(conn->connHandle);
+            updateAdvertisingInterval();
+            if (_connectCallback) {
+                _connectCallback(conn->connHandle, ConnectionType::SECONDARY);
             }
         }
     }
@@ -1127,20 +1139,16 @@ void BLEManager::processIncomingData(uint16_t connHandleParam, const uint8_t* da
 
 void BLEManager::deliverMessage(BBConnection* conn, uint16_t connHandleParam) {
     if (conn->pendingIdentify) {
-        if (strcmp(conn->rxBuffer, "IDENTIFY:SECONDARY") == 0) {
+        if (strcmp(conn->rxBuffer, "IDENTIFY:SECONDARY") == 0 && conn->claimPendingIdentify(ConnectionType::SECONDARY)) {
             Serial.println(F("[BLE] Received IDENTIFY:SECONDARY"));
-            conn->type = ConnectionType::SECONDARY;
-            conn->pendingIdentify = false;
             queryConnectionInterval(connHandleParam);
             updateAdvertisingInterval();
             if (_connectCallback) {
                 _connectCallback(connHandleParam, ConnectionType::SECONDARY);
             }
             return;
-        } else if (strcmp(conn->rxBuffer, "IDENTIFY:PHONE") == 0) {
+        } else if (strcmp(conn->rxBuffer, "IDENTIFY:PHONE") == 0 && conn->claimPendingIdentify(ConnectionType::PHONE)) {
             Serial.println(F("[BLE] Received IDENTIFY:PHONE"));
-            conn->type = ConnectionType::PHONE;
-            conn->pendingIdentify = false;
             queryConnectionInterval(connHandleParam);
             requestLinkConnParams(connHandleParam, ConnectionType::PHONE);
             if (_connectCallback) {
@@ -1154,16 +1162,12 @@ void BLEManager::deliverMessage(BBConnection* conn, uint16_t connHandleParam) {
     // (it sends once, after blocking discovery) and get classified as PHONE,
     // which left the pair unsynced until a reconnect. Reclassify while the
     // SECONDARY slot is empty, and restore the glove link's interval.
+    // The type changes here so the glove's next messages route as SECONDARY;
+    // update() sends the link requests and fires the callback.
     if (conn->type == ConnectionType::PHONE && !isSecondaryConnected() &&
         strcmp(conn->rxBuffer, "IDENTIFY:SECONDARY") == 0) {
-        Serial.println(F("[BLE] Late IDENTIFY:SECONDARY - reclassifying from PHONE"));
         conn->type = ConnectionType::SECONDARY;
-        requestLinkConnParams(connHandleParam, ConnectionType::SECONDARY);
-        queryConnectionInterval(connHandleParam);
-        updateAdvertisingInterval();
-        if (_connectCallback) {
-            _connectCallback(connHandleParam, ConnectionType::SECONDARY);
-        }
+        conn->lateIdentifySecondary = true;
         return;
     }
 

@@ -23,6 +23,7 @@
 #endif
 
 #include "config.h"
+#include "platform.h"
 #include "types.h"
 
 // =============================================================================
@@ -72,6 +73,7 @@ struct BBConnection {
     uint32_t connectedAt;
     volatile bool pendingIdentify;       // Waiting for IDENTIFY message
     uint32_t identifyStartTime; // When identification period started
+    volatile bool lateIdentifySecondary; // Reclassified after the timeout; update() finishes it
 
     // Message receive buffer
     char rxBuffer[RX_BUFFER_SIZE];
@@ -98,6 +100,7 @@ struct BBConnection {
         connectedAt(0),
         pendingIdentify(false),
         identifyStartTime(0),
+        lateIdentifySecondary(false),
         rxIndex(0),
         rxTimestamp(0),
         rxDiscard(false),
@@ -118,6 +121,7 @@ struct BBConnection {
         connectedAt = 0;
         pendingIdentify = false;
         identifyStartTime = 0;
+        lateIdentifySecondary = false;
         rxIndex = 0;
         rxTimestamp = 0;
         rxDiscard = false;
@@ -129,6 +133,22 @@ struct BBConnection {
         pendingDataLength = false;
         linkRetryAt = 0;
         memset(rxBuffer, 0, sizeof(rxBuffer));
+    }
+
+    // Clear pendingIdentify and set type as one unit. update()'s IDENTIFY
+    // timeout (loop) and deliverMessage() (BLE callback) race to classify the
+    // link: only the side that gets true goes on to fire the connect callback,
+    // and the loser sees the winner's type (so a late IDENTIFY:SECONDARY after
+    // the timeout reaches the reclassify path).
+    [[nodiscard]] bool claimPendingIdentify(ConnectionType classifiedAs) {
+        PLATFORM_CRITICAL_ENTER();
+        const bool claimed = pendingIdentify;
+        if (claimed) {
+            pendingIdentify = false;
+            type = classifiedAs;
+        }
+        PLATFORM_CRITICAL_EXIT();
+        return claimed;
     }
 };
 

@@ -2711,13 +2711,20 @@ void onBLEMessage(uint16_t connHandle, const char *message, uint64_t rxTimestamp
             }
 
             // PRIMARY: Calculate RTT and PTP clock offset (requires valid pingT1)
-            // Use atomic read to prevent torn reads on 32-bit ARM
-            uint64_t t1_atomic = atomicRead64(&pingT1);
+            // Read T1 and its sequence id as one unit: onTxStamped publishes
+            // them together, and on v3 it runs on the other core
+            uint64_t t1_atomic;
+            uint32_t expectedSeq;
+            {
+                PLATFORM_CRITICAL_ENTER();
+                t1_atomic = pingT1;
+                expectedSeq = pingSeq;
+                PLATFORM_CRITICAL_EXIT();
+            }
             if (deviceRole == DeviceRole::PRIMARY && t1_atomic > 0)
             {
                 // Reject cross-exchange pairing: a late PONG from a previous
                 // PING must not be paired with the current in-flight T1
-                uint32_t expectedSeq = pingSeq;
                 if (cmd.getSequenceId() != expectedSeq)
                 {
                     if (profiles.getDebugMode())
@@ -3542,13 +3549,15 @@ void sendPing()
 void onTxStamped(TxStampKind kind, uint32_t seqId, uint64_t txTimeUs)
 {
     // Runs in main-loop context (processTxQueue via ble.update()), FreeRTOS
-    // loop task (prio 1). The PONG handler runs in the higher-priority BLE
-    // task (prio 3) and can preempt this code mid-update. pingT1 and pingSeq
-    // must be published as ONE unit: a split update would let the reader pair
-    // a stale PONG (matching the old pingSeq) with the freshly written T1.
-    // A single critical section masks the PendSV context switch (PRIMASK), so
-    // the BLE task cannot observe the triple half-updated. Per-store atomicity
-    // (atomicWrite64) is insufficient here — the invariant spans variables.
+    // loop task (prio 1). The PONG handler runs in the BLE callback: on v2
+    // Bluefruit's Callback task (prio 2), which can preempt this code; on v3
+    // the NimBLE host task on the other core, which runs alongside it.
+    // pingT1 and pingSeq must be published as ONE unit: a split update would
+    // let the reader pair a stale PONG (matching the old pingSeq) with the
+    // freshly written T1. The critical section (PRIMASK on v2, the shared
+    // spinlock on v3) covers the triple, and the PONG handler reads T1 and
+    // seq under the same lock. Per-store atomicity (atomicWrite64) is
+    // insufficient here — the invariant spans variables.
     if (kind == TxStampKind::PING_T1)
     {
         PLATFORM_CRITICAL_ENTER();
@@ -3701,11 +3710,10 @@ void onStateChange(const StateTransition &transition)
         {
             therapy.stop(SessionEndReason::CONNECTION_LOST);
         }
-        // Always call emergencyStop - motors can be active without therapy running
-        // (e.g., from deferred queue connect/disconnect pulses)
-        // Note: safeMotorShutdown() will also run from loop() via safety shutdown semaphore
-        // but this provides immediate belt-and-suspenders safety
-        haptic.emergencyStop();
+        // No motor stop here: this can run on the BLE callback (onBLEDisconnect),
+        // where I2C isn't allowed. onBLEDisconnect gives safetyShutdownSema and
+        // handleKeepaliveTimeout calls safeMotorShutdown() first, so loop() stops
+        // the motors either way.
         break;
 
     default:
