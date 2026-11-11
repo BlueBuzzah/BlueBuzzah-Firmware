@@ -414,9 +414,6 @@ struct TherapyProfile {
     bool mirrorPattern;
     uint8_t numFingers;
     bool isDefault;
-    bool frequencyRandomization;
-    uint16_t frequencyMin;
-    uint16_t frequencyMax;
 };
 
 constexpr uint8_t CUSTOM_PROFILE_ID = 4;
@@ -1035,8 +1032,6 @@ public:
     void setActiveFingers(const uint8_t* fingers, uint8_t count);
     uint8_t getActiveFingerCount() const;
 
-    void setFrequencyRandomization(bool enabled, uint16_t minHz = 210, uint16_t maxHz = 260);
-
     // =========================================================================
     // SESSION CONTROL
     // =========================================================================
@@ -1072,7 +1067,6 @@ public:
     uint32_t getElapsedSeconds() const;
     uint32_t getRemainingSeconds() const;
     uint32_t getDurationSeconds() const;
-    uint16_t getFrequency(uint8_t finger) const;
     uint8_t getAmplitudeMin() const;
     uint8_t getAmplitudeMax() const;
     PatternType getPatternType() const;

@@ -97,7 +97,6 @@ public:
 
     // Restrict patterns to the motors found present at boot (v3 presence probe)
     void setActiveFingers(const uint8_t* fingers, uint8_t count);
-    void setFrequencyRandomization(bool enabled, uint16_t minHz = 210, uint16_t maxHz = 260);
 
     // Session control
     void startSession(uint32_t durationSec, PatternType patternType, float timeOnMs,
@@ -291,7 +290,7 @@ MacrocycleEvent evt(
     primaryFinger,     // For PRIMARY (local scheduling)
     amplitude,
     (uint8_t)pattern.burstDurationMs,
-    _currentFrequency[primaryFinger]  // Use PRIMARY finger for frequency lookup
+    DEFAULT_FREQUENCY_HZ
 );
 ```
 
@@ -481,23 +480,9 @@ void HapticController::emergencyStop() {
 }
 ```
 
-### Random Frequency Reconfiguration
+### Burst Frequency
 
-**Feature**: Optionally randomize actuator frequency each pattern (from Custom vCR in the original firmware; no built-in profile turns it on)
-
-When enabled with `setFrequencyRandomization(true, minHz, maxHz)`, `generateMacrocycle()` picks a new frequency per finger for each pattern, in 5 Hz steps from `minHz` up to but not including `maxHz` (like v1's `randrange`), and stores it in each event:
-
-```cpp
-if (_frequencyRandomization) {
-    uint16_t range = _frequencyMax - _frequencyMin;
-    uint16_t steps = range / 5;
-    for (uint8_t finger = 0; finger < MAX_ACTUATORS; finger++) {
-        _currentFrequency[finger] = _frequencyMin + static_cast<uint16_t>(random(0, steps) * 5);
-    }
-}
-```
-
-Every session start (phone `SESSION_START`, auto-start, `TEST`) applies the current profile's `frequencyRandomization`, `frequencyMin` and `frequencyMax`. No built-in profile has it on, so every profile plays 250 Hz. Both gloves read each event's frequency from the macrocycle, and the motor task writes it to the LRA period register, OL_LRA_PERIOD (0x20, 98.49 µs units), during pre-selection after the previous burst, off the activation's critical path. The write is skipped when the frequency hasn't changed, so fixed-frequency profiles add no I2C traffic.
+Every burst plays a fixed 250 Hz (`DEFAULT_FREQUENCY_HZ`), carried in each macrocycle event as `fo=10`. Both gloves read each event's frequency from the macrocycle, and the motor task writes it to the LRA period register, OL_LRA_PERIOD (0x20, 98.49 µs units), during pre-selection after the previous burst, off the activation's critical path. The write is skipped when the frequency hasn't changed, so it adds no I2C traffic after the first burst.
 
 ---
 
@@ -761,15 +746,10 @@ struct TherapyProfile {
 
     // Metadata
     bool isDefault;
-
-    // Frequency randomization (engine capability; no built-in profile enables it)
-    bool frequencyRandomization;
-    uint16_t frequencyMin;  // Min frequency for randomization (Hz)
-    uint16_t frequencyMax;  // Max frequency for randomization (Hz)
 };
 ```
 
-`actuatorType` and `frequencyHz` are stored and reported by `PROFILE_GET` but do not reach the DRV2605: the drivers are always configured as LRA, at 250 Hz, since no built-in profile randomizes frequency.
+`actuatorType` and `frequencyHz` are stored and reported by `PROFILE_GET` but do not reach the DRV2605: the drivers are always configured as LRA, and every burst plays 250 Hz (`DEFAULT_FREQUENCY_HZ`).
 
 ### Profile Comparison
 
