@@ -80,9 +80,10 @@ BatteryTracker g_battery;
 volatile float g_trustedBatteryVoltage = 0.0f;  // last motor-idle reading; GET_BATTERY replies with it
 volatile BatteryLevel g_secondaryBatteryLevel = BatteryLevel::NORMAL;
 
-// Boot hardware fault (no working motor driver, no motor task, or too few
-// motors on v3): this glove sits in ERROR until reboot. On the PRIMARY,
-// g_secondaryFault is the SECONDARY's GLOVE_ERROR report. Either refuses starts.
+// Boot hardware fault (no working motor driver or no motor task): this glove
+// sits in ERROR until reboot. The v3 boot motor check only warns, never sets
+// it. On the PRIMARY, g_secondaryFault is the SECONDARY's GLOVE_ERROR report.
+// Either refuses starts.
 bool g_hardwareFault = false;
 volatile bool g_secondaryFault = false;
 
@@ -1481,33 +1482,29 @@ DeviceRole determineRole()
 }
 
 /**
- * @brief Feed the last motor-presence probe result into pattern generation
+ * @brief Feed the last motor check into pattern generation
  *
- * PRIMARY is the source of truth: patterns are generated over present
- * fingers only, and those physical indices reach SECONDARY inside
- * macrocycle events, so both gloves skip the same missing motor.
- * A probe that found nothing (e.g. USB-only bench boot) leaves the map
- * untouched rather than disabling therapy outright.
+ * Sessions always play index to little, whatever the check found: it can
+ * misreport a working motor, so it only warns. The thumb is added on boards
+ * that have one only when the check found it, since 4-motor v3 gloves leave
+ * that port empty. PRIMARY is the source of truth: those physical indices
+ * reach SECONDARY inside macrocycle events, so both gloves use the same set.
  */
 static void applyMotorPresenceToTherapy()
 {
-    uint8_t presentFingers[MAX_ACTUATORS];
-    uint8_t n = 0;
-    for (uint8_t f = 0; f < MAX_ACTUATORS; f++)
+    const bool thumb = MAX_ACTUATORS > MOTOR_CHECK_BASE_FINGERS &&
+                       haptic.getMotorCheck(FINGER_THUMB) == MotorCheck::OK;
+    const uint8_t count = therapyFingerCount(thumb);
+    uint8_t fingers[MAX_ACTUATORS];
+    for (uint8_t f = 0; f < count; f++)
     {
-        if (haptic.isMotorPresent(f))
-        {
-            presentFingers[n++] = f;
-        }
+        fingers[f] = f;
     }
-    if (n == 0)
+    therapy.setActiveFingers(fingers, count);
+    if (MAX_ACTUATORS > MOTOR_CHECK_BASE_FINGERS)
     {
-        return;
-    }
-    therapy.setActiveFingers(presentFingers, n);
-    if (n < MAX_ACTUATORS)
-    {
-        Serial.printf("[THERAPY] Patterns restricted to %u present motor(s)\n", n);
+        Serial.println(thumb ? F("[THERAPY] Patterns use index to little plus thumb")
+                             : F("[THERAPY] Patterns use index to little (no thumb found)"));
     }
 }
 
@@ -1540,10 +1537,12 @@ bool initializeHardware()
         // Boot QA: detect unpopulated/broken motor ports (each present motor
         // buzzes ~0.5s during the auto-cal probe). NOTE: needs battery power;
         // a USB-only boot can misreport, but motors can't run then anyway.
+        // A warning only, never a fault: auto-cal can misreport a working
+        // motor. The per-port result goes to the app (INFO MOTP/MOTS) and
+        // decides only whether the thumb plays.
         // v3 only: the auto-cal presence method is validated on this
         // board's LRAs. On nRF v2 gloves the probe stays available via the
-        // MOTOR_PRESENT serial command but never runs (or restricts therapy
-        // patterns) automatically at boot.
+        // MOTOR_PRESENT serial command but never runs automatically at boot.
         constexpr uint8_t MIN_REQUIRED_MOTORS = 4;
         uint8_t motorsPresent = haptic.probeMotorPresence();
         if (haptic.lastProbeSupplyDipped())
@@ -1554,11 +1553,10 @@ bool initializeHardware()
         }
         else if (motorsPresent < MIN_REQUIRED_MOTORS)
         {
-            Serial.printf("[ERROR] Missing/failed motor(s): %u/%u detected (minimum %u) - check JST connections\n",
-                          motorsPresent, MAX_ACTUATORS, MIN_REQUIRED_MOTORS);
+            Serial.printf("[WARN] Motor check: %u/%u motors responded - check JST connections\n",
+                          motorsPresent, MAX_ACTUATORS);
             // Double-blink red long enough to be seen before connection
             // status colors take over the LED
-            g_hardwareFault = true;
             led.setPattern(Colors::RED, LEDPattern::DOUBLE_BLINK);
             uint32_t errorUntil = millis() + 5000;
             while (millis() < errorUntil)

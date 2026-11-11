@@ -73,6 +73,7 @@ HapticController::HapticController() : _tca(TCA9548A_ADDRESS), _initialized(fals
     for (uint8_t i = 0; i < MAX_ACTUATORS; i++) {
         _fingerActive[i] = false;
         _fingerEnabled[i] = false;
+        _motorCheck[i] = MotorCheck::UNKNOWN;  // OK is 0: never leave it zeroed
     }
 }
 
@@ -507,6 +508,7 @@ uint8_t HapticController::probeMotorPresence() {
     constexpr uint8_t DRV_CTRL3_POR = 0xA0;           // closed-loop for calibration
 
     uint8_t mask = 0;
+    MotorCheck checks[MAX_ACTUATORS];
     _lastProbeDipped = false;
     Serial.println(F("[DIAG] Motor presence probe (all ports)"));
     for (uint8_t f = 0; f < MAX_ACTUATORS; f++) {
@@ -517,6 +519,7 @@ uint8_t HapticController::probeMotorPresence() {
 #endif
         if (!_fingerEnabled[f]) {
             Serial.println(F("NO DRIVER (init failed - check battery power)"));
+            checks[f] = MotorCheck::NODRIVER;
             continue;
         }
 
@@ -529,6 +532,7 @@ uint8_t HapticController::probeMotorPresence() {
             }
             if (!selectChannel(f)) {
                 Serial.println(F("MUX SELECT FAILED"));
+                checks[f] = MotorCheck::UNKNOWN;
                 continue;
             }
             // Configure for closed-loop LRA auto-calibration
@@ -591,27 +595,38 @@ uint8_t HapticController::probeMotorPresence() {
             }
             Serial.printf("PROBE TIMEOUT (raw GO=0x%02X STATUS=0x%02X FB=0x%02X)\n",
                           rawGo, rawStatus, rawFb);
+            checks[f] = MotorCheck::UNKNOWN;
             if (rawFb != 0xAA && (rawFb & DRV_FB_N_ERM_LRA) == 0) {
                 _lastProbeDipped = true;
             }
         } else if (dipped) {
             Serial.printf("SUPPLY DIP (chip reset mid-probe, STATUS=0x%02X) - check battery\n",
                           status);
+            checks[f] = MotorCheck::UNKNOWN;
             _lastProbeDipped = true;
         } else if (status & DRV_STATUS_DIAG_RESULT) {
             Serial.printf("NO MOTOR (open load, STATUS=0x%02X)\n", status);
+            checks[f] = MotorCheck::OPEN;
         } else {
             Serial.printf("MOTOR PRESENT (STATUS=0x%02X)\n", status);
+            checks[f] = MotorCheck::OK;
             mask |= static_cast<uint8_t>(1u << f);
         }
     }
     if (_lastProbeDipped) {
         // Supply sagged under cal drive: every verdict this pass is suspect.
-        // Keep the previous mask instead of committing garbage.
+        // Keep the previous mask instead of committing garbage, and report
+        // every port as unknown.
         Serial.println(F("[DIAG] presence probe UNRELIABLE (supply dip) - results discarded"));
+        for (uint8_t f = 0; f < MAX_ACTUATORS; f++) {
+            _motorCheck[f] = MotorCheck::UNKNOWN;
+        }
         return getMotorPresentCount();
     }
     _motorPresentMask = mask;
+    for (uint8_t f = 0; f < MAX_ACTUATORS; f++) {
+        _motorCheck[f] = checks[f];
+    }
     uint8_t count = getMotorPresentCount();
     Serial.printf("[DIAG] presence probe done: %u/%u motors detected\n",
                   count, MAX_ACTUATORS);

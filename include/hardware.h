@@ -24,6 +24,7 @@
 #include "config.h"
 #include "types.h"
 #include "vbat_estimator.h"
+#include "motor_check.h"
 
 // =============================================================================
 // HAPTIC CONTROLLER
@@ -134,7 +135,10 @@ public:
      * Runs LRA auto-calibration (MODE=7) per channel: cal must measure the
      * motor's resonant back-EMF to converge, so an empty JST fails
      * (DIAG_RESULT set). Prints PRESENT / NO MOTOR per port, restores the
-     * LRA open-loop run config, and stores the result (see isMotorPresent()).
+     * LRA open-loop run config, and stores the result (see isMotorPresent()
+     * and getMotorCheck()). A supply dip keeps the previous presence mask and
+     * sets every port's check to UNKNOWN; a busy bus changes neither.
+     * The result is a warning only: auto-cal can misreport a working motor.
      * Blocking (up to ~2s per channel); stop therapy before calling.
      * Populated motors buzz ~0.5s each; needs battery power.
      * @return Number of motors detected
@@ -161,6 +165,14 @@ public:
      * discarded as unreliable and no motor-fault conclusion should be drawn.
      */
     bool lastProbeSupplyDipped() const { return _lastProbeDipped; }
+
+    /**
+     * @brief Per-port verdict of the last probeMotorPresence() (UNKNOWN
+     *        before any probe, or for an out-of-range finger)
+     */
+    MotorCheck getMotorCheck(uint8_t finger) const {
+        return finger < MAX_ACTUATORS ? _motorCheck[finger] : MotorCheck::UNKNOWN;
+    }
 
     /**
      * @brief Print finger 0's key DRV2605 registers with a tag (QA helper)
@@ -257,6 +269,7 @@ private:
     bool _fingerEnabled[MAX_ACTUATORS];
     uint8_t _motorPresentMask = 0;  // bit f set = probeMotorPresence found a motor
     bool _lastProbeDipped = false;  // last probe saw a mid-cal chip reset (supply dip)
+    MotorCheck _motorCheck[MAX_ACTUATORS];  // per-port probe verdict (UNKNOWN until probed)
     bool _initialized;
     int8_t _preSelectedFinger;  // Tracks which finger has mux channel pre-selected (-1 = none)
     uint16_t _lastFrequency[MAX_ACTUATORS] = {0};  // Cached frequency per finger (skip I2C if unchanged)
