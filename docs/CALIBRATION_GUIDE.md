@@ -827,7 +827,7 @@ assembled glove. Stop any running session first (they do it automatically).
 | --- | --- |
 | `MOTOR_DIAG` | Buzzes every channel alone (600 ms, full amplitude) and checks a per-chip reset canary afterward. `*** CHIP RESET` means the supply dipped mid-drive — check the battery (missing, discharged, or miswired). |
 | `MOTOR_TEST:<n>` | Drives finger `n` (`0`–`4`, 0 = index) for 2 s and prints the mux channel it used on v2, or the silk port on v3. Finger N is channel 3 − N on v2 and 4 − N on v3, so `MOTOR_TEST:0` drives the index finger on channel 3 or 4. |
-| `MOTOR_PRESENT` | Open-load probe: runs LRA auto-calibration per channel (each present motor buzzes ~0.5 s) and prints `MOTOR PRESENT` / `NO MOTOR` per finger, with its channel on v2 or its silk port on v3. Also refreshes the therapy engine's active-finger map. Runs automatically at every boot; needs battery power (`SUPPLY DIP` output means the results were discarded). |
+| `MOTOR_PRESENT` | Open-load probe: runs LRA auto-calibration per channel (each present motor buzzes ~0.5 s) and prints `MOTOR PRESENT` / `NO MOTOR` per finger, with its channel on v2 or its silk port on v3. On v3 it also refreshes the boot motor check (`INFO` `MOTP`, and `MOTS` via `MOTOR_STATUS` on a linked SECONDARY); session patterns keep the boot thumb decision. Runs automatically at every v3 boot; needs battery power (`SUPPLY DIP` output means the results were discarded). |
 
 Wiring facts:
 
@@ -843,10 +843,14 @@ Wiring facts:
   open circuit (unplugged JST or broken LRA lead). `MOTOR_PRESENT` detects
   the same condition electrically via LRA auto-calibration (MODE=7), which
   cannot converge on an open port.
-- At boot, the presence probe feeds pattern generation: with 4 of 5 motors
-  attached, both gloves run 4-buzz macrocycles that skip the empty port.
-  Fewer than 4 motors = red double-blink LED for 5 s at boot, then the glove
-  enters `ERROR` (red slow blink) and refuses sessions until reboot.
+- At boot, the presence probe runs as the motor check. It decides only
+  whether the thumb plays: session patterns always use index to pinky, plus
+  the thumb when the PRIMARY's check found it, so a 4-tactor glove runs
+  4-buzz macrocycles. Any of index to pinky `OPEN` or `NODRIVER`, or the thumb
+  `NODRIVER`, prints `[WARN] Motor check: <n>/5 motors responded - check JST
+  connections` and shows a red double-blink LED for 5 s, then boot continues
+  normally. It's a warning, never a fault: an empty thumb port is normal, and
+  `UNKNOWN` (including a probe discarded after a supply dip) never warns.
 
 ## Low-battery threshold
 

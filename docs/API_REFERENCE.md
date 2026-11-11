@@ -106,7 +106,7 @@ enum class TherapyState : uint8_t {
 | `RUNNING` | Actively delivering therapy |
 | `PAUSED` | Therapy temporarily suspended by user |
 | `STOPPING` | Graceful shutdown in progress |
-| `ERROR` | Boot hardware fault (no motor driver, no motor task, or v3 fewer than 4 motors); motors stopped and sessions refused until reboot |
+| `ERROR` | Boot hardware fault (no motor driver or no motor task); motors stopped and sessions refused until reboot |
 | `LOW_BATTERY` | Session running on a low battery (two readings <3.8V, `BATTERY_LOW_VOLTAGE`); behaves like `RUNNING` |
 | `CRITICAL_BATTERY` | Battery critical (two readings <3.3V): motors stopped until the glove charges to ≥3.8V, then `IDLE` |
 | `CONNECTION_LOST` | PRIMARY-SECONDARY connection lost (from READY, RUNNING, LOW_BATTERY or PAUSED) |
@@ -651,6 +651,7 @@ public:
     bool isMotorPresent(uint8_t finger) const;
     uint8_t getMotorPresentCount() const;
     bool lastProbeSupplyDipped() const;
+    MotorCheck getMotorCheck(uint8_t finger) const;  // Per-port result of the last probe (UNKNOWN before any)
     void diagSweep();                                // serial MOTOR_DIAG
     void diagRegs(const char* tag);
     void diagDriveOne(uint8_t finger);               // serial MOTOR_TEST:<n>
@@ -1028,7 +1029,7 @@ public:
     // Adaptive lead time callback (defaults to the 70 ms minimum when unset)
     void setGetLeadTimeCallback(GetLeadTimeCallback callback);
 
-    // Physical fingers patterns are generated over (shrunk when motor ports are empty)
+    // Physical fingers patterns are generated over (v3: index to pinky, plus the thumb when the boot motor check found it)
     void setActiveFingers(const uint8_t* fingers, uint8_t count);
     uint8_t getActiveFingerCount() const;
 
@@ -1652,6 +1653,8 @@ public:
     void setGloveErrorCallback(GloveErrorCallback callback);
     // Set callback reporting each glove's level for INFO/BATTERY BATLP/BATLS
     void setBatteryLevelCallback(BatteryLevelCallback callback);
+    // Set callback returning a glove's boot motor check tokens for INFO MOTP/MOTS (v3), else nullptr
+    void setMotorCheckCallback(MotorCheckCallback callback);
 
     // SECONDARY battery reply (deferred INFO/BATTERY responses)
     void setSecondaryBatteryVoltage(float voltage);
@@ -1735,7 +1738,7 @@ class LEDController {
 | `BLINK_SLOW`    | 1000 ms on / 1000 ms off        | ERROR, no role configured        |
 | `BLINK_URGENT`  | 150 ms on / 150 ms off          | CRITICAL_BATTERY, critical level |
 | `BLINK_CONNECT` | 250 ms on / 250 ms off          | CONNECTING, CONNECTION_LOST      |
-| `DOUBLE_BLINK`  | two quick blinks, then pause    | missing/failed motor(s) at boot  |
+| `DOUBLE_BLINK`  | two quick blinks, then pause    | motor check warning at boot (v3) |
 | `OFF`           | off                             | RUNNING with "LED off" enabled   |
 
 ### Boot Sequence Patterns (`src/main.cpp`)
@@ -1746,7 +1749,7 @@ class LEDController {
 | LED initialized                         | Blue   | `BLINK_CONNECT` |
 | Hardware init success                   | Cyan   | `BLINK_CONNECT` |
 | Hardware init failed                    | Red    | `BLINK_SLOW`    |
-| Fewer than 4 motors detected (5 s, v3 only, then `ERROR`) | Red | `DOUBLE_BLINK` |
+| Motor check warning (5 s, v3 only; boot continues) | Red | `DOUBLE_BLINK` |
 | BLE ready (enters IDLE)                 | Blue   | `BREATHE_SLOW`  |
 | BLE init failed                         | Red    | `BLINK_SLOW`    |
 | Glove pair connected (enters READY)     | Green  | `SOLID`         |

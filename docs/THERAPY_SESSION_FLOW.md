@@ -91,7 +91,7 @@ stateDiagram-v2
 | `RUNNING`            | Active therapy session, motors executing patterns       |
 | `PAUSED`             | Session paused, motors idle, timing preserved           |
 | `STOPPING`           | Stop in progress; `STOPPED` follows immediately, so it lands in IDLE (then READY if the pair is still connected) |
-| `ERROR`              | Boot hardware fault (no motor driver, no motor task, or v3 fewer than 4 motors); red slow blink, sessions refused, held until reboot. Nothing fires `EMERGENCY_STOP` |
+| `ERROR`              | Boot hardware fault (no motor driver or no motor task; the v3 boot motor check only warns); red slow blink, sessions refused, held until reboot. Nothing fires `EMERGENCY_STOP` |
 | `LOW_BATTERY`        | Session running on a low battery (this glove below 3.8V); behaves like RUNNING, orange slow pulse |
 | `CRITICAL_BATTERY`   | This glove's battery critical; motors stopped, red urgent blink, until it charges to 3.8V |
 | `CONNECTION_LOST`    | Glove link lost; therapy stopped, purple blink, waits up to 30s for the peer |
@@ -489,6 +489,7 @@ graph TD
 
     B --> B0["IDENTIFY:SECONDARY<br/>(SECONDARY → PRIMARY on connect)"]
     B --> B5["GLOVE_ERROR<br/>(SECONDARY → PRIMARY after IDENTIFY<br/>and every battery check,<br/>boot hardware fault only)"]
+    B --> B6["MOTOR_STATUS:tokens<br/>(v3: SECONDARY → PRIMARY after IDENTIFY<br/>and every battery check,<br/>boot motor check, warning only)"]
     B --> B1["START_SESSION:seq|ts"]
     B --> B2["PAUSE_SESSION:seq|ts"]
     B --> B3["RESUME_SESSION:seq|ts"]

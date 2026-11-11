@@ -83,16 +83,26 @@ physically attached. Expect each populated motor to buzz ~0.5s at every boot
 the probe never runs at boot; it is available on demand via the
 `MOTOR_PRESENT` serial command.
 
-- Detected motors feed the therapy engine's active-finger map: patterns are
-  generated over present fingers only, and those indices reach SECONDARY
-  inside macrocycle events, so both gloves skip a motor missing on PRIMARY.
-- **Fewer than 4 motors detected** = assembly fault: logged over serial and
-  indicated by a red double-blink LED for 5 seconds. Boot continues, then the
-  glove enters `ERROR` (red slow blink) and refuses sessions until reboot.
+- The probe records a result per finger: `OK`, `OPEN` (no motor seen on the
+  port), `NODRIVER` (the port's DRV2605 never initialized) or `UNKNOWN`. The
+  app reads them as `INFO` `MOTP` (this glove) and `MOTS` (the SECONDARY,
+  which sends its list as `MOTOR_STATUS:<tokens>`).
+- It's a **warning, never a fault**: auto-calibration can misreport a working
+  motor. It warns when any of index to pinky reads `OPEN` or `NODRIVER`, or
+  the thumb reads `NODRIVER`: `[WARN] Motor check: <n>/5 motors responded -
+  check JST connections` on serial and a red double-blink LED for 5 seconds,
+  then boot continues normally. An empty thumb port on a 4-tactor glove is
+  normal and doesn't warn, and `UNKNOWN` never warns.
+- Session patterns always play index to pinky; the thumb joins only when the
+  PRIMARY's boot check found it. The PRIMARY's physical finger indices reach
+  SECONDARY inside macrocycle events, so both gloves use the same set.
 - If the supply dips during the probe (USB-only power, no battery), the
-  results are discarded as unreliable, a warning is logged, and no fault is
-  indicated.
+  results are discarded with `[WARN] Motor check skipped: supply dipped during
+  probe (USB-only power?)`, every finger reads `UNKNOWN`, nothing else warns,
+  and the thumb sits out that boot.
 - The probe can be re-run at any time with the `MOTOR_PRESENT` serial command.
+  That updates `MOTP` (and, on a linked SECONDARY, resends `MOTOR_STATUS`) but
+  doesn't change session patterns.
 
 ---
 
@@ -419,6 +429,7 @@ if (deviceRole == DeviceRole::SECONDARY && type == ConnectionType::PRIMARY)
     {
         ble.sendToPrimary("GLOVE_ERROR");  // the PRIMARY refuses starts while linked to us
     }
+    sendMotorStatusToPrimary();  // v3: MOTOR_STATUS:<tokens>, for the app's INFO MOTS
     // Start keepalive timeout tracking
     lastKeepaliveReceived = millis();
 }
@@ -473,10 +484,10 @@ full pattern-timing table.
 |-------|-------|---------|-----------|---------|
 | **LED initialized** | Blue | Connect blink | 250 ms on/off | early boot, LED up |
 | **No role configured** | Orange | Slow blink | 1 s on/off | `SET_ROLE` not yet run |
-| **Missing/Failed Motor(s)** | Red | Double blink | 2 blinks/pause, shown 5 s | v3 boot probe found fewer than 4 motors |
+| **Motor check warning** | Red | Double blink | 2 blinks/pause, shown 5 s | v3: any of index to pinky `OPEN` or `NODRIVER`, or the thumb `NODRIVER`; boot continues normally |
 | **Hardware init success** | Cyan | Connect blink | 250 ms on/off | motors/mux/battery OK |
 | **Hardware init failed** | Red | Slow blink | 1 s on/off | a hardware subsystem failed (replaced by blue breathe if BLE then starts) |
-| **Boot hardware fault (`ERROR`)** | Red | Slow blink | 1 s on/off | no motor driver started, no motor task, or (v3) fewer than 4 motors; set after BLE init, held until reboot |
+| **Boot hardware fault (`ERROR`)** | Red | Slow blink | 1 s on/off | no motor driver started or no motor task; set after BLE init, held until reboot |
 | **BLE ready (enters IDLE)** | Blue | Breathe | 2 s cycle | BLE up, waiting to pair/connect |
 | **BLE init failed** | Red | Slow blink | 1 s on/off | BLE stack failed to start |
 | **Ready** | Green | Solid | - | glove pair connected, ready for therapy |
@@ -505,12 +516,13 @@ are defined in `include/config.h` (see `docs/API_REFERENCE.md#led-controller`).
 - **Red slow blink** (`Colors::RED, BLINK_SLOW`, 1 s) — a boot step failed
   (hardware or BLE init). Boot continues either way; after a hardware failure the
   LED switches to blue breathe once BLE starts, so only a BLE failure stays red.
-  Exception: a boot hardware fault (no finger's motor driver initialized, the
-  motor task couldn't be created, or the v3 probe found fewer than 4 motors)
-  puts the glove in `ERROR` once the state machine starts, which shows red slow
-  blink until reboot. A battery monitor failure isn't one.
-- **Red double-blink** (`Colors::RED, DOUBLE_BLINK`, 5 s) — v3 boot motor probe found
-  fewer than 4 motors, then boot continues and ends in `ERROR`.
+  Exception: a boot hardware fault (no finger's motor driver initialized, or the
+  motor task couldn't be created) puts the glove in `ERROR` once the state
+  machine starts, which shows red slow blink until reboot. A battery monitor
+  failure isn't one, and neither is the v3 motor check.
+- **Red double-blink** (`Colors::RED, DOUBLE_BLINK`, 5 s) — v3 boot motor check
+  warning (any of index to pinky `OPEN` or `NODRIVER`, or the thumb `NODRIVER`),
+  then boot continues normally.
 - **Orange slow blink** (`Colors::ORANGE, BLINK_SLOW`, 1 s) — no role configured
   yet (run `SET_ROLE`).
 
@@ -520,7 +532,7 @@ are defined in `include/config.h` (see `docs/API_REFERENCE.md#led-controller`).
 Boot (both roles), success:
 [blue connect-blink]   LED init
       -> [orange slow blink]    no role set (until SET_ROLE, then reboot)
-      -> [red double-blink 5s]  v3 only, if the motor probe found <4 motors
+      -> [red double-blink 5s]  v3 only, if the motor check warns (boot continues)
       -> [cyan connect-blink]   hardware init OK
       -> [blue breathe]         BLE ready, IDLE (waiting to pair)
       -> [SOLID GREEN]          glove pair connected, READY
@@ -839,7 +851,7 @@ Boot errors are printed to serial as they happen; there is no separate error log
 [ERROR] Haptic controller initialization failed
 [ERROR] Battery monitor initialization failed
 [WARNING] Some hardware initialization failed
-[ERROR] Missing/failed motor(s): 3/5 detected (minimum 4) - check JST connections
+[WARN] Motor check: 3/5 motors responded - check JST connections
 [ERROR] Motor task creation failed - motors will not function
 [ERROR] BLE begin() failed
 [FAILURE] BLE initialization failed
@@ -857,7 +869,7 @@ Boot errors are printed to serial as they happen; there is no separate error log
 | USB serial wait | Up to 3s (ends as soon as a serial host opens the port) | `setup()` |
 | Post-role delay | 500ms | `setup()` |
 | Motor presence probe (v3 only) | ~0.5s per motor (~2-5s) | `initializeHardware()` |
-| Missing-motor indication (v3, < 4 motors) | 5s | `initializeHardware()` |
+| Motor check warning (v3, problem finger) | 5s | `initializeHardware()` |
 | SECONDARY identification | Up to 1s (`IDENTIFY_TIMEOUT_MS`) | BLE manager |
 | Initial clock sync | ~350ms cold (5 samples at 70ms), ~210ms warm (3 samples) | `config.h` |
 | Phone window before auto-start | 30s after the SECONDARY connects | `STARTUP_WINDOW_MS` |
@@ -966,7 +978,7 @@ The 7.5-10ms range applies to the glove link. The phone link is requested at 30-
 **Possible Causes**:
 1. BLE stack failed to start (`[FAILURE] BLE initialization failed`)
 2. SECONDARY could not start scanning (`[ERROR] Failed to start scanning`)
-3. Boot hardware fault: the glove is in `ERROR` until reboot (`[ERROR] Haptic controller initialization failed`, `[ERROR] Motor task creation failed`, or on v3 `[ERROR] Missing/failed motor(s)`). It still pairs, but `SESSION_START` is refused with `Primary glove error` (or `Secondary glove error` when it is the SECONDARY)
+3. Boot hardware fault: the glove is in `ERROR` until reboot (`[ERROR] Haptic controller initialization failed`, or `[ERROR] Motor task creation failed`; the v3 motor check's `[WARN]` never causes one). It still pairs, but `SESSION_START` is refused with `Primary glove error` (or `Secondary glove error` when it is the SECONDARY)
 
 A battery monitor init failure also shows a slow red blink, but only until BLE starts; check serial for `[ERROR]` lines even when the LED looks normal.
 
@@ -1091,8 +1103,14 @@ void setup()
     deferredQueue.setExecutor(executeDeferredWork);
 
     platformEnableLoopWatchdog();  // v3: loop() under the 5 s task watchdog; no-op on nRF
+
+    Serial.println(F("[READY]"));  // the Updater waits for this before sending settings
 }
 ```
+
+`[READY]` is the last line of `setup()` on both boards and in both roles. An
+unconfigured glove prints it after the `DEVICE NOT CONFIGURED` banner instead,
+before waiting for `SET_ROLE`.
 
 ---
 
