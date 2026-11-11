@@ -1603,7 +1603,9 @@ BLE callbacks never touch I2C. A disconnect callback signals `safetyShutdownSema
 
 **Level 2: Recoverable Errors** (Log + Continue)
 
-- Macrocycle with an implausible `baseTime` (>5s from now) -> Log `[ERROR]`, send `MC_ACK` status `1`, skip it; the PRIMARY skips it too
+- Macrocycle with an implausible `baseTime` (>5s from now) -> Log `[ERROR]`, send `MC_ACK` status `1`, skip it; the PRIMARY skips it too. The same status is sent when every event is late or the frame fails to parse
+- Macrocycle due while the PRIMARY has no clock offset (sync not converged) -> Not sent, skipped on both gloves
+- 5 macrocycles in a row rejected or skipped for lack of sync (`MACROCYCLE_REJECT_LIMIT`) -> Session ends with reason `ERROR`
 - Macrocycle that cannot be queued for the SECONDARY -> Skipped on both gloves
 - SECONDARY battery query unanswered within 1s -> Reply with `BATS:0.00`
 - DRV2605 reset by a supply brownout -> Detected by `verifyAndHeal()`, all drivers reconfigured
@@ -1616,7 +1618,7 @@ BLE callbacks never touch I2C. A disconnect callback signals `safetyShutdownSema
 - Command during session -> `ERROR:Cannot modify parameters during active session`
 - `SESSION_START` while the PRIMARY is in `ERROR` -> `ERROR:Primary glove error`; while the linked SECONDARY reported `GLOVE_ERROR` -> `ERROR:Secondary glove error` (both checked before the SECONDARY link)
 - `SESSION_START` while the SECONDARY isn't connected -> `ERROR:Secondary not connected` (therapy never runs on the PRIMARY alone)
-- `SESSION_START` while the SECONDARY is connected but clock sync is not yet valid -> `ERROR:Sync not ready` (accepted with degraded timing once the SECONDARY has been connected for `SYNC_START_FALLBACK_MS`, 10s)
+- `SESSION_START` while the SECONDARY is connected but clock sync is not yet valid -> `ERROR:Sync not ready` (accepted once the SECONDARY has been connected for `SYNC_START_FALLBACK_MS`, 10s; both gloves stay silent until sync is valid, and the session ends with reason `ERROR` if 5 macrocycles in a row are skipped)
 - `SESSION_START` the state machine won't move to `RUNNING` -> `ERROR:Cannot start in current state` (therapy doesn't start)
 
 Every menu reply, success or error, begins with a `CMD:<command>` line naming the command it answers. Only `ERROR:Invalid command format` has no `CMD:` line, since the command was never parsed.
@@ -1638,7 +1640,7 @@ void MenuController::sendError(const char* message) {
 | BLE scan (SECONDARY) | None         | Scans until the PRIMARY is found | `ble_manager_nrf52.cpp` / `ble_manager_esp32.cpp` |
 | Keepalive (PING/PONG)| 6s           | Connection lost (purple LED), keep scanning/advertising | `main.cpp` |
 | Connection lost      | 30s          | Return to IDLE    | `main.cpp`          |
-| Phone `SESSION_START` before clock sync | 10s after SECONDARY connects | Start with degraded timing | `main.cpp` (`phoneStartSyncReady()`) |
+| Phone `SESSION_START` before clock sync | 10s after SECONDARY connects | Start anyway; no macrocycle plays until sync is valid, and 5 skipped in a row end the session | `main.cpp` (`phoneStartSyncReady()`) |
 | SECONDARY battery query | 1s        | Reply `BATS:0.00` | `menu_controller.cpp` |
 | BLE receive          | Non-blocking | Callback-based    | `ble_manager_nrf52.cpp` / `ble_manager_esp32.cpp` |
 

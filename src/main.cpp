@@ -86,20 +86,22 @@ volatile BatteryLevel g_secondaryBatteryLevel = BatteryLevel::NORMAL;
 bool g_hardwareFault = false;
 volatile bool g_secondaryFault = false;
 
-// MC_ACK results (PRIMARY). The BLE task only stashes them; loop() acts and
-// prints. g_macrocycleRejected: the SECONDARY rejected g_rejectedMacrocycleSeq.
-// loop() skips it here too only if it's still the last macrocycle sent
-// (g_lastSentMacrocycleSeq, loop task only), so a late rejection never clears
-// a newer macrocycle's events.
-volatile uint32_t g_lastSentMacrocycleSeq = 0;
-volatile uint32_t g_rejectedMacrocycleSeq = 0;
-volatile bool g_macrocycleRejected = false;
-// ponytail: the stash fields can tear across two ACKs; they're log-only and
-// ACKs arrive hundreds of ms apart
-volatile uint32_t g_ackSeq = 0;
-volatile int32_t g_ackStatus = 0;
-volatile int32_t g_ackMarginMs = 0;
-volatile bool g_ackPending = false;
+// Latest MC_ACK (PRIMARY). The BLE task only stashes it; loop() takes it, acts
+// and prints. Both sides copy the whole struct inside a critical section.
+// ponytail: one slot. A second ACK before loop() runs replaces the first,
+// which by then is about an older macrocycle than the last one sent
+struct MacrocycleAckStash {
+    uint32_t seq;
+    int32_t marginMs;
+    MacrocycleAckStatus status;
+    bool pending;
+};
+MacrocycleAckStash g_ackStash = {};
+// Loop task only. A skip applies only to the last macrocycle sent, so a late
+// ACK never clears a newer macrocycle's events
+uint32_t g_lastSentMacrocycleSeq = 0;
+uint64_t g_lastSentMacrocycleBaseUs = 0;
+uint8_t g_consecutiveRejections = 0;  // rejected, or never sent for lack of clock sync
 
 uint32_t lastKeepalive = 0;        // Time of last keepalive PING sent (PRIMARY)
 uint32_t lastStatusPrint = 0;
@@ -906,31 +908,67 @@ void loop()
         lateDropsReported = lateDrops;
     }
 
-    // Act on MC_ACKs stashed by the BLE task (PRIMARY)
-    if (g_macrocycleRejected) {
-        g_macrocycleRejected = false;
-        platformMemoryBarrier();
-        const uint32_t rejectedSeq = g_rejectedMacrocycleSeq;
-        if (rejectedSeq == g_lastSentMacrocycleSeq) {
-            activationQueue.clearActivations();
-            Serial.printf("[MACROCYCLE] SECONDARY rejected seq=%lu - skipping it on both gloves\n",
-                          static_cast<unsigned long>(rejectedSeq));
-        }
+    // Act on the MC_ACK stashed by the BLE task (PRIMARY)
+    MacrocycleAckStash ack;
+    {
+        PLATFORM_CRITICAL_ENTER();
+        ack = g_ackStash;
+        g_ackStash.pending = false;
+        PLATFORM_CRITICAL_EXIT();
     }
-    if (g_ackPending) {
-        g_ackPending = false;
-        const uint32_t ackSeq = g_ackSeq;
-        const int32_t ackStatus = g_ackStatus;
-        const int32_t ackMarginMs = g_ackMarginMs;
-        if (ackStatus == static_cast<int32_t>(MacrocycleAckStatus::SCHEDULED) &&
-            ackMarginMs < MACROCYCLE_ACK_LOW_MARGIN_MS) {
+    if (!therapy.isRunning()) {
+        g_consecutiveRejections = 0;
+    }
+    if (ack.pending) {
+        const bool rejected = ack.status == MacrocycleAckStatus::REJECTED;
+        // A bench TEST keeps playing on this glove when the SECONDARY refuses
+        const bool skip = rejected ||
+            (ack.status == MacrocycleAckStatus::REFUSED && !therapy.isTestMode());
+        const char* verb = rejected ? "rejected" : "refused";
+        if (skip && ack.seq != g_lastSentMacrocycleSeq) {
+            Serial.printf("[WARN] SECONDARY %s seq=%lu too late to skip - it played on this glove only\n",
+                          verb, static_cast<unsigned long>(ack.seq));
+        } else if (skip) {
+            activationQueue.clearActivations();
+            if (static_cast<int64_t>(getMicros() - g_lastSentMacrocycleBaseUs) > 0) {
+                Serial.printf("[WARN] SECONDARY %s seq=%lu after it started - dropping the rest of it\n",
+                              verb, static_cast<unsigned long>(ack.seq));
+            } else {
+                Serial.printf("[MACROCYCLE] SECONDARY %s seq=%lu - skipping it on both gloves\n",
+                              verb, static_cast<unsigned long>(ack.seq));
+            }
+        }
+
+        // Refusals don't count: they end through the battery and fault paths
+        if (ack.status == MacrocycleAckStatus::SCHEDULED) {
+            g_consecutiveRejections = 0;
+        } else if (rejected && g_consecutiveRejections < UINT8_MAX) {
+            g_consecutiveRejections++;
+        }
+
+        if (ack.status == MacrocycleAckStatus::SCHEDULED &&
+            ack.marginMs < MACROCYCLE_ACK_LOW_MARGIN_MS) {
             Serial.printf("[WARN] MC_ACK seq=%lu margin=%ldms\n",
-                          static_cast<unsigned long>(ackSeq), static_cast<long>(ackMarginMs));
+                          static_cast<unsigned long>(ack.seq), static_cast<long>(ack.marginMs));
         }
         if (profiles.getDebugMode()) {
-            Serial.printf("[MACROCYCLE] ACK seq=%lu status=%ld margin=%ldms\n",
-                          static_cast<unsigned long>(ackSeq), static_cast<long>(ackStatus),
-                          static_cast<long>(ackMarginMs));
+            Serial.printf("[MACROCYCLE] ACK seq=%lu status=%u margin=%ldms\n",
+                          static_cast<unsigned long>(ack.seq), static_cast<unsigned>(ack.status),
+                          static_cast<long>(ack.marginMs));
+        }
+    }
+
+    // Nothing but skipped macrocycles (rejected, or never sent for lack of
+    // clock sync) means no stimulation: end the session rather than let it
+    // count silent time
+    if (g_consecutiveRejections >= MACROCYCLE_REJECT_LIMIT && therapy.isRunning()) {
+        g_consecutiveRejections = 0;
+        Serial.printf("[ERROR] %u macrocycles in a row skipped - stopping therapy\n",
+                      MACROCYCLE_REJECT_LIMIT);
+        if (therapy.isTestMode()) {
+            stopTherapyTest();
+        } else {
+            stopSessionFromPrimary(SessionEndReason::ERROR);
         }
     }
 
@@ -2304,18 +2342,22 @@ void onBLEMessage(uint16_t connHandle, const char *message, uint64_t rxTimestamp
             lastKeepaliveReceived = millis();
             g_lastMacrocycleReceivedMs = millis();
 
+            // Every macrocycle gets one ACK saying what this glove did with it
+            auto sendAckFor = [](uint32_t seq, MacrocycleAckStatus status, int32_t marginMs) {
+                SyncCommand ackCmd = SyncCommand::createMacrocycleAck(seq, status, marginMs);
+                char ackBuffer[64];  // worst case ~52 chars; serializeData() truncates silently
+                if (ackCmd.serialize(ackBuffer, sizeof(ackBuffer)))
+                {
+                    ble.sendToPrimary(ackBuffer);
+                }
+            };
+
             // Parse macrocycle from V2 format (includes clock offset)
             Macrocycle mc;
             if (SyncCommand::deserializeMacrocycle(message, strlen(message), mc))
             {
-                // Every macrocycle gets one ACK saying what this glove did with it
                 auto sendAck = [&](MacrocycleAckStatus status, int32_t marginMs) {
-                    SyncCommand ackCmd = SyncCommand::createMacrocycleAck(mc.sequenceId, status, marginMs);
-                    char ackBuffer[64];  // worst case ~52 chars; serializeData() truncates silently
-                    if (ackCmd.serialize(ackBuffer, sizeof(ackBuffer)))
-                    {
-                        ble.sendToPrimary(ackBuffer);
-                    }
+                    sendAckFor(mc.sequenceId, status, marginMs);
                 };
 
                 // Apply clock offset from PRIMARY (V2 format)
@@ -2407,6 +2449,10 @@ void onBLEMessage(uint16_t connHandle, const char *message, uint64_t rxTimestamp
                 uint8_t validEvents = 0;
                 uint8_t lastValidIndex = 0;
                 uint8_t lateEvents = 0;
+                // Margin for the ACK: now to the macrocycle's first event,
+                // late ones included, so a frame that missed its first event
+                // reports a negative margin
+                int64_t marginUs = INT64_MAX;
 
                 // First pass: count valid events to mark the last one
                 for (uint8_t i = 0; i < mc.eventCount; i++)
@@ -2416,6 +2462,8 @@ void onBLEMessage(uint16_t connHandle, const char *message, uint64_t rxTimestamp
                     {
                         continue;
                     }
+                    marginUs = std::min(marginUs, static_cast<int64_t>(
+                        localBaseTime + (evt.deltaTimeMs * 1000ULL) - stageNowUs));
                     if (isLate(evt))
                     {
                         lateEvents++;
@@ -2438,8 +2486,6 @@ void onBLEMessage(uint16_t connHandle, const char *message, uint64_t rxTimestamp
                 }
 
                 // Second pass: stage all valid events
-                uint8_t stagedCount = 0;
-                uint64_t earliestStagedUs = UINT64_MAX;
                 for (uint8_t i = 0; i < mc.eventCount; i++)
                 {
                     const MacrocycleEvent& evt = mc.events[i];
@@ -2454,29 +2500,33 @@ void onBLEMessage(uint16_t connHandle, const char *message, uint64_t rxTimestamp
 
                     motorEventBuffer.stage(localActivateTime, evt.finger, evt.amplitude,
                                            evt.durationMs, freqHz, isLast);
-                    stagedCount++;
-                    if (localActivateTime < earliestStagedUs)
-                    {
-                        earliestStagedUs = localActivateTime;
-                    }
                 }
 
                 // Note: scheduleNext() will be called by main loop after forwarding events
                 // Serial.printf moved to main loop to avoid ISR context I/O
 
-                // Send ACK immediately. Margin: receipt to the first scheduled
-                // event (0 when every event was late or invalid)
-                int32_t marginMs = 0;
-                if (stagedCount > 0)
+                // Send ACK immediately. Nothing playable (every event late or
+                // invalid): reject it so the PRIMARY doesn't play it alone
+                if (validEvents > 0)
                 {
-                    marginMs = static_cast<int32_t>(
-                        (static_cast<int64_t>(earliestStagedUs) - static_cast<int64_t>(rxTimestamp)) / 1000);
+                    sendAck(MacrocycleAckStatus::SCHEDULED, static_cast<int32_t>(marginUs / 1000));
                 }
-                sendAck(MacrocycleAckStatus::SCHEDULED, marginMs);
+                else
+                {
+                    sendAck(MacrocycleAckStatus::REJECTED, 0);
+                }
             }
             else
             {
                 Serial.println(F("[ERROR] Failed to parse MACROCYCLE"));
+                // Reject it if the sequence ID is still readable, so the
+                // PRIMARY skips it too
+                char* seqEnd;
+                const uint32_t seq = strtoul(message + 3, &seqEnd, 10);
+                if (seqEnd != message + 3 && *seqEnd == '|')
+                {
+                    sendAckFor(seq, MacrocycleAckStatus::REJECTED, 0);
+                }
             }
         }
         return;
@@ -2485,31 +2535,27 @@ void onBLEMessage(uint16_t connHandle, const char *message, uint64_t rxTimestamp
     // Handle MACROCYCLE_ACK messages
     if (strncmp(message, "MC_ACK:", 7) == 0)
     {
-        if (deviceRole == DeviceRole::PRIMARY)
+        // Only the SECONDARY's ACKs count: an unidentified central must not be
+        // able to clear the queue or feed the keepalive
+        if (deviceRole == DeviceRole::PRIMARY &&
+            ble.getConnectionType(connHandle) == ConnectionType::SECONDARY)
         {
             lastSecondaryKeepalive = millis();
             // No Serial here (BLE task): stash the result for loop()
             SyncCommand cmd;
-            if (!cmd.deserialize(message))
+            if (!cmd.deserialize(message) || !cmd.hasData("1"))
             {
                 return;
             }
-            const uint32_t seq = cmd.getSequenceId();
-            const int32_t status = cmd.getDataInt("0");
-            if (status == static_cast<int32_t>(MacrocycleAckStatus::REJECTED))
+            MacrocycleAckStash stash = {};
+            stash.seq = cmd.getSequenceId();
+            stash.status = static_cast<MacrocycleAckStatus>(cmd.getDataInt("0"));
+            stash.marginMs = cmd.getDataInt("1");
+            stash.pending = true;
             {
-                // loop() checks it against the last macrocycle sent
-                g_rejectedMacrocycleSeq = seq;
-                platformMemoryBarrier();
-                g_macrocycleRejected = true;
-            }
-            // No margin field: nothing to report (avoids a false low-margin warning)
-            if (cmd.hasData("1"))
-            {
-                g_ackSeq = seq;
-                g_ackStatus = status;
-                g_ackMarginMs = cmd.getDataInt("1");
-                g_ackPending = true;
+                PLATFORM_CRITICAL_ENTER();
+                g_ackStash = stash;
+                PLATFORM_CRITICAL_EXIT();
             }
         }
         return;
@@ -2829,8 +2875,23 @@ void onSendMacrocycle(const Macrocycle& macrocycle)
     // loop() only acts on a SECONDARY rejection of this sequence ID, so a
     // late rejection of an older macrocycle never clears this one's events
     g_lastSentMacrocycleSeq = macrocycle.sequenceId;
+    g_lastSentMacrocycleBaseUs = macrocycle.baseTime;
     if (deviceRole != DeviceRole::PRIMARY || !ble.isSecondaryConnected())
     {
+        return;
+    }
+
+    // No clock offset to send (sync not converged yet): the SECONDARY would
+    // play at an arbitrary time, so neither glove plays this one
+    if (!syncProtocol.hasUsableOffset())
+    {
+        g_skipLocalMacrocycle = true;
+        if (g_consecutiveRejections < UINT8_MAX)
+        {
+            g_consecutiveRejections++;
+        }
+        Serial.printf("[MACROCYCLE] No clock sync - skipping seq=%lu on both gloves\n",
+                      (unsigned long)macrocycle.sequenceId);
         return;
     }
 
@@ -3040,7 +3101,7 @@ void startTherapyTest()
     if (deviceRole == DeviceRole::PRIMARY && ble.isSecondaryConnected() &&
         !syncProtocol.isClockSyncValid())
     {
-        Serial.println(F("[WARN] Starting test with invalid sync - timing may be misaligned"));
+        Serial.println(F("[WARN] Starting test with invalid sync - motors stay off until it is valid"));
     }
 
     // Get current profile
@@ -3214,8 +3275,9 @@ void autoStartTherapy()
     {
         if (++g_autoStartRetryCount > 10)
         {
-            // Give up waiting for sync after 10 seconds - start anyway (degraded mode)
-            Serial.println(F("[AUTO] Sync not valid after 10s - starting therapy (timing may be degraded)"));
+            // Give up waiting for sync after 10 seconds - start anyway; macrocycles
+            // are skipped until sync is valid
+            Serial.println(F("[AUTO] Sync not valid after 10s - starting therapy (motors stay off until it is valid)"));
             g_autoStartRetryCount = 0;
             // Fall through to start therapy
         }
@@ -3589,7 +3651,7 @@ void resetDevice()
 }
 
 // Gate for a phone SESSION_START while the SECONDARY is connected. Same
-// degraded-mode fallback as autoStartTherapy(): if sync still hasn't
+// fallback as autoStartTherapy(): if sync still hasn't
 // converged SYNC_START_FALLBACK_MS after the glove connected (noisy RF,
 // every PONG over the RTT quality threshold), start anyway rather than
 // refuse until a glove is power-cycled.
@@ -3601,7 +3663,7 @@ bool phoneStartSyncReady()
     }
     if (millis() - g_secondaryConnectedAt >= SYNC_START_FALLBACK_MS)
     {
-        Serial.println(F("[SYNC] Not valid after fallback window - starting phone session (timing may be degraded)"));
+        Serial.println(F("[SYNC] Not valid after fallback window - starting phone session (motors stay off until it is valid)"));
         return true;
     }
     return false;

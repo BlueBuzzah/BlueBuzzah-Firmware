@@ -100,8 +100,9 @@
 #define SYNC_ACTIVE_INTERVAL_MS 250       // PING cadence while therapy is running (4Hz)
                                            // Idle cadence stays KEEPALIVE_INTERVAL_MS (1Hz)
 #define SYNC_START_FALLBACK_MS 10000      // A phone SESSION_START refused "Sync not ready" starts anyway
-                                           // (degraded timing) once the SECONDARY has been connected this
-                                           // long - matches autoStartTherapy()'s 10 x 1s retries
+                                           // once the SECONDARY has been connected this long - matches
+                                           // autoStartTherapy()'s 10 x 1s retries. Macrocycles are
+                                           // skipped until sync is valid (MACROCYCLE_REJECT_LIMIT)
 #define SYNC_ACQUIRE_INTERVAL_MS 70        // PING cadence until clock sync is valid (cold or warm start):
                                            // 5 samples in ~350ms instead of ~5s at the idle rate.
                                            // Must exceed SYNC_RTT_QUALITY_THRESHOLD_US: only one PING's
@@ -148,9 +149,13 @@
 // played late: by SECONDARY when staging a frame, and by either glove's motor
 // task (PRIMARY never sends a late macrocycle either)
 #define MACROCYCLE_LATE_EVENT_TOLERANCE_US 5000
-// PRIMARY warns when an MC_ACK says SECONDARY received a macrocycle this
-// close to (or after) its first scheduled event
+// PRIMARY warns when an MC_ACK says SECONDARY had a macrocycle ready this
+// close to (or after) its first event
 constexpr int32_t MACROCYCLE_ACK_LOW_MARGIN_MS = 20;
+// PRIMARY ends the session after this many macrocycles in a row that the
+// SECONDARY rejected or that were never sent for lack of clock sync: neither
+// glove is playing anything
+constexpr uint8_t MACROCYCLE_REJECT_LIMIT = 5;
 
 // Unified keepalive + clock sync (PING/PONG)
 #define KEEPALIVE_INTERVAL_MS 1000   // 1 second between PING messages (unified keepalive + clock sync)

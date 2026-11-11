@@ -210,7 +210,7 @@ enum class SessionEndReason : uint8_t {
     STOPPED,            // Stopped by a command (phone, serial, profile change)
     BATTERY,            // Critical battery
     CONNECTION_LOST,    // Glove-to-glove link lost
-    ERROR,              // Firmware error state (reserved: nothing enters it yet)
+    ERROR,              // SECONDARY hardware fault, or it rejected every macrocycle
     POWER_OFF           // Power switch turned off (v3)
 };
 

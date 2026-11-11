@@ -850,6 +850,7 @@ void test_SimpleSyncProtocol_getCorrectedOffset_equals_filtered_offset(void) {
     // Corrected offset is the filtered (median) offset
     int64_t corrected = sync.getCorrectedOffset();
     TEST_ASSERT_EQUAL_INT64(5000, corrected);
+    TEST_ASSERT_TRUE(sync.hasUsableOffset());
 }
 
 void test_SimpleSyncProtocol_getCorrectedOffset_not_synced(void) {
@@ -858,6 +859,7 @@ void test_SimpleSyncProtocol_getCorrectedOffset_not_synced(void) {
     // Not synced - should return 0
     int64_t corrected = sync.getCorrectedOffset();
     TEST_ASSERT_EQUAL_INT64(0, corrected);
+    TEST_ASSERT_FALSE(sync.hasUsableOffset());
 }
 
 void test_SimpleSyncProtocol_getCorrectedOffset_no_extrapolation(void) {
@@ -970,10 +972,12 @@ void test_SimpleSyncProtocol_warmStart_validates_confirmatory_samples(void) {
 
     TEST_ASSERT_TRUE(sync.isWarmStartMode());
     TEST_ASSERT_FALSE(sync.isClockSyncValid());
+    TEST_ASSERT_FALSE(sync.hasUsableOffset());   // Cached offset unconfirmed
 
     // Add confirmatory samples close to the cached offset
     sync.addOffsetSample(10050);  // Within 5ms tolerance
     TEST_ASSERT_FALSE(sync.isClockSyncValid());  // Not yet valid (need 3)
+    TEST_ASSERT_TRUE(sync.hasUsableOffset());    // One confirmation is enough to send
 
     sync.addOffsetSample(9980);
     TEST_ASSERT_FALSE(sync.isClockSyncValid());  // Still need 1 more
