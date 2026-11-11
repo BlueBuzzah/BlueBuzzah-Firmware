@@ -371,7 +371,7 @@ One therapy macrocycle consists of 3 patterns (12 buzz events at 4 fingers, 15 a
 |-----------|----------|
 | Motor ON time | 100ms (configurable) |
 | Motor OFF time | 67ms (configurable) |
-| Fingers per pattern | 4 (5); profile `FINGERS`, limited to detected motors |
+| Fingers per pattern | 4 (5); profile `FINGERS`, capped at index to pinky plus the thumb when the PRIMARY's boot motor check found it |
 | Patterns per macrocycle | 3 |
 | Events per macrocycle | 12 (15): 3 patterns × fingers |
 | Pattern duration | ~668ms (~835ms) |
