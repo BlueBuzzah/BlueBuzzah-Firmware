@@ -203,7 +203,7 @@ constexpr uint32_t TEST_DURATION_SEC = 120;  // 2 minutes
 
 // LRA (Linear Resonant Actuator) parameters
 #define MIN_FREQUENCY_HZ 150            // Minimum LRA resonant frequency
-#define MAX_FREQUENCY_HZ 255            // Maximum LRA resonant frequency (v1 randrange excludes 260)
+#define MAX_FREQUENCY_HZ 255            // Maximum LRA resonant frequency
 #define DEFAULT_FREQUENCY_HZ 250        // Default/standard LRA frequency (v1 reference: 250Hz)
 
 // Therapy parameter bounds. These are the single source of truth for

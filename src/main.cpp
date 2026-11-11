@@ -3039,7 +3039,6 @@ void startTherapyTest()
     }
 
     // Start test session using profile settings (send STOP to end early)
-    therapy.setFrequencyRandomization(profile->frequencyRandomization, profile->frequencyMin, profile->frequencyMax);
     therapy.startSession(
         durationSec,
         patternType,
@@ -3225,7 +3224,6 @@ void autoStartTherapy()
     syncProtocol.resetLatency();  // Clear EMA state for fresh warmup
 
     // Start therapy session using profile settings
-    therapy.setFrequencyRandomization(profile->frequencyRandomization, profile->frequencyMin, profile->frequencyMax);
     therapy.startSession(
         durationSec,
         patternType,
