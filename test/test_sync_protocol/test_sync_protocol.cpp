@@ -1268,6 +1268,39 @@ void test_SyncCommand_createDebugFlash(void) {
     TEST_ASSERT_EQUAL_UINT32(42, cmd.getSequenceId());
 }
 
+void test_SyncCommand_createMacrocycleAck_rejected_roundtrip(void) {
+    // Format: MC_ACK:seq|<micros>|<status>|<marginMs>; margin is signed
+    SyncCommand ack = SyncCommand::createMacrocycleAck(42, MacrocycleAckStatus::REJECTED, -3);
+    char buf[64];
+    TEST_ASSERT_TRUE(ack.serialize(buf, sizeof(buf)));
+    TEST_ASSERT_EQUAL_STRING_LEN("MC_ACK:42|", buf, 10);
+    size_t len = strlen(buf);
+    TEST_ASSERT_EQUAL_STRING("|1|-3", buf + len - 5);
+
+    SyncCommand parsed;
+    TEST_ASSERT_TRUE(parsed.deserialize(buf));
+    TEST_ASSERT_EQUAL(SyncCommandType::MACROCYCLE_ACK, parsed.getType());
+    TEST_ASSERT_EQUAL_UINT32(42, parsed.getSequenceId());
+    TEST_ASSERT_EQUAL_INT32(1, parsed.getDataInt("0", -1));
+    TEST_ASSERT_EQUAL_INT32(-3, parsed.getDataInt("1", 0));
+}
+
+void test_SyncCommand_createMacrocycleAck_scheduled_roundtrip(void) {
+    SyncCommand ack = SyncCommand::createMacrocycleAck(7, MacrocycleAckStatus::SCHEDULED, 287);
+    char buf[64];
+    TEST_ASSERT_TRUE(ack.serialize(buf, sizeof(buf)));
+    TEST_ASSERT_EQUAL_STRING_LEN("MC_ACK:7|", buf, 9);
+    size_t len = strlen(buf);
+    TEST_ASSERT_EQUAL_STRING("|0|287", buf + len - 6);
+
+    SyncCommand parsed;
+    TEST_ASSERT_TRUE(parsed.deserialize(buf));
+    TEST_ASSERT_EQUAL(SyncCommandType::MACROCYCLE_ACK, parsed.getType());
+    TEST_ASSERT_EQUAL_UINT32(7, parsed.getSequenceId());
+    TEST_ASSERT_EQUAL_INT32(0, parsed.getDataInt("0", -1));
+    TEST_ASSERT_EQUAL_INT32(287, parsed.getDataInt("1", 0));
+}
+
 void test_SyncCommand_createPing(void) {
     SyncCommand cmd = SyncCommand::createPing(42);
 
@@ -2200,6 +2233,8 @@ int main(int argc, char **argv) {
     RUN_TEST(test_SyncCommand_createPongWithTimestamps);
     RUN_TEST(test_SyncCommand_createDebugFlashWithTime);
     RUN_TEST(test_SyncCommand_createDebugFlash);
+    RUN_TEST(test_SyncCommand_createMacrocycleAck_rejected_roundtrip);
+    RUN_TEST(test_SyncCommand_createMacrocycleAck_scheduled_roundtrip);
     RUN_TEST(test_SyncCommand_createPing);
     RUN_TEST(test_SyncCommand_createPong);
 

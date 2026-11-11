@@ -578,8 +578,14 @@ SyncCommand SyncCommand::createDebugFlashWithTime(uint32_t sequenceId, uint64_t 
     return cmd;
 }
 
-SyncCommand SyncCommand::createMacrocycleAck(uint32_t sequenceId) {
-    return SyncCommand(SyncCommandType::MACROCYCLE_ACK, sequenceId);
+SyncCommand SyncCommand::createMacrocycleAck(uint32_t sequenceId, MacrocycleAckStatus status,
+                                             int32_t marginMs) {
+    SyncCommand cmd(SyncCommandType::MACROCYCLE_ACK, sequenceId);
+    cmd.setData("0", static_cast<int32_t>(status));
+    // Signed setData(): an event up to MACROCYCLE_LATE_EVENT_TOLERANCE_US late is still
+    // scheduled, so the margin can be negative
+    cmd.setData("1", marginMs);
+    return cmd;
 }
 
 // =============================================================================

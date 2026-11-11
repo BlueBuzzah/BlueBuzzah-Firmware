@@ -47,6 +47,15 @@ struct SyncDataPair {
     }
 };
 
+/**
+ * @brief What the SECONDARY did with a macrocycle, sent in its MC_ACK
+ */
+enum class MacrocycleAckStatus : uint8_t {
+    SCHEDULED = 0,  // Staged for play (late or invalid events dropped)
+    REJECTED = 1,   // Local baseTime more than 5 s from the SECONDARY's clock
+    REFUSED = 2     // SECONDARY in CRITICAL_BATTERY or ERROR, plays nothing
+};
+
 // =============================================================================
 // SYNC COMMAND CLASS
 // =============================================================================
@@ -289,9 +298,16 @@ public:
 
     /**
      * @brief Create MACROCYCLE_ACK response
+     *
+     * Format: MC_ACK:seq|<micros>|<status>|<marginMs>
+     *
      * @param sequenceId Sequence ID (should match received MACROCYCLE)
+     * @param status What the SECONDARY did with the macrocycle (data "0")
+     * @param marginMs Signed ms from receipt to the earliest event the
+     *                 SECONDARY scheduled; 0 unless status is SCHEDULED (data "1")
      */
-    static SyncCommand createMacrocycleAck(uint32_t sequenceId);
+    static SyncCommand createMacrocycleAck(uint32_t sequenceId, MacrocycleAckStatus status,
+                                           int32_t marginMs);
 
     // =========================================================================
     // MACROCYCLE SERIALIZATION (hybrid text header + binary payload)
