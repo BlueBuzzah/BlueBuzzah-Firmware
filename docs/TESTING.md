@@ -228,7 +228,7 @@ void test_SimpleSyncProtocol_warmStart_validates_confirmatory_samples(void) {
     sync.tryWarmStart();
     TEST_ASSERT_TRUE(sync.isWarmStartMode());
 
-    // 3 confirmatory samples within 5ms of the projection make sync valid
+    // 3 confirmatory samples within 5ms of the cached offset make sync valid
     sync.addOffsetSample(10050);
     sync.addOffsetSample(9980);
     sync.addOffsetSample(10020);

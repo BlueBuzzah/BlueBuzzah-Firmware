@@ -851,14 +851,13 @@ void SimpleSyncProtocol::addOffsetSample(int64_t offset) {
         _offsetSampleCount++;
     }
 
-    // Warm-start validation mode: validate samples against projected offset
+    // Warm-start validation mode: validate samples against the cached offset
     if (_warmStartMode) {
-        int64_t projected = getProjectedOffset();
-        int64_t deviation = offset - projected;
+        int64_t deviation = offset - getCachedOffset();
         if (deviation < 0) deviation = -deviation;  // abs()
 
         if (deviation <= SYNC_WARM_START_TOLERANCE_US) {
-            // Sample confirms projected offset
+            // Sample confirms the cached offset
             _warmStartConfirmed++;
 
             if (_warmStartConfirmed >= SYNC_WARM_START_MIN_SAMPLES) {
@@ -972,27 +971,30 @@ void SimpleSyncProtocol::addOffsetSample(int64_t offset) {
             newOffset = prelimMedian;
         }
 
-        {
-            PLATFORM_CRITICAL_ENTER();
-            _medianOffset = newOffset;
-            PLATFORM_CRITICAL_EXIT();
-        }
+        storeOffset(newOffset);
 
         _clockSyncValid = true;
     }
+}
+
+int64_t SimpleSyncProtocol::loadOffset() const {
+    PLATFORM_CRITICAL_ENTER();
+    int64_t offset = _medianOffset;
+    PLATFORM_CRITICAL_EXIT();
+    return offset;
+}
+
+void SimpleSyncProtocol::storeOffset(int64_t offset) {
+    PLATFORM_CRITICAL_ENTER();
+    _medianOffset = offset;
+    PLATFORM_CRITICAL_EXIT();
 }
 
 int64_t SimpleSyncProtocol::getMedianOffset() const {
     if (!_clockSyncValid) {
         return 0;
     }
-    int64_t offset;
-    {
-        PLATFORM_CRITICAL_ENTER();
-        offset = _medianOffset;
-        PLATFORM_CRITICAL_EXIT();
-    }
-    return offset;
+    return loadOffset();
 }
 
 void SimpleSyncProtocol::updateOffsetEMA(int64_t offset) {
@@ -1009,13 +1011,9 @@ void SimpleSyncProtocol::updateOffsetEMA(int64_t offset) {
     // EMA: new = α * measured + (1-α) * previous
     // Continuous updates make the EMA follow crystal drift between the gloves.
     int64_t newOffset = (SYNC_OFFSET_EMA_ALPHA_NUM * offset +
-                         (SYNC_OFFSET_EMA_ALPHA_DEN - SYNC_OFFSET_EMA_ALPHA_NUM) * _medianOffset)
+                         (SYNC_OFFSET_EMA_ALPHA_DEN - SYNC_OFFSET_EMA_ALPHA_NUM) * loadOffset())
                         / SYNC_OFFSET_EMA_ALPHA_DEN;
-    {
-        PLATFORM_CRITICAL_ENTER();
-        _medianOffset = newOffset;
-        PLATFORM_CRITICAL_EXIT();
-    }
+    storeOffset(newOffset);
 
     _lastSyncTime = now;
 
@@ -1026,7 +1024,7 @@ void SimpleSyncProtocol::updateOffsetEMA(int64_t offset) {
 }
 
 int64_t SimpleSyncProtocol::getCorrectedOffset() const {
-    // Once a fresh sample has agreed with it, the warm-start projection is a
+    // Once a fresh sample has agreed with it, the cached warm-start offset is a
     // far better estimate than 0 for macrocycles sent while it is being
     // confirmed. Not before: if the SECONDARY rebooted inside the warm-start
     // window, the cached offset is off by its whole previous uptime.
@@ -1034,24 +1032,14 @@ int64_t SimpleSyncProtocol::getCorrectedOffset() const {
         return 0;
     }
 
-    int64_t offset;
-    {
-        PLATFORM_CRITICAL_ENTER();
-        offset = _medianOffset;
-        PLATFORM_CRITICAL_EXIT();
-    }
-    return offset;
+    return loadOffset();
 }
 
 void SimpleSyncProtocol::resetClockSync() {
     memset(_offsetSamples, 0, sizeof(_offsetSamples));
     _offsetSampleIndex = 0;
     _offsetSampleCount = 0;
-    {
-        PLATFORM_CRITICAL_ENTER();
-        _medianOffset = 0;
-        PLATFORM_CRITICAL_EXIT();
-    }
+    storeOffset(0);
     _clockSyncValid = false;
 
     _innovationRejects = 0;
@@ -1086,17 +1074,13 @@ bool SimpleSyncProtocol::tryWarmStart() {
     _warmStartConfirmed = 0;
 
     // Seed the offset with the cached value (starting point for validation)
-    int64_t projected = getProjectedOffset();
-    {
-        PLATFORM_CRITICAL_ENTER();
-        _medianOffset = projected;
-        PLATFORM_CRITICAL_EXIT();
-    }
+    int64_t cached = getCachedOffset();
+    storeOffset(cached);
 
     return true;
 }
 
-int64_t SimpleSyncProtocol::getProjectedOffset() const {
+int64_t SimpleSyncProtocol::getCachedOffset() const {
     if (!_warmStartCache.isValid) {
         return 0;
     }
@@ -1151,8 +1135,8 @@ bool SimpleSyncProtocol::updateOffsetEMAWithQuality(int64_t offset, uint32_t rtt
 
     // Gate 3: innovation gate. One implausible jump is noise; a persistent
     // one means reality changed (genuine clock step, e.g. warm-start
-    // projection error) and we re-anchor immediately.
-    int64_t innovation = offset - _medianOffset;
+    // cached-offset error) and we re-anchor immediately.
+    int64_t innovation = offset - loadOffset();
     if (innovation < 0) innovation = -innovation;
     if (innovation > static_cast<int64_t>(SYNC_INNOVATION_GATE_US)) {
         if (_innovationRejects < SYNC_INNOVATION_REJECT_LIMIT) {
@@ -1167,13 +1151,11 @@ bool SimpleSyncProtocol::updateOffsetEMAWithQuality(int64_t offset, uint32_t rtt
         // subsequent sample (accept-1/reject-5 oscillation, ~130s to converge
         // on a 20ms step at 1Hz).
         _innovationRejects = 0;
-        updateOffsetEMA(offset);   // updates sync time and cache timestamp
-        {
-            PLATFORM_CRITICAL_ENTER();
-            _medianOffset = offset;    // then re-anchor: overwrite the EMA blend
-            PLATFORM_CRITICAL_EXIT();
-        }
-        _warmStartCache.cachedOffset = offset;  // keep cache consistent with hard-set
+        // Re-anchor first, so loop() never sees an intermediate blend; the EMA
+        // of the same value then leaves it unchanged and refreshes the sync
+        // time and warm-start cache.
+        storeOffset(offset);
+        updateOffsetEMA(offset);
         return true;
     }
     _innovationRejects = 0;

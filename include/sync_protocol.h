@@ -710,7 +710,8 @@ public:
     /**
      * @brief Attempt warm-start sync using cached offset from recent disconnect
      *
-     * Should be called on reconnection. If cache is valid (disconnect was <30s ago),
+     * Should be called on reconnection. If cache is valid (last cached sample <15s ago,
+     * SYNC_WARM_START_VALIDITY_MS),
      * enters warm-start mode requiring only 3 confirmatory samples instead of 5.
      *
      * @return true if warm-start mode activated, false if cold start required
@@ -733,7 +734,7 @@ public:
      * @brief Get the cached offset used to seed warm-start
      * @return Cached offset in microseconds (0 if cache invalid)
      */
-    int64_t getProjectedOffset() const;
+    int64_t getCachedOffset() const;
 
 private:
     // EMA tuning constants
@@ -758,10 +759,12 @@ private:
     int64_t _offsetSamples[OFFSET_SAMPLE_COUNT];  // Circular buffer of offset samples
     uint8_t _offsetSampleIndex;   // Next write position in circular buffer
     uint8_t _offsetSampleCount;   // Number of valid samples (0 to OFFSET_SAMPLE_COUNT)
-    // Written on the BLE callback, read in loop(): 64-bit stores aren't
-    // atomic on 32-bit MCUs, so loop-side reads and all stores take
-    // PLATFORM_CRITICAL_ENTER/EXIT.
+    // Updated on the BLE callback, read in loop() and also reset from loop():
+    // 64-bit accesses aren't atomic on 32-bit MCUs, so every read and store
+    // takes PLATFORM_CRITICAL_ENTER/EXIT.
     int64_t _medianOffset;        // Computed median offset
+    int64_t loadOffset() const;        // _medianOffset under the critical section
+    void storeOffset(int64_t offset);  // _medianOffset under the critical section
     bool _clockSyncValid;         // True when enough stable samples collected
 
     // Maintenance-mode gating state

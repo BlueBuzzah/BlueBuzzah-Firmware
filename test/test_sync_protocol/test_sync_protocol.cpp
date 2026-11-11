@@ -910,7 +910,7 @@ void test_SimpleSyncProtocol_tryWarmStart_with_valid_cache_succeeds(void) {
     TEST_ASSERT_TRUE(sync.isWarmStartMode());
 }
 
-void test_SimpleSyncProtocol_getCorrectedOffset_uses_warm_start_projection(void) {
+void test_SimpleSyncProtocol_getCorrectedOffset_uses_warm_start_cached_offset(void) {
     SimpleSyncProtocol sync;
 
     for (int i = 0; i < 5; i++) {
@@ -923,11 +923,11 @@ void test_SimpleSyncProtocol_getCorrectedOffset_uses_warm_start_projection(void)
     sync.resetClockSync();
     TEST_ASSERT_EQUAL_INT64(0, sync.getCorrectedOffset());
 
-    // The projection alone is unproven (the SECONDARY may have rebooted)
+    // The cached offset alone is unproven (the SECONDARY may have rebooted)
     TEST_ASSERT_TRUE(sync.tryWarmStart());
     TEST_ASSERT_EQUAL_INT64(0, sync.getCorrectedOffset());
 
-    // One agreeing sample: not yet valid, but the projection beats sending 0
+    // One agreeing sample: not yet valid, but the cached offset beats sending 0
     sync.addOffsetSample(10000);
     TEST_ASSERT_TRUE(sync.isWarmStartMode());
     TEST_ASSERT_FALSE(sync.isClockSyncValid());
@@ -971,7 +971,7 @@ void test_SimpleSyncProtocol_warmStart_validates_confirmatory_samples(void) {
     TEST_ASSERT_TRUE(sync.isWarmStartMode());
     TEST_ASSERT_FALSE(sync.isClockSyncValid());
 
-    // Add confirmatory samples close to projected offset
+    // Add confirmatory samples close to the cached offset
     sync.addOffsetSample(10050);  // Within 5ms tolerance
     TEST_ASSERT_FALSE(sync.isClockSyncValid());  // Not yet valid (need 3)
 
@@ -1009,7 +1009,7 @@ void test_SimpleSyncProtocol_warmStart_aborts_on_divergent_sample(void) {
     // Should now require full 5 samples (cold start)
 }
 
-void test_SimpleSyncProtocol_getProjectedOffset_returns_cached_offset(void) {
+void test_SimpleSyncProtocol_getCachedOffset_returns_cached_offset(void) {
     SimpleSyncProtocol sync;
 
     for (int i = 0; i < 5; i++) {
@@ -1026,8 +1026,8 @@ void test_SimpleSyncProtocol_getProjectedOffset_returns_cached_offset(void) {
     mockSetMillis(3100);
     sync.resetClockSync();
 
-    // The cached offset comes back unchanged, with no projection over the gap
-    TEST_ASSERT_EQUAL_INT64(10010, sync.getProjectedOffset());
+    // The cached offset comes back unchanged, with no extrapolation over the gap
+    TEST_ASSERT_EQUAL_INT64(10010, sync.getCachedOffset());
 }
 
 void test_SimpleSyncProtocol_invalidateWarmStartCache_clears_cache(void) {
@@ -2170,11 +2170,11 @@ int main(int argc, char **argv) {
     // Warm-Start Sync Tests
     RUN_TEST(test_SimpleSyncProtocol_tryWarmStart_with_no_cache_returns_false);
     RUN_TEST(test_SimpleSyncProtocol_tryWarmStart_with_valid_cache_succeeds);
-    RUN_TEST(test_SimpleSyncProtocol_getCorrectedOffset_uses_warm_start_projection);
+    RUN_TEST(test_SimpleSyncProtocol_getCorrectedOffset_uses_warm_start_cached_offset);
     RUN_TEST(test_SimpleSyncProtocol_tryWarmStart_with_expired_cache_fails);
     RUN_TEST(test_SimpleSyncProtocol_warmStart_validates_confirmatory_samples);
     RUN_TEST(test_SimpleSyncProtocol_warmStart_aborts_on_divergent_sample);
-    RUN_TEST(test_SimpleSyncProtocol_getProjectedOffset_returns_cached_offset);
+    RUN_TEST(test_SimpleSyncProtocol_getCachedOffset_returns_cached_offset);
     RUN_TEST(test_SimpleSyncProtocol_invalidateWarmStartCache_clears_cache);
 
     // Adaptive Lead Time Tests
