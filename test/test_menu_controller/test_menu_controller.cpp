@@ -1151,16 +1151,16 @@ void test_isInternalMessage_empty_returns_false() {
     TEST_ASSERT_FALSE(g_menu->isInternalMessage(""));
 }
 
-void test_isInternalMessage_PARAM_UPDATE_returns_true() {
-    TEST_ASSERT_TRUE(g_menu->isInternalMessage("PARAM_UPDATE:INTENSITY:75"));
+void test_isInternalMessage_PARAM_UPDATE_returns_false() {
+    TEST_ASSERT_FALSE(g_menu->isInternalMessage("PARAM_UPDATE:INTENSITY:75"));
 }
 
-void test_isInternalMessage_SEED_returns_true() {
-    TEST_ASSERT_TRUE(g_menu->isInternalMessage("SEED:12345"));
+void test_isInternalMessage_SEED_returns_false() {
+    TEST_ASSERT_FALSE(g_menu->isInternalMessage("SEED:12345"));
 }
 
-void test_isInternalMessage_SEED_ACK_returns_true() {
-    TEST_ASSERT_TRUE(g_menu->isInternalMessage("SEED_ACK:12345"));
+void test_isInternalMessage_SEED_ACK_returns_false() {
+    TEST_ASSERT_FALSE(g_menu->isInternalMessage("SEED_ACK:12345"));
 }
 
 void test_isInternalMessage_GET_BATTERY_returns_true() {
@@ -1176,12 +1176,12 @@ void test_isInternalMessage_GLOVE_ERROR_returns_true() {
     TEST_ASSERT_TRUE(g_menu->isInternalMessage("GLOVE_ERROR"));
 }
 
-void test_isInternalMessage_ACK_PARAM_UPDATE_returns_true() {
-    TEST_ASSERT_TRUE(g_menu->isInternalMessage("ACK_PARAM_UPDATE:INTENSITY"));
+void test_isInternalMessage_ACK_PARAM_UPDATE_returns_false() {
+    TEST_ASSERT_FALSE(g_menu->isInternalMessage("ACK_PARAM_UPDATE:INTENSITY"));
 }
 
-void test_isInternalMessage_SYNC_prefix_returns_true() {
-    TEST_ASSERT_TRUE(g_menu->isInternalMessage("SYNC_ADJ:12345:67890"));
+void test_isInternalMessage_SYNC_prefix_returns_false() {
+    TEST_ASSERT_FALSE(g_menu->isInternalMessage("SYNC_ADJ:12345:67890"));
 }
 
 void test_isInternalMessage_IDENTIFY_prefix_returns_true() {
@@ -2190,14 +2190,14 @@ int main(int argc, char **argv) {
     // Internal message tests
     RUN_TEST(test_isInternalMessage_null_returns_false);
     RUN_TEST(test_isInternalMessage_empty_returns_false);
-    RUN_TEST(test_isInternalMessage_PARAM_UPDATE_returns_true);
-    RUN_TEST(test_isInternalMessage_SEED_returns_true);
-    RUN_TEST(test_isInternalMessage_SEED_ACK_returns_true);
+    RUN_TEST(test_isInternalMessage_PARAM_UPDATE_returns_false);
+    RUN_TEST(test_isInternalMessage_SEED_returns_false);
+    RUN_TEST(test_isInternalMessage_SEED_ACK_returns_false);
     RUN_TEST(test_isInternalMessage_GET_BATTERY_returns_true);
     RUN_TEST(test_isInternalMessage_BATRESPONSE_returns_true);
     RUN_TEST(test_isInternalMessage_GLOVE_ERROR_returns_true);
-    RUN_TEST(test_isInternalMessage_ACK_PARAM_UPDATE_returns_true);
-    RUN_TEST(test_isInternalMessage_SYNC_prefix_returns_true);
+    RUN_TEST(test_isInternalMessage_ACK_PARAM_UPDATE_returns_false);
+    RUN_TEST(test_isInternalMessage_SYNC_prefix_returns_false);
     RUN_TEST(test_isInternalMessage_IDENTIFY_prefix_returns_true);
     RUN_TEST(test_isInternalMessage_user_command_INFO_returns_false);
     RUN_TEST(test_isInternalMessage_user_command_BATTERY_returns_false);

@@ -183,27 +183,6 @@ inline const char* stateTriggerToString(StateTrigger trigger) {
 }
 
 // =============================================================================
-// BOOT RESULT
-// =============================================================================
-
-/**
- * @brief Result of boot sequence execution
- */
-enum class BootResult : uint8_t {
-    FAILED = 0,         // Boot sequence failed
-    SUCCESS_NO_PHONE,   // PRIMARY-SECONDARY connected, no phone
-    SUCCESS_WITH_PHONE, // All connections established
-    SUCCESS             // Generic success (SECONDARY only)
-};
-
-/**
- * @brief Check if boot was successful
- */
-inline bool isBootSuccess(BootResult result) {
-    return result != BootResult::FAILED;
-}
-
-// =============================================================================
 // ACTUATOR TYPE
 // =============================================================================
 
@@ -380,34 +359,6 @@ struct BatteryTracker {
 private:
     static uint8_t countUp(uint8_t n) {
         return n < BATTERY_CRITICAL_CONFIRM_READINGS ? n + 1 : n;
-    }
-};
-
-/**
- * @brief Device configuration loaded from settings.json
- */
-struct DeviceConfig {
-    DeviceRole role;
-    char bleName[32];
-    char deviceTag[16];
-
-    DeviceConfig() : role(DeviceRole::PRIMARY) {
-        strcpy(bleName, "BlueBuzzah");
-        strcpy(deviceTag, "[PRIMARY]");
-    }
-
-    /**
-     * @brief Check if device is PRIMARY
-     */
-    bool isPrimary() const {
-        return role == DeviceRole::PRIMARY;
-    }
-
-    /**
-     * @brief Check if device is SECONDARY
-     */
-    bool isSecondary() const {
-        return role == DeviceRole::SECONDARY;
     }
 };
 

@@ -536,7 +536,7 @@ MC:seq|baseHigh|baseLow|offHigh|offLow|dur|count|d,f,a[,fo]|d,f,a[,fo]|...
 MC:1|0|5050000|0|12345|100|12|0,0,100,10|167,1,100,10|334,2,100,10|...
 ```
 
-Each event carries `fo=10`, decoded as `200 + 10×5 = 250 Hz`. No built-in profile randomizes frequency; if randomization were on, events would carry 210-255 Hz (`fo=2` to `fo=11`), and the SECONDARY plays each event at its `fo`. An event without an `fo` field decodes as `fo=0` (200 Hz).
+Each event carries `fo=10`, decoded as `200 + 10×5 = 250 Hz`, and the SECONDARY plays each event at its `fo`. An event without an `fo` field decodes as `fo=0` (200 Hz).
 
 **Note:** The V5 format preserves full microsecond precision for baseTime by splitting the 64-bit value into two 32-bit parts, avoiding the up to 999µs precision loss in the previous millisecond-based format.
 
@@ -544,7 +544,7 @@ SECONDARY applies clock offset once to baseTime, then schedules all events via a
 
 ### Parameter Messages
 
-None are sent. `PARAM_UPDATE`, `SEED`, `SEED_ACK` and `ACK_PARAM_UPDATE` survive only as reserved prefixes in `INTERNAL_MESSAGES[]` (`include/internal_messages.h`); nothing sends or handles them. Therapy parameters reach the SECONDARY inside each `MC` (duration, amplitude, frequency per event).
+None are sent. Therapy parameters reach the SECONDARY inside each `MC` (duration, amplitude, frequency per event).
 
 ### Status Messages
 

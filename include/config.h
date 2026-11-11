@@ -64,7 +64,6 @@
 
 // Boot sequence
 #define STARTUP_WINDOW_MS 30000      // 30 seconds boot timeout
-#define CONNECTION_TIMEOUT_MS 30000  // 30 seconds connection timeout
 
 // BLE parameters
 #define BLE_INTERVAL_MIN_MS 7.5f     // Minimum connection interval (7.5ms = 6 units, BLE spec minimum)
@@ -79,7 +78,6 @@
 #define BLE_INTERVAL_WARNING_THRESHOLD_MS 12.0f  // Warn if negotiated interval > 12ms
 
 // Sync protocol
-#define SYNC_TIMEOUT_MS 2000         // Sync command timeout
 #define COMMAND_TIMEOUT_MS 5000      // General BLE command timeout
 
 // PTP-style clock synchronization
@@ -205,7 +203,7 @@ constexpr uint32_t TEST_DURATION_SEC = 120;  // 2 minutes
 
 // LRA (Linear Resonant Actuator) parameters
 #define MIN_FREQUENCY_HZ 150            // Minimum LRA resonant frequency
-#define MAX_FREQUENCY_HZ 255            // Maximum LRA resonant frequency (v1 randrange excludes 260)
+#define MAX_FREQUENCY_HZ 255            // Maximum LRA resonant frequency
 #define DEFAULT_FREQUENCY_HZ 250        // Default/standard LRA frequency (v1 reference: 250Hz)
 
 // Therapy parameter bounds. These are the single source of truth for

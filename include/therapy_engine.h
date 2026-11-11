@@ -392,14 +392,6 @@ public:
      */
     [[nodiscard]] PatternType getPatternType() const { return _patternType; }
 
-    /**
-     * @brief Enable/disable frequency randomization (no built-in profile enables it)
-     * @param enabled Enable frequency randomization
-     * @param minHz Minimum frequency (default 210 Hz, v1 ACTUATOR_FREQL)
-     * @param maxHz Upper bound, excluded like v1 randrange (default 260 Hz, so 210-255 Hz)
-     */
-    void setFrequencyRandomization(bool enabled, uint16_t minHz = 210, uint16_t maxHz = 260);
-
     // =========================================================================
     // SESSION CONTROL
     // =========================================================================
@@ -537,15 +529,6 @@ public:
      */
     void clearLastSession();
 
-    /**
-     * @brief Get current frequency for a finger
-     * @param finger Finger index (0 to MAX_ACTUATORS-1)
-     * @return Current frequency in Hz
-     */
-    uint16_t getFrequency(uint8_t finger) const {
-        return (finger < MAX_ACTUATORS) ? _currentFrequency[finger] : 235;
-    }
-
 private:
     // State
     bool _isRunning;
@@ -581,12 +564,6 @@ private:
     uint8_t _fingerMapCount;
     uint8_t _amplitudeMin;
     uint8_t _amplitudeMax;
-
-    // Frequency randomization (from v1 defaults_CustomVCR.py; no built-in profile enables it)
-    bool _frequencyRandomization;
-    uint16_t _frequencyMin;     // 210 Hz (v1 ACTUATOR_FREQL)
-    uint16_t _frequencyMax;     // 260 Hz, excluded like v1 randrange (so up to 255 Hz)
-    uint16_t _currentFrequency[MAX_ACTUATORS];  // Current frequency per finger (Hz)
 
     // Current pattern execution
     Pattern _currentPattern;

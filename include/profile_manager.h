@@ -135,11 +135,6 @@ struct TherapyProfile {
     // Metadata
     bool isDefault;
 
-    // Frequency randomization (engine capability; no built-in profile enables it)
-    bool frequencyRandomization;
-    uint16_t frequencyMin;  // Min frequency for randomization (Hz)
-    uint16_t frequencyMax;  // Max frequency for randomization (Hz)
-
     /**
      * @brief Default constructor with placeholder values
      *
@@ -159,10 +154,7 @@ struct TherapyProfile {
         sessionDurationMin(120),  // 2 hours
         mirrorPattern(true),
         numFingers(MAX_ACTUATORS),
-        isDefault(false),
-        frequencyRandomization(false),
-        frequencyMin(210),
-        frequencyMax(260)
+        isDefault(false)
     {
         strcpy(name, "default");
         strcpy(description, "Default profile");
@@ -187,9 +179,6 @@ struct TherapyProfile {
         mirrorPattern = other.mirrorPattern;
         numFingers = other.numFingers;
         isDefault = other.isDefault;
-        frequencyRandomization = other.frequencyRandomization;
-        frequencyMin = other.frequencyMin;
-        frequencyMax = other.frequencyMax;
     }
 
     /**
@@ -211,9 +200,6 @@ struct TherapyProfile {
             mirrorPattern = other.mirrorPattern;
             numFingers = other.numFingers;
             isDefault = other.isDefault;
-            frequencyRandomization = other.frequencyRandomization;
-            frequencyMin = other.frequencyMin;
-            frequencyMax = other.frequencyMax;
         }
         return *this;
     }

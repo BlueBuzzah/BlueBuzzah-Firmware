@@ -198,7 +198,6 @@ void test_getCurrentProfile_custom_vcr_has_correct_defaults(void) {
     TEST_ASSERT_EQUAL_UINT8(100, p->amplitudeMin);
     TEST_ASSERT_EQUAL_UINT8(100, p->amplitudeMax);
     TEST_ASSERT_FALSE(p->mirrorPattern);
-    TEST_ASSERT_FALSE(p->frequencyRandomization);
     TEST_ASSERT_EQUAL_UINT16(250, p->frequencyHz);
     TEST_ASSERT_EQUAL_UINT16(120, p->sessionDurationMin);
     TEST_ASSERT_EQUAL_STRING("rndp", p->patternType);
