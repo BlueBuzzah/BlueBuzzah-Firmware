@@ -14,6 +14,7 @@
 #include <cstring>
 #include <cstdlib>
 #include "internal_messages.h"
+#include "motor_check_info.h"  // real INFO MOTP/MOTS emission
 
 // =============================================================================
 // MOCK DEFINITIONS FOR DEPENDENCIES
@@ -786,16 +787,8 @@ public:
         addResponseLine("NAME", _deviceName);
         addResponseLine("FW", _firmwareVersion);
         addResponseLine("MOTORS", static_cast<int32_t>(MAX_ACTUATORS));
-        if (_motorCheckCallback) {
-            if (const char* own = _motorCheckCallback(false)) {
-                addResponseLine("MOTP", own);
-            }
-            if (_ble && _ble->isSecondaryConnected()) {
-                if (const char* secondary = _motorCheckCallback(true)) {
-                    addResponseLine("MOTS", secondary);
-                }
-            }
-        }
+        addMotorCheckInfoLines(_motorCheckCallback, _ble && _ble->isSecondaryConnected(),
+                               [this](const char* key, const char* value) { addResponseLine(key, value); });
         if (_profiles) {
             char profLine[48];
             snprintf(profLine, sizeof(profLine), "%d:%s",

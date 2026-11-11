@@ -6,6 +6,7 @@
  */
 
 #include "menu_controller.h"
+#include "motor_check_info.h"
 #include "therapy_engine.h"
 #include "hardware.h"
 #include "state_machine.h"
@@ -453,16 +454,8 @@ void MenuController::handleInfo() {
     addResponseLine("MOTORS", static_cast<int32_t>(MAX_ACTUATORS));
     // Boot motor check per finger (a warning, never a fault). Before any
     // early return, so the immediate and deferred replies both carry it.
-    if (_motorCheckCallback) {
-        if (const char* own = _motorCheckCallback(false)) {
-            addResponseLine("MOTP", own);
-        }
-        if (_ble && _ble->isSecondaryConnected()) {
-            if (const char* secondary = _motorCheckCallback(true)) {
-                addResponseLine("MOTS", secondary);
-            }
-        }
-    }
+    addMotorCheckInfoLines(_motorCheckCallback, _ble && _ble->isSecondaryConnected(),
+                           [this](const char* key, const char* value) { addResponseLine(key, value); });
     if (_profiles) {
         char profLine[48];
         snprintf(profLine, sizeof(profLine), "%d:%s",
