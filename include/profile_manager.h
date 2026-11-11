@@ -56,6 +56,11 @@ constexpr uint8_t     CUSTOM_OVERRIDE_VERSION = 1;
  *
  * This compact struct replaces JSON serialization, saving ~10-15KB flash
  * by eliminating the ArduinoJson dependency.
+ *
+ * loadSettings() reads back only role, profileId, therapyLedOff and debugMode.
+ * The parameter fields (actuatorType..numFingers) are still written but never
+ * read (#39). Keep them, and keep the layout: a firmware that reads a file of
+ * a different size rejects it and loses the stored role.
  */
 struct __attribute__((packed)) SettingsData {
     uint8_t magic;               // 0xBB to validate file
@@ -334,7 +339,7 @@ public:
     bool saveSettings();
 
     /**
-     * @brief Load profile settings from LittleFS
+     * @brief Load role, active profile ID and LED/debug flags from LittleFS
      * @return true if loaded successfully
      */
     bool loadSettings();

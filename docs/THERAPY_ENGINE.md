@@ -716,7 +716,7 @@ Silent periods: 48 minutes of the 120 (2 of every 5 CR periods)
 **Files**:
 - `src/profile_manager.cpp` - Profile loading/saving
 - `include/profile_manager.h` - Profile definitions
-- Persistent storage through `fs_backend` (InternalFS on nRF52840, LittleFS on ESP32-S3): `/settings.bin` (role, active profile, its parameters, LED/debug flags) and `/custom.bin` (Custom profile edits)
+- Persistent storage through `fs_backend` (InternalFS on nRF52840, LittleFS on ESP32-S3): `/settings.bin` (role, active profile, LED/debug flags) and `/custom.bin` (Custom profile edits)
 
 **TherapyProfile Structure** (`include/profile_manager.h`):
 

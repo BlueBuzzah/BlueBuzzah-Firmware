@@ -955,7 +955,7 @@ if (mirrorPattern) {
 
 1. **Device Configuration** (`/settings.bin`): Device role, selected profile, therapy LED and debug flags
 2. **Therapy Configuration** (profiles): Built-in profiles in `ProfileManager`; Custom profile edits in `/custom.bin`
-3. **Runtime Configuration**: `PARAM_SET` / `PROFILE_CUSTOM` adjustments, validated against the `PARAM_*` bounds in `config.h`
+3. **Runtime Configuration**: `PARAM_SET` / `PROFILE_CUSTOM` adjustments to the Custom profile only, saved to `/custom.bin` and validated against the `PARAM_*` bounds in `config.h`
 
 **Loading Hierarchy**:
 

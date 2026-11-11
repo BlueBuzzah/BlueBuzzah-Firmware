@@ -869,6 +869,7 @@ void test_loadSettings_preset_ignores_saved_parameters(void) {
     data.frequencyHz        = 200;
     data.mirrorPattern      = 0;
     data.therapyLedOff      = 1;
+    data.debugMode          = 1;
     strncpy(data.patternType, "seq", sizeof(data.patternType) - 1);
 
     fsb::writeFile(SETTINGS_FILE,
@@ -881,6 +882,7 @@ void test_loadSettings_preset_ignores_saved_parameters(void) {
     TEST_ASSERT_EQUAL_UINT8(2, p->getCurrentProfileId());
     TEST_ASSERT_EQUAL(DeviceRole::SECONDARY, p->getDeviceRole());
     TEST_ASSERT_TRUE(p->getTherapyLedOff());
+    TEST_ASSERT_TRUE(p->getDebugMode());
 
     // ...parameters come from the built-in Noisy profile only.
     const TherapyProfile* profile = p->getCurrentProfile();
