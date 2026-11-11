@@ -544,7 +544,7 @@ SECONDARY applies clock offset once to baseTime, then schedules all events via a
 
 ### Parameter Messages
 
-None are sent. `PARAM_UPDATE`, `SEED`, `SEED_ACK` and `ACK_PARAM_UPDATE` survive only as reserved prefixes in `INTERNAL_MESSAGES[]` (`include/internal_messages.h`); nothing sends or handles them. Therapy parameters reach the SECONDARY inside each `MC` (duration, amplitude, frequency per event).
+None are sent. Therapy parameters reach the SECONDARY inside each `MC` (duration, amplitude, frequency per event).
 
 ### Status Messages
 

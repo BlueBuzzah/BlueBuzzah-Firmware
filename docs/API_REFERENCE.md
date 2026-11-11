@@ -158,29 +158,6 @@ if (isErrorState(state)) {
 
 ---
 
-#### BootResult
-
-Boot sequence outcome enumeration.
-
-```cpp
-// include/types.h
-
-enum class BootResult : uint8_t {
-    FAILED = 0,         // Boot sequence failed
-    SUCCESS_NO_PHONE,   // Connected to glove but no phone
-    SUCCESS_WITH_PHONE, // Connected to both glove and phone
-    SUCCESS             // For SECONDARY (only needs PRIMARY connection)
-};
-
-inline bool isBootSuccess(BootResult result) {
-    return result != BootResult::FAILED;
-}
-```
-
-`BootResult` and `isBootSuccess()` are declared in `types.h` but not used by `src/`; the boot flow in `src/main.cpp` `setup()` tracks `hardwareReady` / `bleReady` instead (see [BOOT_SEQUENCE.md](BOOT_SEQUENCE.md)).
-
----
-
 #### BatteryStatus
 
 Battery status information struct.
@@ -245,9 +222,6 @@ Firmware version following semantic versioning. The `config.h` value is a defaul
 
 #define STARTUP_WINDOW_MS 30000
 // Boot sequence connection window in milliseconds
-
-#define CONNECTION_TIMEOUT_MS 30000
-// BLE connection establishment timeout in milliseconds
 
 #define BLE_INTERVAL_MIN_MS 7.5f
 #define BLE_INTERVAL_MAX_MS 10
@@ -375,25 +349,9 @@ namespace Colors {
 
 ### Header: `types.h` / `profile_manager.h`
 
-#### DeviceConfig
+#### Device Role Persistence
 
-Device identity struct.
-
-```cpp
-// include/types.h
-
-struct DeviceConfig {
-    DeviceRole role;
-    char bleName[32];
-    char deviceTag[16];
-
-    DeviceConfig();             // PRIMARY, "BlueBuzzah", "[PRIMARY]"
-    bool isPrimary() const;
-    bool isSecondary() const;
-};
-```
-
-`DeviceConfig` is declared but not used by `src/`. The device role is persisted by `ProfileManager` in the binary settings file (`SETTINGS_FILE "/settings.bin"`) and read back with `ProfileManager::hasStoredRole()` / `getDeviceRole()`. A device with no stored role blinks orange and waits for `SET_ROLE:PRIMARY|SECONDARY` over USB serial, then reboots.
+The device role is persisted by `ProfileManager` in the binary settings file (`SETTINGS_FILE "/settings.bin"`) and read back with `ProfileManager::hasStoredRole()` / `getDeviceRole()`. A device with no stored role blinks orange and waits for `SET_ROLE:PRIMARY|SECONDARY` over USB serial, then reboots.
 
 **Usage:**
 ```cpp
