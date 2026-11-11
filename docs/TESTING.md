@@ -28,7 +28,7 @@ Last Updated: 2026-01-19
 BlueBuzzah firmware uses a **dual testing approach**:
 
 1. **PlatformIO Native Unit Tests** - Automated tests that run on the host computer with mocked Arduino APIs
-2. **Hardware Integration Tests** - Manual tests that run on actual devices (Feather nRF52840 or XIAO ESP32-S3)
+2. **Hardware Integration Tests** - Manual tests that run on actual devices (Feather nRF52840 or ESP32-S3-WROOM-1U-N8R8)
 
 ### What This Testing Does
 
@@ -55,7 +55,7 @@ BlueBuzzah firmware uses a **dual testing approach**:
 | Environment | Purpose | Command |
 |-------------|---------|---------|
 | `native` | Fast unit tests (no coverage, 4-actuator config) | `pio test -e native` |
-| `native_penta` | Fast unit tests (5-actuator PentaBuzzer config) | `pio test -e native_penta` |
+| `native_penta` | Fast unit tests (5-actuator v3 config) | `pio test -e native_penta` |
 | `native_coverage` | Unit tests + coverage (macOS/clang) | `pio test -e native_coverage` |
 | `native_coverage_gcc` | Unit tests + coverage (Linux/GCC) | `pio test -e native_coverage_gcc` |
 
@@ -291,7 +291,7 @@ For testing that requires actual hardware, use manual verification:
 ### Hardware Requirements
 
 1. **BlueBuzzah Device(s)**
-   - Adafruit Feather nRF52840 Express (v2) or Seeed XIAO ESP32-S3 PentaBuzzer (v3)
+   - Adafruit Feather nRF52840 Express (v2) or ESP32-S3-WROOM-1U-N8R8 (v3)
    - BlueBuzzah firmware installed
    - Charged battery or USB power (v3 motors need a battery: the DRV2605 drivers run from VBat)
 
@@ -455,7 +455,7 @@ Judge jitter (latency variation) as:
 **Solutions:**
 1. Verify device is powered on and advertising
 2. Check the LED shows the device is up (breathing blue while waiting for its peer, solid green once paired)
-3. Restart device (press RESET button)
+3. Restart device (v2: press RESET; v3: slide the power switch off and on)
 4. Ensure device not already connected to another host
 5. Reduce distance to <2 meters
 6. Check host Bluetooth is enabled

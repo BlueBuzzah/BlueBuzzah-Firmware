@@ -190,14 +190,14 @@ constexpr uint32_t TEST_DURATION_SEC = 120;  // 2 minutes
 // ADC_MAX_VALUE, ADC_REFERENCE_VOLTAGE, BATTERY_VOLTAGE_DIVIDER).
 #define BATTERY_SAMPLE_COUNT 10         // Number of samples to average
 
-// DRV2605 VBAT backend (PentaBuzzer): number of readings taken per burst
+// DRV2605 VBAT backend (v3): number of readings taken per burst
 #define VBAT_BURST_SAMPLES 9
 
 // =============================================================================
 // HAPTIC CONFIGURATION
 // =============================================================================
 
-// MAX_ACTUATORS comes from board_config.h (4 on BlueBuzzah, 5 on PentaBuzzer)
+// MAX_ACTUATORS comes from board_config.h (4 on v2, 5 on v3)
 #define MAX_AMPLITUDE 100               // Maximum amplitude percentage (0-100)
 #define DRV2605_MAX_RTP 127             // DRV2605 RTP register max value
 

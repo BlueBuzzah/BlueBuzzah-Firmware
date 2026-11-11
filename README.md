@@ -23,7 +23,7 @@ One codebase builds for two hardware generations, selected by PlatformIO environ
 
 | | BlueBuzzah v2 | BlueBuzzah v3 |
 | --- | --- | --- |
-| **Board** | Adafruit Feather nRF52840 Express | Seeed XIAO ESP32-S3 |
+| **Board** | Adafruit Feather nRF52840 Express | ESP32-S3-WROOM-1U-N8R8 |
 | **Environment** | `adafruit_feather_nrf52840` | `pentabuzzer_esp32s3` |
 | **Motors** | 4 (index–pinky) | 5 (adds thumb) |
 | **BLE stack** | Bluefruit / SoftDevice | NimBLE-Arduino 2.x |
@@ -64,7 +64,7 @@ python deploy.py
 
 The deploy script automatically:
 
-- Detects connected devices and their board type (Feather nRF52840 or XIAO ESP32-S3)
+- Detects connected devices and their board type (Feather nRF52840 or ESP32-S3-WROOM-1U-N8R8)
 - Builds and uploads the matching firmware for each board
 - **1 device**: Prompts for role selection (PRIMARY/SECONDARY)
 - **2 devices**: Auto-assigns PRIMARY to first, SECONDARY to second
