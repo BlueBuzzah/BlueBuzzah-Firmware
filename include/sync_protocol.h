@@ -282,7 +282,8 @@ public:
     /**
      * @brief Create DEBUG_FLASH command with scheduled activation time
      * @param sequenceId Sequence ID for the command
-     * @param flashTime Absolute time to trigger flash (in PRIMARY clock, microseconds)
+     * @param flashTime Absolute time to trigger flash (in SECONDARY clock, microseconds;
+     *                  the PRIMARY converts with primaryToLocalTime() before sending)
      */
     static SyncCommand createDebugFlashWithTime(uint32_t sequenceId, uint64_t flashTime);
 
@@ -648,21 +649,15 @@ public:
     void resetClockSync();
 
     /**
-     * @brief Get drift-corrected clock offset
+     * @brief Get the clock offset to use for scheduling
      *
-     * Returns the median offset plus compensation for estimated crystal drift
-     * since the last measurement. This provides more accurate offset between
-     * sync events.
+     * Returns the filtered offset (median, then offset EMA), which follows
+     * crystal drift through continuous updates. Also usable during warm-start
+     * once a fresh sample has confirmed the cached offset.
      *
-     * @return Corrected offset in microseconds
+     * @return Offset in microseconds (0 if not usable yet)
      */
     int64_t getCorrectedOffset() const;
-
-    /**
-     * @brief Get estimated drift rate
-     * @return Drift rate in microseconds per millisecond
-     */
-    float getDriftRate() const { return _driftRateUsPerMs; }
 
     /**
      * @brief Get average RTT in microseconds
@@ -696,7 +691,6 @@ public:
      */
     uint64_t primaryToLocalTime(uint64_t primaryTime) const {
         // offset = SECONDARY - PRIMARY, so local = primary + offset
-        // Use drift-corrected offset for better accuracy
         return primaryTime + getCorrectedOffset();
     }
 
@@ -716,7 +710,8 @@ public:
     /**
      * @brief Attempt warm-start sync using cached offset from recent disconnect
      *
-     * Should be called on reconnection. If cache is valid (disconnect was <30s ago),
+     * Should be called on reconnection. If cache is valid (last cached sample <15s ago,
+     * SYNC_WARM_START_VALIDITY_MS),
      * enters warm-start mode requiring only 3 confirmatory samples instead of 5.
      *
      * @return true if warm-start mode activated, false if cold start required
@@ -736,63 +731,10 @@ public:
     bool isWarmStartMode() const { return _warmStartMode; }
 
     /**
-     * @brief Get projected offset using cached value and drift rate
-     * @return Projected offset in microseconds (0 if cache invalid)
+     * @brief Get the cached offset used to seed warm-start
+     * @return Cached offset in microseconds (0 if cache invalid)
      */
-    int64_t getProjectedOffset() const;
-
-    // =========================================================================
-    // PATH ASYMMETRY TRACKING (Measurement Only)
-    // =========================================================================
-
-    /**
-     * @brief Record path asymmetry from PTP timestamps
-     *
-     * Asymmetry = (outbound delay) - (return delay) = (T2-T1) - (T4-T3)
-     * Positive asymmetry means PRIMARY->SECONDARY path is slower.
-     *
-     * @param t1 PRIMARY send timestamp
-     * @param t2 SECONDARY receive timestamp
-     * @param t3 SECONDARY send timestamp
-     * @param t4 PRIMARY receive timestamp
-     * @param phoneConnected Whether phone was connected during this measurement
-     */
-    void recordAsymmetry(uint64_t t1, uint64_t t2, uint64_t t3, uint64_t t4, bool phoneConnected);
-
-    /**
-     * @brief Get most recent raw asymmetry measurement
-     * @return Asymmetry in microseconds (positive = PRIMARY->SECONDARY slower)
-     */
-    int64_t getRawAsymmetry() const { return _lastAsymmetry; }
-
-    /**
-     * @brief Get EMA-smoothed asymmetry estimate
-     * @return Smoothed asymmetry in microseconds
-     */
-    int64_t getSmoothedAsymmetry() const { return _smoothedAsymmetry; }
-
-    /**
-     * @brief Get asymmetry variance estimate
-     * @return Variance in microseconds
-     */
-    uint32_t getAsymmetryVariance() const { return _asymmetryVariance; }
-
-    /**
-     * @brief Get number of asymmetry samples collected
-     */
-    uint16_t getAsymmetrySampleCount() const { return _asymmetrySampleCount; }
-
-    /**
-     * @brief Check if phone was connected during last asymmetry measurement
-     * @return true if phone was connected
-     * @note Reserved for future asymmetry compensation - correlates asymmetry with load state
-     */
-    bool wasPhoneConnectedDuringSync() const { return _phoneConnectedDuringSync; }
-
-    /**
-     * @brief Reset asymmetry tracking state
-     */
-    void resetAsymmetryTracking();
+    int64_t getCachedOffset() const;
 
 private:
     // EMA tuning constants
@@ -817,15 +759,13 @@ private:
     int64_t _offsetSamples[OFFSET_SAMPLE_COUNT];  // Circular buffer of offset samples
     uint8_t _offsetSampleIndex;   // Next write position in circular buffer
     uint8_t _offsetSampleCount;   // Number of valid samples (0 to OFFSET_SAMPLE_COUNT)
+    // Updated on the BLE callback, read in loop() and also reset from loop():
+    // 64-bit accesses aren't atomic on 32-bit MCUs, so every read and store
+    // takes PLATFORM_CRITICAL_ENTER/EXIT.
     int64_t _medianOffset;        // Computed median offset
+    int64_t loadOffset() const;        // _medianOffset under the critical section
+    void storeOffset(int64_t offset);  // _medianOffset under the critical section
     bool _clockSyncValid;         // True when enough stable samples collected
-
-    // Drift rate compensation
-    int64_t _lastMeasuredOffset;  // Previous offset measurement for drift calculation
-    uint32_t _lastOffsetTime;     // Time of last offset measurement (millis)
-    float _driftRateUsPerMs;      // Estimated drift rate (microseconds per millisecond)
-    int64_t _driftAnchorOffset;   // Offset at the start of the current drift-measurement window
-    uint32_t _driftAnchorTime;    // syncNowMs() at the start of the window (0 = unset)
 
     // Maintenance-mode gating state
     uint32_t _minRttUs;           // Decaying minimum RTT (lucky-packet gate)
@@ -834,23 +774,14 @@ private:
     // Warm-start cache for quick reconnection
     struct WarmStartCache {
         int64_t cachedOffset;        // Last known median offset
-        float cachedDriftRate;       // Last known drift rate (us/ms)
         uint32_t cacheTimestamp;     // syncNowMs() epoch (getMicros()/1000) when cached
         bool isValid;                // Cache contains usable data
 
-        WarmStartCache() : cachedOffset(0), cachedDriftRate(0.0f),
-                           cacheTimestamp(0), isValid(false) {}
+        WarmStartCache() : cachedOffset(0), cacheTimestamp(0), isValid(false) {}
     } _warmStartCache;
 
     bool _warmStartMode;             // Currently in warm-start recovery
     uint8_t _warmStartConfirmed;     // Number of validated confirmatory samples
-
-    // Path asymmetry tracking (measurement only)
-    int64_t _lastAsymmetry;          // Most recent asymmetry measurement (µs)
-    int64_t _smoothedAsymmetry;      // EMA-smoothed asymmetry (µs)
-    uint32_t _asymmetryVariance;     // EMA-smoothed variance (µs)
-    uint16_t _asymmetrySampleCount;  // Valid asymmetry samples collected
-    bool _phoneConnectedDuringSync;  // Phone connection state at measurement
 };
 
 #endif // SYNC_PROTOCOL_H

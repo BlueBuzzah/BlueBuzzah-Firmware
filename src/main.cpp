@@ -990,10 +990,9 @@ void loop()
         uint8_t newPhy = g_newPhy;
 
         const char* phyStr = (newPhy == 2) ? "2M" : (newPhy == 1) ? "1M" : "Coded";
-        Serial.printf("[BLE] PHY changed to %s - resetting RTT and asymmetry statistics\n", phyStr);
+        Serial.printf("[BLE] PHY changed to %s - resetting RTT statistics\n", phyStr);
 
         syncProtocol.resetLatency();
-        syncProtocol.resetAsymmetryTracking();
 
         // Reset clock sync if few samples collected during PHY transition
         // (samples before and after PHY change have inconsistent RTT)
@@ -2633,19 +2632,13 @@ void onBLEMessage(uint16_t connHandle, const char *message, uint64_t rxTimestamp
                     latencyMetrics.recordRtt(rtt);
                 }
 
-                // Record path asymmetry for diagnostics (measurement only)
-                bool phoneConnected = ble.isPhoneConnected();
-                syncProtocol.recordAsymmetry(t1, t2, t3, t4, phoneConnected);
-
-                // Enhanced logging with asymmetry (DEBUG only)
+                // Sync sample logging (DEBUG only)
                 if (profiles.getDebugMode())
                 {
-                    Serial.printf("[SYNC] RTT=%lu offset=%ld asym=%ld asym_sm=%ld phone=%d samples=%u %s\n",
+                    Serial.printf("[SYNC] RTT=%lu offset=%ld phone=%d samples=%u %s\n",
                                   (unsigned long)rtt,
                                   (long)offset,
-                                  (long)syncProtocol.getRawAsymmetry(),
-                                  (long)syncProtocol.getSmoothedAsymmetry(),
-                                  phoneConnected ? 1 : 0,
+                                  ble.isPhoneConnected() ? 1 : 0,
                                   syncProtocol.getOffsetSampleCount(),
                                   sampleAccepted ? "" : "(rejected)");
                 }
@@ -2703,8 +2696,11 @@ void onBLEMessage(uint16_t connHandle, const char *message, uint64_t rxTimestamp
             if (deviceRole == DeviceRole::SECONDARY && profiles.getDebugMode())
             {
                 // Check if this is a PTP sync command with scheduled flash time
+                // The flash time is already on this glove's clock: the
+                // PRIMARY converted it with its clock offset before sending
+                // (a SECONDARY never holds a valid clock sync of its own)
                 bool hasPTPTime = cmd.hasData("0");
-                if (hasPTPTime && syncProtocol.isClockSyncValid())
+                if (hasPTPTime)
                 {
                     // Parse flash time from command
                     uint64_t flashTime;
@@ -2723,18 +2719,13 @@ void onBLEMessage(uint16_t connHandle, const char *message, uint64_t rxTimestamp
                         flashTime = static_cast<uint64_t>(cmd.getDataUnsigned("0", 0));
                     }
 
-                    // Convert PRIMARY clock time to local (SECONDARY) clock time
-                    // Use drift-corrected offset for better accuracy between sync events
-                    int64_t offset = syncProtocol.getCorrectedOffset();
-                    uint64_t localFlashTime = flashTime + offset;
-
                     // NON-BLOCKING FIX: Schedule flash for later instead of busy-waiting
                     // The old code used delayMicroseconds() which blocked BLE callback
                     // processing for ~300ms, causing MACROCYCLE messages to queue up
                     // and arrive after their scheduled execution time.
                     // Now we store the flash time and check it in the main loop.
                     // Use atomic write since this runs in BLE callback (ISR) context
-                    atomicWrite64(&g_pendingFlashTime, localFlashTime);
+                    atomicWrite64(&g_pendingFlashTime, flashTime);
                     g_pendingFlashActive = true;
                 }
                 else
@@ -2908,7 +2899,10 @@ void onMacrocycleStart(uint32_t macrocycleCount)
                 uint32_t leadTimeUs = syncProtocol.calculateAdaptiveLeadTime();
                 uint64_t flashTime = getMicros() + leadTimeUs;
 
-                SyncCommand cmd = SyncCommand::createDebugFlashWithTime(g_sequenceGenerator.next(), flashTime);
+                // The SECONDARY schedules the time it receives as-is, so send
+                // it already converted to the SECONDARY's clock
+                SyncCommand cmd = SyncCommand::createDebugFlashWithTime(
+                    g_sequenceGenerator.next(), syncProtocol.primaryToLocalTime(flashTime));
                 if (cmd.serialize(buffer, sizeof(buffer)))
                 {
                     ble.sendToSecondary(buffer);
@@ -3856,7 +3850,6 @@ void handleSerialCommand(const char *command)
         Serial.printf("Offset samples: %u\n", syncProtocol.getOffsetSampleCount());
         Serial.printf("Median offset: %ld us\n", (long)syncProtocol.getMedianOffset());
         Serial.printf("Corrected offset: %ld us\n", (long)syncProtocol.getCorrectedOffset());
-        Serial.printf("Drift rate: %.3f us/ms\n", syncProtocol.getDriftRate());
         Serial.printf("RTT samples: %u\n", syncProtocol.getSampleCount());
         Serial.printf("RTT smoothed: %lu us (avg RTT %lu us)\n",
                       (unsigned long)syncProtocol.getMeasuredLatency(),
@@ -3880,7 +3873,6 @@ void handleSerialCommand(const char *command)
         Serial.printf("Clock Sync Valid: %s\n", syncProtocol.isClockSyncValid() ? "YES" : "NO");
         Serial.printf("Offset (corrected): %+ld μs\n", (long)syncProtocol.getCorrectedOffset());
         Serial.printf("Offset (median):    %+ld μs\n", (long)syncProtocol.getMedianOffset());
-        Serial.printf("Drift Rate:         %.4f μs/ms\n", syncProtocol.getDriftRate());
         Serial.printf("Offset Samples:     %u/%u\n", syncProtocol.getOffsetSampleCount(), 10);
         Serial.println(F("-------------------------------------"));
 
@@ -3897,23 +3889,6 @@ void handleSerialCommand(const char *command)
                       (unsigned long)syncProtocol.calculateAdaptiveLeadTime(),
                       static_cast<float>(syncProtocol.calculateAdaptiveLeadTime()) / 1000.0f);
         Serial.printf("Time Since Sync:    %lu ms\n", (unsigned long)syncProtocol.getTimeSinceSync());
-        Serial.println(F("-------------------------------------"));
-
-        // Path Asymmetry diagnostics
-        Serial.println(F("PATH ASYMMETRY:"));
-        Serial.printf("  Raw (last):     %+ld μs\n", (long)syncProtocol.getRawAsymmetry());
-        Serial.printf("  Smoothed:       %+ld μs\n", (long)syncProtocol.getSmoothedAsymmetry());
-        Serial.printf("  Variance:       %lu μs\n", (unsigned long)syncProtocol.getAsymmetryVariance());
-        Serial.printf("  Samples:        %u\n", syncProtocol.getAsymmetrySampleCount());
-        Serial.printf("  Phone during:   %s\n", syncProtocol.wasPhoneConnectedDuringSync() ? "YES" : "NO");
-
-        // Correction readiness check
-        bool varianceStable = syncProtocol.getAsymmetryVariance() < SYNC_ASYMMETRY_STABLE_VARIANCE_US;
-        bool enoughSamples = syncProtocol.getAsymmetrySampleCount() >= SYNC_ASYMMETRY_MIN_SAMPLES;
-        Serial.printf("  Correction Ready: %s\n",
-                      (varianceStable && enoughSamples) ? "YES (variance stable)" :
-                      (!enoughSamples) ? "NO (need more samples)" : "NO (variance too high)");
-
         Serial.println(F("=====================================\n"));
         return;
     }

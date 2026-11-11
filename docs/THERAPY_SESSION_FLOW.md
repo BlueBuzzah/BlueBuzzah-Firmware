@@ -351,7 +351,7 @@ sequenceDiagram
 
     Note over P,S: SCENARIO: Brief BLE disconnect (<15s)
 
-    Note over P: Sync cache (refreshed on every accepted sample):<br/>• Last clock offset<br/>• Last drift rate<br/>• Cached timestamp
+    Note over P: Sync cache (refreshed on every accepted sample):<br/>• Last clock offset<br/>• Cached timestamp
     P->>P: Connection lost
     S->>S: Connection lost
     Note over S: Wait for reconnection
@@ -367,7 +367,7 @@ sequenceDiagram
 
     P->>S: PING:seq|T1 (1st keepalive)
     S->>P: PONG:seq|tx_micros|T2|T3
-    Note over P: 3 confirmatory samples (each within 5ms<br/>of the projected offset) = sync ready<br/>(~210ms vs ~350ms)
+    Note over P: 3 confirmatory samples (each within 5ms<br/>of the cached offset) = sync ready<br/>(~210ms vs ~350ms)
 ```
 
 **Warm-Start Conditions:**
@@ -377,7 +377,7 @@ sequenceDiagram
 | Disconnect duration < 15s | ✓ | ✗ |
 | Disconnect duration ≥ 15s | ✗ | ✓ |
 | First connection (no cache) | ✗ | ✓ |
-| Device reboot (or a sample > 5ms off the projection) | ✗ | ✓ |
+| Device reboot (or a sample > 5ms off the cached offset) | ✗ | ✓ |
 
 **Recovery Time Comparison:**
 
@@ -392,7 +392,6 @@ sequenceDiagram
 // include/sync_protocol.h
 struct WarmStartCache {
     int64_t cachedOffset;        // Last known median offset
-    float cachedDriftRate;       // Last known drift rate (us/ms)
     uint32_t cacheTimestamp;     // syncNowMs() epoch (getMicros()/1000) when cached
     bool isValid;                // Cache contains usable data
 };
