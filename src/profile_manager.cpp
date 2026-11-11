@@ -287,12 +287,12 @@ bool ProfileManager::setParameter(const char* paramName, const char* value) {
     }
     else if (strcmp(paramUpper, "ON") == 0) {
         float onTime = static_cast<float>(atof(value));
-        if (onTime < PARAM_MIN_TIME_ON_MS || onTime > PARAM_MAX_TIME_ON_MS) return false;
+        if (!(onTime >= PARAM_MIN_TIME_ON_MS && onTime <= PARAM_MAX_TIME_ON_MS)) return false;
         _currentProfile.timeOnMs = onTime;
     }
     else if (strcmp(paramUpper, "OFF") == 0) {
         float offTime = static_cast<float>(atof(value));
-        if (offTime < PARAM_MIN_TIME_OFF_MS || offTime > PARAM_MAX_TIME_OFF_MS) return false;
+        if (!(offTime >= PARAM_MIN_TIME_OFF_MS && offTime <= PARAM_MAX_TIME_OFF_MS)) return false;
         _currentProfile.timeOffMs = offTime;
     }
     else if (strcmp(paramUpper, "SESSION") == 0) {
@@ -332,7 +332,7 @@ bool ProfileManager::setParameter(const char* paramName, const char* value) {
     }
     else if (strcmp(paramUpper, "JITTER") == 0) {
         float jitter = static_cast<float>(atof(value));
-        if (jitter < 0.0f || jitter > PARAM_MAX_JITTER_PCT) return false;
+        if (!(jitter >= 0.0f && jitter <= PARAM_MAX_JITTER_PCT)) return false;
         _currentProfile.jitterPercent = jitter;
     }
     else if (strcmp(paramUpper, "FINGERS") == 0) {
