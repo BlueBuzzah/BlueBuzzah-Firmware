@@ -462,6 +462,7 @@ COMMAND:field1|field2|field3|...
 |---------|-----------|--------|---------|
 | `IDENTIFY:SECONDARY` | S → P | (plain string, not pipe-delimited) | `IDENTIFY:SECONDARY` |
 | `GLOVE_ERROR` | S → P | (plain string; sent right after `IDENTIFY:SECONDARY` and again with every battery check, only when the SECONDARY has a boot hardware fault and is in `ERROR`; the PRIMARY ignores it from any other link) | `GLOVE_ERROR` |
+| `MOTOR_STATUS` | S → P | v3 only. The SECONDARY's boot motor check: one token per finger in finger order (index, middle, ring, pinky, thumb), comma-separated (`OK`, `OPEN`, `NODRIVER`, `UNKNOWN`). Sent right after `IDENTIFY:SECONDARY` (after `GLOVE_ERROR` when that is sent), again with every battery check, and after a serial `MOTOR_PRESENT` while linked. The PRIMARY accepts it only from the SECONDARY's link, drops a malformed list or one with the wrong token count, clears its copy on every SECONDARY connect and disconnect, and reports it to the app as `INFO` `MOTS`. A warning only: it never refuses or ends a session, and doesn't change session patterns | `MOTOR_STATUS:OK,OK,OPEN,OPEN,OPEN` |
 | `START_SESSION` | P → S | seq, timestamp | `START_SESSION:1\|50000` |
 | `PAUSE_SESSION` | P → S | seq, timestamp | `PAUSE_SESSION:0\|61000000` |
 | `RESUME_SESSION` | P → S | seq, timestamp | `RESUME_SESSION:0\|65000000` |
