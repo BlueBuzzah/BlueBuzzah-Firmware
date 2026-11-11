@@ -30,6 +30,7 @@ inline constexpr const char* const INTERNAL_MESSAGES[] = {
     "GET_BATTERY",
     "BATRESPONSE",
     "GLOVE_ERROR",     // SECONDARY -> PRIMARY on connect: boot hardware fault
+    "MOTOR_STATUS:",   // SECONDARY -> PRIMARY (v3): boot motor check tokens
     "FIRST_SYNC",
     "ACK_SYNC",        // Covers ACK_SYNC_ADJ
     "START_SESSION",

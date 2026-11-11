@@ -95,7 +95,7 @@ public:
                                 IsSchedulingCompleteCallback isCompleteCallback);
     void setGetLeadTimeCallback(GetLeadTimeCallback callback);
 
-    // Restrict patterns to the motors found present at boot (v3 presence probe)
+    // Fingers patterns use (v3: index to pinky, plus the thumb when the boot motor check found it)
     void setActiveFingers(const uint8_t* fingers, uint8_t count);
 
     // Session control
@@ -274,7 +274,7 @@ struct [[nodiscard]] Pattern {
 
 Both hands use finger indices `0..MAX_ACTUATORS-1`, with the hardware wiring ensuring each finger index maps to the same anatomical finger on both gloves (finger 0 = index on both, etc.).
 
-**Active-finger remapping**: pattern sequences are slot indices `0..numFingers-1`. `remapPatternFingers()` maps them onto the physical fingers set by `setActiveFingers()`. On v3 the boot motor-presence probe calls `setActiveFingers()` with the ports that have a motor, so a missing motor is skipped on both gloves rather than getting a silent slot. `startSession()` caps `numFingers` at the active-finger count.
+**Active-finger remapping**: pattern sequences are slot indices `0..numFingers-1`. `remapPatternFingers()` maps them onto the physical fingers set by `setActiveFingers()`. On v3, boot calls `setActiveFingers()` with index to pinky, plus the thumb only when the PRIMARY's boot motor check found it (`applyMotorPresenceToTherapy()`), so a 4-tactor glove's empty thumb port is skipped on both gloves rather than getting a silent slot. The check never drops index to pinky, and a later serial `MOTOR_PRESENT` doesn't change the set. `startSession()` caps `numFingers` at the active-finger count.
 
 ### Bilateral Pattern Delivery
 
@@ -1032,7 +1032,7 @@ All I2C access to the drivers takes the I2C mutex (`I2CMutexLock`), so the motor
 3. **Emergency stop**: `emergencyStop()` immediately stops all motors
 4. **Visual feedback**: LED indicators for errors
 5. **Driver self-heal**: `verifyAndHeal()` reconfigures a DRV2605 that reset after a supply brownout
-6. **Hardware fault**: A glove with no working motor driver, no motor task, or (v3) fewer than 4 motors enters `ERROR` at boot and stays there until reboot. Starts are refused while either glove is in `ERROR`, and the PRIMARY ends a running session (reason `ERROR`) if the SECONDARY reports `GLOVE_ERROR`
+6. **Hardware fault**: A glove with no working motor driver or no motor task enters `ERROR` at boot (the v3 boot motor check only warns) and stays there until reboot. Starts are refused while either glove is in `ERROR`, and the PRIMARY ends a running session (reason `ERROR`) if the SECONDARY reports `GLOVE_ERROR`
 
 ### Bilateral Synchronization
 

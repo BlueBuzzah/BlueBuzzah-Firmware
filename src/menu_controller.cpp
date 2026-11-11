@@ -6,6 +6,7 @@
  */
 
 #include "menu_controller.h"
+#include "motor_check_info.h"
 #include "therapy_engine.h"
 #include "hardware.h"
 #include "state_machine.h"
@@ -34,6 +35,7 @@ MenuController::MenuController() :
     _batteryGateCallback(nullptr),
     _gloveErrorCallback(nullptr),
     _batteryLevelCallback(nullptr),
+    _motorCheckCallback(nullptr),
     _deferredCommand(DeferredCommand::NONE),
     _secondaryBatteryVoltage(0.0f),
     _waitingForSecondaryBattery(false),
@@ -121,6 +123,10 @@ void MenuController::setGloveErrorCallback(GloveErrorCallback callback) {
 
 void MenuController::setBatteryLevelCallback(BatteryLevelCallback callback) {
     _batteryLevelCallback = callback;
+}
+
+void MenuController::setMotorCheckCallback(MotorCheckCallback callback) {
+    _motorCheckCallback = callback;
 }
 
 // =============================================================================
@@ -446,6 +452,10 @@ void MenuController::handleInfo() {
     addResponseLine("FW", _firmwareVersion);
     addResponseLine("HW", HW_VERSION_STRING);
     addResponseLine("MOTORS", static_cast<int32_t>(MAX_ACTUATORS));
+    // Boot motor check per finger (a warning, never a fault). Before any
+    // early return, so the immediate and deferred replies both carry it.
+    addMotorCheckInfoLines(_motorCheckCallback, _ble && _ble->isSecondaryConnected(),
+                           [this](const char* key, const char* value) { addResponseLine(key, value); });
     if (_profiles) {
         char profLine[48];
         snprintf(profLine, sizeof(profLine), "%d:%s",

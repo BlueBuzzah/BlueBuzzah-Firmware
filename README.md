@@ -143,10 +143,14 @@ Board-specific values (pins, actuator count, battery availability, the `BATTERY_
 
 **Red slow-blinking LED during boot (hardware or BLE initialization failed):**
 
-- If it stays red after boot, the glove is in `ERROR`: no motor driver started, the motor task failed, or (v3) fewer than 4 motors were found. It refuses sessions until rebooted, and its partner PRIMARY refuses them too
+- If it stays red after boot, the glove is in `ERROR`: no motor driver started or the motor task failed. It refuses sessions until rebooted, and its partner PRIMARY refuses them too
 - Power cycle the device
 - Check battery voltage (> 3.8V)
 - Verify I2C connections and motor JST connections
+
+**Red double blink for 5 seconds at boot (v3):**
+
+- The motor check found a finger that didn't respond (`[WARN] Motor check:` on serial). A warning only: boot continues. Check that finger's JST connection; `INFO` `MOTP`/`MOTS` show which fingers didn't respond
 
 **Breathing blue indefinitely (gloves never pair):**
 

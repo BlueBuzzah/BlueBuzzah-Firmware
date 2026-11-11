@@ -14,6 +14,7 @@
 #include <cstring>
 #include <cstdlib>
 #include "internal_messages.h"
+#include "motor_check_info.h"  // real INFO MOTP/MOTS emission
 
 // =============================================================================
 // MOCK DEFINITIONS FOR DEPENDENCIES
@@ -332,6 +333,8 @@ public:
     GateCallback _batteryGateCallback = nullptr;
     typedef const char* (*GloveErrorCallback)();
     GloveErrorCallback _gloveErrorCallback = nullptr;
+    typedef const char* (*MotorCheckCallback)(bool secondary);
+    MotorCheckCallback _motorCheckCallback = nullptr;
     GateCallback _syncReadyCallback = nullptr;
     DeferredCommand _deferredCommand;
     volatile float _secondaryBatteryVoltage;
@@ -553,6 +556,10 @@ public:
 
     void setBatteryLevelCallback(BatteryLevelCallback callback) {
         _batteryLevelCallback = callback;
+    }
+
+    void setMotorCheckCallback(MotorCheckCallback callback) {
+        _motorCheckCallback = callback;
     }
 
     void addBatteryLevelLine(const char* key, bool secondary) {
@@ -780,6 +787,8 @@ public:
         addResponseLine("NAME", _deviceName);
         addResponseLine("FW", _firmwareVersion);
         addResponseLine("MOTORS", static_cast<int32_t>(MAX_ACTUATORS));
+        addMotorCheckInfoLines(_motorCheckCallback, _ble && _ble->isSecondaryConnected(),
+                               [this](const char* key, const char* value) { addResponseLine(key, value); });
         if (_profiles) {
             char profLine[48];
             snprintf(profLine, sizeof(profLine), "%d:%s",
@@ -1174,6 +1183,11 @@ void test_isInternalMessage_BATRESPONSE_returns_true() {
 void test_isInternalMessage_GLOVE_ERROR_returns_true() {
     // The SECONDARY's fault report must never reach the menu as a phone command
     TEST_ASSERT_TRUE(g_menu->isInternalMessage("GLOVE_ERROR"));
+}
+
+void test_isInternalMessage_MOTOR_STATUS_returns_true() {
+    // The SECONDARY's motor check report must never reach the menu as a phone command
+    TEST_ASSERT_TRUE(g_menu->isInternalMessage("MOTOR_STATUS:OK,OK,OPEN,OPEN,OPEN"));
 }
 
 void test_isInternalMessage_ACK_PARAM_UPDATE_returns_false() {
@@ -2030,6 +2044,72 @@ void test_handleInfo_reports_secondary_link() {
     TEST_ASSERT_NOT_NULL(strstr(g_lastResponse, "SECONDARY:0\nBATS:0.00"));
 }
 
+static const char* g_testOwnMotorChecks = nullptr;
+static const char* g_testSecondaryMotorChecks = nullptr;
+static const char* testMotorCheck(bool secondary) {
+    return secondary ? g_testSecondaryMotorChecks : g_testOwnMotorChecks;
+}
+
+static void setTestMotorChecks(const char* own, const char* secondary) {
+    g_testOwnMotorChecks = own;
+    g_testSecondaryMotorChecks = secondary;
+    g_menu->setMotorCheckCallback(testMotorCheck);
+}
+
+void test_handleInfo_reports_motor_checks_after_MOTORS() {
+    // Linked, answered at once: MOTP then MOTS, right after MOTORS
+    setTestMotorChecks("OK,OK,OPEN,OPEN,OPEN", "OK,OK,OK,OK,UNKNOWN");
+    g_menu->handleInfo();
+    TEST_ASSERT_EQUAL_INT(1, g_responseCount);
+    char expected[96];
+    snprintf(expected, sizeof(expected),
+             "MOTORS:%d\nMOTP:OK,OK,OPEN,OPEN,OPEN\nMOTS:OK,OK,OK,OK,UNKNOWN\nPROFILE:", MAX_ACTUATORS);
+    TEST_ASSERT_NOT_NULL(strstr(g_lastResponse, expected));
+}
+
+void test_handleInfo_deferred_reply_carries_motor_checks() {
+    setTestMotorChecks("OK,OK,OK,OK,OK", "NODRIVER,OK,OK,OK,OPEN");
+    g_menu->setSendToSecondaryCallback(testSendToSecondaryCallback);
+    g_menu->handleInfo();
+    TEST_ASSERT_EQUAL_INT(0, g_responseCount);
+    g_menu->handleSecondaryBatteryResponse(3.92f);
+    TEST_ASSERT_EQUAL_INT(1, g_responseCount);
+    TEST_ASSERT_NOT_NULL(strstr(g_lastResponse, "MOTP:OK,OK,OK,OK,OK\n"));
+    TEST_ASSERT_NOT_NULL(strstr(g_lastResponse, "MOTS:NODRIVER,OK,OK,OK,OPEN\n"));
+    TEST_ASSERT_NOT_NULL(strstr(g_lastResponse, "BATS:3.92"));
+}
+
+void test_handleInfo_omits_MOTS_when_unlinked() {
+    // The link, not just the callback, gates MOTS
+    setTestMotorChecks("OK,OK,OK,OK,OPEN", "OK,OK,OK,OK,OK");
+    g_ble->_secondaryConnected = false;
+    g_menu->handleInfo();
+    TEST_ASSERT_NOT_NULL(strstr(g_lastResponse, "MOTP:OK,OK,OK,OK,OPEN\n"));
+    TEST_ASSERT_NULL(strstr(g_lastResponse, "MOTS:"));
+}
+
+void test_handleInfo_omits_motor_checks_without_report() {
+    // Nothing to report (SECONDARY hasn't sent MOTOR_STATUS): no key
+    setTestMotorChecks("OK,OK,OK,OK,OK", nullptr);
+    g_menu->handleInfo();
+    TEST_ASSERT_NOT_NULL(strstr(g_lastResponse, "MOTP:"));
+    TEST_ASSERT_NULL(strstr(g_lastResponse, "MOTS:"));
+
+    resetCapturedResponse();
+    setTestMotorChecks(nullptr, nullptr);
+    g_menu->handleInfo();
+    TEST_ASSERT_NULL(strstr(g_lastResponse, "MOTP:"));
+    TEST_ASSERT_NULL(strstr(g_lastResponse, "MOTS:"));
+}
+
+void test_handleInfo_omits_motor_checks_without_callback() {
+    // v2 registers no callback: neither key
+    g_menu->handleInfo();
+    TEST_ASSERT_EQUAL_INT(1, g_responseCount);
+    TEST_ASSERT_NULL(strstr(g_lastResponse, "MOTP:"));
+    TEST_ASSERT_NULL(strstr(g_lastResponse, "MOTS:"));
+}
+
 void test_handleBattery_reports_critical_level() {
     g_menu->setSendToSecondaryCallback(testSendToSecondaryCallback);
     g_menu->setBatteryLevelCallback(testBatteryLevel);
@@ -2196,6 +2276,7 @@ int main(int argc, char **argv) {
     RUN_TEST(test_isInternalMessage_GET_BATTERY_returns_true);
     RUN_TEST(test_isInternalMessage_BATRESPONSE_returns_true);
     RUN_TEST(test_isInternalMessage_GLOVE_ERROR_returns_true);
+    RUN_TEST(test_isInternalMessage_MOTOR_STATUS_returns_true);
     RUN_TEST(test_isInternalMessage_ACK_PARAM_UPDATE_returns_false);
     RUN_TEST(test_isInternalMessage_SYNC_prefix_returns_false);
     RUN_TEST(test_isInternalMessage_IDENTIFY_prefix_returns_true);
@@ -2296,6 +2377,11 @@ int main(int argc, char **argv) {
     RUN_TEST(test_sessionStart_refused_when_state_machine_rejects);
     RUN_TEST(test_sessionStop_invokes_stop_callback);
     RUN_TEST(test_handleInfo_reports_secondary_link);
+    RUN_TEST(test_handleInfo_reports_motor_checks_after_MOTORS);
+    RUN_TEST(test_handleInfo_deferred_reply_carries_motor_checks);
+    RUN_TEST(test_handleInfo_omits_MOTS_when_unlinked);
+    RUN_TEST(test_handleInfo_omits_motor_checks_without_report);
+    RUN_TEST(test_handleInfo_omits_motor_checks_without_callback);
     RUN_TEST(test_handleBattery_reports_critical_level);
     RUN_TEST(test_battery_level_omitted_without_reading);
     RUN_TEST(test_handleCommand_cancels_stale_deferred_INFO_on_new_command);

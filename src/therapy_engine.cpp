@@ -236,7 +236,7 @@ void TherapyEngine::setActiveFingers(const uint8_t* fingers, uint8_t count) {
 
 void TherapyEngine::remapPatternFingers(Pattern& pattern) {
     // Pattern sequences are permutations of 0.._numFingers-1 (slot indices);
-    // map them onto physical fingers so a missing motor is skipped entirely.
+    // map them onto the physical fingers set by setActiveFingers().
     // _numFingers <= _fingerMapCount is enforced by startSession.
     for (uint8_t i = 0; i < pattern.numFingers; i++) {
         if (pattern.primarySequence[i] < _fingerMapCount) {
@@ -352,7 +352,7 @@ void TherapyEngine::startSession(
     _patternType = patternType;
     _timeOnMs = timeOnMs;
     _timeOffMs = timeOffMs;
-    // Never more fingers than the active (physically present) set
+    // Never more fingers than the active set (setActiveFingers)
     _numFingers = (numFingers < _fingerMapCount) ? numFingers : _fingerMapCount;
     _jitterLimitMs = onsetJitterLimitMs(timeOnMs, timeOffMs, jitterPercent);
     _jitterGuardMs = static_cast<uint16_t>(std::ceil(_jitterLimitMs));

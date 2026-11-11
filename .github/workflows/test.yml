@@ -45,9 +45,9 @@ jobs:
         run: |
           pio test -e native_coverage_gcc -v
 
-      - name: Run v3 board mapping tests
+      - name: Run v3 (5-actuator) tests
         run: |
-          pio test -e native_penta -f test_board_config
+          pio test -e native_penta -f test_board_config -f test_motor_check -f test_menu_controller
 
       - name: Generate lcov report
         if: always()
