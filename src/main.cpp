@@ -908,7 +908,8 @@ void setup()
     if (deviceRole == DeviceRole::PRIMARY)
     {
         Serial.println(F("|  PRIMARY MODE - Advertising as 'BlueBuzzah'              |"));
-        Serial.println(F("|  Send 'TEST' via BLE to start 30-second therapy test     |"));
+        Serial.printf("|  Send 'TEST' via BLE to start %lu-second therapy test      |\n",
+                      static_cast<unsigned long>(TEST_DURATION_SEC));
         Serial.println(F("|  Send 'STOP' via BLE to stop therapy                     |"));
     }
     else
@@ -917,7 +918,10 @@ void setup()
         Serial.println(F("|  Will execute BUZZ commands from PRIMARY                 |"));
     }
     Serial.println(F("+============================================================+"));
-    Serial.println(F("|  Keepalive PING sent every 2 seconds when connected       |"));
+    Serial.printf("|  Keepalive PING every %lu/%lu/%lu ms (sync/therapy/idle)   |\n",
+                  static_cast<unsigned long>(SYNC_ACQUIRE_INTERVAL_MS),
+                  static_cast<unsigned long>(SYNC_ACTIVE_INTERVAL_MS),
+                  static_cast<unsigned long>(KEEPALIVE_INTERVAL_MS));
     Serial.println(F("|  Status printed every 5 seconds                           |"));
     Serial.println(F("+============================================================+\n"));
 
@@ -1533,10 +1537,10 @@ DeviceRole determineRole()
     }
 #endif
 
-    // Check if role was loaded from settings.json
+    // Check if role was loaded from SETTINGS_FILE
     if (profiles.hasStoredRole())
     {
-        Serial.println(F("[INFO] Using role from settings.json"));
+        Serial.println(F("[INFO] Using role from " SETTINGS_FILE));
         return profiles.getDeviceRole();
     }
 
