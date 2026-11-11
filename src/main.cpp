@@ -87,9 +87,12 @@ bool g_hardwareFault = false;
 volatile bool g_secondaryFault = false;
 
 // MC_ACK results (PRIMARY). The BLE task only stashes them; loop() acts and
-// prints. g_macrocycleRejected: the SECONDARY rejected the last macrocycle
-// sent, so loop() skips it here too.
+// prints. g_macrocycleRejected: the SECONDARY rejected g_rejectedMacrocycleSeq.
+// loop() skips it here too only if it's still the last macrocycle sent
+// (g_lastSentMacrocycleSeq, loop task only), so a late rejection never clears
+// a newer macrocycle's events.
 volatile uint32_t g_lastSentMacrocycleSeq = 0;
+volatile uint32_t g_rejectedMacrocycleSeq = 0;
 volatile bool g_macrocycleRejected = false;
 // ponytail: the stash fields can tear across two ACKs; they're log-only and
 // ACKs arrive hundreds of ms apart
@@ -906,9 +909,13 @@ void loop()
     // Act on MC_ACKs stashed by the BLE task (PRIMARY)
     if (g_macrocycleRejected) {
         g_macrocycleRejected = false;
-        activationQueue.clearActivations();
-        Serial.printf("[MACROCYCLE] SECONDARY rejected seq=%lu - skipping it on both gloves\n",
-                      static_cast<unsigned long>(g_lastSentMacrocycleSeq));
+        platformMemoryBarrier();
+        const uint32_t rejectedSeq = g_rejectedMacrocycleSeq;
+        if (rejectedSeq == g_lastSentMacrocycleSeq) {
+            activationQueue.clearActivations();
+            Serial.printf("[MACROCYCLE] SECONDARY rejected seq=%lu - skipping it on both gloves\n",
+                          static_cast<unsigned long>(rejectedSeq));
+        }
     }
     if (g_ackPending) {
         g_ackPending = false;
@@ -2489,15 +2496,21 @@ void onBLEMessage(uint16_t connHandle, const char *message, uint64_t rxTimestamp
             }
             const uint32_t seq = cmd.getSequenceId();
             const int32_t status = cmd.getDataInt("0");
-            if (status == static_cast<int32_t>(MacrocycleAckStatus::REJECTED) &&
-                seq == g_lastSentMacrocycleSeq)
+            if (status == static_cast<int32_t>(MacrocycleAckStatus::REJECTED))
             {
+                // loop() checks it against the last macrocycle sent
+                g_rejectedMacrocycleSeq = seq;
+                platformMemoryBarrier();
                 g_macrocycleRejected = true;
             }
-            g_ackSeq = seq;
-            g_ackStatus = status;
-            g_ackMarginMs = cmd.getDataInt("1");
-            g_ackPending = true;
+            // No margin field: nothing to report (avoids a false low-margin warning)
+            if (cmd.hasData("1"))
+            {
+                g_ackSeq = seq;
+                g_ackStatus = status;
+                g_ackMarginMs = cmd.getDataInt("1");
+                g_ackPending = true;
+            }
         }
         return;
     }
@@ -2813,9 +2826,8 @@ void onSendMacrocycle(const Macrocycle& macrocycle)
     // SECONDARY will apply clock offset once and schedule all activations
 
     g_skipLocalMacrocycle = false;
-    // A new macrocycle supersedes a stale rejection, so a late flag never
-    // clears this one's events
-    g_macrocycleRejected = false;
+    // loop() only acts on a SECONDARY rejection of this sequence ID, so a
+    // late rejection of an older macrocycle never clears this one's events
     g_lastSentMacrocycleSeq = macrocycle.sequenceId;
     if (deviceRole != DeviceRole::PRIMARY || !ble.isSecondaryConnected())
     {
