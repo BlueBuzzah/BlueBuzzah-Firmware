@@ -3929,7 +3929,7 @@ void handleSerialCommand(const char *command)
         }
         safeMotorShutdown();
         LoopWatchdogPause watchdogPause;  // up to 2s per port
-        haptic.probeMotorPresence();  // updates INFO MOTP; patterns keep the boot check's thumb decision
+        haptic.probeMotorPresence();  // refreshes the motor check (INFO MOTP on v3); patterns keep the boot thumb decision
 #if defined(BOARD_PENTABUZZER_ESP32S3)
         if (deviceRole == DeviceRole::SECONDARY && ble.isPrimaryConnected())
         {
