@@ -285,9 +285,9 @@ In a bilateral session the SECONDARY never generates patterns or random values. 
 ```cpp
 // src/therapy_engine.cpp - generateMacrocycle()
 MacrocycleEvent evt(
-    cumulativeTimeMs,
+    eventDelta,
     secondaryFinger,   // For SECONDARY (BLE transmission)
-    primaryFinger,     // For PRIMARY (local scheduling)
+    primaryFinger,     // For this glove (local scheduling)
     amplitude,
     (uint8_t)pattern.burstDurationMs,
     DEFAULT_FREQUENCY_HZ
@@ -482,7 +482,7 @@ void HapticController::emergencyStop() {
 
 ### Burst Frequency
 
-Every burst plays a fixed 250 Hz (`DEFAULT_FREQUENCY_HZ`), carried in each macrocycle event as `fo=10`. Both gloves read each event's frequency from the macrocycle, and the motor task writes it to the LRA period register, OL_LRA_PERIOD (0x20, 98.49 µs units), during pre-selection after the previous burst, off the activation's critical path. The write is skipped when the frequency hasn't changed, so it adds no I2C traffic after the first burst.
+Every burst plays a fixed 250 Hz (`DEFAULT_FREQUENCY_HZ`), carried in each macrocycle event as `fo=10`. Both gloves read each event's frequency from the macrocycle, and the motor task writes it to the LRA period register, OL_LRA_PERIOD (0x20, 98.49 µs units), during pre-selection, off the activation's critical path. The period write is skipped when the finger's frequency hasn't changed, so after each finger's first burst it is written again only after a driver re-init.
 
 ---
 

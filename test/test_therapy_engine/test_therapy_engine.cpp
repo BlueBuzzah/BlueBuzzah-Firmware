@@ -769,6 +769,7 @@ void test_macrocycle_events_are_250hz(void) {
     engine.update();
 
     TEST_ASSERT_TRUE(g_macrocycleReceived);
+    TEST_ASSERT_GREATER_THAN_UINT8(0, g_lastSentMacrocycle.eventCount);
     for (uint8_t i = 0; i < g_lastSentMacrocycle.eventCount; i++) {
         TEST_ASSERT_EQUAL_UINT16(250, g_lastSentMacrocycle.events[i].getFrequencyHz());
         TEST_ASSERT_EQUAL_UINT8(10, g_lastSentMacrocycle.events[i].freqOffset);

@@ -878,8 +878,8 @@ Result HapticController::setFrequencyDirect(uint8_t finger, uint16_t frequencyHz
     // Write to CONTROL1 register (0x1B)
     _drv[finger].writeRegister8(DRV2605_REG_CONTROL1, driveTime);
 
-    // The period only when it changes: every burst plays 250 Hz, so this
-    // normally adds no I2C traffic
+    // The period only when it changes: every burst plays 250 Hz, so the
+    // period write is skipped after each finger's first burst
     if (_lastFrequency[finger] != frequencyHz) {
         _drv[finger].writeRegister8(DRV_REG_OL_LRA_PERIOD, olLraPeriod(frequencyHz));
         _lastFrequency[finger] = frequencyHz;
