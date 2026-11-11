@@ -2,7 +2,7 @@
 
 **Comprehensive API documentation for the BlueBuzzah bilateral haptic therapy system**
 
-Platform: Arduino C++ on Adafruit Feather nRF52840 Express (v2, 4 motors) and Seeed XIAO ESP32-S3 PentaBuzzer (v3, 5 motors)
+Platform: Arduino C++ on Adafruit Feather nRF52840 Express (v2, 4 motors) and ESP32-S3-WROOM-1U-N8R8 (v3, 5 motors)
 Build System: PlatformIO (`adafruit_feather_nrf52840`, `pentabuzzer_esp32s3`)
 
 ---
@@ -285,15 +285,15 @@ Firmware version following semantic versioning. The `config.h` value is a defaul
 // include/config.h (per-board values from include/board_config.h)
 
 #define NEOPIXEL_PIN NEOPIXEL_PIN_OVERRIDE
-// NeoPixel LED data pin: PIN_NEOPIXEL on the Feather, GPIO4 on PentaBuzzer
+// NeoPixel LED data pin: PIN_NEOPIXEL on the Feather, GPIO4 on v3
 
 #if BATTERY_SENSE_ADC
 #define BATTERY_PIN BATTERY_PIN_OVERRIDE
 #endif
-// Battery voltage ADC pin: PIN_VBAT on the Feather. PentaBuzzer has no battery
+// Battery voltage ADC pin: PIN_VBAT on the Feather. v3 has no battery
 // ADC; it reads VBAT from the DRV2605 VBAT register instead
 
-// I2C uses default Wire pins on the Feather; PentaBuzzer sets
+// I2C uses default Wire pins on the Feather; v3 sets
 // SDA_PIN_OVERRIDE 5 / SCL_PIN_OVERRIDE 6
 ```
 
@@ -701,7 +701,7 @@ haptic.stopAll();
 
 #### BatteryMonitor Class
 
-Battery voltage and charge percentage (defined in `hardware.h`). Two backends, selected by `BATTERY_SENSE_ADC`: the VBAT divider ADC on the Feather nRF52840, and the DRV2605 VBAT register on PentaBuzzer.
+Battery voltage and charge percentage (defined in `hardware.h`). Two backends, selected by `BATTERY_SENSE_ADC`: the VBAT divider ADC on the Feather nRF52840, and the DRV2605 VBAT register on v3.
 
 ```cpp
 // include/hardware.h
@@ -716,7 +716,7 @@ public:
     bool isLow(float voltage = -1.0f);             // < BATTERY_LOW_VOLTAGE
     bool isCritical(float voltage = -1.0f);        // < BATTERY_CRITICAL_VOLTAGE
 
-    // Required before begin() on boards without a battery ADC (PentaBuzzer)
+    // Required before begin() on boards without a battery ADC (v3)
     void attachHaptic(HapticController* haptic);
 };
 ```
@@ -726,7 +726,7 @@ public:
 #include "hardware.h"
 
 BatteryMonitor battery;
-battery.attachHaptic(&haptic);  // PentaBuzzer: VBAT source; no-op on the Feather
+battery.attachHaptic(&haptic);  // v3: VBAT source; no-op on the Feather
 battery.begin();
 
 BatteryStatus status = battery.getStatus();
@@ -797,7 +797,7 @@ led.off();
 
 #### BLEManager Class
 
-BLE communication over the Nordic UART Service. One API, two backends: Bluefruit/SoftDevice on the Feather nRF52840 (`src/ble_manager_nrf52.cpp`) and NimBLE on PentaBuzzer (`src/ble_manager_esp32.cpp`). The PRIMARY is a peripheral that accepts the phone and the SECONDARY; the SECONDARY is a central that connects to the PRIMARY. Incoming connections are classified by an `IDENTIFY` handshake.
+BLE communication over the Nordic UART Service. One API, two backends: Bluefruit/SoftDevice on the Feather nRF52840 (`src/ble_manager_nrf52.cpp`) and NimBLE on v3 (`src/ble_manager_esp32.cpp`). The PRIMARY is a peripheral that accepts the phone and the SECONDARY; the SECONDARY is a central that connects to the PRIMARY. Incoming connections are classified by an `IDENTIFY` handshake.
 
 ```cpp
 // include/ble_manager.h
@@ -1746,7 +1746,7 @@ class LEDController {
 | LED initialized                         | Blue   | `BLINK_CONNECT` |
 | Hardware init success                   | Cyan   | `BLINK_CONNECT` |
 | Hardware init failed                    | Red    | `BLINK_SLOW`    |
-| Fewer than 4 motors detected (5 s, PentaBuzzer only, then `ERROR`) | Red | `DOUBLE_BLINK` |
+| Fewer than 4 motors detected (5 s, v3 only, then `ERROR`) | Red | `DOUBLE_BLINK` |
 | BLE ready (enters IDLE)                 | Blue   | `BREATHE_SLOW`  |
 | BLE init failed                         | Red    | `BLINK_SLOW`    |
 | Glove pair connected (enters READY)     | Green  | `SOLID`         |
@@ -1815,7 +1815,7 @@ void setup() {
     power.cutDrivers();  // v3: GPIO1 LOW, drivers off; no-op on nRF
     Serial.begin(115200);
 
-    power.begin();  // PentaBuzzer power path; no-op on nRF
+    power.begin();  // v3 power path; no-op on nRF
 
     // 1. LED first (configuration feedback)
     if (led.begin()) {

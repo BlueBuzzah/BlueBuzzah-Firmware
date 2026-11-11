@@ -725,8 +725,8 @@ void setup()
 
     printBanner();
 
-    // Enable the board power path FIRST (Penta: peripheral 3V3 rail feeds the
-    // LED, mux, and motor drivers; no-op on nRF)
+    // Enable the board power path FIRST (v3: GPIO1 enables the motor drivers
+    // and mux and powers the LED rail; no-op on nRF)
     power.begin();
 
     // Initialize LED FIRST (needed for configuration feedback)
@@ -1015,7 +1015,7 @@ void loop()
     // Update LED pattern animation
     led.update();
 
-    // Power-switch shutdown request (PentaBuzzer only; no-op on nRF)
+    // Power-switch shutdown request (v3 only; no-op on nRF)
     if (power.powerOffRequested())
     {
         safeMotorShutdown(SessionEndReason::POWER_OFF);
@@ -1412,7 +1412,7 @@ void printBanner()
 #if defined(BOARD_BLUEBUZZAH_NRF52)
     Serial.println(F("|  Platform: Adafruit Feather nRF52840 Express              |"));
 #else
-    Serial.println(F("|  Platform: PentaBuzzer XIAO ESP32-S3                       |"));
+    Serial.println(F("|  Platform: BlueBuzzah v3 (ESP32-S3-WROOM-1U-N8R8)          |"));
 #endif
     Serial.println(F("+============================================================+"));
 }
@@ -1502,7 +1502,7 @@ bool initializeHardware()
         // Boot QA: detect unpopulated/broken motor ports (each present motor
         // buzzes ~0.5s during the auto-cal probe). NOTE: needs battery power;
         // a USB-only boot can misreport, but motors can't run then anyway.
-        // PentaBuzzer only: the auto-cal presence method is validated on this
+        // v3 only: the auto-cal presence method is validated on this
         // board's LRAs. On nRF v2 gloves the probe stays available via the
         // MOTOR_PRESENT serial command but never runs (or restricts therapy
         // patterns) automatically at boot.

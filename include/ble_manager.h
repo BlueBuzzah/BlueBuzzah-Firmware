@@ -5,7 +5,7 @@
  *
  * Platform-neutral BLE manager API. The backend is selected at build time:
  * - ble_manager_nrf52.cpp: Bluefruit/SoftDevice (Adafruit Feather nRF52840)
- * - ble_manager_esp32.cpp: NimBLE (PentaBuzzer XIAO ESP32-S3)
+ * - ble_manager_esp32.cpp: NimBLE (v3 ESP32-S3-WROOM-1U-N8R8)
  *
  * Both backends implement:
  * - Nordic UART Service for data transfer

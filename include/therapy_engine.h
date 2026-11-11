@@ -211,7 +211,7 @@ enum class SessionEndReason : uint8_t {
     BATTERY,            // Critical battery
     CONNECTION_LOST,    // Glove-to-glove link lost
     ERROR,              // Firmware error state (reserved: nothing enters it yet)
-    POWER_OFF           // Power switch turned off (PentaBuzzer)
+    POWER_OFF           // Power switch turned off (v3)
 };
 
 inline const char* sessionEndReasonToString(SessionEndReason reason) {

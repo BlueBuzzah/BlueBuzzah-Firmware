@@ -5,7 +5,7 @@ Arduino C++ firmware for vibrotactile haptic feedback gloves. One codebase, two 
 | Board | Env | MCU | Motors | BLE stack |
 | ----- | --- | --- | ------ | --------- |
 | BlueBuzzah (Adafruit Feather nRF52840 Express) | `adafruit_feather_nrf52840` | nRF52840 | 4 | Bluefruit/SoftDevice |
-| PentaBuzzer (Seeed XIAO ESP32-S3) | `pentabuzzer_esp32s3` | ESP32-S3 | 5 (adds thumb) | NimBLE-Arduino 2.x |
+| v3 (ESP32-S3-WROOM-1U-N8R8) | `pentabuzzer_esp32s3` | ESP32-S3 | 5 (adds thumb) | NimBLE-Arduino 2.x |
 
 The board is selected by a build macro (`BOARD_BLUEBUZZAH_NRF52` / `BOARD_PENTABUZZER_ESP32S3`); board-specific values live in `board_config.h`, platform primitives in `platform.h`.
 
@@ -16,7 +16,7 @@ The board is selected by a build macro (`BOARD_BLUEBUZZAH_NRF52` / `BOARD_PENTAB
 | **Framework**  | Arduino via PlatformIO       |
 | **C++**        | C++20 (gnu++20)              |
 | **Build (nRF)**| `pio run -e adafruit_feather_nrf52840` |
-| **Build (Penta)**| `pio run -e pentabuzzer_esp32s3` |
+| **Build (v3)**| `pio run -e pentabuzzer_esp32s3` |
 | **Flash**      | `pio run -e <env> -t upload` |
 | **Test**       | `pio test -e native` (4-actuator) / `pio test -e native_penta` (5-actuator) |
 | **Test (one suite)** | `pio test -e native -f test_sync_protocol` |
@@ -42,7 +42,7 @@ The board is selected by a build macro (`BOARD_BLUEBUZZAH_NRF52` / `BOARD_PENTAB
 | `power_controller_*.cpp` | v3 power switch + deep sleep before the hardware cuts 3.3 V; no-op on nRF |
 | `latency_metrics.cpp`| Runtime latency measurement, RTT tracking, sync quality reporting |
 | `hires_clock.cpp`    | 1MHz timebase for sync timestamps: NRF_TIMER4 + HFXO on nRF (start after SoftDevice enable), `esp_timer` on ESP32 |
-| `radio_anchor.cpp`   | Hardware timestamps of BLE radio events via SoftDevice radio notifications (sync anchoring); inert stubs on Penta and native |
+| `radio_anchor.cpp`   | Hardware timestamps of BLE radio events via SoftDevice radio notifications (sync anchoring); inert stubs on v3 and native |
 | `activation_queue.cpp`| FreeRTOS motor event scheduling with paired activate/deactivate |
 | `deferred_queue.cpp` | ISR-safe work queue for blocking operations |
 | `motor_event_buffer.cpp`| Lock-free staging buffer (BLE callbacks → main loop) |
@@ -76,10 +76,10 @@ The board is selected by a build macro (`BOARD_BLUEBUZZAH_NRF52` / `BOARD_PENTAB
 - **`CONFIG_BT_NIMBLE_HOST_TASK_STACK_SIZE=8192` (v3) predates that deferral**: it was sized while menu commands ran in the NimBLE host task and hasn't been re-measured since.
 - **`loop()` runs under the 5 s task watchdog on v3** (enabled last in `setup()`). Wrap loop-context work that can legitimately block 5 s or more in a `LoopWatchdogPause` (`platform.h`), as `MOTOR_DIAG`, `MOTOR_PRESENT` and the SECONDARY connect do.
 - **FreeRTOS stack units differ**: words on nRF, bytes on ESP32 (`MOTOR_TASK_STACK`).
-- **`SYNC_DEBUG_GPIO_PIN` is per board** (`SYNC_DEBUG_GPIO_PIN_OVERRIDE` in `board_config.h`): `A0` on nRF, GPIO40 (unrouted WROOM pad 33, hand-wired for bench tests) on Penta. Never use `A0` on Penta: that's GPIO1, the shared DRV2605 enable line, and toggling it wipes every driver's registers.
+- **`SYNC_DEBUG_GPIO_PIN` is per board** (`SYNC_DEBUG_GPIO_PIN_OVERRIDE` in `board_config.h`): `A0` on nRF, GPIO40 (unrouted WROOM pad 33, hand-wired for bench tests) on v3. Never use `A0` on v3: that's GPIO1, the shared DRV2605 enable line, and toggling it wipes every driver's registers.
 - **`BLE_USE_2M_PHY` is tested with `#ifdef`**: `-DBLE_USE_2M_PHY=0` does not disable 2M PHY. `DEBUG_ENABLED`, `SKIP_BOOT_SEQUENCE`, `SYNC_DEBUG_GPIO_ENABLED`, `SYNC_ANCHOR_TIMESTAMPING_ENABLED` are `#ifndef` defaults in `config.h` and are safe to override with `-D`.
 - **`FIRMWARE_VERSION` comes from the release tag at build time.** `release.yml` strips the leading `v` and passes it as `-DFIRMWARE_VERSION` (overriding the `#ifndef` default in `config.h`) and as `BLUEBUZZAH_VERSION` for the v3 manifest. Local builds and the tag's source tree report the `config.h` default.
-- **`partitions_penta.csv` has a single `ota_0`**: no A/B OTA on Penta.
+- **`partitions_penta.csv` has a single `ota_0`**: no A/B OTA on v3.
 - **Worktrees go only in `.claude/worktrees/<name>`** inside this repo (gitignored), never beside it in the workspace's `projects/` or anywhere else.
 
 ## Key Documentation
