@@ -1301,6 +1301,21 @@ void test_SyncCommand_createMacrocycleAck_scheduled_roundtrip(void) {
     TEST_ASSERT_EQUAL_INT32(287, parsed.getDataInt("1", 0));
 }
 
+void test_SyncCommand_createMacrocycleAck_worstCase_fits64(void) {
+    // Longest possible MC_ACK must fit the SECONDARY's 64-byte ACK buffer
+    SyncCommand ack = SyncCommand::createMacrocycleAck(UINT32_MAX, MacrocycleAckStatus::REFUSED, INT32_MIN);
+    ack.setTimestamp(UINT64_MAX);
+    char buf[64];
+    TEST_ASSERT_TRUE(ack.serialize(buf, sizeof(buf)));
+    size_t len = strlen(buf);
+    TEST_ASSERT_EQUAL_STRING("|2|-2147483648", buf + len - 14);
+
+    SyncCommand parsed;
+    TEST_ASSERT_TRUE(parsed.deserialize(buf));
+    TEST_ASSERT_EQUAL_INT32(2, parsed.getDataInt("0", -1));
+    TEST_ASSERT_EQUAL_INT32(INT32_MIN, parsed.getDataInt("1", 0));
+}
+
 void test_SyncCommand_createPing(void) {
     SyncCommand cmd = SyncCommand::createPing(42);
 
@@ -2235,6 +2250,7 @@ int main(int argc, char **argv) {
     RUN_TEST(test_SyncCommand_createDebugFlash);
     RUN_TEST(test_SyncCommand_createMacrocycleAck_rejected_roundtrip);
     RUN_TEST(test_SyncCommand_createMacrocycleAck_scheduled_roundtrip);
+    RUN_TEST(test_SyncCommand_createMacrocycleAck_worstCase_fits64);
     RUN_TEST(test_SyncCommand_createPing);
     RUN_TEST(test_SyncCommand_createPong);
 
