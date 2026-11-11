@@ -52,7 +52,7 @@ struct SyncDataPair {
  */
 enum class MacrocycleAckStatus : uint8_t {
     SCHEDULED = 0,  // Staged for play (late or invalid events dropped)
-    REJECTED = 1,   // Local baseTime more than 5 s from the SECONDARY's clock
+    REJECTED = 1,   // Nothing playable: baseTime over 5 s off, every event late, or unparseable
     REFUSED = 2     // SECONDARY in CRITICAL_BATTERY or ERROR, plays nothing
 };
 
@@ -303,8 +303,9 @@ public:
      *
      * @param sequenceId Sequence ID (should match received MACROCYCLE)
      * @param status What the SECONDARY did with the macrocycle (data "0")
-     * @param marginMs Signed ms from receipt to the earliest event the
-     *                 SECONDARY scheduled; 0 unless status is SCHEDULED (data "1")
+     * @param marginMs Signed ms from staging the macrocycle to its first
+     *                 event, negative if that event was already late; 0
+     *                 unless status is SCHEDULED (data "1")
      */
     static SyncCommand createMacrocycleAck(uint32_t sequenceId, MacrocycleAckStatus status,
                                            int32_t marginMs);

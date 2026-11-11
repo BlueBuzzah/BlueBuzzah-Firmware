@@ -1097,7 +1097,7 @@ See [CALIBRATION_GUIDE.md](CALIBRATION_GUIDE.md#assembly-qa-bluebuzzah-v3) for t
 
 **Causes**:
 1. BLE connection interval >7.5ms
-2. MACROCYCLE arriving after its scheduled time (check SECONDARY serial logs). The PRIMARY prints `[WARN] MC_ACK seq=N margin=Mms` when a macrocycle reached the SECONDARY less than 20ms before its first event (every ACK is logged as `[MACROCYCLE] ACK ...` in debug mode)
+2. MACROCYCLE arriving after its scheduled time (check SECONDARY serial logs). The PRIMARY prints `[WARN] MC_ACK seq=N margin=Mms` when the SECONDARY had a macrocycle ready less than 20ms before its first event, or after it (negative margin) (every ACK is logged as `[MACROCYCLE] ACK ...` in debug mode)
 3. Clock sync not converged (`SESSION_START` returns `ERROR:Sync not ready` until it is)
 
 **Fix**:

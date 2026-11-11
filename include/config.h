@@ -148,9 +148,12 @@
 // played late: by SECONDARY when staging a frame, and by either glove's motor
 // task (PRIMARY never sends a late macrocycle either)
 #define MACROCYCLE_LATE_EVENT_TOLERANCE_US 5000
-// PRIMARY warns when an MC_ACK says SECONDARY received a macrocycle this
-// close to (or after) its first scheduled event
+// PRIMARY warns when an MC_ACK says SECONDARY had a macrocycle ready this
+// close to (or after) its first event
 constexpr int32_t MACROCYCLE_ACK_LOW_MARGIN_MS = 20;
+// PRIMARY ends the session after this many rejected macrocycles in a row:
+// neither glove is playing anything
+constexpr uint8_t MACROCYCLE_REJECT_LIMIT = 5;
 
 // Unified keepalive + clock sync (PING/PONG)
 #define KEEPALIVE_INTERVAL_MS 1000   // 1 second between PING messages (unified keepalive + clock sync)

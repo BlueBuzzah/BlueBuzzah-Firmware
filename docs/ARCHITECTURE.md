@@ -1603,7 +1603,7 @@ BLE callbacks never touch I2C. A disconnect callback signals `safetyShutdownSema
 
 **Level 2: Recoverable Errors** (Log + Continue)
 
-- Macrocycle with an implausible `baseTime` (>5s from now) -> Log `[ERROR]`, send `MC_ACK` status `1`, skip it; the PRIMARY skips it too
+- Macrocycle with an implausible `baseTime` (>5s from now) -> Log `[ERROR]`, send `MC_ACK` status `1`, skip it; the PRIMARY skips it too. The same status is sent when every event is late or the frame fails to parse. 5 in a row end the session with reason `ERROR`
 - Macrocycle that cannot be queued for the SECONDARY -> Skipped on both gloves
 - SECONDARY battery query unanswered within 1s -> Reply with `BATS:0.00`
 - DRV2605 reset by a supply brownout -> Detected by `verifyAndHeal()`, all drivers reconfigured
