@@ -437,68 +437,12 @@ bool ProfileManager::loadSettings() {
     _roleFromSettings = true;
     Serial.printf("[SETTINGS] Role: %s\n", deviceRoleToString(_deviceRole));
 
-    // Load profile
+    // Load profile. settings.bin supplies only which profile is active; its
+    // parameter fields are never read back, so a firmware that changes a
+    // built-in's defaults takes effect on the next boot.
     if (data.profileId > 0 && data.profileId <= _profileCount) {
         _currentProfile = _builtInProfiles[data.profileId - 1];
         _currentProfileId = data.profileId;
-
-        // Apply saved customizations. Custom skips them: its parameters come
-        // from the built-in plus custom.bin (applied below), and settings.bin
-        // may hold stale Custom values from older firmware.
-        if (data.profileId != CUSTOM_PROFILE_ID) {
-            _currentProfile.actuatorType = (data.actuatorType == 1) ? ActuatorType::ERM : ActuatorType::LRA;
-
-            // Validate against the current parameter bounds - reject fields outside them.
-            // This protects against corrupted or stale settings from old firmware versions.
-            if (data.timeOnMs >= PARAM_MIN_TIME_ON_MS && data.timeOnMs <= PARAM_MAX_TIME_ON_MS) {
-                _currentProfile.timeOnMs = data.timeOnMs;
-            } else {
-                Serial.printf("[SETTINGS] WARNING: Invalid timeOnMs %.1f, keeping default %.1f\n",
-                              data.timeOnMs, _currentProfile.timeOnMs);
-            }
-            if (data.timeOffMs >= PARAM_MIN_TIME_OFF_MS && data.timeOffMs <= PARAM_MAX_TIME_OFF_MS) {
-                _currentProfile.timeOffMs = data.timeOffMs;
-            } else {
-                Serial.printf("[SETTINGS] WARNING: Invalid timeOffMs %.1f, keeping default %.1f\n",
-                              data.timeOffMs, _currentProfile.timeOffMs);
-            }
-            if (data.jitterPercent >= 0.0f && data.jitterPercent <= PARAM_MAX_JITTER_PCT) {
-                _currentProfile.jitterPercent = data.jitterPercent;
-            } else {
-                Serial.printf("[SETTINGS] WARNING: Invalid jitterPercent %.1f, keeping default %.1f\n",
-                              data.jitterPercent, _currentProfile.jitterPercent);
-            }
-            if (data.frequencyHz >= PARAM_MIN_FREQUENCY_HZ && data.frequencyHz <= PARAM_MAX_FREQUENCY_HZ) {
-                _currentProfile.frequencyHz = data.frequencyHz;
-            } else {
-                Serial.printf("[SETTINGS] WARNING: Invalid frequencyHz %d, keeping default %d\n",
-                              data.frequencyHz, _currentProfile.frequencyHz);
-            }
-            if (data.amplitudeMin >= PARAM_MIN_AMPLITUDE_PCT &&
-                data.amplitudeMax <= MAX_AMPLITUDE &&
-                data.amplitudeMin <= data.amplitudeMax) {
-                _currentProfile.amplitudeMin = data.amplitudeMin;
-                _currentProfile.amplitudeMax = data.amplitudeMax;
-            } else {
-                Serial.println(F("[SETTINGS] WARNING: Invalid amplitude range, keeping defaults"));
-            }
-            if (data.sessionDurationMin >= PARAM_MIN_SESSION_MIN &&
-                data.sessionDurationMin <= PARAM_MAX_SESSION_MIN) {
-                _currentProfile.sessionDurationMin = data.sessionDurationMin;
-            } else {
-                Serial.printf("[SETTINGS] WARNING: Invalid sessionDurationMin %d, keeping default %d\n",
-                              data.sessionDurationMin, _currentProfile.sessionDurationMin);
-            }
-            if (data.numFingers >= 1 && data.numFingers <= MAX_ACTUATORS) {
-                _currentProfile.numFingers = data.numFingers;
-            } else {
-                Serial.printf("[SETTINGS] WARNING: Invalid numFingers %d, keeping default %d\n",
-                              data.numFingers, _currentProfile.numFingers);
-            }
-            strncpy(_currentProfile.patternType, data.patternType, PATTERN_TYPE_MAX - 1);
-            _currentProfile.patternType[PATTERN_TYPE_MAX - 1] = '\0';
-            _currentProfile.mirrorPattern = (data.mirrorPattern != 0);
-        }
 
         _profileLoaded = true;
 

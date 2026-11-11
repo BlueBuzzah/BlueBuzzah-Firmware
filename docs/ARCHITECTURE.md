@@ -953,9 +953,9 @@ if (mirrorPattern) {
 
 **Layered Configuration**:
 
-1. **Device Configuration** (`/settings.bin`): Device role, selected profile, profile overrides, therapy LED and debug flags
+1. **Device Configuration** (`/settings.bin`): Device role, selected profile, therapy LED and debug flags
 2. **Therapy Configuration** (profiles): Built-in profiles in `ProfileManager`; Custom profile edits in `/custom.bin`
-3. **Runtime Configuration**: `PARAM_SET` / `PROFILE_CUSTOM` adjustments, validated against the `PARAM_*` bounds in `config.h`
+3. **Runtime Configuration**: `PARAM_SET` / `PROFILE_CUSTOM` adjustments to the Custom profile only, saved to `/custom.bin` and validated against the `PARAM_*` bounds in `config.h`
 
 **Loading Hierarchy**:
 
@@ -980,8 +980,8 @@ bool ProfileManager::loadSettings() {
     _deviceRole = (data.role == 1) ? DeviceRole::SECONDARY : DeviceRole::PRIMARY;
     _roleFromSettings = true;
 
-    // Load profile, then apply saved values that pass the PARAM_* bounds
-    // (except Custom, whose parameters come from custom.bin only)
+    // Load profile: settings.bin supplies only the role and profile, never
+    // parameters, for every profile (Custom then applies custom.bin)
     if (data.profileId > 0 && data.profileId <= _profileCount) {
         _currentProfile = _builtInProfiles[data.profileId - 1];
         // ...
