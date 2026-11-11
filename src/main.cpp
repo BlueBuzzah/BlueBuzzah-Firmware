@@ -2,18 +2,18 @@
  * @file main.cpp
  * @brief BlueBuzzah Firmware - Main Application
  * @version 2.0.0
- * @platform Adafruit Feather nRF52840 Express
+ * @platform Adafruit Feather nRF52840 Express (v2), ESP32-S3-WROOM-1U-N8R8 (v3)
  *
  * Therapy engine with pattern generation and execution:
  * - PRIMARY mode: Generates patterns and sends to SECONDARY
- * - SECONDARY mode: Receives and executes buzz commands
+ * - SECONDARY mode: Receives and executes macrocycle batches
  * - Pattern types: RNDP, Sequential, Mirrored
  * - BLE synchronization between devices
  *
  * Configuration:
- * - Define DEVICE_ROLE_PRIMARY or DEVICE_ROLE_SECONDARY before building
- * - Or hold USER button during boot for SECONDARY mode
- * - Send "START" command via BLE to begin therapy test
+ * - Role is stored in SETTINGS_FILE, set over serial with SET_ROLE:PRIMARY|SECONDARY
+ * - Or hold USER button during boot for SECONDARY mode (boards with USER_BUTTON_ENABLED)
+ * - Send "TEST" command via BLE to begin therapy test
  */
 
 #include <Arduino.h>
@@ -908,16 +908,20 @@ void setup()
     if (deviceRole == DeviceRole::PRIMARY)
     {
         Serial.println(F("|  PRIMARY MODE - Advertising as 'BlueBuzzah'              |"));
-        Serial.println(F("|  Send 'TEST' via BLE to start 30-second therapy test     |"));
+        Serial.printf("|  Send 'TEST' via BLE to start %lu-second therapy test      |\n",
+                      static_cast<unsigned long>(TEST_DURATION_SEC));
         Serial.println(F("|  Send 'STOP' via BLE to stop therapy                     |"));
+        Serial.printf("|  PINGs every %lu/%lu/%lu ms (acquire/therapy/idle)         |\n",
+                      static_cast<unsigned long>(SYNC_ACQUIRE_INTERVAL_MS),
+                      static_cast<unsigned long>(SYNC_ACTIVE_INTERVAL_MS),
+                      static_cast<unsigned long>(KEEPALIVE_INTERVAL_MS));
     }
     else
     {
         Serial.println(F("|  SECONDARY MODE - Scanning for 'BlueBuzzah'              |"));
-        Serial.println(F("|  Will execute BUZZ commands from PRIMARY                 |"));
+        Serial.println(F("|  Will run MACROCYCLE batches from PRIMARY                  |"));
     }
     Serial.println(F("+============================================================+"));
-    Serial.println(F("|  Keepalive PING sent every 2 seconds when connected       |"));
     Serial.println(F("|  Status printed every 5 seconds                           |"));
     Serial.println(F("+============================================================+\n"));
 
@@ -1533,10 +1537,10 @@ DeviceRole determineRole()
     }
 #endif
 
-    // Check if role was loaded from settings.json
+    // Check if role was loaded from SETTINGS_FILE
     if (profiles.hasStoredRole())
     {
-        Serial.println(F("[INFO] Using role from settings.json"));
+        Serial.println(F("[INFO] Using role from " SETTINGS_FILE));
         return profiles.getDeviceRole();
     }
 
