@@ -667,7 +667,7 @@ RTT = (T4 - T1) - (T3 - T2)
 - Clock synchronization is continuously maintained via PING/PONG (every 70ms until sync is valid, so 5 samples take ~350ms; then 250ms during therapy, 1 second idle)
 - EMA (Exponential Moving Average) smooths offset measurements
 - Outlier rejection filters samples with high RTT (>60ms)
-- Drift rate tracking compensates for crystal oscillator differences
+- Continuous offset EMA updates follow crystal oscillator drift
 - Sub-millisecond precision achieved after 5+ valid samples
 
 **Warm-Start Recovery:**
@@ -908,7 +908,7 @@ The 7.5-10ms range applies to the glove link. The phone link is requested at 30-
 **Sub-millisecond Synchronization**: Achieved through:
 1. 7.5-10ms glove-link BLE connection interval
 2. IEEE 1588 PTP-style clock offset calculation
-3. EMA-smoothed offset tracking with drift compensation
+3. EMA-smoothed offset tracking that follows crystal drift
 4. Periodic PING/PONG keepalive (every 70ms until clock sync is valid, 250ms during therapy, 1 second idle)
 
 ---

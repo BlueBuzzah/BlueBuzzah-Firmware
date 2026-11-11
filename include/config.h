@@ -64,7 +64,6 @@
 
 // Boot sequence
 #define STARTUP_WINDOW_MS 30000      // 30 seconds boot timeout
-#define CONNECTION_TIMEOUT_MS 30000  // 30 seconds connection timeout
 
 // BLE parameters
 #define BLE_INTERVAL_MIN_MS 7.5f     // Minimum connection interval (7.5ms = 6 units, BLE spec minimum)
@@ -79,7 +78,6 @@
 #define BLE_INTERVAL_WARNING_THRESHOLD_MS 12.0f  // Warn if negotiated interval > 12ms
 
 // Sync protocol
-#define SYNC_TIMEOUT_MS 2000         // Sync command timeout
 #define COMMAND_TIMEOUT_MS 5000      // General BLE command timeout
 
 // PTP-style clock synchronization
@@ -94,7 +92,8 @@
 // blocking bug. The old code's delayMicroseconds() blocked BLE callbacks for ~300ms,
 // making it appear that MACROCYCLE transmission took much longer than it actually does.
 // MACROCYCLE delivery is covered by the RTT-based lead time calculation; at the
-// negotiated 200-byte MTU a macrocycle is one or two notifications.
+// negotiated 200-byte MTU (197-byte packets) a macrocycle is one or two
+// notifications on both boards.
 #define SYNC_MIN_VALID_SAMPLES 5     // Minimum samples before clock sync is valid
 #define SYNC_OFFSET_EMA_ALPHA_NUM 1  // Slow EMA α = 1/10 = 0.1 for continuous updates
 #define SYNC_OFFSET_EMA_ALPHA_DEN 10
@@ -117,13 +116,9 @@
 #define SYNC_MIN_RTT_DECAY_US 200           // Per-sample creep of tracked min RTT (adapts to degradation)
 #define SYNC_INNOVATION_GATE_US 5000        // Reject offset jumps > 5ms...
 #define SYNC_INNOVATION_REJECT_LIMIT 5      // ...unless persistent across this many samples
-#define SYNC_MAX_DRIFT_RATE_US_PER_MS 0.15f  // 150 ppm max drift rate (cap for safety)
-#define SYNC_MAX_APPLIED_DRIFT_RATE_US_PER_MS 0.1f  // 100 ppm max for corrections
-                                                     // More conservative than measurement cap (0.15f)
-                                                     // Applied in getCorrectedOffset() and getProjectedOffset()
 
 // Warm-start sync configuration (quick recovery after brief disconnects)
-#define SYNC_WARM_START_VALIDITY_MS 15000    // Cache valid for 15 seconds (reduced drift extrapolation window)
+#define SYNC_WARM_START_VALIDITY_MS 15000    // Cache valid for 15 seconds
 #define SYNC_WARM_START_MIN_SAMPLES 3        // Confirmatory samples required for warm-start
 #define SYNC_WARM_START_TOLERANCE_US 5000    // 5ms tolerance for confirmatory sample validation
 
@@ -142,22 +137,17 @@
                                                // converged offset (catches within-gate mispairs
                                                // from phone-link/advertising anchors on PRIMARY)
 
-// Path asymmetry compensation (measurement mode - correction not yet implemented)
-#define SYNC_ASYMMETRY_CORRECTION_ENABLED 0   // 0 = measure only, 1 = apply correction
-#define SYNC_ASYMMETRY_MIN_SAMPLES 10         // Samples before correction applied
-#define SYNC_ASYMMETRY_STABLE_VARIANCE_US 3000 // Variance threshold for stable estimate
-#define SYNC_ASYMMETRY_MAX_CORRECTION_US 20000 // Maximum correction (20ms cap)
-
-// Drift rate and lead time calculation constants
-#define SYNC_MAX_CORRECTION_ELAPSED_MS 10000  // 10s max elapsed time for drift correction
-#define SYNC_MIN_DRIFT_INTERVAL_MS 500        // 500ms min interval for drift rate calculation
-#define SYNC_DRIFT_EMA_ALPHA 0.3f             // Drift rate EMA smoothing factor (α=0.3)
+// Lead time calculation constants
 #define SYNC_MIN_LEAD_TIME_US 70000           // 70ms minimum lead time for MACROCYCLE
 #define SYNC_MAX_LEAD_TIME_US 150000          // 150ms maximum lead time for MACROCYCLE
 // A macrocycle is prepared this far before the max lead, so a slow loop pass
 // can't lose it. Tunable: dispatch stays gated on the previous queue draining,
 // and SECONDARY accepts a baseTime up to 5 s ahead.
 #define MACROCYCLE_PREPARE_MARGIN_US 150000
+// A macrocycle activation already this far past its time is dropped, never
+// played late: by SECONDARY when staging a frame, and by either glove's motor
+// task (PRIMARY never sends a late macrocycle either)
+#define MACROCYCLE_LATE_EVENT_TOLERANCE_US 5000
 
 // Unified keepalive + clock sync (PING/PONG)
 #define KEEPALIVE_INTERVAL_MS 1000   // 1 second between PING messages (unified keepalive + clock sync)
@@ -213,7 +203,7 @@ constexpr uint32_t TEST_DURATION_SEC = 120;  // 2 minutes
 
 // LRA (Linear Resonant Actuator) parameters
 #define MIN_FREQUENCY_HZ 150            // Minimum LRA resonant frequency
-#define MAX_FREQUENCY_HZ 255            // Maximum LRA resonant frequency (v1 randrange excludes 260)
+#define MAX_FREQUENCY_HZ 255            // Maximum LRA resonant frequency
 #define DEFAULT_FREQUENCY_HZ 250        // Default/standard LRA frequency (v1 reference: 250Hz)
 
 // Therapy parameter bounds. These are the single source of truth for
@@ -287,7 +277,6 @@ constexpr float ONSET_ROUNDING_RESERVE_MS = 1.0f;
 // =============================================================================
 
 #define BLE_EOT_CHAR 0x04               // End of transmission marker (ASCII EOT)
-#define BLE_CHUNK_SIZE 100              // Max bytes per BLE packet
 #define BLE_MAX_MESSAGE_SIZE 512        // Max total message size
 #define BLE_NAME "BlueBuzzah"           // Default BLE device name
 
@@ -309,7 +298,7 @@ constexpr float ONSET_ROUNDING_RESERVE_MS = 1.0f;
 #ifndef SYNC_DEBUG_GPIO_ENABLED
 #define SYNC_DEBUG_GPIO_ENABLED 0
 #endif
-#define SYNC_DEBUG_GPIO_PIN PIN_A0
+#define SYNC_DEBUG_GPIO_PIN SYNC_DEBUG_GPIO_PIN_OVERRIDE
 
 // Debug macros
 #if DEBUG_ENABLED

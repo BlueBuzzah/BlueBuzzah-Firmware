@@ -5,7 +5,7 @@
 **Test Duration**: ~5 minutes
 **Environment**: Indoor, typical usage distance
 
-> **Note**: This baseline was established before the `feat/sync-fault-correction` branch which implements IEEE 1588 PTP clock synchronization, warm-start recovery, path asymmetry tracking, and microsecond precision timestamps. Most optimization phases have been completed. Current bilateral sync accuracy is pending re-validation on the 1MHz hardware timebase (see the 2026-06-10 section below).
+> **Note**: This baseline was established before the `feat/sync-fault-correction` branch which implements IEEE 1588 PTP clock synchronization, warm-start recovery, and microsecond precision timestamps. Most optimization phases have been completed. Current bilateral sync accuracy is pending re-validation on the 1MHz hardware timebase (see the 2026-06-10 section below).
 
 ---
 
@@ -259,10 +259,9 @@ The +473µs / +500µs average execution drift figures recorded in the December 2
 | **RTT hard ceiling** | Samples with RTT > 60ms are discarded (unchanged value, now correctly measurable). |
 | **Lucky-packet gate** | Only exchanges within `SYNC_LUCKY_RTT_MARGIN_US` (10ms) of the tracked minimum RTT are accepted; minimum decays upward at `SYNC_MIN_RTT_DECAY_US` (200µs/sample). |
 | **Innovation gate** | Offset jumps > `SYNC_INNOVATION_GATE_US` (5ms) are rejected; after `SYNC_INNOVATION_REJECT_LIMIT` (5) such rejections with no accepted sample in between, the next jumping sample hard re-anchors the offset instead of EMA-blending. |
-| **Drift anchor** | A dedicated anchor pair measures drift over windows ≥ `SYNC_MIN_DRIFT_INTERVAL_MS` (500ms), preventing 4Hz cadence from stalling drift estimation. |
 | **4Hz therapy cadence** | `SYNC_ACTIVE_INTERVAL_MS` = 250ms (was 1s for all states). |
 | **Motor path** | First macrocycle event gets I2C pre-selection in the motor task idle window; removed blocking serial read and critical-path `[LEADTIME]` printf from the therapy loop. |
-| **GPIO ground truth** | `SYNC_DEBUG_GPIO_ENABLED` toggles pin A0 on each ACTIVATE; see `docs/SYNC_VALIDATION.md` for the measurement protocol. |
+| **GPIO ground truth** | `SYNC_DEBUG_GPIO_ENABLED` toggles a debug pin (A0 on v2, GPIO40 on v3) on each ACTIVATE; see `docs/SYNC_VALIDATION.md` for the measurement protocol. |
 | **Anchor timestamping (experimental)** | Radio-notification ISR (SWI1, 800µs pre-event) anchors in a 16-slot ring; SECONDARY attaches its rx anchor to PONGs (6-field wire format); PRIMARY pairs with its first post-T1 tx anchor within 25ms; `anchorOffset = secondaryAnchor - primaryAnchor - SYNC_ANCHOR_BIAS_US` replaces PTP when within the 1.5ms pre-filter; PTP fallback per sample. Disabled by default (`SYNC_ANCHOR_TIMESTAMPING_ENABLED 0`). |
 
 ### Expected Outcomes

@@ -171,26 +171,6 @@ void test_stateTriggerToString_emergencyStop(void) {
 }
 
 // =============================================================================
-// BOOT RESULT TESTS
-// =============================================================================
-
-void test_isBootSuccess_failed_returns_false(void) {
-    TEST_ASSERT_FALSE(isBootSuccess(BootResult::FAILED));
-}
-
-void test_isBootSuccess_noPhone_returns_true(void) {
-    TEST_ASSERT_TRUE(isBootSuccess(BootResult::SUCCESS_NO_PHONE));
-}
-
-void test_isBootSuccess_withPhone_returns_true(void) {
-    TEST_ASSERT_TRUE(isBootSuccess(BootResult::SUCCESS_WITH_PHONE));
-}
-
-void test_isBootSuccess_success_returns_true(void) {
-    TEST_ASSERT_TRUE(isBootSuccess(BootResult::SUCCESS));
-}
-
-// =============================================================================
 // SYNC COMMAND TYPE STRING TESTS
 // =============================================================================
 
@@ -557,31 +537,6 @@ void test_BatteryTracker_confirming_until_second_reading(void) {
 }
 
 // =============================================================================
-// DEVICE CONFIG TESTS
-// =============================================================================
-
-void test_DeviceConfig_default_constructor(void) {
-    DeviceConfig config;
-    TEST_ASSERT_EQUAL(DeviceRole::PRIMARY, config.role);
-    TEST_ASSERT_EQUAL_STRING("BlueBuzzah", config.bleName);
-    TEST_ASSERT_EQUAL_STRING("[PRIMARY]", config.deviceTag);
-}
-
-void test_DeviceConfig_isPrimary_when_primary(void) {
-    DeviceConfig config;
-    config.role = DeviceRole::PRIMARY;
-    TEST_ASSERT_TRUE(config.isPrimary());
-    TEST_ASSERT_FALSE(config.isSecondary());
-}
-
-void test_DeviceConfig_isSecondary_when_secondary(void) {
-    DeviceConfig config;
-    config.role = DeviceRole::SECONDARY;
-    TEST_ASSERT_FALSE(config.isPrimary());
-    TEST_ASSERT_TRUE(config.isSecondary());
-}
-
-// =============================================================================
 // CONNECTION STATE TESTS
 // =============================================================================
 
@@ -735,12 +690,6 @@ int main(int argc, char **argv) {
     RUN_TEST(test_stateTriggerToString_stopped);
     RUN_TEST(test_stateTriggerToString_forcedShutdown);
 
-    // Boot Result Tests
-    RUN_TEST(test_isBootSuccess_failed_returns_false);
-    RUN_TEST(test_isBootSuccess_noPhone_returns_true);
-    RUN_TEST(test_isBootSuccess_withPhone_returns_true);
-    RUN_TEST(test_isBootSuccess_success_returns_true);
-
     // Sync Command Type String Tests
     RUN_TEST(test_syncCommandTypeToString_startSession);
     RUN_TEST(test_syncCommandTypeToString_buzz);
@@ -788,11 +737,6 @@ int main(int argc, char **argv) {
     RUN_TEST(test_BatteryTracker_critical_holds_through_rest_recovery);
     RUN_TEST(test_BatteryTracker_thresholds_are_strict);
     RUN_TEST(test_BatteryTracker_confirming_until_second_reading);
-
-    // Device Config Tests
-    RUN_TEST(test_DeviceConfig_default_constructor);
-    RUN_TEST(test_DeviceConfig_isPrimary_when_primary);
-    RUN_TEST(test_DeviceConfig_isSecondary_when_secondary);
 
     // Connection State Tests
     RUN_TEST(test_ConnectionState_default_constructor);

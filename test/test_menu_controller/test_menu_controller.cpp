@@ -81,6 +81,7 @@ enum class StateTrigger {
     PAUSE_SESSION,
     RESUME_SESSION,
     STOP_SESSION,
+    STOPPED,
     SESSION_COMPLETE,
     BATTERY_CRITICAL,
     BATTERY_RECOVERED,
@@ -277,6 +278,7 @@ const char* deviceRoleToString(DeviceRole role) {
 
 typedef void (*SendResponseCallback)(const char* response);
 typedef void (*RestartCallback)();
+typedef void (*SessionStopCallback)();
 
 /**
  * @brief Test version of MenuController focusing on testable logic
@@ -297,6 +299,7 @@ public:
 
     SendResponseCallback _sendCallback;
     RestartCallback _restartCallback;
+    SessionStopCallback _sessionStopCallback;
 
     bool _isCalibrating;
     uint32_t _calibrationStartTime;
@@ -349,6 +352,7 @@ public:
         _role(DeviceRole::PRIMARY),
         _sendCallback(nullptr),
         _restartCallback(nullptr),
+        _sessionStopCallback(nullptr),
         _sendToSecondaryCallback(nullptr),
         _deferredCommand(DeferredCommand::NONE),
         _secondaryBatteryVoltage(0.0f),
@@ -398,6 +402,10 @@ public:
 
     void setRestartCallback(RestartCallback callback) {
         _restartCallback = callback;
+    }
+
+    void setSessionStopCallback(SessionStopCallback callback) {
+        _sessionStopCallback = callback;
     }
 
     bool isCalibrating() const { return _isCalibrating; }
@@ -859,6 +867,20 @@ public:
         }
     }
 
+    // Mirrors MenuController::handleSessionStop: the callback does the stop
+    void handleSessionStop() {
+        if (_sessionStopCallback) {
+            _sessionStopCallback();
+        }
+        if (_stateMachine) {
+            _stateMachine->transition(StateTrigger::STOP_SESSION);
+            _stateMachine->transition(StateTrigger::STOPPED);
+        }
+        beginResponse();
+        addResponseLine("SESSION_STATUS", "IDLE");
+        sendResponse();
+    }
+
     void handlePing() {
         beginResponse();
         addResponseLine("PONG", "");
@@ -996,6 +1018,11 @@ public:
             return true;
         }
 
+        if (strcmp(command, "SESSION_STOP") == 0) {
+            handleSessionStop();
+            return true;
+        }
+
         if (strcmp(command, "PROFILE_LOAD") == 0) {
             if (paramCount < 1) {
                 sendError("Profile ID required");
@@ -1124,16 +1151,16 @@ void test_isInternalMessage_empty_returns_false() {
     TEST_ASSERT_FALSE(g_menu->isInternalMessage(""));
 }
 
-void test_isInternalMessage_PARAM_UPDATE_returns_true() {
-    TEST_ASSERT_TRUE(g_menu->isInternalMessage("PARAM_UPDATE:INTENSITY:75"));
+void test_isInternalMessage_PARAM_UPDATE_returns_false() {
+    TEST_ASSERT_FALSE(g_menu->isInternalMessage("PARAM_UPDATE:INTENSITY:75"));
 }
 
-void test_isInternalMessage_SEED_returns_true() {
-    TEST_ASSERT_TRUE(g_menu->isInternalMessage("SEED:12345"));
+void test_isInternalMessage_SEED_returns_false() {
+    TEST_ASSERT_FALSE(g_menu->isInternalMessage("SEED:12345"));
 }
 
-void test_isInternalMessage_SEED_ACK_returns_true() {
-    TEST_ASSERT_TRUE(g_menu->isInternalMessage("SEED_ACK:12345"));
+void test_isInternalMessage_SEED_ACK_returns_false() {
+    TEST_ASSERT_FALSE(g_menu->isInternalMessage("SEED_ACK:12345"));
 }
 
 void test_isInternalMessage_GET_BATTERY_returns_true() {
@@ -1149,12 +1176,12 @@ void test_isInternalMessage_GLOVE_ERROR_returns_true() {
     TEST_ASSERT_TRUE(g_menu->isInternalMessage("GLOVE_ERROR"));
 }
 
-void test_isInternalMessage_ACK_PARAM_UPDATE_returns_true() {
-    TEST_ASSERT_TRUE(g_menu->isInternalMessage("ACK_PARAM_UPDATE:INTENSITY"));
+void test_isInternalMessage_ACK_PARAM_UPDATE_returns_false() {
+    TEST_ASSERT_FALSE(g_menu->isInternalMessage("ACK_PARAM_UPDATE:INTENSITY"));
 }
 
-void test_isInternalMessage_SYNC_prefix_returns_true() {
-    TEST_ASSERT_TRUE(g_menu->isInternalMessage("SYNC_ADJ:12345:67890"));
+void test_isInternalMessage_SYNC_prefix_returns_false() {
+    TEST_ASSERT_FALSE(g_menu->isInternalMessage("SYNC_ADJ:12345:67890"));
 }
 
 void test_isInternalMessage_IDENTIFY_prefix_returns_true() {
@@ -1967,6 +1994,19 @@ void test_sessionStart_refused_when_state_machine_rejects() {
     TEST_ASSERT_FALSE(g_therapy->isRunning());  // the FSM is asked before therapy starts
 }
 
+static int g_sessionStopCount = 0;
+static void testSessionStop() { g_sessionStopCount++; }
+
+void test_sessionStop_invokes_stop_callback() {
+    g_sessionStopCount = 0;
+    g_menu->setSessionStopCallback(testSessionStop);
+
+    g_menu->handleCommand("SESSION_STOP");
+
+    TEST_ASSERT_EQUAL_INT(1, g_sessionStopCount);
+    TEST_ASSERT_NOT_NULL(strstr(g_lastResponse, "SESSION_STATUS:IDLE"));
+}
+
 void test_handleInfo_reports_secondary_link() {
     // Linked: present in the deferred reply, ahead of BATS
     g_menu->setSendToSecondaryCallback(testSendToSecondaryCallback);
@@ -2150,14 +2190,14 @@ int main(int argc, char **argv) {
     // Internal message tests
     RUN_TEST(test_isInternalMessage_null_returns_false);
     RUN_TEST(test_isInternalMessage_empty_returns_false);
-    RUN_TEST(test_isInternalMessage_PARAM_UPDATE_returns_true);
-    RUN_TEST(test_isInternalMessage_SEED_returns_true);
-    RUN_TEST(test_isInternalMessage_SEED_ACK_returns_true);
+    RUN_TEST(test_isInternalMessage_PARAM_UPDATE_returns_false);
+    RUN_TEST(test_isInternalMessage_SEED_returns_false);
+    RUN_TEST(test_isInternalMessage_SEED_ACK_returns_false);
     RUN_TEST(test_isInternalMessage_GET_BATTERY_returns_true);
     RUN_TEST(test_isInternalMessage_BATRESPONSE_returns_true);
     RUN_TEST(test_isInternalMessage_GLOVE_ERROR_returns_true);
-    RUN_TEST(test_isInternalMessage_ACK_PARAM_UPDATE_returns_true);
-    RUN_TEST(test_isInternalMessage_SYNC_prefix_returns_true);
+    RUN_TEST(test_isInternalMessage_ACK_PARAM_UPDATE_returns_false);
+    RUN_TEST(test_isInternalMessage_SYNC_prefix_returns_false);
     RUN_TEST(test_isInternalMessage_IDENTIFY_prefix_returns_true);
     RUN_TEST(test_isInternalMessage_user_command_INFO_returns_false);
     RUN_TEST(test_isInternalMessage_user_command_BATTERY_returns_false);
@@ -2254,6 +2294,7 @@ int main(int argc, char **argv) {
     RUN_TEST(test_sessionStart_refused_on_glove_error_before_link_check);
     RUN_TEST(test_sessionStart_refused_on_secondary_glove_error);
     RUN_TEST(test_sessionStart_refused_when_state_machine_rejects);
+    RUN_TEST(test_sessionStop_invokes_stop_callback);
     RUN_TEST(test_handleInfo_reports_secondary_link);
     RUN_TEST(test_handleBattery_reports_critical_level);
     RUN_TEST(test_battery_level_omitted_without_reading);

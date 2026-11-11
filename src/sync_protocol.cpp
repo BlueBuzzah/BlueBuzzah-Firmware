@@ -12,6 +12,10 @@
 #include <stdlib.h>
 #include <cerrno>
 
+#if defined(BOARD_PENTABUZZER_ESP32S3) && !defined(NATIVE_TEST_BUILD)
+#include "esp_timer.h"
+#endif
+
 // =============================================================================
 // 64-BIT MICROSECOND TIMESTAMP WITH OVERFLOW TRACKING
 // =============================================================================
@@ -34,6 +38,11 @@ static inline uint32_t readMicrosSource(bool hires) {
 }
 
 uint64_t getMicros() {
+#if defined(BOARD_PENTABUZZER_ESP32S3) && !defined(NATIVE_TEST_BUILD)
+    // esp_timer is already a 64-bit 1MHz counter: no wrap to track, so no
+    // cross-core lock. Same values as the 32-bit path below would give.
+    return static_cast<uint64_t>(esp_timer_get_time());
+#else
     // Interrupt-safe: called from main loop, BLE task, motor task and (later)
     // the radio-notification ISR. The IRQ-off section makes overflow tracking
     // and the TIMER4 CC[5] capture register exclusive.
@@ -78,6 +87,7 @@ uint64_t getMicros() {
 
     // Combine overflow count (upper 32 bits) with current micros (lower 32 bits)
     return ((uint64_t)overflows << 32) | now;
+#endif
 }
 
 void resetMicrosOverflow() {
@@ -751,9 +761,9 @@ bool SyncCommand::deserializeMacrocycle(const char* message, size_t messageLen, 
 }
 
 // Milliseconds derived from the sync timebase. Using getMicros()/1000 instead
-// of millis() keeps drift-rate math in a single clock domain (HFXO) - millis()
-// is LFXO/tick-derived and differs by up to ~40ppm, the same magnitude as the
-// crystal drift being estimated.
+// of millis() keeps sync timestamps and warm-start cache ages in the same
+// clock domain (HFXO) as the offsets - millis() is LFXO/tick-derived and
+// differs by up to ~40ppm.
 static inline uint32_t syncNowMs() {
     return static_cast<uint32_t>(getMicros() / 1000ULL);
 }
@@ -773,19 +783,9 @@ SimpleSyncProtocol::SimpleSyncProtocol() :
     _offsetSampleCount(0),
     _medianOffset(0),
     _clockSyncValid(false),
-    _lastMeasuredOffset(0),
-    _lastOffsetTime(0),
-    _driftRateUsPerMs(0.0f),
-    _driftAnchorOffset(0),
-    _driftAnchorTime(0),
     _minRttUs(UINT32_MAX), _innovationRejects(0),
     _warmStartMode(false),
-    _warmStartConfirmed(0),
-    _lastAsymmetry(0),
-    _smoothedAsymmetry(0),
-    _asymmetryVariance(0),
-    _asymmetrySampleCount(0),
-    _phoneConnectedDuringSync(false)
+    _warmStartConfirmed(0)
 {
     memset(_offsetSamples, 0, sizeof(_offsetSamples));
     // _warmStartCache initialized by struct default constructor
@@ -851,14 +851,13 @@ void SimpleSyncProtocol::addOffsetSample(int64_t offset) {
         _offsetSampleCount++;
     }
 
-    // Warm-start validation mode: validate samples against projected offset
+    // Warm-start validation mode: validate samples against the cached offset
     if (_warmStartMode) {
-        int64_t projected = getProjectedOffset();
-        int64_t deviation = offset - projected;
+        int64_t deviation = offset - getCachedOffset();
         if (deviation < 0) deviation = -deviation;  // abs()
 
         if (deviation <= SYNC_WARM_START_TOLERANCE_US) {
-            // Sample confirms projected offset
+            // Sample confirms the cached offset
             _warmStartConfirmed++;
 
             if (_warmStartConfirmed >= SYNC_WARM_START_MIN_SAMPLES) {
@@ -947,6 +946,7 @@ void SimpleSyncProtocol::addOffsetSample(int64_t offset) {
         }
 
         // Step 4: Compute final median from filtered samples
+        int64_t newOffset;
         if (filteredCount >= SYNC_MIN_VALID_SAMPLES) {
             // Sort filtered samples
             for (uint8_t i = 1; i < filteredCount; i++) {
@@ -962,24 +962,39 @@ void SimpleSyncProtocol::addOffsetSample(int64_t offset) {
             // Get final median from filtered samples
             if (filteredCount % 2 == 0) {
                 uint8_t mid = filteredCount / 2;
-                _medianOffset = (filtered[mid - 1] + filtered[mid]) / 2;
+                newOffset = (filtered[mid - 1] + filtered[mid]) / 2;
             } else {
-                _medianOffset = filtered[filteredCount / 2];
+                newOffset = filtered[filteredCount / 2];
             }
         } else {
             // Not enough non-outlier samples, use preliminary median
-            _medianOffset = prelimMedian;
+            newOffset = prelimMedian;
         }
+
+        storeOffset(newOffset);
 
         _clockSyncValid = true;
     }
+}
+
+int64_t SimpleSyncProtocol::loadOffset() const {
+    PLATFORM_CRITICAL_ENTER();
+    int64_t offset = _medianOffset;
+    PLATFORM_CRITICAL_EXIT();
+    return offset;
+}
+
+void SimpleSyncProtocol::storeOffset(int64_t offset) {
+    PLATFORM_CRITICAL_ENTER();
+    _medianOffset = offset;
+    PLATFORM_CRITICAL_EXIT();
 }
 
 int64_t SimpleSyncProtocol::getMedianOffset() const {
     if (!_clockSyncValid) {
         return 0;
     }
-    return _medianOffset;
+    return loadOffset();
 }
 
 void SimpleSyncProtocol::updateOffsetEMA(int64_t offset) {
@@ -991,61 +1006,25 @@ void SimpleSyncProtocol::updateOffsetEMA(int64_t offset) {
         return;
     }
 
-    // CRITICAL: Use consistent timestamp throughout to avoid drift rate bias
-    // Previously, mixing millis() calls at different times created 33-50 ppm systematic error
     uint32_t now = syncNowMs();
 
-    // Drift measurement uses a dedicated anchor pair so the >=500ms window
-    // accumulates in wall time even when accepted samples arrive faster
-    // (4Hz therapy cadence) - advancing the anchor every sample would keep
-    // elapsed below the window forever and stall drift estimation.
-    if (_driftAnchorTime > 0) {
-        uint32_t elapsed = now - _driftAnchorTime;
-        if (elapsed >= SYNC_MIN_DRIFT_INTERVAL_MS) {
-            int64_t delta = offset - _driftAnchorOffset;
-            float newRate = (float)delta / (float)elapsed;  // μs per ms
-
-            // Cap newRate before EMA smoothing to prevent outlier corruption
-            // Extreme values from BLE retransmissions can corrupt the drift estimate
-            if (newRate > SYNC_MAX_DRIFT_RATE_US_PER_MS) {
-                newRate = SYNC_MAX_DRIFT_RATE_US_PER_MS;
-            }
-            if (newRate < -SYNC_MAX_DRIFT_RATE_US_PER_MS) {
-                newRate = -SYNC_MAX_DRIFT_RATE_US_PER_MS;
-            }
-
-            // EMA smooth the CAPPED drift rate (α = 0.3 for reasonable responsiveness)
-            _driftRateUsPerMs = SYNC_DRIFT_EMA_ALPHA * newRate + (1.0f - SYNC_DRIFT_EMA_ALPHA) * _driftRateUsPerMs;
-
-            _driftAnchorOffset = offset;
-            _driftAnchorTime = now;
-        }
-    } else {
-        _driftAnchorOffset = offset;
-        _driftAnchorTime = now;
-    }
-
-    // _lastMeasuredOffset/_lastOffsetTime retain every-sample semantics:
-    // getCorrectedOffset() extrapolates drift from the most recent sample.
-    _lastMeasuredOffset = offset;
-    _lastOffsetTime = now;
-
     // EMA: new = α * measured + (1-α) * previous
-    _medianOffset = (SYNC_OFFSET_EMA_ALPHA_NUM * offset +
-                     (SYNC_OFFSET_EMA_ALPHA_DEN - SYNC_OFFSET_EMA_ALPHA_NUM) * _medianOffset)
-                    / SYNC_OFFSET_EMA_ALPHA_DEN;
+    // Continuous updates make the EMA follow crystal drift between the gloves.
+    int64_t newOffset = (SYNC_OFFSET_EMA_ALPHA_NUM * offset +
+                         (SYNC_OFFSET_EMA_ALPHA_DEN - SYNC_OFFSET_EMA_ALPHA_NUM) * loadOffset())
+                        / SYNC_OFFSET_EMA_ALPHA_DEN;
+    storeOffset(newOffset);
 
     _lastSyncTime = now;
 
     // Update warm-start cache with current state (for quick recovery after disconnect)
-    _warmStartCache.cachedOffset = _medianOffset;
-    _warmStartCache.cachedDriftRate = _driftRateUsPerMs;
+    _warmStartCache.cachedOffset = newOffset;
     _warmStartCache.cacheTimestamp = now;  // FIXED: Use same timestamp for consistency
     _warmStartCache.isValid = true;
 }
 
 int64_t SimpleSyncProtocol::getCorrectedOffset() const {
-    // Once a fresh sample has agreed with it, the warm-start projection is a
+    // Once a fresh sample has agreed with it, the cached warm-start offset is a
     // far better estimate than 0 for macrocycles sent while it is being
     // confirmed. Not before: if the SECONDARY rebooted inside the warm-start
     // window, the cached offset is off by its whole previous uptime.
@@ -1053,48 +1032,15 @@ int64_t SimpleSyncProtocol::getCorrectedOffset() const {
         return 0;
     }
 
-    // Apply drift compensation based on time since last measurement
-    if (_lastOffsetTime > 0) {
-        uint32_t elapsed = syncNowMs() - _lastOffsetTime;
-
-        // SAFETY: Cap elapsed time to prevent runaway drift correction
-        // If we haven't had a sync update in >10s, something is wrong
-        // Limit to 10 seconds max to prevent overflow
-        if (elapsed > SYNC_MAX_CORRECTION_ELAPSED_MS) {
-            elapsed = SYNC_MAX_CORRECTION_ELAPSED_MS;
-        }
-
-        // SAFETY: Cap drift rate to reasonable bounds (±100 ppm = ±0.1 µs/ms)
-        // Crystal oscillators typically drift ±20-50 ppm
-        // Anything larger indicates bad measurements
-        float cappedDriftRate = _driftRateUsPerMs;
-        if (cappedDriftRate > SYNC_MAX_APPLIED_DRIFT_RATE_US_PER_MS) cappedDriftRate = SYNC_MAX_APPLIED_DRIFT_RATE_US_PER_MS;
-        if (cappedDriftRate < -SYNC_MAX_APPLIED_DRIFT_RATE_US_PER_MS) cappedDriftRate = -SYNC_MAX_APPLIED_DRIFT_RATE_US_PER_MS;
-
-        int64_t driftCorrection = (int64_t)(cappedDriftRate * (float)elapsed);
-
-        // Note: Offset can be large when devices boot at different times
-        // The MACROCYCLE handler validates ±30 second reasonableness
-        // We only apply drift correction, no artificial cap here
-        int64_t result = _medianOffset + driftCorrection;
-
-        return result;
-    }
-
-    return _medianOffset;
+    return loadOffset();
 }
 
 void SimpleSyncProtocol::resetClockSync() {
     memset(_offsetSamples, 0, sizeof(_offsetSamples));
     _offsetSampleIndex = 0;
     _offsetSampleCount = 0;
-    _medianOffset = 0;
+    storeOffset(0);
     _clockSyncValid = false;
-    _lastMeasuredOffset = 0;
-    _lastOffsetTime = 0;
-    _driftRateUsPerMs = 0.0f;
-    _driftAnchorOffset = 0;
-    _driftAnchorTime = 0;
 
     _innovationRejects = 0;
     _minRttUs = UINT32_MAX;
@@ -1127,45 +1073,23 @@ bool SimpleSyncProtocol::tryWarmStart() {
     _warmStartMode = true;
     _warmStartConfirmed = 0;
 
-    // Project offset forward using drift rate and seed the sync state
-    int64_t projected = getProjectedOffset();
-
-    // Seed the offset with projected value (starting point for validation)
-    _medianOffset = projected;
-    _lastMeasuredOffset = projected;
-    _lastOffsetTime = syncNowMs();
-    _driftRateUsPerMs = _warmStartCache.cachedDriftRate;
-    _driftAnchorOffset = projected;
-    _driftAnchorTime = syncNowMs();
+    // Seed the offset with the cached value (starting point for validation)
+    int64_t cached = getCachedOffset();
+    storeOffset(cached);
 
     return true;
 }
 
-int64_t SimpleSyncProtocol::getProjectedOffset() const {
+int64_t SimpleSyncProtocol::getCachedOffset() const {
     if (!_warmStartCache.isValid) {
         return 0;
     }
-
-    uint32_t elapsed = syncNowMs() - _warmStartCache.cacheTimestamp;
-
-    // Cap elapsed to prevent runaway projection
-    if (elapsed > SYNC_WARM_START_VALIDITY_MS) {
-        elapsed = SYNC_WARM_START_VALIDITY_MS;
-    }
-
-    // Cap drift rate for safety (100 ppm max = ±0.1 µs/ms)
-    float cappedDriftRate = _warmStartCache.cachedDriftRate;
-    if (cappedDriftRate > SYNC_MAX_APPLIED_DRIFT_RATE_US_PER_MS) cappedDriftRate = SYNC_MAX_APPLIED_DRIFT_RATE_US_PER_MS;
-    if (cappedDriftRate < -SYNC_MAX_APPLIED_DRIFT_RATE_US_PER_MS) cappedDriftRate = -SYNC_MAX_APPLIED_DRIFT_RATE_US_PER_MS;
-
-    int64_t driftCorrection = (int64_t)(cappedDriftRate * (float)elapsed);
-    return _warmStartCache.cachedOffset + driftCorrection;
+    return _warmStartCache.cachedOffset;
 }
 
 void SimpleSyncProtocol::invalidateWarmStartCache() {
     _warmStartCache.isValid = false;
     _warmStartCache.cachedOffset = 0;
-    _warmStartCache.cachedDriftRate = 0.0f;
     _warmStartCache.cacheTimestamp = 0;
     _warmStartMode = false;
     _warmStartConfirmed = 0;
@@ -1211,8 +1135,8 @@ bool SimpleSyncProtocol::updateOffsetEMAWithQuality(int64_t offset, uint32_t rtt
 
     // Gate 3: innovation gate. One implausible jump is noise; a persistent
     // one means reality changed (genuine clock step, e.g. warm-start
-    // projection error) and we re-anchor immediately.
-    int64_t innovation = offset - _medianOffset;
+    // cached-offset error) and we re-anchor immediately.
+    int64_t innovation = offset - loadOffset();
     if (innovation < 0) innovation = -innovation;
     if (innovation > static_cast<int64_t>(SYNC_INNOVATION_GATE_US)) {
         if (_innovationRejects < SYNC_INNOVATION_REJECT_LIMIT) {
@@ -1227,9 +1151,11 @@ bool SimpleSyncProtocol::updateOffsetEMAWithQuality(int64_t offset, uint32_t rtt
         // subsequent sample (accept-1/reject-5 oscillation, ~130s to converge
         // on a 20ms step at 1Hz).
         _innovationRejects = 0;
-        updateOffsetEMA(offset);   // updates drift bookkeeping with the new sample
-        _medianOffset = offset;    // then re-anchor: overwrite the EMA blend
-        _warmStartCache.cachedOffset = offset;  // keep cache consistent with hard-set
+        // Re-anchor first, so loop() never sees an intermediate blend; the EMA
+        // of the same value then leaves it unchanged and refreshes the sync
+        // time and warm-start cache.
+        storeOffset(offset);
+        updateOffsetEMA(offset);
         return true;
     }
     _innovationRejects = 0;
@@ -1281,51 +1207,4 @@ uint32_t SimpleSyncProtocol::calculateAdaptiveLeadTime() const {
     }
 
     return leadTime;
-}
-
-// =============================================================================
-// PATH ASYMMETRY TRACKING - IMPLEMENTATION
-// =============================================================================
-
-void SimpleSyncProtocol::recordAsymmetry(uint64_t t1, uint64_t t2, uint64_t t3, uint64_t t4, bool phoneConnected) {
-    // Asymmetry = (outbound delay) - (return delay) = (T2-T1) - (T4-T3)
-    // Positive asymmetry means PRIMARY->SECONDARY path is slower than return
-    // This can happen when PRIMARY handles 2 connections (phone + SECONDARY)
-    // while SECONDARY only handles 1
-    int64_t outbound = static_cast<int64_t>(t2) - static_cast<int64_t>(t1);
-    int64_t returnPath = static_cast<int64_t>(t4) - static_cast<int64_t>(t3);
-    int64_t asymmetry = outbound - returnPath;
-
-    _lastAsymmetry = asymmetry;
-    _phoneConnectedDuringSync = phoneConnected;
-
-    // First sample - initialize
-    if (_asymmetrySampleCount == 0) {
-        _smoothedAsymmetry = asymmetry;
-        _asymmetryVariance = 0;
-        _asymmetrySampleCount = 1;
-        return;
-    }
-
-    // Calculate deviation from smoothed mean for variance tracking
-    int64_t deviation = asymmetry - _smoothedAsymmetry;
-    if (deviation < 0) deviation = -deviation;  // abs()
-
-    // EMA smooth the variance (same alpha as main latency: α = 0.3)
-    _asymmetryVariance = (EMA_ALPHA_NUM * static_cast<uint32_t>(deviation) +
-                          (EMA_ALPHA_DEN - EMA_ALPHA_NUM) * _asymmetryVariance) / EMA_ALPHA_DEN;
-
-    // EMA smooth the asymmetry (α = 0.3)
-    _smoothedAsymmetry = (EMA_ALPHA_NUM * asymmetry +
-                          (EMA_ALPHA_DEN - EMA_ALPHA_NUM) * _smoothedAsymmetry) / EMA_ALPHA_DEN;
-
-    if (_asymmetrySampleCount < 0xFFFF) _asymmetrySampleCount++;
-}
-
-void SimpleSyncProtocol::resetAsymmetryTracking() {
-    _lastAsymmetry = 0;
-    _smoothedAsymmetry = 0;
-    _asymmetryVariance = 0;
-    _asymmetrySampleCount = 0;
-    _phoneConnectedDuringSync = false;
 }

@@ -17,6 +17,7 @@
  */
 
 #include <Arduino.h>
+#include <atomic>
 #include "platform.h"  // Platform primitives + FreeRTOS for motor task
 #include "fs_backend.h"
 #include "power_controller.h"
@@ -216,7 +217,10 @@ static void preSelectNextActivation() {
 static void executeMotorEvent(const MotorEvent& event) {
 #if SYNC_DEBUG_GPIO_ENABLED
     if (event.type == MotorEventType::ACTIVATE) {
-        digitalToggle(SYNC_DEBUG_GPIO_PIN);
+        // Tracked level instead of digitalToggle(): the ESP32 core has none.
+        static bool syncDebugLevel = false;
+        syncDebugLevel = !syncDebugLevel;
+        digitalWrite(SYNC_DEBUG_GPIO_PIN, syncDebugLevel ? HIGH : LOW);
     }
 #endif
     uint64_t beforeOp = getMicros();
@@ -297,6 +301,28 @@ static void executeMotorEvent(const MotorEvent& event) {
     (void)beforeOp;  // Suppress unused warning if debug mode off
 }
 
+// Late activations the motor task dropped. Reported from loop(): a USB
+// serial write can block, and the motor task must never wait on it
+static std::atomic<uint32_t> g_lateActivationsDropped{0};
+
+/**
+ * @brief Execute an event, unless it is an activation more than
+ * MACROCYCLE_LATE_EVENT_TOLERANCE_US late (e.g. loop() stalled before
+ * forwarding it): the other glove played it on time, so it is dropped. Its
+ * deactivation still runs, harmless on a motor that is off.
+ */
+static void executeOrDropMotorEvent(const MotorEvent& event) {
+    const int64_t lateUs = static_cast<int64_t>(getMicros() - event.timeUs);
+    if (event.type == MotorEventType::ACTIVATE && lateUs > MACROCYCLE_LATE_EVENT_TOLERANCE_US) {
+        if (latencyMetrics.enabled) {
+            latencyMetrics.recordExecution(static_cast<int32_t>(lateUs));
+        }
+        g_lateActivationsDropped.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    executeMotorEvent(event);
+}
+
 /**
  * @brief High-priority motor task for event-driven activations/deactivations
  *
@@ -336,7 +362,7 @@ static void motorTask(void* pvParameters) {
         if (delayUs <= 0) {
             // Event time already passed - execute immediately
             if (activationQueue.dequeueNextEvent(event)) {
-                executeMotorEvent(event);
+                executeOrDropMotorEvent(event);
             }
             continue;
         }
@@ -383,7 +409,7 @@ static void motorTask(void* pvParameters) {
 
         // Execute event - dequeue first to ensure we get the same event we peeked
         if (activationQueue.dequeueNextEvent(event)) {
-            executeMotorEvent(event);
+            executeOrDropMotorEvent(event);
         }
     }
 }
@@ -435,6 +461,7 @@ void onStateChange(const StateTransition &transition);
 void onMenuSendResponse(const char *response);
 void onMenuSendToSecondary(const char *message);
 void restartAfterTxDrain();
+void stopSessionFromPhone();
 void resetDevice();
 bool phoneStartSyncReady();
 
@@ -771,6 +798,7 @@ void setup()
     menu.setSendCallback(onMenuSendResponse);
     menu.setSendToSecondaryCallback(onMenuSendToSecondary);
     menu.setRestartCallback(restartAfterTxDrain);
+    menu.setSessionStopCallback(stopSessionFromPhone);
     menu.setSyncReadyCallback(phoneStartSyncReady);
     menu.setBatteryGateCallback(batteryAllowsSession);
     menu.setGloveErrorCallback(gloveErrorReply);
@@ -853,6 +881,15 @@ void loop()
     // Motor events (activations AND deactivations) handled by motor task
     // No polling needed - motor task uses FreeRTOS timing
 
+    // Report late activations the motor task dropped (it never prints itself)
+    static uint32_t lateDropsReported = 0;
+    const uint32_t lateDrops = g_lateActivationsDropped.load(std::memory_order_relaxed);
+    if (lateDrops != lateDropsReported) {
+        Serial.printf("[MOTOR_TASK] Dropped %lu late activations\n",
+                      static_cast<unsigned long>(lateDrops - lateDropsReported));
+        lateDropsReported = lateDrops;
+    }
+
     // TP-1: Process staged motor events from BLE callbacks
     // Forward from lock-free staging buffer to mutex-protected activationQueue
     // Defensive check: only process if motor task is initialized
@@ -862,12 +899,13 @@ void loop()
         uint8_t eventsForwarded = 0;
         StagedMotorEvent staged;
         while (motorEventBuffer.unstage(staged)) {
-            // A new macrocycle replaces the previous one. Cleared when its
+            // A new macrocycle replaces the previous one's activations (pending
+            // turn-offs still run). Cleared when its
             // first event is unstaged: on dual-core ESP32 the loop can see a
             // half-staged batch, and clearing on the pending flag wiped the
             // events already forwarded.
             if (staged.isMacrocycleFirst) {
-                activationQueue.clear();
+                activationQueue.clearActivations();
             }
             activationQueue.enqueue(staged.activateTimeUs, staged.finger, staged.amplitude,
                                    staged.durationMs, staged.frequencyHz);
@@ -952,10 +990,9 @@ void loop()
         uint8_t newPhy = g_newPhy;
 
         const char* phyStr = (newPhy == 2) ? "2M" : (newPhy == 1) ? "1M" : "Coded";
-        Serial.printf("[BLE] PHY changed to %s - resetting RTT and asymmetry statistics\n", phyStr);
+        Serial.printf("[BLE] PHY changed to %s - resetting RTT statistics\n", phyStr);
 
         syncProtocol.resetLatency();
-        syncProtocol.resetAsymmetryTracking();
 
         // Reset clock sync if few samples collected during PHY transition
         // (samples before and after PHY change have inconsistent RTT)
@@ -1038,7 +1075,17 @@ void loop()
         }
         Serial.println(F("+============================================================+\n"));
 
-        haptic.emergencyStop();
+        // Drop the queued macrocycle and stop the SECONDARY too. After a stop
+        // that already did this, the second STOP_SESSION finds nothing to stop,
+        // and the engine keeps the first stop's reason.
+        if (deviceRole == DeviceRole::PRIMARY)
+        {
+            stopSessionFromPrimary(SessionEndReason::COMPLETED);
+        }
+        else
+        {
+            safeMotorShutdown();
+        }
         stateMachine.transition(StateTrigger::STOP_SESSION);
         stateMachine.transition(StateTrigger::STOPPED);
 
@@ -1527,11 +1574,12 @@ bool initializeBLE()
 #endif
 
 #if defined(BOARD_BLUEBUZZAH_NRF52)
-    // Register PHY change callback (both roles)
-    // Detects 1M -> 2M PHY upgrades so we can reset RTT statistics
-    // PRIMARY also uses RTT for adaptive lead time calculation
+    // Register the SoftDevice event callback (both roles). Required: it returns
+    // BLEManager's TX credits, without which every link stops sending after
+    // 8 packets. Also detects 1M -> 2M PHY upgrades so we can reset RTT
+    // statistics (PRIMARY also uses RTT for adaptive lead time calculation).
     Bluefruit.setEventCallback(onBLEEvent);
-    Serial.println(F("[BLE] PHY change event callback registered"));
+    Serial.println(F("[BLE] SoftDevice event callback registered"));
 #endif
 
     // Start scanning for SECONDARY role
@@ -1852,7 +1900,10 @@ void onBLEDisconnect(uint16_t connHandle, ConnectionType type, uint8_t reason)
  */
 void executeDeferredWork(DeferredWorkType type, uint8_t p1, uint8_t p2, uint32_t p3)
 {
-    // SAFETY: Skip haptic operations in critical error states
+    // SAFETY: Skip feedback pulses in critical error states and during a session.
+    // A pulse mid-session buzzes one finger alone, and its turn-off can cut a
+    // therapy burst short. isRunning() covers PHONE_DISCONNECTED; isActiveState()
+    // covers PAUSED and a SECONDARY following the PRIMARY's session.
     // Note: CONNECTION_LOST is intentionally NOT blocked - disconnect feedback pulses
     // (queued AFTER safety shutdown semaphore is signaled) should still execute for user feedback
     // Note: HAPTIC_HEAL is intentionally exempt - it never drives amplitude
@@ -1865,6 +1916,11 @@ void executeDeferredWork(DeferredWorkType type, uint8_t p1, uint8_t p2, uint32_t
             currentState == TherapyState::CRITICAL_BATTERY)
         {
             Serial.println(F("[DEFERRED] Skipping haptic - safety state active"));
+            return;
+        }
+        if (therapy.isRunning() || isActiveState(currentState))
+        {
+            Serial.println(F("[DEFERRED] Skipping haptic - session active"));
             return;
         }
     }
@@ -2245,11 +2301,12 @@ void onBLEMessage(uint16_t connHandle, const char *message, uint64_t rxTimestamp
                                   (long)(timeUntilExec / 1000));
                 }
                 int64_t timeDiff = static_cast<int64_t>(localBaseTime) - static_cast<int64_t>(nowUs);
-                // Corruption guard: legitimate values are 70-300ms ahead,
-                // the adaptive lead time up to the macrocycle prepare point,
-                // plus BLE delivery jitter. 5s is well clear of that while
-                // still rejecting a corrupt offset/baseTime that would
-                // otherwise schedule far-off activations.
+                // Corruption guard: legitimate values are about 300ms ahead
+                // (every macrocycle goes out at its prepare point), minus BLE
+                // delivery time. 5s is well clear of that while still
+                // rejecting a corrupt offset/baseTime that would otherwise
+                // schedule far-off activations. Late events are dropped one
+                // by one below.
                 constexpr int64_t MAX_TIME_DIFF = 5000000LL;  // 5 seconds
                 if (timeDiff > MAX_TIME_DIFF || timeDiff < -MAX_TIME_DIFF)
                 {
@@ -2284,19 +2341,57 @@ void onBLEMessage(uint16_t connHandle, const char *message, uint64_t rxTimestamp
 
                 // TP-1: Stage all events via lock-free buffer (ISR-safe)
                 // Main loop will forward to activationQueue and call scheduleNext()
-                motorEventBuffer.beginMacrocycle();
+                //
+                // Skip invalid events (garbage from truncated messages) and
+                // events already past their time: the PRIMARY played them on
+                // time, so playing them now would put this hand out of step
+                auto isValid = [](const MacrocycleEvent& evt) {
+                    return evt.amplitude > 0 && evt.finger < MAX_ACTUATORS;
+                };
+                // Fresh clock: debug logging above may have taken a few ms.
+                // Signed difference, so a localBaseTime just below zero (glove
+                // booted under 5 s ago) still counts as late
+                const uint64_t stageNowUs = getMicros();
+                auto isLate = [&](const MacrocycleEvent& evt) {
+                    uint64_t localActivateTime = localBaseTime + (evt.deltaTimeMs * 1000ULL);
+                    return static_cast<int64_t>(localActivateTime - stageNowUs) <
+                           -static_cast<int64_t>(MACROCYCLE_LATE_EVENT_TOLERANCE_US);
+                };
+                auto isPlayable = [&](const MacrocycleEvent& evt) {
+                    return isValid(evt) && !isLate(evt);
+                };
+
                 uint8_t validEvents = 0;
                 uint8_t lastValidIndex = 0;
+                uint8_t lateEvents = 0;
 
                 // First pass: count valid events to mark the last one
                 for (uint8_t i = 0; i < mc.eventCount; i++)
                 {
                     const MacrocycleEvent& evt = mc.events[i];
-                    if (evt.amplitude > 0 && evt.finger < MAX_ACTUATORS)
+                    if (!isValid(evt))
                     {
-                        lastValidIndex = i;
-                        validEvents++;
+                        continue;
                     }
+                    if (isLate(evt))
+                    {
+                        lateEvents++;
+                        continue;
+                    }
+                    lastValidIndex = i;
+                    validEvents++;
+                }
+
+                if (lateEvents > 0)
+                {
+                    Serial.printf("[MACROCYCLE] Dropped %u late events (seq=%lu)\n",
+                                  lateEvents, (unsigned long)mc.sequenceId);
+                }
+
+                // Only a macrocycle with something to play replaces the queue
+                if (validEvents > 0)
+                {
+                    motorEventBuffer.beginMacrocycle();
                 }
 
                 // Second pass: stage all valid events
@@ -2304,9 +2399,7 @@ void onBLEMessage(uint16_t connHandle, const char *message, uint64_t rxTimestamp
                 for (uint8_t i = 0; i < mc.eventCount; i++)
                 {
                     const MacrocycleEvent& evt = mc.events[i];
-
-                    // Skip invalid events (garbage from truncated messages)
-                    if (evt.amplitude == 0 || evt.finger >= MAX_ACTUATORS)
+                    if (!isPlayable(evt))
                     {
                         continue;
                     }
@@ -2539,19 +2632,13 @@ void onBLEMessage(uint16_t connHandle, const char *message, uint64_t rxTimestamp
                     latencyMetrics.recordRtt(rtt);
                 }
 
-                // Record path asymmetry for diagnostics (measurement only)
-                bool phoneConnected = ble.isPhoneConnected();
-                syncProtocol.recordAsymmetry(t1, t2, t3, t4, phoneConnected);
-
-                // Enhanced logging with asymmetry (DEBUG only)
+                // Sync sample logging (DEBUG only)
                 if (profiles.getDebugMode())
                 {
-                    Serial.printf("[SYNC] RTT=%lu offset=%ld asym=%ld asym_sm=%ld phone=%d samples=%u %s\n",
+                    Serial.printf("[SYNC] RTT=%lu offset=%ld phone=%d samples=%u %s\n",
                                   (unsigned long)rtt,
                                   (long)offset,
-                                  (long)syncProtocol.getRawAsymmetry(),
-                                  (long)syncProtocol.getSmoothedAsymmetry(),
-                                  phoneConnected ? 1 : 0,
+                                  ble.isPhoneConnected() ? 1 : 0,
                                   syncProtocol.getOffsetSampleCount(),
                                   sampleAccepted ? "" : "(rejected)");
                 }
@@ -2609,8 +2696,11 @@ void onBLEMessage(uint16_t connHandle, const char *message, uint64_t rxTimestamp
             if (deviceRole == DeviceRole::SECONDARY && profiles.getDebugMode())
             {
                 // Check if this is a PTP sync command with scheduled flash time
+                // The flash time is already on this glove's clock: the
+                // PRIMARY converted it with its clock offset before sending
+                // (a SECONDARY never holds a valid clock sync of its own)
                 bool hasPTPTime = cmd.hasData("0");
-                if (hasPTPTime && syncProtocol.isClockSyncValid())
+                if (hasPTPTime)
                 {
                     // Parse flash time from command
                     uint64_t flashTime;
@@ -2629,18 +2719,13 @@ void onBLEMessage(uint16_t connHandle, const char *message, uint64_t rxTimestamp
                         flashTime = static_cast<uint64_t>(cmd.getDataUnsigned("0", 0));
                     }
 
-                    // Convert PRIMARY clock time to local (SECONDARY) clock time
-                    // Use drift-corrected offset for better accuracy between sync events
-                    int64_t offset = syncProtocol.getCorrectedOffset();
-                    uint64_t localFlashTime = flashTime + offset;
-
                     // NON-BLOCKING FIX: Schedule flash for later instead of busy-waiting
                     // The old code used delayMicroseconds() which blocked BLE callback
                     // processing for ~300ms, causing MACROCYCLE messages to queue up
                     // and arrive after their scheduled execution time.
                     // Now we store the flash time and check it in the main loop.
                     // Use atomic write since this runs in BLE callback (ISR) context
-                    atomicWrite64(&g_pendingFlashTime, localFlashTime);
+                    atomicWrite64(&g_pendingFlashTime, flashTime);
                     g_pendingFlashActive = true;
                 }
                 else
@@ -2680,8 +2765,9 @@ void onSendMacrocycle(const Macrocycle& macrocycle)
         return;
     }
 
-    // Clear activation queue for new macrocycle (PRIMARY will enqueue via callbacks)
-    activationQueue.clear();
+    // A new macrocycle replaces queued activations; pending turn-offs still
+    // run, so a motor that is on is never stranded (PRIMARY will enqueue via callbacks)
+    activationQueue.clearActivations();
 
     // Make a local copy to set clock offset (callback receives const reference)
     Macrocycle mcCopy = macrocycle;
@@ -2813,7 +2899,10 @@ void onMacrocycleStart(uint32_t macrocycleCount)
                 uint32_t leadTimeUs = syncProtocol.calculateAdaptiveLeadTime();
                 uint64_t flashTime = getMicros() + leadTimeUs;
 
-                SyncCommand cmd = SyncCommand::createDebugFlashWithTime(g_sequenceGenerator.next(), flashTime);
+                // The SECONDARY schedules the time it receives as-is, so send
+                // it already converted to the SECONDARY's clock
+                SyncCommand cmd = SyncCommand::createDebugFlashWithTime(
+                    g_sequenceGenerator.next(), syncProtocol.primaryToLocalTime(flashTime));
                 if (cmd.serialize(buffer, sizeof(buffer)))
                 {
                     ble.sendToSecondary(buffer);
@@ -2950,7 +3039,6 @@ void startTherapyTest()
     }
 
     // Start test session using profile settings (send STOP to end early)
-    therapy.setFrequencyRandomization(profile->frequencyRandomization, profile->frequencyMin, profile->frequencyMax);
     therapy.startSession(
         durationSec,
         patternType,
@@ -2985,8 +3073,15 @@ void stopTherapyTest()
     Serial.println(F("|  STOPPING THERAPY TEST                                     |"));
     Serial.println(F("+============================================================+\n"));
 
-    therapy.stop();
-    safeMotorShutdown();
+    if (deviceRole == DeviceRole::PRIMARY)
+    {
+        stopSessionFromPrimary(SessionEndReason::STOPPED);
+    }
+    else
+    {
+        therapy.stop();
+        safeMotorShutdown();
+    }
 
     // Update state machine
     stateMachine.transition(StateTrigger::STOP_SESSION);
@@ -3129,7 +3224,6 @@ void autoStartTherapy()
     syncProtocol.resetLatency();  // Clear EMA state for fresh warmup
 
     // Start therapy session using profile settings
-    therapy.setFrequencyRandomization(profile->frequencyRandomization, profile->frequencyMin, profile->frequencyMax);
     therapy.startSession(
         durationSec,
         patternType,
@@ -3340,6 +3434,12 @@ void onStateChange(const StateTransition &transition)
         // Emergency stop on error
         haptic.emergencyStop();
         therapy.stop(SessionEndReason::ERROR);
+        // emergencyStop() leaves queued macrocycle events that would buzz again;
+        // the loop's safety shutdown clears the queues
+        if (safetyShutdownSema)
+        {
+            xSemaphoreGive(safetyShutdownSema);
+        }
         break;
 
     case TherapyState::CRITICAL_BATTERY:
@@ -3386,6 +3486,12 @@ void onMenuSendResponse(const char *response)
     {
         ble.sendToPhone(response);
     }
+}
+
+// Phone SESSION_STOP (runs in loop(): menu commands are deferred there)
+void stopSessionFromPhone()
+{
+    stopSessionFromPrimary(SessionEndReason::STOPPED);
 }
 
 // Menu-initiated reboot (PROFILE_LOAD, RESTART). The handler queues
@@ -3446,9 +3552,10 @@ void onMenuSendToSecondary(const char *message)
 
 #if defined(BOARD_BLUEBUZZAH_NRF52)
 /**
- * @brief BLE event callback for PHY change detection
+ * @brief BLE event callback: TX gate credits, link-parameter log, PHY change detection
  *
- * Runs in SoftDevice context - only sets flags, no I2C/Serial.
+ * Runs on Bluefruit's BLE task, which holds the only event-callback slot, so
+ * BLEManager's SoftDevice handling is chained from here. No I2C.
  * When PHY upgrades from 1M to 2M, RTT changes significantly (~20ms to ~10-15ms).
  * This callback detects the transition so main loop can reset RTT statistics.
  * (NimBLE requests 2M at connect time before sync traffic starts, so the
@@ -3456,6 +3563,8 @@ void onMenuSendToSecondary(const char *message)
  */
 void onBLEEvent(ble_evt_t* evt)
 {
+    ble.onSoftDeviceEvent(evt);
+
     if (evt->header.evt_id != BLE_GAP_EVT_PHY_UPDATE) return;
 
     ble_gap_evt_phy_update_t* phy = &evt->evt.gap_evt.params.phy_update;
@@ -3549,7 +3658,15 @@ void handleSerialCommand(const char *command)
         // FSM and LED reflect reality and auto-start can't fire mid-diag
         if (therapy.isRunning())
         {
-            therapy.stop();
+            // Tell the SECONDARY before the blocking diagnostic below
+            if (deviceRole == DeviceRole::PRIMARY)
+            {
+                stopSessionFromPrimary(SessionEndReason::STOPPED);
+            }
+            else
+            {
+                therapy.stop();
+            }
             stateMachine.transition(StateTrigger::STOP_SESSION);
             stateMachine.transition(StateTrigger::STOPPED);
         }
@@ -3564,7 +3681,15 @@ void handleSerialCommand(const char *command)
     {
         if (therapy.isRunning())
         {
-            therapy.stop();
+            // Tell the SECONDARY before the blocking diagnostic below
+            if (deviceRole == DeviceRole::PRIMARY)
+            {
+                stopSessionFromPrimary(SessionEndReason::STOPPED);
+            }
+            else
+            {
+                therapy.stop();
+            }
             stateMachine.transition(StateTrigger::STOP_SESSION);
             stateMachine.transition(StateTrigger::STOPPED);
         }
@@ -3587,7 +3712,15 @@ void handleSerialCommand(const char *command)
         int n = atoi(arg);
         if (therapy.isRunning())
         {
-            therapy.stop();
+            // Tell the SECONDARY before the blocking diagnostic below
+            if (deviceRole == DeviceRole::PRIMARY)
+            {
+                stopSessionFromPrimary(SessionEndReason::STOPPED);
+            }
+            else
+            {
+                therapy.stop();
+            }
             stateMachine.transition(StateTrigger::STOP_SESSION);
             stateMachine.transition(StateTrigger::STOPPED);
         }
@@ -3715,7 +3848,6 @@ void handleSerialCommand(const char *command)
         Serial.printf("Offset samples: %u\n", syncProtocol.getOffsetSampleCount());
         Serial.printf("Median offset: %ld us\n", (long)syncProtocol.getMedianOffset());
         Serial.printf("Corrected offset: %ld us\n", (long)syncProtocol.getCorrectedOffset());
-        Serial.printf("Drift rate: %.3f us/ms\n", syncProtocol.getDriftRate());
         Serial.printf("RTT samples: %u\n", syncProtocol.getSampleCount());
         Serial.printf("RTT smoothed: %lu us (avg RTT %lu us)\n",
                       (unsigned long)syncProtocol.getMeasuredLatency(),
@@ -3739,7 +3871,6 @@ void handleSerialCommand(const char *command)
         Serial.printf("Clock Sync Valid: %s\n", syncProtocol.isClockSyncValid() ? "YES" : "NO");
         Serial.printf("Offset (corrected): %+ld μs\n", (long)syncProtocol.getCorrectedOffset());
         Serial.printf("Offset (median):    %+ld μs\n", (long)syncProtocol.getMedianOffset());
-        Serial.printf("Drift Rate:         %.4f μs/ms\n", syncProtocol.getDriftRate());
         Serial.printf("Offset Samples:     %u/%u\n", syncProtocol.getOffsetSampleCount(), 10);
         Serial.println(F("-------------------------------------"));
 
@@ -3756,23 +3887,6 @@ void handleSerialCommand(const char *command)
                       (unsigned long)syncProtocol.calculateAdaptiveLeadTime(),
                       static_cast<float>(syncProtocol.calculateAdaptiveLeadTime()) / 1000.0f);
         Serial.printf("Time Since Sync:    %lu ms\n", (unsigned long)syncProtocol.getTimeSinceSync());
-        Serial.println(F("-------------------------------------"));
-
-        // Path Asymmetry diagnostics
-        Serial.println(F("PATH ASYMMETRY:"));
-        Serial.printf("  Raw (last):     %+ld μs\n", (long)syncProtocol.getRawAsymmetry());
-        Serial.printf("  Smoothed:       %+ld μs\n", (long)syncProtocol.getSmoothedAsymmetry());
-        Serial.printf("  Variance:       %lu μs\n", (unsigned long)syncProtocol.getAsymmetryVariance());
-        Serial.printf("  Samples:        %u\n", syncProtocol.getAsymmetrySampleCount());
-        Serial.printf("  Phone during:   %s\n", syncProtocol.wasPhoneConnectedDuringSync() ? "YES" : "NO");
-
-        // Correction readiness check
-        bool varianceStable = syncProtocol.getAsymmetryVariance() < SYNC_ASYMMETRY_STABLE_VARIANCE_US;
-        bool enoughSamples = syncProtocol.getAsymmetrySampleCount() >= SYNC_ASYMMETRY_MIN_SAMPLES;
-        Serial.printf("  Correction Ready: %s\n",
-                      (varianceStable && enoughSamples) ? "YES (variance stable)" :
-                      (!enoughSamples) ? "NO (need more samples)" : "NO (variance too high)");
-
         Serial.println(F("=====================================\n"));
         return;
     }

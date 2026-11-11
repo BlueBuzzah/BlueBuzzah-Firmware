@@ -180,9 +180,6 @@ TherapyEngine::TherapyEngine() :
     _mirrorPattern(false),
     _amplitudeMin(100),
     _amplitudeMax(100),
-    _frequencyRandomization(false),
-    _frequencyMin(210),
-    _frequencyMax(260),
     _patternIndex(0),
     _activationStartTime(0),
     _waitingForInterval(false),
@@ -205,10 +202,6 @@ TherapyEngine::TherapyEngine() :
     _macrocycleEventIndex(0),
     _macrocycleBaseTime(0)
 {
-    // Initialize frequencies to default (250 Hz per v1 ACTUATOR_FREQUENCY)
-    for (uint8_t i = 0; i < MAX_ACTUATORS; i++) {
-        _currentFrequency[i] = 250;
-    }
     // Identity finger map: patterns use all fingers until told otherwise
     _fingerMapCount = MAX_ACTUATORS;
     for (uint8_t i = 0; i < MAX_ACTUATORS; i++) {
@@ -289,19 +282,6 @@ void TherapyEngine::setSchedulingCallbacks(ScheduleActivationCallback scheduleCa
 
 void TherapyEngine::setGetLeadTimeCallback(GetLeadTimeCallback callback) {
     _getLeadTimeCallback = callback;
-}
-
-void TherapyEngine::setFrequencyRandomization(bool enabled, uint16_t minHz, uint16_t maxHz) {
-    _frequencyRandomization = enabled;
-    _frequencyMin = minHz;
-    _frequencyMax = maxHz;
-    if (!enabled) {
-        // A previous randomized session left its last draws here; events
-        // read them, so a fixed-frequency session must start from 250 Hz
-        for (uint8_t finger = 0; finger < MAX_ACTUATORS; finger++) {
-            _currentFrequency[finger] = DEFAULT_FREQUENCY_HZ;
-        }
-    }
 }
 
 // =============================================================================
@@ -706,18 +686,6 @@ Macrocycle TherapyEngine::generateMacrocycle() {
 
         remapPatternFingers(pattern);
 
-        // Apply frequency randomization if enabled. Covers all MAX_ACTUATORS
-        // slots (not just _numFingers): events look frequency up by PHYSICAL
-        // finger, which can exceed _numFingers when the finger map skips a
-        // missing motor.
-        if (_frequencyRandomization) {
-            uint16_t range = _frequencyMax - _frequencyMin;
-            uint16_t steps = range / 5;
-            for (uint8_t finger = 0; finger < MAX_ACTUATORS; finger++) {
-                _currentFrequency[finger] = _frequencyMin + static_cast<uint16_t>(random(0, steps) * 5);
-            }
-        }
-
         // Add events for each finger in this pattern
         for (uint8_t fingerIdx = 0; fingerIdx < pattern.numFingers; fingerIdx++) {
             if (mc.eventCount >= MACROCYCLE_MAX_EVENTS) break;
@@ -744,7 +712,7 @@ Macrocycle TherapyEngine::generateMacrocycle() {
                 primaryFinger,     // For this glove (local scheduling)
                 amplitude,
                 (uint8_t)pattern.burstDurationMs,
-                _currentFrequency[primaryFinger]  // Use PRIMARY finger for frequency lookup
+                DEFAULT_FREQUENCY_HZ
             );
 
             mc.events[mc.eventCount++] = evt;
@@ -812,13 +780,10 @@ void TherapyEngine::executeMacrocycleStep() {
             }
 
             if (!gridStarted) {
-                // Calculate lead time FIRST (callback takes 50-200µs)
-                // Falls back to the 70ms minimum if no callback registered
-                const uint32_t leadTimeUs = currentLeadTimeUs();
-
-                // CRITICAL: Capture timestamp AFTER lead time calculation to minimize staleness
-                // Lead time callback can take 50-200µs; capturing before causes systematic lateness
-                _gridOriginUs = getMicros() + leadTimeUs + guardUs;
+                // Same lead as every later macrocycle (sent at its prepare
+                // point), not the adaptive lead: that is usually the 70ms
+                // floor at session start, too tight for the SECONDARY
+                _gridOriginUs = getMicros() + SYNC_MAX_LEAD_TIME_US + MACROCYCLE_PREPARE_MARGIN_US + guardUs;
                 PLATFORM_CRITICAL_ENTER();
                 _appliedPauseMs = _pausedMs;
                 PLATFORM_CRITICAL_EXIT();

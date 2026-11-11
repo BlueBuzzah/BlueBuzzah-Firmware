@@ -75,6 +75,11 @@ typedef void (*SendResponseCallback)(const char* response);
 typedef void (*RestartCallback)();
 
 /**
+ * @brief Callback that ends the session on both gloves (SESSION_STOP)
+ */
+typedef void (*SessionStopCallback)();
+
+/**
  * @brief Callback for sending a message to SECONDARY glove
  */
 typedef void (*SendToSecondaryCallback)(const char* message);
@@ -151,6 +156,11 @@ public:
      * @brief Set callback for device restart
      */
     void setRestartCallback(RestartCallback callback);
+
+    /**
+     * @brief Set callback that ends the session on both gloves (SESSION_STOP)
+     */
+    void setSessionStopCallback(SessionStopCallback callback);
 
     // =========================================================================
     // COMMAND PROCESSING
@@ -268,6 +278,7 @@ private:
     // Callbacks
     SendResponseCallback _sendCallback;
     RestartCallback _restartCallback;
+    SessionStopCallback _sessionStopCallback;
     SendToSecondaryCallback _sendToSecondaryCallback;
     SyncReadyCallback _syncReadyCallback;
     BatteryGateCallback _batteryGateCallback;

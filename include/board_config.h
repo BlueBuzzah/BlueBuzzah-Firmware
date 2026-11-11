@@ -17,6 +17,7 @@
   #define NEOPIXEL_PIN_OVERRIDE    PIN_NEOPIXEL   // Feather board macro
   #define USER_BUTTON_ENABLED      1
   #define USER_BUTTON_PIN_OVERRIDE 7              // Feather USER switch (force-SECONDARY at boot)
+  #define SYNC_DEBUG_GPIO_PIN_OVERRIDE PIN_A0     // Feather A0 header pin
   #define BATTERY_SENSE_ENABLED    1
   #define BATTERY_SENSE_ADC        1
   #define BATTERY_PIN_OVERRIDE     PIN_VBAT
@@ -42,6 +43,9 @@
   #define ENABLE_PIN_OVERRIDE      1
   #define POWER_SWITCH_PIN_OVERRIDE 3             // strapping pin; sampled after boot only
   #define USB_POW_DETECT_PIN_OVERRIDE 2
+  // Unconnected WROOM-1U pad 33; its neighbours (IO39, IO41) are unconnected
+  // too, so a hand-soldered probe wire can't bridge to a live net.
+  #define SYNC_DEBUG_GPIO_PIN_OVERRIDE 40
   #define USER_BUTTON_ENABLED      0              // no user button on this board
   #define BATTERY_SENSE_ENABLED    1              // no VBAT divider, but DRV2605 VBAT register doubles as a voltmeter
   #define BATTERY_SENSE_ADC        0              // no VBAT divider / fuel gauge ADC on this board

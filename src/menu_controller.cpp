@@ -28,6 +28,7 @@ MenuController::MenuController() :
     _role(DeviceRole::PRIMARY),
     _sendCallback(nullptr),
     _restartCallback(nullptr),
+    _sessionStopCallback(nullptr),
     _sendToSecondaryCallback(nullptr),
     _syncReadyCallback(nullptr),
     _batteryGateCallback(nullptr),
@@ -96,6 +97,10 @@ void MenuController::setSendCallback(SendResponseCallback callback) {
 
 void MenuController::setRestartCallback(RestartCallback callback) {
     _restartCallback = callback;
+}
+
+void MenuController::setSessionStopCallback(SessionStopCallback callback) {
+    _sessionStopCallback = callback;
 }
 
 void MenuController::setSendToSecondaryCallback(SendToSecondaryCallback callback) {
@@ -781,9 +786,6 @@ void MenuController::handleSessionStart() {
     bool mirror = true;
     uint8_t amplitudeMin = 100;
     uint8_t amplitudeMax = 100;
-    bool frequencyRandomization = false;
-    uint16_t frequencyMin = 210;
-    uint16_t frequencyMax = 260;
 
     if (_profiles) {
         const TherapyProfile* profile = _profiles->getCurrentProfile();
@@ -796,9 +798,6 @@ void MenuController::handleSessionStart() {
             mirror = profile->mirrorPattern;
             amplitudeMin = profile->amplitudeMin;
             amplitudeMax = profile->amplitudeMax;
-            frequencyRandomization = profile->frequencyRandomization;
-            frequencyMin = profile->frequencyMin;
-            frequencyMax = profile->frequencyMax;
 
             if (strcmp(profile->patternType, "rndp") == 0) {
                 patternType = PatternType::RNDP;
@@ -817,7 +816,6 @@ void MenuController::handleSessionStart() {
         return;
     }
 
-    _therapy->setFrequencyRandomization(frequencyRandomization, frequencyMin, frequencyMax);
     _therapy->startSession(durationSec, patternType, timeOnMs, timeOffMs, jitterPercent, numFingers, mirror,
                             amplitudeMin, amplitudeMax, false);
 
@@ -896,12 +894,10 @@ void MenuController::handleSessionResume() {
 }
 
 void MenuController::handleSessionStop() {
-    if (_therapy) {
-        _therapy->stop();
-    }
-
-    if (_haptic) {
-        _haptic->emergencyStop();
+    // Stops the engine, clears both queues and sends STOP_SESSION to a linked
+    // SECONDARY. ponytail: no fallback, setup() registers it before any command.
+    if (_sessionStopCallback) {
+        _sessionStopCallback();
     }
 
     if (_stateMachine) {
@@ -910,15 +906,6 @@ void MenuController::handleSessionStop() {
         // lingered in STOPPING after a phone-initiated stop.
         _stateMachine->transition(StateTrigger::STOP_SESSION);
         _stateMachine->transition(StateTrigger::STOPPED);
-    }
-
-    // Notify SECONDARY of session stop
-    if (_ble && _ble->isSecondaryConnected()) {
-        SyncCommand cmd = SyncCommand::createStopSession(0);
-        char buffer[64];
-        if (cmd.serialize(buffer, sizeof(buffer))) {
-            _ble->sendToSecondary(buffer);
-        }
     }
 
     beginResponse();

@@ -97,7 +97,6 @@ public:
 
     // Restrict patterns to the motors found present at boot (v3 presence probe)
     void setActiveFingers(const uint8_t* fingers, uint8_t count);
-    void setFrequencyRandomization(bool enabled, uint16_t minHz = 210, uint16_t maxHz = 260);
 
     // Session control
     void startSession(uint32_t durationSec, PatternType patternType, float timeOnMs,
@@ -286,12 +285,12 @@ In a bilateral session the SECONDARY never generates patterns or random values. 
 ```cpp
 // src/therapy_engine.cpp - generateMacrocycle()
 MacrocycleEvent evt(
-    cumulativeTimeMs,
+    eventDelta,
     secondaryFinger,   // For SECONDARY (BLE transmission)
-    primaryFinger,     // For PRIMARY (local scheduling)
+    primaryFinger,     // For this glove (local scheduling)
     amplitude,
     (uint8_t)pattern.burstDurationMs,
-    _currentFrequency[primaryFinger]  // Use PRIMARY finger for frequency lookup
+    DEFAULT_FREQUENCY_HZ
 );
 ```
 
@@ -430,11 +429,9 @@ Result HapticController::activate(uint8_t finger, uint8_t amplitude) {
 The engine schedules activations via callbacks rather than executing them directly with blocking delays. In the `IDLE` state of `executeMacrocycleStep()`:
 
 ```cpp
-// First macrocycle only: the grid origin is now + lead time + jitter guard.
-// The lead time callback takes 50-200µs, so it runs before the clock is read.
-// Falls back to the 70ms minimum if no callback registered
-const uint32_t leadTimeUs = currentLeadTimeUs();
-_gridOriginUs = getMicros() + leadTimeUs + guardUs;
+// First macrocycle only: the grid origin is now + the same 300ms lead every
+// later macrocycle gets (sent at its prepare point) + jitter guard
+_gridOriginUs = getMicros() + SYNC_MAX_LEAD_TIME_US + MACROCYCLE_PREPARE_MARGIN_US + guardUs;
 
 // Every macrocycle: baseTime is its grid slot minus the jitter guard
 _macrocycleBaseTime = gridSlotUs(_gridMacroIndex) - guardUs;
@@ -483,23 +480,9 @@ void HapticController::emergencyStop() {
 }
 ```
 
-### Random Frequency Reconfiguration
+### Burst Frequency
 
-**Feature**: Optionally randomize actuator frequency each pattern (from Custom vCR in the original firmware; no built-in profile turns it on)
-
-When enabled with `setFrequencyRandomization(true, minHz, maxHz)`, `generateMacrocycle()` picks a new frequency per finger for each pattern, in 5 Hz steps from `minHz` up to but not including `maxHz` (like v1's `randrange`), and stores it in each event:
-
-```cpp
-if (_frequencyRandomization) {
-    uint16_t range = _frequencyMax - _frequencyMin;
-    uint16_t steps = range / 5;
-    for (uint8_t finger = 0; finger < MAX_ACTUATORS; finger++) {
-        _currentFrequency[finger] = _frequencyMin + static_cast<uint16_t>(random(0, steps) * 5);
-    }
-}
-```
-
-Every session start (phone `SESSION_START`, auto-start, `TEST`) applies the current profile's `frequencyRandomization`, `frequencyMin` and `frequencyMax`. No built-in profile has it on, so every profile plays 250 Hz. Both gloves read each event's frequency from the macrocycle, and the motor task writes it to the LRA period register, OL_LRA_PERIOD (0x20, 98.49 µs units), during pre-selection after the previous burst, off the activation's critical path. The write is skipped when the frequency hasn't changed, so fixed-frequency profiles add no I2C traffic.
+Every burst plays a fixed 250 Hz (`DEFAULT_FREQUENCY_HZ`), carried in each macrocycle event as `fo=10`. Both gloves read each event's frequency from the macrocycle, and the motor task writes it to the LRA period register, OL_LRA_PERIOD (0x20, 98.49 µs units), during pre-selection, off the activation's critical path. The period write is skipped when the finger's frequency hasn't changed, so after each finger's first burst it is written again only after a driver re-init.
 
 ---
 
@@ -711,7 +694,7 @@ Buzz Sequence 3: 4 bursts, onsets at 8T .. 11T (each ±19.6ms)
 Silent: 2 CR periods (8T) before the next grid slot
 
 Grid period: 5 × 4 × 167ms = 3340ms
-Lead time before the first event: 70-150ms (adaptive)
+Lead time before the first event: 300ms (SYNC_MAX_LEAD_TIME_US + MACROCYCLE_PREPARE_MARGIN_US)
 ```
 
 With 5 fingers (v3) each sequence is 5 buzzes, TIME_RELAX is 835ms, the grid period is 4175ms, and a macrocycle has 15 events (`MACROCYCLE_MAX_EVENTS = 3 * MAX_ACTUATORS`).
@@ -763,15 +746,10 @@ struct TherapyProfile {
 
     // Metadata
     bool isDefault;
-
-    // Frequency randomization (engine capability; no built-in profile enables it)
-    bool frequencyRandomization;
-    uint16_t frequencyMin;  // Min frequency for randomization (Hz)
-    uint16_t frequencyMax;  // Max frequency for randomization (Hz)
 };
 ```
 
-`actuatorType` and `frequencyHz` are stored and reported by `PROFILE_GET` but do not reach the DRV2605: the drivers are always configured as LRA, at 250 Hz, since no built-in profile randomizes frequency.
+`actuatorType` and `frequencyHz` are stored and reported by `PROFILE_GET` but do not reach the DRV2605: the drivers are always configured as LRA, and every burst plays 250 Hz (`DEFAULT_FREQUENCY_HZ`).
 
 ### Profile Comparison
 

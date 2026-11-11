@@ -81,9 +81,6 @@ void ProfileManager::initBuiltInProfiles() {
     regular.mirrorPattern = false;
     regular.numFingers = MAX_ACTUATORS;
     regular.isDefault = true;
-    regular.frequencyRandomization = false;
-    regular.frequencyMin = 210;
-    regular.frequencyMax = 260;
     _profileNames[_profileCount] = _builtInProfiles[_profileCount].name;
     _profileCount++;
 
@@ -104,9 +101,6 @@ void ProfileManager::initBuiltInProfiles() {
     noisy.mirrorPattern = true;
     noisy.numFingers = MAX_ACTUATORS;
     noisy.isDefault = false;
-    noisy.frequencyRandomization = false;
-    noisy.frequencyMin = 210;
-    noisy.frequencyMax = 260;
     _profileNames[_profileCount] = _builtInProfiles[_profileCount].name;
     _profileCount++;
 
@@ -127,9 +121,6 @@ void ProfileManager::initBuiltInProfiles() {
     hybrid.mirrorPattern = false;
     hybrid.numFingers = MAX_ACTUATORS;
     hybrid.isDefault = false;
-    hybrid.frequencyRandomization = false;
-    hybrid.frequencyMin = 210;
-    hybrid.frequencyMax = 260;
     _profileNames[_profileCount] = _builtInProfiles[_profileCount].name;
     _profileCount++;
 
@@ -153,9 +144,6 @@ void ProfileManager::initBuiltInProfiles() {
     custom.mirrorPattern = false;
     custom.numFingers = MAX_ACTUATORS;
     custom.isDefault = false;
-    custom.frequencyRandomization = false;
-    custom.frequencyMin = 210;
-    custom.frequencyMax = 260;
     _profileNames[_profileCount] = _builtInProfiles[_profileCount].name;
     _profileCount++;
 
@@ -179,9 +167,6 @@ void ProfileManager::initBuiltInProfiles() {
     gentle.mirrorPattern = true;
     gentle.numFingers = MAX_ACTUATORS;
     gentle.isDefault = false;
-    gentle.frequencyRandomization = false;
-    gentle.frequencyMin = 210;
-    gentle.frequencyMax = 260;
     _profileNames[_profileCount] = _builtInProfiles[_profileCount].name;
     _profileCount++;
 
@@ -201,9 +186,6 @@ void ProfileManager::initBuiltInProfiles() {
     quick.mirrorPattern = true;
     quick.numFingers = MAX_ACTUATORS;
     quick.isDefault = false;
-    quick.frequencyRandomization = false;
-    quick.frequencyMin = 210;
-    quick.frequencyMax = 260;
     _profileNames[_profileCount] = _builtInProfiles[_profileCount].name;
     _profileCount++;
 }

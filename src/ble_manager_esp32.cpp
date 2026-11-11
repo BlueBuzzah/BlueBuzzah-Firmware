@@ -106,6 +106,15 @@ static bool s_scanning = false;
 
 static void requestPhy2M(uint16_t connHandle);
 
+static const char* phyName(uint8_t phy) {
+    switch (phy) {
+        case BLE_GAP_LE_PHY_1M: return "1M";
+        case BLE_GAP_LE_PHY_2M: return "2M";
+        case BLE_GAP_LE_PHY_CODED: return "Coded";
+        default: return "?";
+    }
+}
+
 // Peripheral (PRIMARY) callbacks
 class BBServerCallbacks : public NimBLEServerCallbacks {
     void onConnect(NimBLEServer*, NimBLEConnInfo& connInfo) override {
@@ -116,6 +125,16 @@ class BBServerCallbacks : public NimBLEServerCallbacks {
     }
     void onMTUChange(uint16_t mtu, NimBLEConnInfo& connInfo) override {
         Serial.printf("[BLE] MTU negotiated: %u (handle=%d)\n", mtu, connInfo.getConnHandle());
+    }
+    void onPhyUpdate(NimBLEConnInfo& connInfo, uint8_t txPhy, uint8_t rxPhy) override {
+        Serial.printf("[BLE] PHY in effect: TX %s, RX %s (handle=%d)\n",
+                      phyName(txPhy), phyName(rxPhy), connInfo.getConnHandle());
+    }
+    void onConnParamsUpdate(NimBLEConnInfo& connInfo) override {
+        // Fires once the update is in effect, unlike the request-time log
+        Serial.printf("[BLE] Conn params in effect: interval %.2f ms, latency %u, timeout %u ms (handle=%d)\n",
+                      connInfo.getConnInterval() * 1.25f, connInfo.getConnLatency(),
+                      connInfo.getConnTimeout() * 10U, connInfo.getConnHandle());
     }
 };
 
@@ -146,6 +165,10 @@ class BBClientCallbacks : public NimBLEClientCallbacks {
     }
     void onDisconnect(NimBLEClient* client, int reason) override {
         BLEManager::_onCentralDisconnect(client->getConnHandle(), static_cast<uint8_t>(reason));
+    }
+    void onPhyUpdate(NimBLEClient* client, uint8_t txPhy, uint8_t rxPhy) override {
+        Serial.printf("[BLE] PHY in effect: TX %s, RX %s (handle=%d)\n",
+                      phyName(txPhy), phyName(rxPhy), client->getConnHandle());
     }
 };
 
@@ -211,8 +234,8 @@ bool BLEManager::begin(DeviceRole role, const char* deviceName) {
 
     NimBLEDevice::init(_deviceName);
 
-    // MTU 200: a 100-byte chunk fits in one notification (protocol parity with
-    // the Bluefruit backend; the 23-byte default would fragment every chunk)
+    // MTU 200: each packet carries MTU-3 = 197 bytes (protocol parity with
+    // the Bluefruit backend; the 23-byte default would fragment every message)
     NimBLEDevice::setMTU(200);
 
     // TX power parity with Bluefruit.setTxPower(0)
@@ -271,6 +294,10 @@ void BLEManager::setupSecondaryMode() {
     // connect() runs in loop(): NimBLE's 30s default froze the loop that long
     // when the PRIMARY vanished between scan and connect
     s_client->setConnectTimeout(3000);
+    // NimBLE retries a failed connect twice by default, tripling that block.
+    // A failed connect goes back to scanning instead, and the scan callback
+    // starts the next attempt.
+    s_client->setConnectRetries(0);
 }
 
 void BLEManager::setupAdvertising() {
@@ -317,15 +344,22 @@ void BLEManager::update() {
     processTxQueue();
 
     // Deferred central connect (scan callback must not block the host task)
+    if (s_pendingConnect && s_client->isConnected()) {
+        // An advert handled as the scan stopped re-armed the flag; connecting
+        // again would be rejected and mark the live client disconnected
+        s_pendingConnect = false;
+    }
     if (s_pendingConnect) {
-        // connect() can take 9s with retries; discovery waits on the 30s ATT timeout
+        // connect() can take ~3 s; discovery waits on the 30s ATT timeout
         LoopWatchdogPause watchdogPause;
+        // Stop the scan before clearing the flag: the scan callback doesn't
+        // stop it, so an advert in between would re-arm the connect
+        stopScanning();
         PLATFORM_CRITICAL_ENTER();
         s_pendingConnect = false;
         NimBLEAddress pendingAddress = s_pendingAddress;
         PLATFORM_CRITICAL_EXIT();
         Serial.println(F("[BLE] Connecting to PRIMARY..."));
-        stopScanning();
         if (!s_client->connect(pendingAddress)) {
             Serial.println(F("[BLE] ERROR: Connect to PRIMARY failed"));
             if (_scannerAutoRestartEnabled) {
@@ -489,7 +523,20 @@ void BBScanCallbacks::match(const NimBLEAdvertisedDevice* device, bool allowName
     s_pendingAddress = device->getAddress();
     s_pendingConnect = true;
     PLATFORM_CRITICAL_EXIT();
-    NimBLEDevice::getScan()->stop();
+    // No scan stop here: with no stored results, stop() deletes every device,
+    // including the one NimBLE is still handling after this callback returns.
+    // update() stops the scan before connecting; s_pendingConnect above
+    // ignores adverts until then.
+}
+
+// With no results stored, stop() frees every device on the calling (loop) core
+// while the host task may still be handling one. Keep them through the stop: a
+// running scan erases each on its next advert, and start() from idle clears them.
+static bool stopScanKeepingResults(NimBLEScan* scan) {
+    scan->setMaxResults(0xFF);
+    if (scan->stop()) return true;
+    scan->setMaxResults(0);  // still scanning: keep storing nothing
+    return false;
 }
 
 bool BLEManager::startScanning(const char* targetName) {
@@ -502,8 +549,14 @@ bool BLEManager::startScanning(const char* targetName) {
     Serial.printf("[BLE] Starting scan for '%s'...\n", _targetName);
 
     NimBLEScan* scan = NimBLEDevice::getScan();
+    // A running scan restarts in place: start()'s own restart would free every
+    // device on this core, and so would clearing results after the stop
+    bool wasScanning = scan->isScanning() && stopScanKeepingResults(scan);
     scan->setScanCallbacks(&s_scanCallbacks, false);
     scan->setActiveScan(true);      // Request scan response for name
+    // Store no results: the callback copies the address it needs, and a stored
+    // list grows with every rotating phone address until the scan restarts
+    scan->setMaxResults(0);
     // Continuous scan while disconnected: the old 19% duty cycle stretched
     // reconnects to seconds. A false keepalive timeout restarts scanning
     // with the link still up, though - keep the low duty cycle then so the
@@ -512,14 +565,14 @@ bool BLEManager::startScanning(const char* targetName) {
     scan->setInterval(linkUp ? 200 : 100);  // ms
     scan->setWindow(linkUp ? 38 : 100);
 
-    bool started = scan->start(0, false);
+    bool started = scan->start(0, wasScanning);  // continue = keep (don't free) results
     s_scanning = started;
     Serial.println(started ? F("[BLE] Scanner started") : F("[BLE] ERROR: Failed to start scanner"));
     return started;
 }
 
 void BLEManager::stopScanning() {
-    NimBLEDevice::getScan()->stop();
+    stopScanKeepingResults(NimBLEDevice::getScan());
     s_scanning = false;
     Serial.println(F("[BLE] Scanning stopped"));
 }
@@ -799,13 +852,12 @@ void BLEManager::drainRing(TxRing& ring, uint8_t maxEntries) {
 }
 
 size_t BLEManager::tryWriteImmediate(uint16_t connHandle, const uint8_t* data, size_t len) {
-    // One packet per attempt, capped at the link's negotiated MTU: NimBLE
-    // truncates a notify to MTU-3, so a fixed 100-byte chunk on an
-    // un-negotiated (23) link silently lost the tail
+    // One packet per attempt, sized to the link's negotiated MTU: NimBLE
+    // truncates a notify to MTU-3, so a fixed size on an un-negotiated (23)
+    // link silently lost the tail. Receivers reassemble by EOT.
     uint16_t mtu = ble_att_mtu(connHandle);
     if (mtu < BLE_ATT_MTU_DFLT) return 0;  // 0 = no such connection
     size_t chunk = mtu - 3;
-    if (chunk > BLE_CHUNK_SIZE) chunk = BLE_CHUNK_SIZE;
     if (len < chunk) chunk = len;
 
     if (_role == DeviceRole::PRIMARY) {

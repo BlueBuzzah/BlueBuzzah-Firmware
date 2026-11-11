@@ -824,7 +824,7 @@ void test_SimpleSyncProtocol_addOffsetSampleWithQuality_boundary(void) {
 }
 
 // =============================================================================
-// DRIFT COMPENSATION TESTS
+// OFFSET EMA / CORRECTED OFFSET TESTS
 // =============================================================================
 
 void test_SimpleSyncProtocol_updateOffsetEMA_first_sample(void) {
@@ -838,65 +838,7 @@ void test_SimpleSyncProtocol_updateOffsetEMA_first_sample(void) {
     TEST_ASSERT_FALSE(sync.isClockSyncValid());
 }
 
-void test_SimpleSyncProtocol_updateOffsetEMA_updates_drift_rate(void) {
-    SimpleSyncProtocol sync;
-
-    // First, establish valid sync with 5 samples
-    for (int i = 0; i < 5; i++) {
-        sync.addOffsetSample(10000);
-    }
-    TEST_ASSERT_TRUE(sync.isClockSyncValid());
-    TEST_ASSERT_FLOAT_WITHIN(0.001f, 0.0f, sync.getDriftRate());
-
-    // Now update with EMA - need time to pass for drift calculation
-    // Minimum interval for drift calculation is 500ms (improved SNR)
-    mockSetMillis(100);
-    sync.updateOffsetEMA(10000);  // First EMA update sets baseline
-
-    mockSetMillis(700);  // 600ms later (>500ms minimum)
-    sync.updateOffsetEMA(10600);  // 600us drift in 600ms = 1.0 us/ms
-
-    // Drift rate should now be non-zero (EMA smoothed)
-    TEST_ASSERT_TRUE(sync.getDriftRate() != 0.0f);
-}
-
-void test_SimpleSyncProtocol_updateOffsetEMA_caps_extreme_drift_rate(void) {
-    SimpleSyncProtocol sync;
-
-    // First, establish valid sync with 5 samples
-    for (int i = 0; i < 5; i++) {
-        sync.addOffsetSample(10000);
-    }
-    TEST_ASSERT_TRUE(sync.isClockSyncValid());
-
-    // Set up baseline
-    mockSetMillis(100);
-    sync.updateOffsetEMA(10000);
-
-    // Simulate extreme drift: 1000µs in 600ms = 1.67 µs/ms (11x over 0.15 limit)
-    // This simulates a BLE retransmission or other anomaly
-    mockSetMillis(700);
-    sync.updateOffsetEMA(11000);  // 1000µs drift in 600ms
-
-    // Drift rate should be capped to SYNC_MAX_DRIFT_RATE_US_PER_MS (0.15)
-    // Since this is EMA smoothed (0.3 * capped + 0.7 * 0), expect ~0.045
-    float driftRate = sync.getDriftRate();
-    TEST_ASSERT_TRUE(driftRate <= 0.15f);
-    TEST_ASSERT_TRUE(driftRate >= -0.15f);
-
-    // Apply more extreme drifts to saturate the EMA toward the cap
-    mockSetMillis(1300);
-    sync.updateOffsetEMA(12000);  // Another extreme jump
-    mockSetMillis(1900);
-    sync.updateOffsetEMA(13000);  // Another extreme jump
-
-    // After multiple extreme samples, drift rate should still be capped
-    driftRate = sync.getDriftRate();
-    TEST_ASSERT_TRUE(driftRate <= 0.15f);
-    TEST_ASSERT_TRUE(driftRate >= -0.15f);
-}
-
-void test_SimpleSyncProtocol_getCorrectedOffset_no_drift(void) {
+void test_SimpleSyncProtocol_getCorrectedOffset_equals_filtered_offset(void) {
     SimpleSyncProtocol sync;
     mockSetMillis(100);
 
@@ -905,7 +847,7 @@ void test_SimpleSyncProtocol_getCorrectedOffset_no_drift(void) {
         sync.addOffsetSample(5000);
     }
 
-    // With no drift rate set, corrected offset should equal median
+    // Corrected offset is the filtered (median) offset
     int64_t corrected = sync.getCorrectedOffset();
     TEST_ASSERT_EQUAL_INT64(5000, corrected);
 }
@@ -918,26 +860,23 @@ void test_SimpleSyncProtocol_getCorrectedOffset_not_synced(void) {
     TEST_ASSERT_EQUAL_INT64(0, corrected);
 }
 
-void test_SimpleSyncProtocol_getDriftRate_initial_zero(void) {
-    SimpleSyncProtocol sync;
-    TEST_ASSERT_FLOAT_WITHIN(0.001f, 0.0f, sync.getDriftRate());
-}
-
-void test_SimpleSyncProtocol_getDriftRate_after_reset(void) {
+void test_SimpleSyncProtocol_getCorrectedOffset_no_extrapolation(void) {
     SimpleSyncProtocol sync;
 
-    // Establish sync and do some EMA updates
     for (int i = 0; i < 5; i++) {
         sync.addOffsetSample(10000);
     }
     mockSetMillis(100);
     sync.updateOffsetEMA(10000);
-    mockSetMillis(300);
-    sync.updateOffsetEMA(10500);
 
-    // Reset should clear drift rate
-    sync.resetClockSync();
-    TEST_ASSERT_FLOAT_WITHIN(0.001f, 0.0f, sync.getDriftRate());
+    // Large step: EMA (alpha = 1/10) = (15000 + 9 * 10000) / 10 = 10500
+    mockSetMillis(1100);
+    sync.updateOffsetEMA(15000);
+
+    // Ten seconds without a sample: the offset is not extrapolated
+    mockSetMillis(11100);
+    TEST_ASSERT_EQUAL_INT64(10500, sync.getCorrectedOffset());
+    TEST_ASSERT_EQUAL_INT64(sync.getMedianOffset(), sync.getCorrectedOffset());
 }
 
 // =============================================================================
@@ -971,7 +910,7 @@ void test_SimpleSyncProtocol_tryWarmStart_with_valid_cache_succeeds(void) {
     TEST_ASSERT_TRUE(sync.isWarmStartMode());
 }
 
-void test_SimpleSyncProtocol_getCorrectedOffset_uses_warm_start_projection(void) {
+void test_SimpleSyncProtocol_getCorrectedOffset_uses_warm_start_cached_offset(void) {
     SimpleSyncProtocol sync;
 
     for (int i = 0; i < 5; i++) {
@@ -984,11 +923,11 @@ void test_SimpleSyncProtocol_getCorrectedOffset_uses_warm_start_projection(void)
     sync.resetClockSync();
     TEST_ASSERT_EQUAL_INT64(0, sync.getCorrectedOffset());
 
-    // The projection alone is unproven (the SECONDARY may have rebooted)
+    // The cached offset alone is unproven (the SECONDARY may have rebooted)
     TEST_ASSERT_TRUE(sync.tryWarmStart());
     TEST_ASSERT_EQUAL_INT64(0, sync.getCorrectedOffset());
 
-    // One agreeing sample: not yet valid, but the projection beats sending 0
+    // One agreeing sample: not yet valid, but the cached offset beats sending 0
     sync.addOffsetSample(10000);
     TEST_ASSERT_TRUE(sync.isWarmStartMode());
     TEST_ASSERT_FALSE(sync.isClockSyncValid());
@@ -1032,7 +971,7 @@ void test_SimpleSyncProtocol_warmStart_validates_confirmatory_samples(void) {
     TEST_ASSERT_TRUE(sync.isWarmStartMode());
     TEST_ASSERT_FALSE(sync.isClockSyncValid());
 
-    // Add confirmatory samples close to projected offset
+    // Add confirmatory samples close to the cached offset
     sync.addOffsetSample(10050);  // Within 5ms tolerance
     TEST_ASSERT_FALSE(sync.isClockSyncValid());  // Not yet valid (need 3)
 
@@ -1070,17 +1009,16 @@ void test_SimpleSyncProtocol_warmStart_aborts_on_divergent_sample(void) {
     // Should now require full 5 samples (cold start)
 }
 
-void test_SimpleSyncProtocol_getProjectedOffset_applies_drift(void) {
+void test_SimpleSyncProtocol_getCachedOffset_returns_cached_offset(void) {
     SimpleSyncProtocol sync;
 
-    // Establish sync with positive drift
     for (int i = 0; i < 5; i++) {
         sync.addOffsetSample(10000);
     }
     mockSetMillis(100);
     sync.updateOffsetEMA(10000);
 
-    // Simulate drift: 100us over 1 second = 0.1 us/ms
+    // Cached EMA (alpha = 1/10) = (10100 + 9 * 10000) / 10 = 10010
     mockSetMillis(1100);
     sync.updateOffsetEMA(10100);
 
@@ -1088,12 +1026,8 @@ void test_SimpleSyncProtocol_getProjectedOffset_applies_drift(void) {
     mockSetMillis(3100);
     sync.resetClockSync();
 
-    // Projected offset should include drift correction
-    int64_t projected = sync.getProjectedOffset();
-    // Cache was updated at 1100ms with offset 10100 and drift ~0.1 us/ms
-    // At 3100ms, 2000ms elapsed, drift correction = 0.1 * 2000 = 200
-    // Expected: ~10100 + 200 = ~10300 (within tolerance)
-    TEST_ASSERT_INT64_WITHIN(500, 10300, projected);
+    // The cached offset comes back unchanged, with no extrapolation over the gap
+    TEST_ASSERT_EQUAL_INT64(10010, sync.getCachedOffset());
 }
 
 void test_SimpleSyncProtocol_invalidateWarmStartCache_clears_cache(void) {
@@ -1113,81 +1047,6 @@ void test_SimpleSyncProtocol_invalidateWarmStartCache_clears_cache(void) {
     mockSetMillis(500);
     sync.resetClockSync();
     TEST_ASSERT_FALSE(sync.tryWarmStart());
-}
-
-// =============================================================================
-// PATH ASYMMETRY TRACKING TESTS
-// =============================================================================
-
-void test_SimpleSyncProtocol_recordAsymmetry_basic(void) {
-    SimpleSyncProtocol sync;
-
-    // Symmetric path: outbound = return = 10µs
-    // T1=1000, T2=1010, T3=1020, T4=1030
-    // asymmetry = (1010-1000) - (1030-1020) = 10 - 10 = 0
-    sync.recordAsymmetry(1000, 1010, 1020, 1030, false);
-
-    TEST_ASSERT_EQUAL_INT64(0, sync.getRawAsymmetry());
-    TEST_ASSERT_EQUAL_UINT16(1, sync.getAsymmetrySampleCount());
-}
-
-void test_SimpleSyncProtocol_recordAsymmetry_positive(void) {
-    SimpleSyncProtocol sync;
-
-    // Outbound slower: outbound=15µs, return=10µs
-    // T1=1000, T2=1015, T3=1020, T4=1030
-    // asymmetry = (1015-1000) - (1030-1020) = 15 - 10 = 5
-    sync.recordAsymmetry(1000, 1015, 1020, 1030, false);
-
-    TEST_ASSERT_EQUAL_INT64(5, sync.getRawAsymmetry());
-}
-
-void test_SimpleSyncProtocol_recordAsymmetry_negative(void) {
-    SimpleSyncProtocol sync;
-
-    // Return slower: outbound=10µs, return=15µs
-    // T1=1000, T2=1010, T3=1020, T4=1035
-    // asymmetry = (1010-1000) - (1035-1020) = 10 - 15 = -5
-    sync.recordAsymmetry(1000, 1010, 1020, 1035, false);
-
-    TEST_ASSERT_EQUAL_INT64(-5, sync.getRawAsymmetry());
-}
-
-void test_SimpleSyncProtocol_recordAsymmetry_ema_smoothing(void) {
-    SimpleSyncProtocol sync;
-
-    // First sample: asymmetry = 1000µs (outbound=1500, return=500)
-    // T1=0, T2=1500, T3=2000, T4=2500 -> (1500-0) - (2500-2000) = 1500 - 500 = 1000
-    sync.recordAsymmetry(0, 1500, 2000, 2500, false);
-    TEST_ASSERT_EQUAL_INT64(1000, sync.getSmoothedAsymmetry());
-
-    // Second sample: asymmetry = 0µs (symmetric)
-    // T1=3000, T2=3500, T3=4000, T4=4500 -> (500) - (500) = 0
-    // EMA with α=0.3: new = 0.3*0 + 0.7*1000 = 700
-    sync.recordAsymmetry(3000, 3500, 4000, 4500, false);
-    TEST_ASSERT_EQUAL_INT64(0, sync.getRawAsymmetry());
-
-    // Smoothed should be between 0 and 1000 due to EMA
-    int64_t smoothed = sync.getSmoothedAsymmetry();
-    TEST_ASSERT_TRUE(smoothed > 0 && smoothed < 1000);
-}
-
-void test_SimpleSyncProtocol_resetAsymmetryTracking(void) {
-    SimpleSyncProtocol sync;
-
-    // Record some asymmetry samples
-    sync.recordAsymmetry(1000, 1010, 1020, 1030, false);
-    sync.recordAsymmetry(2000, 2015, 2020, 2030, true);
-
-    TEST_ASSERT_GREATER_THAN(0, sync.getAsymmetrySampleCount());
-
-    // Reset
-    sync.resetAsymmetryTracking();
-
-    TEST_ASSERT_EQUAL_INT64(0, sync.getRawAsymmetry());
-    TEST_ASSERT_EQUAL_INT64(0, sync.getSmoothedAsymmetry());
-    TEST_ASSERT_EQUAL_UINT32(0, sync.getAsymmetryVariance());
-    TEST_ASSERT_EQUAL_UINT16(0, sync.getAsymmetrySampleCount());
 }
 
 // =============================================================================
@@ -1867,85 +1726,6 @@ void test_SimpleSyncProtocol_negative_offset_near_zero(void) {
 }
 
 // =============================================================================
-// LONG-TERM DRIFT TESTS
-// =============================================================================
-
-void test_SimpleSyncProtocol_long_term_drift_accumulation(void) {
-    SimpleSyncProtocol sync;
-
-    // Initialize with baseline offset
-    for (int i = 0; i < 5; i++) {
-        sync.addOffsetSample(10000);
-    }
-    mockSetMillis(100);
-    sync.updateOffsetEMA(10000);
-
-    // Simulate drift over time: 0.1 µs/ms (100 ppm) - within SYNC_MAX_DRIFT_RATE_US_PER_MS cap
-    // Apply multiple updates to allow EMA to converge (α=0.3)
-    // EMA convergence: after N updates, rate ≈ target * (1 - 0.7^N)
-    mockSetMillis(1100);
-    sync.updateOffsetEMA(10100);  // 100 µs drift in 1000ms
-    mockSetMillis(2100);
-    sync.updateOffsetEMA(10200);  // Another 100 µs drift
-    mockSetMillis(3100);
-    sync.updateOffsetEMA(10300);  // Another 100 µs drift
-
-    float driftRate = sync.getDriftRate();
-    // After 3 updates with true rate 0.1, EMA converges:
-    // Update 1: 0.3*0.1 + 0.7*0 = 0.03
-    // Update 2: 0.3*0.1 + 0.7*0.03 = 0.051
-    // Update 3: 0.3*0.1 + 0.7*0.051 = 0.066
-    // So expect rate in range 0.05 to 0.10
-    TEST_ASSERT_TRUE(driftRate > 0.05f && driftRate < 0.10f);
-}
-
-void test_SimpleSyncProtocol_drift_direction_reversal(void) {
-    SimpleSyncProtocol sync;
-
-    // Initialize
-    for (int i = 0; i < 5; i++) {
-        sync.addOffsetSample(10000);
-    }
-    mockSetMillis(100);
-    sync.updateOffsetEMA(10000);
-
-    // Positive drift
-    mockSetMillis(600);
-    sync.updateOffsetEMA(10500);
-
-    float firstDrift = sync.getDriftRate();
-    TEST_ASSERT_TRUE(firstDrift > 0);
-
-    // Negative drift (opposite direction)
-    mockSetMillis(1100);
-    sync.updateOffsetEMA(10000);  // Back down
-
-    // Drift rate should have decreased or reversed
-    float secondDrift = sync.getDriftRate();
-    TEST_ASSERT_TRUE(secondDrift < firstDrift);
-}
-
-void test_SimpleSyncProtocol_corrected_offset_bounds(void) {
-    SimpleSyncProtocol sync;
-
-    // Test that corrected offset stays within reasonable bounds
-    for (int i = 0; i < 5; i++) {
-        sync.addOffsetSample(10000);
-    }
-    mockSetMillis(100);
-    sync.updateOffsetEMA(10000);
-
-    // Set up significant drift
-    mockSetMillis(1100);
-    sync.updateOffsetEMA(15000);  // Large change
-
-    // Corrected offset should be bounded (not extrapolate wildly)
-    int64_t corrected = sync.getCorrectedOffset();
-    // Should be within reasonable range (e.g., not exceeding 10 seconds)
-    TEST_ASSERT_TRUE(corrected > -10000000 && corrected < 10000000);
-}
-
-// =============================================================================
 // FAILURE MODE TESTS
 // =============================================================================
 
@@ -2234,23 +2014,6 @@ void test_maintenance_step_change_reanchors(void) {
     TEST_ASSERT_TRUE(sync.updateOffsetEMAWithQuality(20000, 10000));
 }
 
-void test_drift_estimation_survives_fast_cadence(void) {
-    SimpleSyncProtocol sync;
-    for (int i = 0; i < 5; i++) sync.addOffsetSample(0);
-    TEST_ASSERT_TRUE(sync.isClockSyncValid());
-
-    // Accepted samples every 250ms (4Hz) with a steady +25us/250ms ramp
-    // (= 100 ppm drift). With the per-sample anchor advance, elapsed never
-    // reaches SYNC_MIN_DRIFT_INTERVAL_MS and the rate stays 0 forever.
-    int64_t offset = 0;
-    for (int i = 0; i < 12; i++) {
-        mockAdvanceMillis(250);
-        offset += 25;
-        sync.updateOffsetEMAWithQuality(offset, 10000);
-    }
-    TEST_ASSERT_TRUE(sync.getDriftRate() > 0.0f);
-}
-
 // =============================================================================
 // ANCHOR PONG FACTORY TESTS
 // =============================================================================
@@ -2398,31 +2161,21 @@ int main(int argc, char **argv) {
     RUN_TEST(test_SimpleSyncProtocol_addOffsetSampleWithQuality_rejects_high_rtt);
     RUN_TEST(test_SimpleSyncProtocol_addOffsetSampleWithQuality_boundary);
 
-    // Drift Compensation Tests
+    // Offset EMA / Corrected Offset Tests
     RUN_TEST(test_SimpleSyncProtocol_updateOffsetEMA_first_sample);
-    RUN_TEST(test_SimpleSyncProtocol_updateOffsetEMA_updates_drift_rate);
-    RUN_TEST(test_SimpleSyncProtocol_updateOffsetEMA_caps_extreme_drift_rate);
-    RUN_TEST(test_SimpleSyncProtocol_getCorrectedOffset_no_drift);
+    RUN_TEST(test_SimpleSyncProtocol_getCorrectedOffset_equals_filtered_offset);
     RUN_TEST(test_SimpleSyncProtocol_getCorrectedOffset_not_synced);
-    RUN_TEST(test_SimpleSyncProtocol_getDriftRate_initial_zero);
-    RUN_TEST(test_SimpleSyncProtocol_getDriftRate_after_reset);
+    RUN_TEST(test_SimpleSyncProtocol_getCorrectedOffset_no_extrapolation);
 
     // Warm-Start Sync Tests
     RUN_TEST(test_SimpleSyncProtocol_tryWarmStart_with_no_cache_returns_false);
     RUN_TEST(test_SimpleSyncProtocol_tryWarmStart_with_valid_cache_succeeds);
-    RUN_TEST(test_SimpleSyncProtocol_getCorrectedOffset_uses_warm_start_projection);
+    RUN_TEST(test_SimpleSyncProtocol_getCorrectedOffset_uses_warm_start_cached_offset);
     RUN_TEST(test_SimpleSyncProtocol_tryWarmStart_with_expired_cache_fails);
     RUN_TEST(test_SimpleSyncProtocol_warmStart_validates_confirmatory_samples);
     RUN_TEST(test_SimpleSyncProtocol_warmStart_aborts_on_divergent_sample);
-    RUN_TEST(test_SimpleSyncProtocol_getProjectedOffset_applies_drift);
+    RUN_TEST(test_SimpleSyncProtocol_getCachedOffset_returns_cached_offset);
     RUN_TEST(test_SimpleSyncProtocol_invalidateWarmStartCache_clears_cache);
-
-    // Path Asymmetry Tracking Tests
-    RUN_TEST(test_SimpleSyncProtocol_recordAsymmetry_basic);
-    RUN_TEST(test_SimpleSyncProtocol_recordAsymmetry_positive);
-    RUN_TEST(test_SimpleSyncProtocol_recordAsymmetry_negative);
-    RUN_TEST(test_SimpleSyncProtocol_recordAsymmetry_ema_smoothing);
-    RUN_TEST(test_SimpleSyncProtocol_resetAsymmetryTracking);
 
     // Adaptive Lead Time Tests
     RUN_TEST(test_SimpleSyncProtocol_calculateAdaptiveLeadTime_floor_with_no_samples);
@@ -2493,11 +2246,6 @@ int main(int argc, char **argv) {
     RUN_TEST(test_SimpleSyncProtocol_time_conversion_precision);
     RUN_TEST(test_SimpleSyncProtocol_negative_offset_near_zero);
 
-    // Long-term drift tests
-    RUN_TEST(test_SimpleSyncProtocol_long_term_drift_accumulation);
-    RUN_TEST(test_SimpleSyncProtocol_drift_direction_reversal);
-    RUN_TEST(test_SimpleSyncProtocol_corrected_offset_bounds);
-
     // Failure mode tests
     RUN_TEST(test_SimpleSyncProtocol_sync_loss_timeout);
     RUN_TEST(test_SimpleSyncProtocol_all_samples_rejected_by_quality);
@@ -2521,9 +2269,6 @@ int main(int argc, char **argv) {
     RUN_TEST(test_maintenance_min_rtt_decay);
     RUN_TEST(test_maintenance_routes_to_sample_collection_before_valid);
     RUN_TEST(test_maintenance_step_change_reanchors);
-
-    // Drift estimation must survive fast (4Hz) accepted-sample cadence
-    RUN_TEST(test_drift_estimation_survives_fast_cadence);
 
     // Anchor-paired PONG factory: 6-field round-trip
     RUN_TEST(test_createPongWithAnchor_roundtrip);

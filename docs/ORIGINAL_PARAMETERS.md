@@ -485,7 +485,7 @@ This section maps original V1 CircuitPython concepts to V2 C++ implementation.
 |--------|----|----|
 | Clock sync method | Single timestamp + fixed 21ms offset | IEEE 1588 PTP 4-timestamp |
 | Sync accuracy | ~20-50ms estimated | <2ms measured |
-| Drift compensation | None | EMA smoothing + drift rate tracking |
+| Drift compensation | None | Continuous offset EMA |
 | Sync frequency | Per-macrocycle | Continuous PING/PONG (1s idle, 250ms during therapy, 70ms until sync converges) |
 | Warm-start recovery | None | 15s cache validity |
 
@@ -505,7 +505,7 @@ This section maps original V1 CircuitPython concepts to V2 C++ implementation.
 | `defaults.py` | `include/config.h` | Hardware constants, timing defaults |
 | `defaults_*.py` (presets) | `ProfileManager` built-in profiles + `fs_backend` (InternalFS on nRF52840, LittleFS on ESP32-S3) | Profile storage |
 | `AMPLITUDE_MIN/MAX` | `TherapyProfile.amplitudeMin/amplitudeMax` | Random per event when they differ (per-finger planned) |
-| `RANDOM_FREQ` + `ACTUATOR_FREQ*` | `frequencyRandomization`, `frequencyMin`, `frequencyMax` | Applied at every session start; no built-in profile randomizes, so all run at 250 Hz (when on, 210-255 Hz in 5 Hz steps, like v1) |
+| `RANDOM_FREQ` + `ACTUATOR_FREQ*` | Not ported | Fixed at 250 Hz (`DEFAULT_FREQUENCY_HZ`) |
 
 ### Architecture Differences
 

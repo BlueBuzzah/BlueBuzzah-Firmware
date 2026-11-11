@@ -247,6 +247,15 @@ public:
      * @return true if connection initiated
      */
     bool connectToPrimary(ble_gap_evt_adv_report_t* report);
+
+    /**
+     * @brief Feed SoftDevice events to the TX gate and log link parameters
+     *
+     * Call from the Bluefruit event callback (BLE task). Returns TX queue
+     * credits on HVN/write-command completion, and stashes the negotiated
+     * interval and supervision timeout for update() to log.
+     */
+    void onSoftDeviceEvent(ble_evt_t* evt);
 #endif
 
     // =========================================================================
@@ -450,6 +459,21 @@ private:
 #if defined(BOARD_BLUEBUZZAH_NRF52)
     BLEUart _uartService;           // Peripheral UART (for incoming connections)
     BLEClientUart _clientUart;      // Central UART (for outgoing connections)
+
+    // Packets handed to the SoftDevice and not yet sent, per _connections
+    // slot. tryWriteImmediate stops at the queue size so Bluefruit never
+    // blocks waiting for a free buffer. Decremented on the BLE task.
+    volatile uint8_t _txInFlight[MAX_CONNECTIONS];
+
+    /** Return n TX credits to a slot, clamped at 0. */
+    void _releaseTx(uint8_t slot, uint8_t n);
+
+    // Latest negotiated link parameters, stashed on the BLE task and printed
+    // from update(): a Serial write can block, and the BLE task must not
+    volatile bool _linkParamsPending = false;
+    uint16_t _linkParamsHandle = 0;
+    uint16_t _linkParamsInterval = 0;   // 1.25ms units
+    uint16_t _linkParamsTimeout = 0;    // 10ms units
 #endif
 
     // Callbacks
