@@ -177,6 +177,111 @@ void test_param_set_reports_save_failure(void) {
                              h.send("PARAM_SET:ON:80").c_str());
 }
 
+// Sessions
+
+static void startSession(MenuHarness& h) {
+    h.ble.secondaryConnected = true;
+    h.send("SESSION_START");
+}
+
+void test_session_start_success(void) {
+    MenuHarness h;
+    h.ble.secondaryConnected = true;
+    const std::string reply = h.send("SESSION_START");
+    const std::string expected = "CMD:SESSION_START\nSESSION_STATUS:RUNNING\nELAPSED:0\nTOTAL:7200\nSESSION_ID:" +
+                                 std::to_string(h.therapy.getSessionId()) + "\n\x04";
+    TEST_ASSERT_EQUAL_STRING(expected.c_str(), reply.c_str());
+    TEST_ASSERT_TRUE(h.therapy.getSessionId() > 0);
+    TEST_ASSERT_EQUAL_INT(0, h.ble.lastToSecondary.rfind("START_SESSION", 0));
+    TEST_ASSERT_EQUAL_STRING("RUNNING", therapyStateToString(h.stateMachine.getCurrentState()));
+}
+
+void test_session_start_refused_glove_error(void) {
+    MenuHarness h;
+    h.ble.secondaryConnected = true;
+    h.gloveError = "Primary glove error";
+    TEST_ASSERT_EQUAL_STRING("CMD:SESSION_START\nERROR:Primary glove error\n\x04", h.send("SESSION_START").c_str());
+    TEST_ASSERT_FALSE(h.therapy.isRunning());
+}
+
+void test_session_start_refused_battery(void) {
+    MenuHarness h;
+    h.ble.secondaryConnected = true;
+    h.batteryAllows = false;
+    TEST_ASSERT_EQUAL_STRING("CMD:SESSION_START\nERROR:Battery too low\n\x04", h.send("SESSION_START").c_str());
+    TEST_ASSERT_FALSE(h.therapy.isRunning());
+}
+
+void test_session_start_refused_no_secondary(void) {
+    MenuHarness h;
+    TEST_ASSERT_EQUAL_STRING("CMD:SESSION_START\nERROR:Secondary not connected\n\x04", h.send("SESSION_START").c_str());
+    TEST_ASSERT_FALSE(h.therapy.isRunning());
+}
+
+void test_session_start_refused_sync_not_ready(void) {
+    MenuHarness h;
+    h.ble.secondaryConnected = true;
+    h.syncReady = false;
+    TEST_ASSERT_EQUAL_STRING("CMD:SESSION_START\nERROR:Sync not ready\n\x04", h.send("SESSION_START").c_str());
+    TEST_ASSERT_FALSE(h.therapy.isRunning());
+}
+
+void test_session_start_refused_when_running(void) {
+    MenuHarness h;
+    startSession(h);
+    TEST_ASSERT_EQUAL_STRING("CMD:SESSION_START\nERROR:Session already active\n\x04", h.send("SESSION_START").c_str());
+}
+
+void test_session_start_refusal_order(void) {
+    MenuHarness h;
+    h.ble.secondaryConnected = true;
+    h.gloveError = "Primary glove error";
+    h.batteryAllows = false;
+    h.syncReady = false;
+    TEST_ASSERT_EQUAL_STRING("CMD:SESSION_START\nERROR:Primary glove error\n\x04", h.send("SESSION_START").c_str());
+}
+
+void test_session_start_secondary_checked_before_battery(void) {
+    MenuHarness h;
+    h.batteryAllows = false;
+    TEST_ASSERT_EQUAL_STRING("CMD:SESSION_START\nERROR:Secondary not connected\n\x04", h.send("SESSION_START").c_str());
+}
+
+void test_session_pause_resume_stop_from_running(void) {
+    MenuHarness h;
+    startSession(h);
+    TEST_ASSERT_EQUAL_STRING("CMD:SESSION_PAUSE\nSESSION_STATUS:PAUSED\n\x04", h.send("SESSION_PAUSE").c_str());
+    TEST_ASSERT_EQUAL_STRING("CMD:SESSION_RESUME\nSESSION_STATUS:RUNNING\n\x04", h.send("SESSION_RESUME").c_str());
+    TEST_ASSERT_EQUAL_STRING("CMD:SESSION_STOP\nSESSION_STATUS:IDLE\n\x04", h.send("SESSION_STOP").c_str());
+    TEST_ASSERT_EQUAL_INT(1, h.sessionStopCalls);
+}
+
+void test_session_pause_refused_when_idle(void) {
+    MenuHarness h;
+    TEST_ASSERT_EQUAL_STRING("CMD:SESSION_PAUSE\nERROR:No active session\n\x04", h.send("SESSION_PAUSE").c_str());
+}
+
+void test_session_resume_refused_when_not_paused(void) {
+    MenuHarness h;
+    startSession(h);
+    TEST_ASSERT_EQUAL_STRING("CMD:SESSION_RESUME\nERROR:Session is not paused\n\x04", h.send("SESSION_RESUME").c_str());
+}
+
+void test_session_status_states(void) {
+    MenuHarness h;
+    TEST_ASSERT_EQUAL_STRING("CMD:SESSION_STATUS\nSESSION_STATUS:IDLE\nELAPSED:0\nTOTAL:0\nPROGRESS:0\n\x04",
+                             h.send("SESSION_STATUS").c_str());
+    h.stateMachine.forceState(TherapyState::RUNNING);
+    TEST_ASSERT_EQUAL_STRING("CMD:SESSION_STATUS\nSESSION_STATUS:RUNNING\nELAPSED:0\nTOTAL:0\nPROGRESS:0\n\x04",
+                             h.send("SESSION_STATUS").c_str());
+    h.stateMachine.forceState(TherapyState::PAUSED);
+    TEST_ASSERT_EQUAL_STRING("CMD:SESSION_STATUS\nSESSION_STATUS:PAUSED\nELAPSED:0\nTOTAL:0\nPROGRESS:0\n\x04",
+                             h.send("SESSION_STATUS").c_str());
+    h.stateMachine.forceState(TherapyState::LOW_BATTERY);
+    TEST_ASSERT_EQUAL_STRING("CMD:SESSION_STATUS\nSESSION_STATUS:LOW_BATTERY\nELAPSED:0\nTOTAL:0\nPROGRESS:0\n\x04",
+                             h.send("SESSION_STATUS").c_str());
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_ping);
@@ -202,5 +307,18 @@ int main(int, char**) {
     RUN_TEST(test_param_set_missing_value);
     RUN_TEST(test_param_set_locked_param);
     RUN_TEST(test_param_set_reports_save_failure);
+    // Sessions
+    RUN_TEST(test_session_start_success);
+    RUN_TEST(test_session_start_refused_glove_error);
+    RUN_TEST(test_session_start_refused_battery);
+    RUN_TEST(test_session_start_refused_no_secondary);
+    RUN_TEST(test_session_start_refused_sync_not_ready);
+    RUN_TEST(test_session_start_refused_when_running);
+    RUN_TEST(test_session_start_refusal_order);
+    RUN_TEST(test_session_start_secondary_checked_before_battery);
+    RUN_TEST(test_session_pause_resume_stop_from_running);
+    RUN_TEST(test_session_pause_refused_when_idle);
+    RUN_TEST(test_session_resume_refused_when_not_paused);
+    RUN_TEST(test_session_status_states);
     return UNITY_END();
 }
