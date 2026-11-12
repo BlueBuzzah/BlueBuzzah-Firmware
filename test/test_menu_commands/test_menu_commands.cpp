@@ -552,6 +552,115 @@ void test_restart_calls_callback(void) {
     TEST_ASSERT_EQUAL_INT(1, h.restartCalls);
 }
 
+// Internal message routing: INTERNAL_MESSAGES[] against the real MenuController
+
+static bool isInternal(const char* message) {
+    MenuHarness h;
+    return h.menu.isInternalMessage(message);
+}
+
+void test_isInternalMessage_null_returns_false() {
+    TEST_ASSERT_FALSE(isInternal(nullptr));
+}
+
+void test_isInternalMessage_empty_returns_false() {
+    TEST_ASSERT_FALSE(isInternal(""));
+}
+
+void test_isInternalMessage_PARAM_UPDATE_returns_false() {
+    TEST_ASSERT_FALSE(isInternal("PARAM_UPDATE:INTENSITY:75"));
+}
+
+void test_isInternalMessage_SEED_returns_false() {
+    TEST_ASSERT_FALSE(isInternal("SEED:12345"));
+}
+
+void test_isInternalMessage_SEED_ACK_returns_false() {
+    TEST_ASSERT_FALSE(isInternal("SEED_ACK:12345"));
+}
+
+void test_isInternalMessage_GET_BATTERY_returns_true() {
+    TEST_ASSERT_TRUE(isInternal("GET_BATTERY"));
+}
+
+void test_isInternalMessage_BATRESPONSE_returns_true() {
+    TEST_ASSERT_TRUE(isInternal("BATRESPONSE:3.72:85"));
+}
+
+void test_isInternalMessage_GLOVE_ERROR_returns_true() {
+    // The SECONDARY's fault report must never reach the menu as a phone command
+    TEST_ASSERT_TRUE(isInternal("GLOVE_ERROR"));
+}
+
+void test_isInternalMessage_MOTOR_STATUS_returns_true() {
+    // The SECONDARY's motor check report must never reach the menu as a phone command
+    TEST_ASSERT_TRUE(isInternal("MOTOR_STATUS:OK,OK,OPEN,OPEN,OPEN"));
+}
+
+void test_isInternalMessage_ACK_PARAM_UPDATE_returns_false() {
+    TEST_ASSERT_FALSE(isInternal("ACK_PARAM_UPDATE:INTENSITY"));
+}
+
+void test_isInternalMessage_SYNC_prefix_returns_false() {
+    TEST_ASSERT_FALSE(isInternal("SYNC_ADJ:12345:67890"));
+}
+
+void test_isInternalMessage_IDENTIFY_prefix_returns_true() {
+    TEST_ASSERT_TRUE(isInternal("IDENTIFY:PRIMARY"));
+}
+
+void test_isInternalMessage_user_command_INFO_returns_false() {
+    TEST_ASSERT_FALSE(isInternal("INFO"));
+}
+
+void test_isInternalMessage_user_command_BATTERY_returns_false() {
+    TEST_ASSERT_FALSE(isInternal("BATTERY"));
+}
+
+void test_isInternalMessage_user_command_SESSION_START_returns_false() {
+    TEST_ASSERT_FALSE(isInternal("SESSION_START"));
+}
+
+// The Updater reaches the firmware menu over USB serial precisely because these
+// commands are NOT internal — handleSerialCommand falls through to
+// onBLEMessage(0, ...) with fromPhone == false, and main.cpp's role gate then
+// requires !menu.isInternalMessage(message). Adding any of these to
+// INTERNAL_MESSAGES silently severs the desktop Updater from the device.
+void test_isInternalMessage_updater_command_PROFILE_LIST_returns_false() {
+    TEST_ASSERT_FALSE(isInternal("PROFILE_LIST"));
+}
+
+void test_isInternalMessage_updater_command_PROFILE_LOAD_returns_false() {
+    TEST_ASSERT_FALSE(isInternal("PROFILE_LOAD:4"));
+}
+
+void test_isInternalMessage_updater_command_PROFILE_GET_returns_false() {
+    TEST_ASSERT_FALSE(isInternal("PROFILE_GET"));
+}
+
+void test_isInternalMessage_updater_command_PROFILE_CUSTOM_returns_false() {
+    TEST_ASSERT_FALSE(isInternal("PROFILE_CUSTOM:ON:100:OFF:67"));
+}
+
+void test_isInternalMessage_updater_command_PARAM_SET_returns_false() {
+    TEST_ASSERT_FALSE(isInternal("PARAM_SET:FINGERS:4"));
+}
+
+void test_isInternalMessage_PING_returns_true() {
+    TEST_ASSERT_TRUE(isInternal("PING"));
+}
+
+void test_isInternalMessage_partial_match_not_prefix_returns_false() {
+    // "BUZ" doesn't match "BUZZ" prefix
+    TEST_ASSERT_FALSE(isInternal("BUZ"));
+}
+
+void test_isInternalMessage_case_sensitive() {
+    // Internal messages are uppercase, lowercase should not match
+    TEST_ASSERT_FALSE(isInternal("buzz"));
+    TEST_ASSERT_FALSE(isInternal("Buzz"));
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_ping);
@@ -619,5 +728,29 @@ int main(int, char**) {
     RUN_TEST(test_debug_rejects_bad_value);
     RUN_TEST(test_help_lists_every_command);
     RUN_TEST(test_restart_calls_callback);
+    // Internal message routing
+    RUN_TEST(test_isInternalMessage_null_returns_false);
+    RUN_TEST(test_isInternalMessage_empty_returns_false);
+    RUN_TEST(test_isInternalMessage_PARAM_UPDATE_returns_false);
+    RUN_TEST(test_isInternalMessage_SEED_returns_false);
+    RUN_TEST(test_isInternalMessage_SEED_ACK_returns_false);
+    RUN_TEST(test_isInternalMessage_GET_BATTERY_returns_true);
+    RUN_TEST(test_isInternalMessage_BATRESPONSE_returns_true);
+    RUN_TEST(test_isInternalMessage_GLOVE_ERROR_returns_true);
+    RUN_TEST(test_isInternalMessage_MOTOR_STATUS_returns_true);
+    RUN_TEST(test_isInternalMessage_ACK_PARAM_UPDATE_returns_false);
+    RUN_TEST(test_isInternalMessage_SYNC_prefix_returns_false);
+    RUN_TEST(test_isInternalMessage_IDENTIFY_prefix_returns_true);
+    RUN_TEST(test_isInternalMessage_user_command_INFO_returns_false);
+    RUN_TEST(test_isInternalMessage_user_command_BATTERY_returns_false);
+    RUN_TEST(test_isInternalMessage_user_command_SESSION_START_returns_false);
+    RUN_TEST(test_isInternalMessage_updater_command_PROFILE_LIST_returns_false);
+    RUN_TEST(test_isInternalMessage_updater_command_PROFILE_LOAD_returns_false);
+    RUN_TEST(test_isInternalMessage_updater_command_PROFILE_GET_returns_false);
+    RUN_TEST(test_isInternalMessage_updater_command_PROFILE_CUSTOM_returns_false);
+    RUN_TEST(test_isInternalMessage_updater_command_PARAM_SET_returns_false);
+    RUN_TEST(test_isInternalMessage_PING_returns_true);
+    RUN_TEST(test_isInternalMessage_partial_match_not_prefix_returns_false);
+    RUN_TEST(test_isInternalMessage_case_sensitive);
     return UNITY_END();
 }

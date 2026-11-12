@@ -3,7 +3,7 @@
  * @brief INFO's boot motor check keys (MOTP / MOTS)
  *
  * Used by MenuController::handleInfo and tested directly by
- * test_menu_controller.
+ * test_motor_check_info.
  *
  * Header-only with no includes, so this spells out the callback type.
  */
