@@ -377,6 +377,184 @@ void test_battery_with_secondary(void) {
     TEST_ASSERT_EQUAL_STRING("CMD:BATTERY\nBATP:4.02\nBATLP:NORMAL\nBATS:3.85\nBATLS:LOW\n\x04", h.reply.c_str());
 }
 
+// Calibration and system
+
+void test_calibrate_start(void) {
+    MenuHarness h;
+    TEST_ASSERT_EQUAL_STRING("CMD:CALIBRATE_START\nMODE:CALIBRATION\n\x04", h.send("CALIBRATE_START").c_str());
+    TEST_ASSERT_TRUE(h.menu.isCalibrating());
+}
+
+void test_calibrate_start_refused_during_session(void) {
+    MenuHarness h;
+    startSession(h);
+    TEST_ASSERT_EQUAL_STRING("CMD:CALIBRATE_START\nERROR:Cannot calibrate during active session\n\x04",
+                             h.send("CALIBRATE_START").c_str());
+    TEST_ASSERT_FALSE(h.menu.isCalibrating());
+}
+
+void test_calibrate_buzz_requires_start(void) {
+    MenuHarness h;
+    TEST_ASSERT_EQUAL_STRING("CMD:CALIBRATE_BUZZ\nERROR:Not in calibration mode\n\x04",
+                             h.send("CALIBRATE_BUZZ:0:80:500").c_str());
+    TEST_ASSERT_EQUAL_INT(0, h.haptic.activateCalls);
+}
+
+void test_calibrate_buzz_requires_all_arguments(void) {
+    MenuHarness h;
+    h.send("CALIBRATE_START");
+    TEST_ASSERT_EQUAL_STRING("CMD:CALIBRATE_BUZZ\nERROR:Finger, intensity, and duration required\n\x04",
+                             h.send("CALIBRATE_BUZZ:0:80").c_str());
+}
+
+void test_calibrate_buzz_activates_then_stops(void) {
+    MenuHarness h;
+    h.send("CALIBRATE_START");
+    TEST_ASSERT_EQUAL_STRING("CMD:CALIBRATE_BUZZ\nFINGER:1\nINTENSITY:80\nDURATION:500\n\x04",
+                             h.send("CALIBRATE_BUZZ:1:80:500").c_str());
+    h.menu.updateCalibrationBuzz();
+    TEST_ASSERT_EQUAL_INT(1, h.haptic.activateCalls);
+    TEST_ASSERT_EQUAL_UINT8(1, h.haptic.lastFinger);
+    TEST_ASSERT_EQUAL_UINT8(80, h.haptic.lastAmplitude);
+    TEST_ASSERT_EQUAL_INT(0, h.haptic.deactivateCalls);
+
+    mockAdvanceMillis(499);
+    h.menu.updateCalibrationBuzz();
+    TEST_ASSERT_EQUAL_INT(0, h.haptic.deactivateCalls);
+    mockAdvanceMillis(1);
+    h.menu.updateCalibrationBuzz();
+    TEST_ASSERT_EQUAL_INT(1, h.haptic.deactivateCalls);
+    TEST_ASSERT_EQUAL_UINT8(1, h.haptic.lastFinger);
+}
+
+void test_calibrate_buzz_rejects_finger_beyond_secondary(void) {
+    MenuHarness h;
+    h.send("CALIBRATE_START");
+    const std::string expected =
+        "CMD:CALIBRATE_BUZZ\nERROR:Invalid finger index (0-" + std::to_string(2 * MAX_ACTUATORS - 1) + ")\n\x04";
+    const std::string beyond = "CALIBRATE_BUZZ:" + std::to_string(2 * MAX_ACTUATORS) + ":80:500";
+    TEST_ASSERT_EQUAL_STRING(expected.c_str(), h.send(beyond.c_str()).c_str());
+    TEST_ASSERT_EQUAL_STRING(expected.c_str(), h.send("CALIBRATE_BUZZ:-1:80:500").c_str());
+}
+
+void test_calibrate_buzz_secondary_finger_refused_without_secondary(void) {
+    MenuHarness h;
+    h.send("CALIBRATE_START");
+    const std::string buzz = "CALIBRATE_BUZZ:" + std::to_string(MAX_ACTUATORS) + ":80:500";
+    TEST_ASSERT_EQUAL_STRING("CMD:CALIBRATE_BUZZ\nERROR:Secondary glove not connected\n\x04", h.send(buzz.c_str()).c_str());
+    TEST_ASSERT_EQUAL_STRING("", h.lastToSecondaryCallback.c_str());
+}
+
+void test_calibrate_buzz_relays_secondary_finger(void) {
+    MenuHarness h;
+    h.ble.secondaryConnected = true;
+    h.send("CALIBRATE_START");
+    const std::string buzz = "CALIBRATE_BUZZ:" + std::to_string(MAX_ACTUATORS) + ":80:500";
+    const std::string expected = "CMD:CALIBRATE_BUZZ\nFINGER:" + std::to_string(MAX_ACTUATORS) +
+                                 "\nINTENSITY:80\nDURATION:500\n\x04";
+    TEST_ASSERT_EQUAL_STRING(expected.c_str(), h.send(buzz.c_str()).c_str());
+    TEST_ASSERT_EQUAL_STRING("CALIB_BUZZ:0:80:500", h.lastToSecondaryCallback.c_str());
+    h.menu.updateCalibrationBuzz();
+    TEST_ASSERT_EQUAL_INT(0, h.haptic.activateCalls);
+}
+
+void test_calibrate_buzz_rejects_disabled_finger(void) {
+    MenuHarness h;
+    h.haptic.enabled[1] = false;
+    h.send("CALIBRATE_START");
+    TEST_ASSERT_EQUAL_STRING("CMD:CALIBRATE_BUZZ\nERROR:Motor disabled\n\x04", h.send("CALIBRATE_BUZZ:1:80:500").c_str());
+    h.menu.updateCalibrationBuzz();
+    TEST_ASSERT_EQUAL_INT(0, h.haptic.activateCalls);
+}
+
+void test_calibrate_buzz_rejects_amplitude_out_of_range(void) {
+    MenuHarness h;
+    h.send("CALIBRATE_START");
+    TEST_ASSERT_EQUAL_STRING("CMD:CALIBRATE_BUZZ\nERROR:Intensity out of range (0-100)\n\x04",
+                             h.send("CALIBRATE_BUZZ:0:101:500").c_str());
+    TEST_ASSERT_EQUAL_STRING("CMD:CALIBRATE_BUZZ\nERROR:Intensity out of range (0-100)\n\x04",
+                             h.send("CALIBRATE_BUZZ:0:-1:500").c_str());
+}
+
+void test_calibrate_buzz_rejects_duration_out_of_range(void) {
+    MenuHarness h;
+    h.send("CALIBRATE_START");
+    TEST_ASSERT_EQUAL_STRING("CMD:CALIBRATE_BUZZ\nERROR:Duration out of range (50-2000ms)\n\x04",
+                             h.send("CALIBRATE_BUZZ:0:80:49").c_str());
+    TEST_ASSERT_EQUAL_STRING("CMD:CALIBRATE_BUZZ\nERROR:Duration out of range (50-2000ms)\n\x04",
+                             h.send("CALIBRATE_BUZZ:0:80:2001").c_str());
+}
+
+void test_calibrate_stop(void) {
+    MenuHarness h;
+    h.ble.secondaryConnected = true;
+    h.send("CALIBRATE_START");
+    h.send("CALIBRATE_BUZZ:0:80:500");
+    h.menu.updateCalibrationBuzz();
+    TEST_ASSERT_EQUAL_STRING("CMD:CALIBRATE_STOP\nMODE:NORMAL\n\x04", h.send("CALIBRATE_STOP").c_str());
+    TEST_ASSERT_FALSE(h.menu.isCalibrating());
+    TEST_ASSERT_EQUAL_INT(1, h.haptic.emergencyStopCalls);
+    TEST_ASSERT_EQUAL_STRING("CALIB_STOP", h.lastToSecondaryCallback.c_str());
+    h.menu.updateCalibrationBuzz();
+    TEST_ASSERT_EQUAL_INT(1, h.haptic.deactivateCalls);
+}
+
+void test_therapy_led_off_sets_and_relays(void) {
+    MenuHarness h;
+    h.ble.secondaryConnected = true;
+    TEST_ASSERT_EQUAL_STRING("CMD:THERAPY_LED_OFF\nTHERAPY_LED_OFF:true\n\x04", h.send("THERAPY_LED_OFF:1").c_str());
+    TEST_ASSERT_TRUE(h.profiles.getTherapyLedOff());
+    TEST_ASSERT_EQUAL_STRING("LED_OFF_SYNC:1", h.ble.lastToSecondary.c_str());
+    TEST_ASSERT_EQUAL_STRING("CMD:THERAPY_LED_OFF\nTHERAPY_LED_OFF:true\n\x04", h.send("THERAPY_LED_OFF").c_str());
+}
+
+void test_therapy_led_off_rejects_bad_value(void) {
+    MenuHarness h;
+    TEST_ASSERT_EQUAL_STRING("CMD:THERAPY_LED_OFF\nERROR:Invalid value. Use: true/false or 1/0\n\x04",
+                             h.send("THERAPY_LED_OFF:maybe").c_str());
+    TEST_ASSERT_FALSE(h.profiles.getTherapyLedOff());
+}
+
+void test_therapy_led_off_query_default(void) {
+    MenuHarness h;
+    TEST_ASSERT_EQUAL_STRING("CMD:THERAPY_LED_OFF\nTHERAPY_LED_OFF:false\n\x04", h.send("THERAPY_LED_OFF").c_str());
+}
+
+void test_debug_sets_and_relays(void) {
+    MenuHarness h;
+    h.ble.secondaryConnected = true;
+    TEST_ASSERT_EQUAL_STRING("CMD:DEBUG\nDEBUG:true\n\x04", h.send("DEBUG:1").c_str());
+    TEST_ASSERT_TRUE(h.profiles.getDebugMode());
+    TEST_ASSERT_EQUAL_STRING("DEBUG_SYNC:1", h.ble.lastToSecondary.c_str());
+    TEST_ASSERT_EQUAL_STRING("CMD:DEBUG\nDEBUG:true\n\x04", h.send("DEBUG").c_str());
+}
+
+void test_debug_rejects_bad_value(void) {
+    MenuHarness h;
+    TEST_ASSERT_EQUAL_STRING("CMD:DEBUG\nERROR:Invalid value. Use: true/false or 1/0\n\x04", h.send("DEBUG:maybe").c_str());
+    TEST_ASSERT_FALSE(h.profiles.getDebugMode());
+}
+
+void test_help_lists_every_command(void) {
+    MenuHarness h;
+    const std::string reply = h.send("HELP");
+    const char* commands[] = {"INFO", "BATTERY", "PING", "PROFILE_LIST", "PROFILE_LOAD", "PROFILE_GET",
+                              "PROFILE_CUSTOM", "SESSION_START", "SESSION_PAUSE", "SESSION_RESUME",
+                              "SESSION_STOP", "SESSION_STATUS", "PARAM_SET", "CALIBRATE_START",
+                              "CALIBRATE_BUZZ", "CALIBRATE_STOP", "HELP", "RESTART", "THERAPY_LED_OFF", "DEBUG"};
+    for (const char* name : commands) {
+        const std::string line = std::string("COMMAND:") + name + "\n";
+        TEST_ASSERT_NOT_EQUAL_MESSAGE(std::string::npos, reply.find(line), name);
+    }
+    TEST_ASSERT_EQUAL_INT(0, reply.rfind("CMD:HELP\n", 0));
+}
+
+void test_restart_calls_callback(void) {
+    MenuHarness h;
+    TEST_ASSERT_EQUAL_STRING("CMD:RESTART\nSTATUS:REBOOTING\n\x04", h.send("RESTART").c_str());
+    TEST_ASSERT_EQUAL_INT(1, h.restartCalls);
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_ping);
@@ -424,5 +602,25 @@ int main(int, char**) {
     RUN_TEST(test_unsolicited_secondary_battery_is_dropped);
     RUN_TEST(test_battery_primary_only);
     RUN_TEST(test_battery_with_secondary);
+    // Calibration and system
+    RUN_TEST(test_calibrate_start);
+    RUN_TEST(test_calibrate_start_refused_during_session);
+    RUN_TEST(test_calibrate_buzz_requires_start);
+    RUN_TEST(test_calibrate_buzz_requires_all_arguments);
+    RUN_TEST(test_calibrate_buzz_activates_then_stops);
+    RUN_TEST(test_calibrate_buzz_rejects_finger_beyond_secondary);
+    RUN_TEST(test_calibrate_buzz_secondary_finger_refused_without_secondary);
+    RUN_TEST(test_calibrate_buzz_relays_secondary_finger);
+    RUN_TEST(test_calibrate_buzz_rejects_disabled_finger);
+    RUN_TEST(test_calibrate_buzz_rejects_amplitude_out_of_range);
+    RUN_TEST(test_calibrate_buzz_rejects_duration_out_of_range);
+    RUN_TEST(test_calibrate_stop);
+    RUN_TEST(test_therapy_led_off_sets_and_relays);
+    RUN_TEST(test_therapy_led_off_rejects_bad_value);
+    RUN_TEST(test_therapy_led_off_query_default);
+    RUN_TEST(test_debug_sets_and_relays);
+    RUN_TEST(test_debug_rejects_bad_value);
+    RUN_TEST(test_help_lists_every_command);
+    RUN_TEST(test_restart_calls_callback);
     return UNITY_END();
 }
