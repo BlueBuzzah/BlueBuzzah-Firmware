@@ -382,13 +382,6 @@ private:
     VbatEstimator _estimator;
 
     /**
-     * @brief LiPo discharge curve for accurate percentage calculation
-     * Format: {voltage, percentage}
-     */
-    static const float VOLTAGE_CURVE[][2];
-    static const uint8_t VOLTAGE_CURVE_SIZE;
-
-    /**
      * @brief Interpolate percentage from voltage curve
      * @param voltage Battery voltage
      * @return Interpolated percentage
