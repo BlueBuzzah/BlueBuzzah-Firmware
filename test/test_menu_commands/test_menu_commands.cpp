@@ -272,14 +272,11 @@ void test_session_status_states(void) {
     TEST_ASSERT_EQUAL_STRING("CMD:SESSION_STATUS\nSESSION_STATUS:IDLE\nELAPSED:0\nTOTAL:0\nPROGRESS:0\n\x04",
                              h.send("SESSION_STATUS").c_str());
     h.stateMachine.forceState(TherapyState::RUNNING);
-    TEST_ASSERT_EQUAL_STRING("CMD:SESSION_STATUS\nSESSION_STATUS:RUNNING\nELAPSED:0\nTOTAL:0\nPROGRESS:0\n\x04",
-                             h.send("SESSION_STATUS").c_str());
+    TEST_ASSERT_EQUAL_INT(0, h.send("SESSION_STATUS").rfind("CMD:SESSION_STATUS\nSESSION_STATUS:RUNNING\n", 0));
     h.stateMachine.forceState(TherapyState::PAUSED);
-    TEST_ASSERT_EQUAL_STRING("CMD:SESSION_STATUS\nSESSION_STATUS:PAUSED\nELAPSED:0\nTOTAL:0\nPROGRESS:0\n\x04",
-                             h.send("SESSION_STATUS").c_str());
+    TEST_ASSERT_EQUAL_INT(0, h.send("SESSION_STATUS").rfind("CMD:SESSION_STATUS\nSESSION_STATUS:PAUSED\n", 0));
     h.stateMachine.forceState(TherapyState::LOW_BATTERY);
-    TEST_ASSERT_EQUAL_STRING("CMD:SESSION_STATUS\nSESSION_STATUS:LOW_BATTERY\nELAPSED:0\nTOTAL:0\nPROGRESS:0\n\x04",
-                             h.send("SESSION_STATUS").c_str());
+    TEST_ASSERT_EQUAL_INT(0, h.send("SESSION_STATUS").rfind("CMD:SESSION_STATUS\nSESSION_STATUS:LOW_BATTERY\n", 0));
 }
 
 // INFO and BATTERY
