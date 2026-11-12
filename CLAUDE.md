@@ -81,6 +81,7 @@ The board is selected by a build macro (`BOARD_BLUEBUZZAH_NRF52` / `BOARD_PENTAB
 - **FreeRTOS stack units differ**: words on nRF, bytes on ESP32 (`MOTOR_TASK_STACK`).
 - **`SYNC_DEBUG_GPIO_PIN` is per board** (`SYNC_DEBUG_GPIO_PIN_OVERRIDE` in `board_config.h`): `A0` on nRF, GPIO40 (unrouted WROOM pad 33, hand-wired for bench tests) on v3. Never use `A0` on v3: that's GPIO1, the shared DRV2605 enable line, and toggling it wipes every driver's registers.
 - **`BLE_USE_2M_PHY` is tested with `#ifdef`**: `-DBLE_USE_2M_PHY=0` does not disable 2M PHY. `DEBUG_ENABLED`, `SKIP_BOOT_SEQUENCE`, `SYNC_DEBUG_GPIO_ENABLED`, `SYNC_ANCHOR_TIMESTAMPING_ENABLED` are `#ifndef` defaults in `config.h` and are safe to override with `-D`.
+- **The nRF env is built with `-Ofast`** (added by the Adafruit core; implies finite-math-only), so `isnan`/`isfinite` and comparison-based NaN checks are optimised away there. Float validity checks must test the bits, as `isFiniteFloat()` in `profile_manager.cpp` does.
 - **`FIRMWARE_VERSION` comes from the release tag at build time.** `release.yml` strips the leading `v` and passes it as `-DFIRMWARE_VERSION` (overriding the `#ifndef` default in `config.h`) and as `BLUEBUZZAH_VERSION` for the v3 manifest. Local builds and the tag's source tree report the `config.h` default.
 - **`partitions_penta.csv` has a single `ota_0`**: no A/B OTA on v3.
 - **Worktrees go only in `.claude/worktrees/<name>`** inside this repo (gitignored), never beside it in the workspace's `projects/` or anywhere else.
