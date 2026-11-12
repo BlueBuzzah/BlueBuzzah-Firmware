@@ -595,39 +595,55 @@ void test_getSyncConfidence_spread_above_20ms_returns_low(void) {
 }
 
 // =============================================================================
-// PRINT REPORT TESTS (verify it doesn't crash, output not captured)
+// PRINT REPORT TESTS
 // =============================================================================
 
-void test_printReport_empty_metrics_no_crash(void) {
+void test_printReport_empty_metrics_reports_no_data(void) {
+    MockSerial::clearCaptured();
     latencyMetrics.printReport();
-    TEST_PASS();
+    const std::string& out = MockSerial::captured();
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, out.find("Status: DISABLED\n"));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, out.find("  (no sync probing data)\n"));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, out.find("  (no execution data)\n"));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, out.find("  (no RTT data)\n"));
 }
 
-void test_printReport_with_execution_data_no_crash(void) {
+void test_printReport_with_execution_data_reports_min_and_max(void) {
     latencyMetrics.enable();
     latencyMetrics.recordExecution(100);
     latencyMetrics.recordExecution(500);
+    MockSerial::clearCaptured();
     latencyMetrics.printReport();
-    TEST_PASS();
+    const std::string& out = MockSerial::captured();
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, out.find("  Min:     +100 us\n"));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, out.find("  Max:     +500 us\n"));
 }
 
-void test_printReport_with_rtt_data_no_crash(void) {
+void test_printReport_with_rtt_data_reports_min_and_max(void) {
     latencyMetrics.enable();
     latencyMetrics.recordRtt(5000);
     latencyMetrics.recordRtt(3000);
+    MockSerial::clearCaptured();
     latencyMetrics.printReport();
-    TEST_PASS();
+    const std::string& out = MockSerial::captured();
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, out.find("  Min:     3000 us\n"));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, out.find("  Max:     5000 us\n"));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, out.find("  Samples: 2\n"));
 }
 
-void test_printReport_with_sync_data_no_crash(void) {
+void test_printReport_with_sync_data_reports_rtt_range_and_offset(void) {
     latencyMetrics.recordSyncProbe(5000);
     latencyMetrics.recordSyncProbe(8000);
     latencyMetrics.finalizeSyncProbing(1000);
+    MockSerial::clearCaptured();
     latencyMetrics.printReport();
-    TEST_PASS();
+    const std::string& out = MockSerial::captured();
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, out.find("  Min RTT:    5000 us (one-way: 2500 us)\n"));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, out.find("  Max RTT:    8000 us\n"));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, out.find("  Offset:     +1000 us\n"));
 }
 
-void test_printReport_with_all_data_no_crash(void) {
+void test_printReport_with_all_data_reports_every_section(void) {
     latencyMetrics.enable();
     latencyMetrics.recordExecution(100);
     latencyMetrics.recordExecution(-50);  // Early
@@ -636,15 +652,24 @@ void test_printReport_with_all_data_no_crash(void) {
     latencyMetrics.recordSyncProbe(3000);
     latencyMetrics.recordSyncProbe(8000);
     latencyMetrics.finalizeSyncProbing(-500);
+    MockSerial::clearCaptured();
     latencyMetrics.printReport();
-    TEST_PASS();
+    const std::string& out = MockSerial::captured();
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, out.find("Buzzes: 3\n"));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, out.find("  Min:     -50 us\n"));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, out.find("  Max:     +2000 us\n"));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, out.find("  Min RTT:    3000 us (one-way: 1500 us)\n"));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, out.find("  Offset:     -500 us\n"));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, out.find("  Min:     5000 us\n"));
 }
 
-void test_printReport_verbose_mode_no_crash(void) {
+void test_printReport_verbose_mode_reports_verbose_on(void) {
     latencyMetrics.enable(true);
     latencyMetrics.recordExecution(100);
+    MockSerial::clearCaptured();
     latencyMetrics.printReport();
-    TEST_PASS();
+    TEST_ASSERT_NOT_EQUAL(std::string::npos,
+                          MockSerial::captured().find("Status: ENABLED (verbose: ON)\n"));
 }
 
 void test_printReport_early_count_displayed(void) {
@@ -761,12 +786,12 @@ int main(int argc, char **argv) {
     RUN_TEST(test_getSyncConfidence_spread_above_20ms_returns_low);
 
     // Print Report Tests
-    RUN_TEST(test_printReport_empty_metrics_no_crash);
-    RUN_TEST(test_printReport_with_execution_data_no_crash);
-    RUN_TEST(test_printReport_with_rtt_data_no_crash);
-    RUN_TEST(test_printReport_with_sync_data_no_crash);
-    RUN_TEST(test_printReport_with_all_data_no_crash);
-    RUN_TEST(test_printReport_verbose_mode_no_crash);
+    RUN_TEST(test_printReport_empty_metrics_reports_no_data);
+    RUN_TEST(test_printReport_with_execution_data_reports_min_and_max);
+    RUN_TEST(test_printReport_with_rtt_data_reports_min_and_max);
+    RUN_TEST(test_printReport_with_sync_data_reports_rtt_range_and_offset);
+    RUN_TEST(test_printReport_with_all_data_reports_every_section);
+    RUN_TEST(test_printReport_verbose_mode_reports_verbose_on);
     RUN_TEST(test_printReport_early_count_displayed);
 
     return UNITY_END();
