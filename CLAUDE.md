@@ -9,6 +9,10 @@ Arduino C++ firmware for vibrotactile haptic feedback gloves. One codebase, two 
 
 The board is selected by a build macro (`BOARD_BLUEBUZZAH_NRF52` / `BOARD_PENTABUZZER_ESP32S3`); board-specific values live in `board_config.h`, platform primitives in `platform.h`.
 
+## Not a medical device
+
+BlueBuzzah is a volunteer-driven, open-source DIY project, not a medical or therapeutic device. Nothing written here (serial and BLE strings, docs, README, wiki, release notes, comments people read) may say or imply that it is a medical device, or that it is cleared, approved or authorized by the FDA or any other regulator. Regulatory status appears only in the verbatim legal disclaimer. Code identifiers, firmware commands, protocol fields, serial markers and file names are not copy and stay as they are. Full rule: "Not a medical device" in the workspace `CLAUDE.md` (`../../CLAUDE.md`).
+
 ## Quick Reference
 
 | Item           | Value                        |
