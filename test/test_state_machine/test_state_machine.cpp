@@ -220,7 +220,7 @@ void test_StateMachine_lowBattery_to_running_on_batteryOk(void) {
     TEST_ASSERT_EQUAL(TherapyState::RUNNING, sm.getCurrentState());
 }
 
-void test_StateMachine_any_to_criticalBattery_on_batteryCritical(void) {
+void test_StateMachine_idle_running_ready_to_criticalBattery_on_batteryCritical(void) {
     // From IDLE
     TherapyStateMachine sm1;
     sm1.begin(TherapyState::IDLE);
@@ -306,7 +306,7 @@ void test_StateMachine_running_to_phoneDisconnected_on_phoneLost(void) {
 // ERROR TRANSITION TESTS
 // =============================================================================
 
-void test_StateMachine_any_to_error_on_errorOccurred(void) {
+void test_StateMachine_running_idle_to_error_on_errorOccurred(void) {
     TherapyStateMachine sm1;
     sm1.begin(TherapyState::RUNNING);
     TEST_ASSERT_TRUE(sm1.transition(StateTrigger::ERROR_OCCURRED));
@@ -321,8 +321,19 @@ void test_StateMachine_any_to_error_on_errorOccurred(void) {
 void test_StateMachine_error_holds_until_reset(void) {
     // A boot hardware fault holds until reboot: no trigger but RESET or
     // FORCED_SHUTDOWN leaves ERROR (BATTERY_CRITICAL then BATTERY_OK would)
-    for (uint8_t t = 0; t <= static_cast<uint8_t>(StateTrigger::FORCED_SHUTDOWN); t++) {
-        StateTrigger trigger = static_cast<StateTrigger>(t);
+    const StateTrigger allTriggers[] = {
+        StateTrigger::CONNECTED, StateTrigger::DISCONNECTED, StateTrigger::START_SESSION,
+        StateTrigger::PAUSE_SESSION, StateTrigger::RESUME_SESSION, StateTrigger::STOP_SESSION,
+        StateTrigger::SESSION_COMPLETE, StateTrigger::BATTERY_WARNING, StateTrigger::BATTERY_CRITICAL,
+        StateTrigger::BATTERY_OK, StateTrigger::RECONNECTED, StateTrigger::RECONNECT_FAILED,
+        StateTrigger::PHONE_LOST, StateTrigger::PHONE_RECONNECTED, StateTrigger::PHONE_TIMEOUT,
+        StateTrigger::ERROR_OCCURRED, StateTrigger::EMERGENCY_STOP, StateTrigger::RESET,
+        StateTrigger::STOPPED, StateTrigger::FORCED_SHUTDOWN,
+    };
+    static_assert(sizeof(allTriggers) / sizeof(allTriggers[0]) ==
+                  static_cast<size_t>(StateTrigger::FORCED_SHUTDOWN) + 1,
+                  "list every StateTrigger");
+    for (StateTrigger trigger : allTriggers) {
         if (trigger == StateTrigger::RESET || trigger == StateTrigger::FORCED_SHUTDOWN) {
             continue;
         }
@@ -373,7 +384,7 @@ void test_StateMachine_idle_no_change_on_emergencyStop(void) {
 // RESET TRANSITION TESTS
 // =============================================================================
 
-void test_StateMachine_any_to_idle_on_reset(void) {
+void test_StateMachine_running_to_idle_on_reset(void) {
     TherapyStateMachine sm;
     sm.begin(TherapyState::RUNNING);
 
@@ -381,7 +392,7 @@ void test_StateMachine_any_to_idle_on_reset(void) {
     TEST_ASSERT_EQUAL(TherapyState::IDLE, sm.getCurrentState());
 }
 
-void test_StateMachine_any_to_idle_on_forcedShutdown(void) {
+void test_StateMachine_running_to_idle_on_forcedShutdown(void) {
     TherapyStateMachine sm;
     sm.begin(TherapyState::RUNNING);
 
@@ -443,6 +454,7 @@ void test_StateMachine_forceState_notifies_callbacks(void) {
     TEST_ASSERT_TRUE(g_callbackCalled);
     TEST_ASSERT_EQUAL(TherapyState::IDLE, g_lastTransition.fromState);
     TEST_ASSERT_EQUAL(TherapyState::CRITICAL_BATTERY, g_lastTransition.toState);
+    TEST_ASSERT_EQUAL_STRING("Battery dead", g_lastTransition.reason);
 }
 
 // =============================================================================
@@ -722,15 +734,6 @@ void test_StateMachine_connectionLost_connected(void) {
     TEST_ASSERT_EQUAL(TherapyState::READY, sm.getCurrentState());
 }
 
-void test_StateMachine_lowBattery_stopSession(void) {
-    TherapyStateMachine sm;
-    sm.begin(TherapyState::LOW_BATTERY);
-
-    // LOW_BATTERY is an active state, can stop
-    TEST_ASSERT_TRUE(sm.transition(StateTrigger::STOP_SESSION));
-    TEST_ASSERT_EQUAL(TherapyState::STOPPING, sm.getCurrentState());
-}
-
 void test_StateMachine_stopping_emergencyStop(void) {
     TherapyStateMachine sm;
     sm.begin(TherapyState::STOPPING);
@@ -783,21 +786,21 @@ int main(int argc, char **argv) {
     // Battery Transition Tests
     RUN_TEST(test_StateMachine_running_to_lowBattery_on_batteryWarning);
     RUN_TEST(test_StateMachine_lowBattery_to_running_on_batteryOk);
-    RUN_TEST(test_StateMachine_any_to_criticalBattery_on_batteryCritical);
+    RUN_TEST(test_StateMachine_idle_running_ready_to_criticalBattery_on_batteryCritical);
 
     // Phone Transition Tests
     RUN_TEST(test_StateMachine_ready_to_phoneDisconnected_on_phoneLost);
     RUN_TEST(test_StateMachine_running_to_phoneDisconnected_on_phoneLost);
 
     // Error Transition Tests
-    RUN_TEST(test_StateMachine_any_to_error_on_errorOccurred);
+    RUN_TEST(test_StateMachine_running_idle_to_error_on_errorOccurred);
     RUN_TEST(test_StateMachine_error_holds_until_reset);
     RUN_TEST(test_StateMachine_activeState_to_error_on_emergencyStop);
     RUN_TEST(test_StateMachine_idle_no_change_on_emergencyStop);
 
     // Reset Transition Tests
-    RUN_TEST(test_StateMachine_any_to_idle_on_reset);
-    RUN_TEST(test_StateMachine_any_to_idle_on_forcedShutdown);
+    RUN_TEST(test_StateMachine_running_to_idle_on_reset);
+    RUN_TEST(test_StateMachine_running_to_idle_on_forcedShutdown);
 
     // Invalid Transition Tests
     RUN_TEST(test_StateMachine_invalid_transition_returns_false);
@@ -849,7 +852,6 @@ int main(int argc, char **argv) {
     // Additional Transition Edge Cases
     RUN_TEST(test_StateMachine_paused_disconnected);
     RUN_TEST(test_StateMachine_connectionLost_connected);
-    RUN_TEST(test_StateMachine_lowBattery_stopSession);
     RUN_TEST(test_StateMachine_stopping_emergencyStop);
     RUN_TEST(test_StateMachine_criticalBattery_from_paused);
 

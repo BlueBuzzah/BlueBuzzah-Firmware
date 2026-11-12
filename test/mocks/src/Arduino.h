@@ -15,6 +15,7 @@
 #include <stdio.h>
 #include <ctype.h>
 #include <stdarg.h>
+#include <string>
 
 // =============================================================================
 // ARDUINO TYPE DEFINITIONS
@@ -266,35 +267,43 @@ inline int digitalRead(uint8_t pin) {
 /**
  * @brief Mock Serial class for testing
  *
- * All methods are no-ops to prevent output during tests.
- * Can be extended to capture output if needed.
+ * Everything printed is appended to one static buffer, readable through
+ * captured() and emptied by clearCaptured(). println() ends a line with "\n".
+ * Tests that assert on output clear the buffer first; mockResetTime() does not.
  */
 class MockSerial {
 public:
     void begin(unsigned long baud) { (void)baud; }
     void end() {}
 
-    // Print functions (no-op)
-    size_t print(const char* s) { (void)s; return 0; }
-    size_t print(char c) { (void)c; return 0; }
-    size_t print(int n, int base = 10) { (void)n; (void)base; return 0; }
-    size_t print(unsigned int n, int base = 10) { (void)n; (void)base; return 0; }
-    size_t print(long n, int base = 10) { (void)n; (void)base; return 0; }
-    size_t print(unsigned long n, int base = 10) { (void)n; (void)base; return 0; }
-    size_t print(double n, int digits = 2) { (void)n; (void)digits; return 0; }
+    static const std::string& captured() { return buffer(); }
+    static void clearCaptured() { buffer().clear(); }
 
-    size_t println(const char* s = "") { (void)s; return 0; }
-    size_t println(char c) { (void)c; return 0; }
-    size_t println(int n, int base = 10) { (void)n; (void)base; return 0; }
-    size_t println(unsigned int n, int base = 10) { (void)n; (void)base; return 0; }
-    size_t println(long n, int base = 10) { (void)n; (void)base; return 0; }
-    size_t println(unsigned long n, int base = 10) { (void)n; (void)base; return 0; }
-    size_t println(double n, int digits = 2) { (void)n; (void)digits; return 0; }
+    size_t print(const char* s) { return append(s ? s : ""); }
+    size_t print(char c) { return append(std::string(1, c)); }
+    size_t print(int n, int base = 10) { return append(formatInt((long)n, base)); }
+    size_t print(unsigned int n, int base = 10) { return append(formatUInt((unsigned long)n, base)); }
+    size_t print(long n, int base = 10) { return append(formatInt(n, base)); }
+    size_t print(unsigned long n, int base = 10) { return append(formatUInt(n, base)); }
+    size_t print(double n, int digits = 2) { return append(formatDouble(n, digits)); }
 
-    // Printf (no-op)
+    size_t println(const char* s = "") { return append(s ? s : "") + append("\n"); }
+    size_t println(char c) { return print(c) + append("\n"); }
+    size_t println(int n, int base = 10) { return print(n, base) + append("\n"); }
+    size_t println(unsigned int n, int base = 10) { return print(n, base) + append("\n"); }
+    size_t println(long n, int base = 10) { return print(n, base) + append("\n"); }
+    size_t println(unsigned long n, int base = 10) { return print(n, base) + append("\n"); }
+    size_t println(double n, int digits = 2) { return print(n, digits) + append("\n"); }
+
     size_t printf(const char* format, ...) {
-        (void)format;
-        return 0;
+        char text[512];
+        va_list args;
+        va_start(args, format);
+        int len = vsnprintf(text, sizeof(text), format, args);
+        va_end(args);
+        if (len < 0) return 0;
+        if ((size_t)len >= sizeof(text)) len = (int)sizeof(text) - 1;
+        return append(std::string(text, (size_t)len));
     }
 
     // Status functions
@@ -303,6 +312,36 @@ public:
     int read() { return -1; }
     int peek() { return -1; }
     void flush() {}
+
+private:
+    static std::string& buffer() {
+        static std::string captured;
+        return captured;
+    }
+
+    static size_t append(const std::string& text) {
+        buffer() += text;
+        return text.size();
+    }
+
+    static std::string formatInt(long n, int base) {
+        if (base == 16 && n < 0) return formatUInt((unsigned long)n, base);
+        char text[40];
+        snprintf(text, sizeof(text), base == 16 ? "%lX" : "%ld", n);
+        return text;
+    }
+
+    static std::string formatUInt(unsigned long n, int base) {
+        char text[40];
+        snprintf(text, sizeof(text), base == 16 ? "%lX" : "%lu", n);
+        return text;
+    }
+
+    static std::string formatDouble(double n, int digits) {
+        char text[64];
+        snprintf(text, sizeof(text), "%.*f", digits, n);
+        return text;
+    }
 };
 
 extern MockSerial Serial;

@@ -94,9 +94,9 @@ public:
     typedef void (*WorkExecutor)(DeferredWorkType type, uint8_t p1, uint8_t p2, uint32_t p3);
     void setExecutor(WorkExecutor executor);
 
-private:
     static constexpr uint8_t MAX_WORK = 8;
 
+private:
     struct Work {
         DeferredWorkType type;
         uint8_t param1;

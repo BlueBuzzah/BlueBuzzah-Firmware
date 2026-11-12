@@ -45,6 +45,16 @@ static int g_cycleCompleteCallCount = 0;
 static uint8_t g_lastActivatedFinger = 255;
 static uint8_t g_lastActivatedAmplitude = 0;
 
+static int g_macrocycleStartCallCount = 0;
+static int g_sendMacrocycleCallCount = 0;
+static int g_scheduleActivationCallCount = 0;
+static uint32_t g_lastLeadTimeReturned = 0;
+static bool g_schedulingComplete = false;
+static Macrocycle g_lastSentMacrocycle;
+static bool g_macrocycleReceived = false;
+static std::vector<uint64_t> onsetScheduledTimes;
+static std::vector<uint16_t> onsetScheduledDurations;
+
 void mockActivateCallback(uint8_t finger, uint8_t amplitude) {
     g_activateCallCount++;
     g_lastActivatedFinger = finger;
@@ -83,6 +93,15 @@ void setUp(void) {
     g_cycleCompleteCallCount = 0;
     g_lastActivatedFinger = 255;
     g_lastActivatedAmplitude = 0;
+    g_macrocycleStartCallCount = 0;
+    g_sendMacrocycleCallCount = 0;
+    g_scheduleActivationCallCount = 0;
+    g_lastLeadTimeReturned = 0;
+    g_schedulingComplete = false;
+    g_lastSentMacrocycle = Macrocycle();
+    g_macrocycleReceived = false;
+    onsetScheduledTimes.clear();
+    onsetScheduledDurations.clear();
 }
 
 void tearDown(void) {
@@ -472,33 +491,6 @@ void test_TherapyEngine_startSession_mirrored_pattern(void) {
 }
 
 // =============================================================================
-// CALLBACK TESTS
-// =============================================================================
-
-void test_TherapyEngine_setCycleCompleteCallback(void) {
-    TherapyEngine engine;
-    engine.setCycleCompleteCallback(mockCycleCompleteCallback);
-
-    // Callback is called at end of macrocycle, need to run full update cycle
-    // For now just verify callback is set without crashing
-    TEST_ASSERT_TRUE(true);
-}
-
-void test_TherapyEngine_setDeactivateCallback(void) {
-    TherapyEngine engine;
-    engine.setDeactivateCallback(mockDeactivateCallback);
-
-    // Verify deactivate callback is called during pause
-    engine.setActivateCallback(mockActivateCallback);
-    engine.startSession(100, PatternType::RNDP, 100.0f, 67.0f, 0.0f, 4, true, 100, 100, false);
-
-    // Pause should deactivate motors if active
-    engine.pause();
-
-    TEST_ASSERT_TRUE(engine.isPaused());
-}
-
-// =============================================================================
 // AMPLITUDE RANGE TESTS
 // =============================================================================
 
@@ -546,37 +538,6 @@ void test_interBurstInterval_scales_with_finger_count_all_generators(void) {
 }
 
 // =============================================================================
-// DEFAULT PATTERN TYPE TEST
-// =============================================================================
-
-void test_TherapyEngine_default_pattern_type_fallback(void) {
-    TherapyEngine engine;
-
-    // Use a non-standard pattern type (default branch in switch)
-    // Since we can't easily pass an invalid enum, test with valid types
-    engine.startSession(100, PatternType::RNDP, 100.0f, 67.0f, 0.0f, 4, true, 100, 100, false);
-
-    TEST_ASSERT_TRUE(engine.isRunning());
-}
-
-// =============================================================================
-// STOP WITH ACTIVE MOTOR TEST
-// =============================================================================
-
-void test_TherapyEngine_stop_deactivates_motors(void) {
-    TherapyEngine engine;
-    engine.setDeactivateCallback(mockDeactivateCallback);
-    engine.setActivateCallback(mockActivateCallback);
-
-    engine.startSession(100, PatternType::RNDP, 100.0f, 67.0f, 0.0f, 4, true, 100, 100, false);
-
-    // Stop should deactivate motors if active
-    engine.stop();
-
-    TEST_ASSERT_FALSE(engine.isRunning());
-}
-
-// =============================================================================
 // REMAINING SECONDS EDGE CASES
 // =============================================================================
 
@@ -595,12 +556,6 @@ void test_TherapyEngine_getRemainingSeconds_exceeded(void) {
 // =============================================================================
 // ADDITIONAL CALLBACK SETTER TESTS
 // =============================================================================
-
-static int g_macrocycleStartCallCount = 0;
-static int g_sendMacrocycleCallCount = 0;
-static int g_scheduleActivationCallCount = 0;
-static uint32_t g_lastLeadTimeReturned = 0;
-static bool g_schedulingComplete = false;
 
 void mockMacrocycleStartCallback(uint32_t cycleNum) {
     g_macrocycleStartCallCount++;
@@ -671,9 +626,6 @@ void test_TherapyEngine_setSchedulingCallbacks(void) {
 // MACROCYCLE GENERATION TESTS (via callbacks)
 // =============================================================================
 
-static Macrocycle g_lastSentMacrocycle;
-static bool g_macrocycleReceived = false;
-
 void mockCaptureMacrocycleCallback(const Macrocycle& mc) {
     g_lastSentMacrocycle = mc;
     g_macrocycleReceived = true;
@@ -692,6 +644,143 @@ void test_macrocycle_creates_12_events(void) {
     TEST_ASSERT_TRUE(g_macrocycleReceived);
     // 3 patterns * 4 fingers = 12 events
     TEST_ASSERT_EQUAL_UINT8(12, g_lastSentMacrocycle.eventCount);
+}
+
+void test_TherapyEngine_default_pattern_type_fallback(void) {
+    TherapyEngine engine;
+    engine.setSendMacrocycleCallback(mockCaptureMacrocycleCallback);
+    mockSetMillis(1000);
+
+    // An out-of-range PatternType takes the switch's default branch (RNDP)
+    engine.startSession(100, static_cast<PatternType>(250), 100.0f, 67.0f, 0.0f, 4, true, 100, 100, false);
+    engine.update();
+
+    TEST_ASSERT_TRUE(g_macrocycleReceived);
+    TEST_ASSERT_EQUAL_UINT8(12, g_lastSentMacrocycle.eventCount);
+}
+
+void test_TherapyEngine_stop_ends_session_and_sends_nothing_more(void) {
+    TherapyEngine engine;
+    engine.setSendMacrocycleCallback(mockSendMacrocycleCallback);
+    engine.setSchedulingCallbacks(mockScheduleActivationCallback, mockStartSchedulingCallback, mockIsSchedulingCompleteCallback);
+    g_schedulingComplete = true;
+    mockSetMillis(1000);
+    engine.startSession(100, PatternType::RNDP, 100.0f, 67.0f, 0.0f, 4, true, 100, 100, false);
+    engine.update();
+    TEST_ASSERT_EQUAL_INT(1, g_sendMacrocycleCallCount);
+
+    engine.stop();
+    TEST_ASSERT_FALSE(engine.isRunning());
+
+    // The steps that make a running engine send its next macrocycle
+    mockAdvanceMillis(100);
+    engine.update();
+    mockAdvanceMillis(3240);
+    engine.update();
+    engine.update();
+    TEST_ASSERT_EQUAL_INT(1, g_sendMacrocycleCallCount);
+}
+
+void test_TherapyEngine_pause_holds_session_and_sends_nothing_more(void) {
+    TherapyEngine engine;
+    engine.setSendMacrocycleCallback(mockSendMacrocycleCallback);
+    engine.setSchedulingCallbacks(mockScheduleActivationCallback, mockStartSchedulingCallback, mockIsSchedulingCompleteCallback);
+    g_schedulingComplete = true;
+    mockSetMillis(1000);
+    engine.startSession(100, PatternType::RNDP, 100.0f, 67.0f, 0.0f, 4, true, 100, 100, false);
+    engine.update();
+    TEST_ASSERT_EQUAL_INT(1, g_sendMacrocycleCallCount);
+
+    engine.pause();
+    TEST_ASSERT_TRUE(engine.isRunning());
+    TEST_ASSERT_TRUE(engine.isPaused());
+
+    // The steps that make a running engine send its next macrocycle
+    mockAdvanceMillis(100);
+    engine.update();
+    mockAdvanceMillis(3240);
+    engine.update();
+    engine.update();
+    TEST_ASSERT_EQUAL_INT(1, g_sendMacrocycleCallCount);
+}
+
+void test_setActiveFingers_null_restores_identity(void) {
+    TherapyEngine engine;
+    const uint8_t subset[] = {1, 3};
+    engine.setActiveFingers(subset, 2);
+    TEST_ASSERT_EQUAL_UINT8(2, engine.getActiveFingerCount());
+
+    engine.setActiveFingers(nullptr, 2);
+    TEST_ASSERT_EQUAL_UINT8(MAX_ACTUATORS, engine.getActiveFingerCount());
+}
+
+void test_setActiveFingers_zero_count_restores_identity(void) {
+    TherapyEngine engine;
+    const uint8_t subset[] = {1, 3};
+    engine.setActiveFingers(subset, 2);
+
+    engine.setActiveFingers(subset, 0);
+    TEST_ASSERT_EQUAL_UINT8(MAX_ACTUATORS, engine.getActiveFingerCount());
+}
+
+void test_setActiveFingers_duplicate_restores_identity(void) {
+    TherapyEngine engine;
+    const uint8_t subset[] = {1, 3};
+    engine.setActiveFingers(subset, 2);
+
+    const uint8_t duplicate[] = {0, 0};
+    engine.setActiveFingers(duplicate, 2);
+    TEST_ASSERT_EQUAL_UINT8(MAX_ACTUATORS, engine.getActiveFingerCount());
+}
+
+void test_setActiveFingers_out_of_range_restores_identity(void) {
+    TherapyEngine engine;
+    const uint8_t subset[] = {1, 3};
+    engine.setActiveFingers(subset, 2);
+
+    const uint8_t outOfRange[] = {0, MAX_ACTUATORS};
+    engine.setActiveFingers(outOfRange, 2);
+    TEST_ASSERT_EQUAL_UINT8(MAX_ACTUATORS, engine.getActiveFingerCount());
+}
+
+void test_setActiveFingers_subset_only_uses_those_fingers(void) {
+    TherapyEngine engine;
+    engine.setSendMacrocycleCallback(mockCaptureMacrocycleCallback);
+    const uint8_t subset[] = {1, 3};
+    engine.setActiveFingers(subset, 2);
+    mockSetMillis(1000);
+
+    engine.startSession(100, PatternType::RNDP, 100.0f, 67.0f, 0.0f, MAX_ACTUATORS, true, 100, 100, false);
+    engine.update();
+
+    TEST_ASSERT_TRUE(g_macrocycleReceived);
+    TEST_ASSERT_EQUAL_UINT8(6, g_lastSentMacrocycle.eventCount);
+    for (uint8_t i = 0; i < g_lastSentMacrocycle.eventCount; i++) {
+        const uint8_t finger = g_lastSentMacrocycle.events[i].finger;
+        TEST_ASSERT_TRUE(finger == 1 || finger == 3);
+    }
+}
+
+void test_macrocycle_uses_all_actuators(void) {
+    TherapyEngine engine;
+    engine.setSendMacrocycleCallback(mockCaptureMacrocycleCallback);
+    mockSetMillis(1000);
+
+    engine.startSession(100, PatternType::RNDP, 100.0f, 67.0f, 0.0f, MAX_ACTUATORS, true, 100, 100, false);
+    engine.update();
+
+    TEST_ASSERT_TRUE(g_macrocycleReceived);
+    TEST_ASSERT_EQUAL_UINT8(3 * MAX_ACTUATORS, g_lastSentMacrocycle.eventCount);
+
+    uint8_t counts[MAX_ACTUATORS] = {0};
+    for (uint8_t i = 0; i < g_lastSentMacrocycle.eventCount; i++) {
+        const uint8_t finger = g_lastSentMacrocycle.events[i].finger;
+        TEST_ASSERT_LESS_THAN_UINT8(MAX_ACTUATORS, finger);
+        counts[finger]++;
+    }
+    for (uint8_t f = 0; f < MAX_ACTUATORS; f++) {
+        TEST_ASSERT_EQUAL_UINT8(3, counts[f]);
+    }
 }
 
 void test_macrocycle_skips_inactive_finger(void) {
@@ -981,47 +1070,6 @@ void test_executeMacrocycleStep_full_cycle(void) {
     // Next update should start new macrocycle (3rd macrocycle start)
     engine.update();
     TEST_ASSERT_TRUE(g_macrocycleStartCallCount >= 2);  // At least 2+ starts
-}
-
-// =============================================================================
-// PAUSE WITH MOTOR ACTIVE TESTS
-// =============================================================================
-
-void test_TherapyEngine_pause_with_motor_active(void) {
-    TherapyEngine engine;
-    engine.setDeactivateCallback(mockDeactivateCallback);
-    engine.setActivateCallback(mockActivateCallback);
-    engine.setSchedulingCallbacks(mockScheduleActivationCallback, mockStartSchedulingCallback, mockIsSchedulingCompleteCallback);
-
-    g_deactivateCallCount = 0;
-    g_schedulingComplete = false;
-    mockSetMillis(1000);
-
-    engine.startSession(100, PatternType::RNDP, 100.0f, 67.0f, 0.0f, 4, true, 100, 100, false);
-    engine.update();
-
-    // Pause during active state - should deactivate motors if any active
-    engine.pause();
-
-    TEST_ASSERT_TRUE(engine.isPaused());
-}
-
-void test_TherapyEngine_stop_with_motor_active(void) {
-    TherapyEngine engine;
-    engine.setDeactivateCallback(mockDeactivateCallback);
-    engine.setSchedulingCallbacks(mockScheduleActivationCallback, mockStartSchedulingCallback, mockIsSchedulingCompleteCallback);
-
-    g_deactivateCallCount = 0;
-    g_schedulingComplete = false;
-    mockSetMillis(1000);
-
-    engine.startSession(100, PatternType::RNDP, 100.0f, 67.0f, 0.0f, 4, true, 100, 100, false);
-    engine.update();
-
-    // Stop during active state
-    engine.stop();
-
-    TEST_ASSERT_FALSE(engine.isRunning());
 }
 
 // =============================================================================
@@ -1345,9 +1393,6 @@ void test_LastSession_load_rejects_bad_file(void) {
 
 static const uint32_t ONSET_PREPARE_LEAD_US = 180000;  // Inside the 300 ms prepare window
 
-static std::vector<uint64_t> onsetScheduledTimes;
-static std::vector<uint16_t> onsetScheduledDurations;
-
 void captureOnsetActivation(uint64_t t, uint8_t, uint8_t, uint16_t duration, uint16_t) {
     onsetScheduledTimes.push_back(t);
     onsetScheduledDurations.push_back(duration);
@@ -1564,8 +1609,10 @@ void test_onset_zero_jitter_and_fractional_slot(void) {
     engine.setSendMacrocycleCallback(mockCaptureMacrocycleCallback);
     engine.startSession(100, PatternType::RNDP, 100, 66.666667f, 0, 4, true, 50, 50, false);
     engine.update();
+    // Slot i starts at i * 166.667 ms, rounded: 0, 166.67, 333.33, 500, 666.67, 833.33, 1000, ...
+    const uint16_t expected[12] = {0, 167, 333, 500, 667, 833, 1000, 1167, 1333, 1500, 1667, 1833};
     for (int i = 0; i < 12; ++i)
-        TEST_ASSERT_EQUAL_UINT16(std::lround(i * (100.0 + double(66.666667f))), g_lastSentMacrocycle.events[i].deltaTimeMs);
+        TEST_ASSERT_EQUAL_UINT16(expected[i], g_lastSentMacrocycle.events[i].deltaTimeMs);
 }
 
 void test_onset_jitter_above_cap_keeps_minimum_gap(void) {
@@ -1741,22 +1788,12 @@ int main(int argc, char **argv) {
     RUN_TEST(test_TherapyEngine_startSession_sequential_pattern);
     RUN_TEST(test_TherapyEngine_startSession_mirrored_pattern);
 
-    // Callback Tests
-    RUN_TEST(test_TherapyEngine_setCycleCompleteCallback);
-    RUN_TEST(test_TherapyEngine_setDeactivateCallback);
-
     // Amplitude Range Tests
     RUN_TEST(test_TherapyEngine_amplitude_range);
     RUN_TEST(test_TherapyEngine_fixed_amplitude);
 
     // Jitter Edge Case Tests
     RUN_TEST(test_interBurstInterval_scales_with_finger_count_all_generators);
-
-    // Default Pattern Type Tests
-    RUN_TEST(test_TherapyEngine_default_pattern_type_fallback);
-
-    // Stop Deactivation Tests
-    RUN_TEST(test_TherapyEngine_stop_deactivates_motors);
 
     // Remaining Seconds Edge Cases
     RUN_TEST(test_TherapyEngine_getRemainingSeconds_exceeded);
@@ -1768,6 +1805,15 @@ int main(int argc, char **argv) {
 
     // Macrocycle Generation Tests (via callbacks)
     RUN_TEST(test_macrocycle_creates_12_events);
+    RUN_TEST(test_TherapyEngine_default_pattern_type_fallback);
+    RUN_TEST(test_TherapyEngine_stop_ends_session_and_sends_nothing_more);
+    RUN_TEST(test_TherapyEngine_pause_holds_session_and_sends_nothing_more);
+    RUN_TEST(test_setActiveFingers_null_restores_identity);
+    RUN_TEST(test_setActiveFingers_zero_count_restores_identity);
+    RUN_TEST(test_setActiveFingers_duplicate_restores_identity);
+    RUN_TEST(test_setActiveFingers_out_of_range_restores_identity);
+    RUN_TEST(test_setActiveFingers_subset_only_uses_those_fingers);
+    RUN_TEST(test_macrocycle_uses_all_actuators);
     RUN_TEST(test_macrocycle_skips_inactive_finger);
     RUN_TEST(test_macrocycle_sequential_pattern);
     RUN_TEST(test_macrocycle_mirrored_pattern);
@@ -1783,10 +1829,6 @@ int main(int argc, char **argv) {
     RUN_TEST(test_executeMacrocycleStep_waits_for_completion);
     RUN_TEST(test_executeMacrocycleStep_transitions_to_waiting_relax);
     RUN_TEST(test_executeMacrocycleStep_full_cycle);
-
-    // Pause/Stop with Motor Active Tests
-    RUN_TEST(test_TherapyEngine_pause_with_motor_active);
-    RUN_TEST(test_TherapyEngine_stop_with_motor_active);
 
     // Update with Stop Flag Tests
     RUN_TEST(test_TherapyEngine_update_stops_when_shouldStop_set);

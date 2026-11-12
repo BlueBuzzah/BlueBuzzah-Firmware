@@ -1317,7 +1317,7 @@ float average = (float)total / BATTERY_SAMPLE_COUNT;
 float voltage = (average / (float)ADC_MAX_VALUE) * ADC_REFERENCE_VOLTAGE * BATTERY_VOLTAGE_DIVIDER;
 ```
 
-Percentage is interpolated from a 21-point LiPo discharge curve (`VOLTAGE_CURVE`: 4.20V = 100%, 3.27V = 0%).
+Percentage is interpolated from a 21-point LiPo discharge curve (`BATTERY_VOLTAGE_CURVE` in `drive_math.h`: 4.20V = 100%, 3.27V = 0%).
 
 #### DRV2605 VBAT Register (v3, ESP32-S3)
 
@@ -1874,7 +1874,7 @@ Users edit their own parameters on the built-in Custom profile (ID 4) with `PROF
 
 1. Add a handler in `MenuController` and a branch in `handleCommand()`
 2. Update application layer logic
-3. Mirror the change in `TestMenuController` (`test/test_menu_controller`), the wiki `BLE-Protocol.md`, and BuzzahBuddy's `MockBluetoothService`
+3. Add a test to `test/test_menu_commands`, and mirror the change in the wiki `BLE-Protocol.md`, and BuzzahBuddy's `MockBluetoothService`
 4. Never add the command's prefix to `INTERNAL_MESSAGES[]`: that hides it from the menu
 
 ```cpp

@@ -68,14 +68,18 @@ BlueBuzzah firmware uses a **dual testing approach**:
 | `test_latency_metrics` | `latency_metrics.cpp` | RTT tracking, drift calculation |
 | `test_profile_manager` | `profile_manager.cpp` | Profile load/save, validation |
 | `test_types` | `types.h` | Struct packing, enum values |
-| `test_menu_controller` | `TestMenuController` (hand-maintained mirror of `menu_controller.cpp`) + `internal_messages.h` | Command parsing, response format, `INTERNAL_MESSAGES[]` routing |
+| `test_menu_commands` | `menu_controller.cpp` (real, with fakes for `hardware.h` and `ble_manager.h`) | Command replies, session gates, INFO/BATTERY, calibration, `INTERNAL_MESSAGES[]` routing |
+| `test_motor_check_info` | `motor_check_info.h` | `MOTP`/`MOTS` lines |
+| `test_activation_queue` | `activation_queue.cpp` | Paired activate/deactivate scheduling |
+| `test_drive_math` | `drive_math.h` | Battery percent curve, amplitude→RTP, LRA period |
+| `test_deferred_queue` | `deferred_queue.cpp` | Capacity and FIFO order |
 | `test_motor_event_buffer` | `motor_event_buffer.cpp` | Lock-free buffer, thread safety |
 | `test_state_machine` | `state_machine.cpp` | Therapy FSM transitions |
 | `test_therapy_engine` | `therapy_engine.cpp` | Pattern generation, callbacks |
 | `test_sync_protocol` | `sync_protocol.cpp` | PTP clock sync, offset calculation |
 | `test_vbat_estimator` | `vbat_estimator.cpp` | DRV2605 VBAT conversion, median-of-burst + EMA |
 
-`test_menu_controller` does not compile `menu_controller.cpp`: behavior changes in `MenuController` need the mirror updated or they go untested.
+`test_menu_commands` compiles the real `menu_controller.cpp`; it also guards `INTERNAL_MESSAGES[]` routing. `test_motor_check_info` tests the `MOTP`/`MOTS` lines.
 
 ### Mock Infrastructure
 
@@ -166,7 +170,8 @@ Open `coverage/index.html` in a browser for visual coverage.
 | `sync_protocol.cpp` | `test_sync_protocol` | PTP offset calculation, offset EMA, warm-start recovery |
 | `therapy_engine.cpp` | `test_therapy_engine` | Pattern generation, callback invocation, session timing |
 | `state_machine.cpp` | `test_state_machine` | FSM transitions, state validation |
-| `menu_controller.cpp` (via `TestMenuController` mirror) | `test_menu_controller` | Command parsing, response formatting |
+| `menu_controller.cpp` | `test_menu_commands` | Command replies, session gates, INFO/BATTERY |
+| `internal_messages.h` | `test_menu_commands` | Internal prefix routing |
 | `motor_event_buffer.cpp` | `test_motor_event_buffer` | Lock-free operations, overflow handling |
 | `profile_manager.cpp` | `test_profile_manager` | Profile serialization, validation |
 | `latency_metrics.cpp` | `test_latency_metrics` | RTT calculation, drift statistics |

@@ -9,6 +9,16 @@
 #include "config.h"
 #include "fs_backend.h"
 
+#include <cstring>
+
+// The nRF52 Arduino core builds with -Ofast (finite-math-only), which folds
+// isnan()/isfinite() and comparison-based NaN checks away. Test the bits.
+static bool isFiniteFloat(float v) {
+    uint32_t bits;
+    memcpy(&bits, &v, sizeof(bits));
+    return (bits & 0x7F800000u) != 0x7F800000u;
+}
+
 // =============================================================================
 // CONSTRUCTOR
 // =============================================================================
@@ -287,12 +297,14 @@ bool ProfileManager::setParameter(const char* paramName, const char* value) {
     }
     else if (strcmp(paramUpper, "ON") == 0) {
         float onTime = static_cast<float>(atof(value));
-        if (onTime < PARAM_MIN_TIME_ON_MS || onTime > PARAM_MAX_TIME_ON_MS) return false;
+        if (!isFiniteFloat(onTime)) return false;
+        if (!(onTime >= PARAM_MIN_TIME_ON_MS && onTime <= PARAM_MAX_TIME_ON_MS)) return false;
         _currentProfile.timeOnMs = onTime;
     }
     else if (strcmp(paramUpper, "OFF") == 0) {
         float offTime = static_cast<float>(atof(value));
-        if (offTime < PARAM_MIN_TIME_OFF_MS || offTime > PARAM_MAX_TIME_OFF_MS) return false;
+        if (!isFiniteFloat(offTime)) return false;
+        if (!(offTime >= PARAM_MIN_TIME_OFF_MS && offTime <= PARAM_MAX_TIME_OFF_MS)) return false;
         _currentProfile.timeOffMs = offTime;
     }
     else if (strcmp(paramUpper, "SESSION") == 0) {
@@ -332,7 +344,8 @@ bool ProfileManager::setParameter(const char* paramName, const char* value) {
     }
     else if (strcmp(paramUpper, "JITTER") == 0) {
         float jitter = static_cast<float>(atof(value));
-        if (jitter < 0.0f || jitter > PARAM_MAX_JITTER_PCT) return false;
+        if (!isFiniteFloat(jitter)) return false;
+        if (!(jitter >= 0.0f && jitter <= PARAM_MAX_JITTER_PCT)) return false;
         _currentProfile.jitterPercent = jitter;
     }
     else if (strcmp(paramUpper, "FINGERS") == 0) {
@@ -516,13 +529,16 @@ bool ProfileManager::loadCustomOverride() {
 
     // Revalidate against current bounds -- an override written by older
     // firmware may fall outside them. Out-of-range fields keep the built-in value.
-    if (data.timeOnMs >= PARAM_MIN_TIME_ON_MS && data.timeOnMs <= PARAM_MAX_TIME_ON_MS) {
+    if (isFiniteFloat(data.timeOnMs) &&
+        data.timeOnMs >= PARAM_MIN_TIME_ON_MS && data.timeOnMs <= PARAM_MAX_TIME_ON_MS) {
         _currentProfile.timeOnMs = data.timeOnMs;
     }
-    if (data.timeOffMs >= PARAM_MIN_TIME_OFF_MS && data.timeOffMs <= PARAM_MAX_TIME_OFF_MS) {
+    if (isFiniteFloat(data.timeOffMs) &&
+        data.timeOffMs >= PARAM_MIN_TIME_OFF_MS && data.timeOffMs <= PARAM_MAX_TIME_OFF_MS) {
         _currentProfile.timeOffMs = data.timeOffMs;
     }
-    if (data.jitterPercent >= 0.0f && data.jitterPercent <= PARAM_MAX_JITTER_PCT) {
+    if (isFiniteFloat(data.jitterPercent) &&
+        data.jitterPercent >= 0.0f && data.jitterPercent <= PARAM_MAX_JITTER_PCT) {
         _currentProfile.jitterPercent = data.jitterPercent;
     }
     if (data.amplitudeMin >= PARAM_MIN_AMPLITUDE_PCT &&

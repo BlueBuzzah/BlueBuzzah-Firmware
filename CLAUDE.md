@@ -52,11 +52,12 @@ The board is selected by a build macro (`BOARD_BLUEBUZZAH_NRF52` / `BOARD_PENTAB
 | `types.h`            | Enums, packed structs, macrocycle format definitions |
 | `internal_messages.h`| `INTERNAL_MESSAGES[]` — the single definition site for device-to-device prefixes the menu must not treat as user commands |
 | `motor_check.h`      | Boot motor check tokens (`OK`/`OPEN`/`NODRIVER`/`UNKNOWN`), their wire format, the per-finger warning rule, and the fingers patterns use |
-| `motor_check_info.h` | `INFO` `MOTP`/`MOTS` emission, shared by `MenuController` and the `test_menu_controller` mirror |
+| `motor_check_info.h` | `INFO` `MOTP`/`MOTS` emission, used by `MenuController::handleInfo`, tested directly by `test_motor_check_info` |
+| `drive_math.h` | Battery percent curve, amplitude→RTP and LRA period calculations; header-only so host tests cover them |
 
 ## Cross-Repo Contracts
 
-- **`INTERNAL_MESSAGES[]` is a trapdoor.** Any command *not* matched by a prefix in `include/internal_messages.h` reaches `MenuController::handleCommand()`, which is how the desktop Updater (over USB serial) and the mobile app reach the menu. Adding `INFO`, `PROFILE_LOAD`, `PROFILE_GET`, or `PROFILE_CUSTOM` there silently severs the Updater with no compile error — `test_menu_controller` guards exactly this.
+- **`INTERNAL_MESSAGES[]` is a trapdoor.** Any command *not* matched by a prefix in `include/internal_messages.h` reaches `MenuController::handleCommand()`, which is how the desktop Updater (over USB serial) and the mobile app reach the menu. Adding `INFO`, `PROFILE_LOAD`, `PROFILE_GET`, or `PROFILE_CUSTOM` there silently severs the Updater with no compile error — `test_menu_commands` guards exactly this by running the real `MenuController::isInternalMessage`.
 - **Serial response markers are a wire format.** `[MENU-TX]` (`menu_controller.cpp`), plus `[CONFIG]`, `[ERROR]` and the `"Role set to"` / `"Profile set to"` strings from `main.cpp`, are parsed verbatim by BlueBuzzah-Updater. Rewording either side breaks the other. `[READY]` is printed as the last line of `setup()` and after the `DEVICE NOT CONFIGURED` banner; the Updater's boot drain ends on it before sending settings (falling back to a silence timeout for firmware without it), so keep it last. The Updater also scans for `[SETTING]`, which this firmware no longer emits — it treats its absence as success, so don't reintroduce it expecting a behavior change.
 - **Motor check tokens and `INFO` `MOTP`/`MOTS`.** The tokens in `motor_check.h` and the keys `motor_check_info.h` emits are parsed by BuzzahBuddy (`Models/MotorCheck.cs`, `Models/GloveDeviceInfo.cs`), which warns by the same per-finger rule as `isMotorCheckProblem()`. Renaming a token or key, or changing the rule, means updating the app.
 - **Firmware is the sole validator of therapy parameters.** The `PARAM_*` bounds in `config.h` are mirrored into the Updater (`src/lib/therapy-bounds.ts`) for input constraint only; that copy can never widen what the device accepts. Changing a bound here means updating the mirror.
@@ -66,8 +67,8 @@ The board is selected by a build macro (`BOARD_BLUEBUZZAH_NRF52` / `BOARD_PENTAB
 
 ## Testing
 
-- Native envs compile `src/` via `test_build_src = true` minus a `build_src_filter` exclusion list. Suites for excluded modules pull the source in directly (`#include "../../src/sync_protocol.cpp"` in `test_sync_protocol`, `test_state_machine`, `test_profile_manager`, `test_therapy_engine`). Including a non-excluded `.cpp` this way gives duplicate symbols.
-- **`test_menu_controller` does not compile `menu_controller.cpp`.** It tests `TestMenuController`, a hand-maintained mirror; only `internal_messages.h` and `motor_check_info.h` are real. Behavior changes in `MenuController` need the mirror updated or they go untested.
+- Native envs compile `src/` via `test_build_src = true` minus a `build_src_filter` exclusion list. Suites for excluded modules pull the source in directly (`#include "../../src/sync_protocol.cpp"`): `test_sync_protocol`, `test_state_machine`, `test_profile_manager`, `test_therapy_engine`, `test_activation_queue`, `test_deferred_queue`, and `test_menu_commands` (via `menu_harness.h`: sync_protocol, therapy_engine, state_machine, profile_manager, menu_controller). Including a non-excluded `.cpp` this way gives duplicate symbols.
+- **`test_menu_commands` compiles the real `menu_controller.cpp`** with fakes for `hardware.h` and `ble_manager.h`. It also guards `INTERNAL_MESSAGES[]` routing. `test_motor_check_info` tests the `MOTP`/`MOTS` lines.
 - The exclusion list lives once, in `env:native`; `native_penta`, `native_coverage` and `native_coverage_gcc` reuse it. A new platform-specific `.cpp` must be excluded there, plus the other board's device env.
 - Mocks (`test/mocks/src/Arduino.h`): `mockAdvanceMicros()`, `mockEnableTimeAutoIncrement()`, `MockSerial`. Filesystem mocks are defined per test file.
 - CI (`test.yml`) runs `native_coverage_gcc` (4-actuator) plus all of `native_penta` (5-actuator), and fails under 90% line coverage (`scripts/coverage_table.sh`). Run `native_penta` locally for anything touching `MAX_ACTUATORS`.
@@ -81,6 +82,7 @@ The board is selected by a build macro (`BOARD_BLUEBUZZAH_NRF52` / `BOARD_PENTAB
 - **FreeRTOS stack units differ**: words on nRF, bytes on ESP32 (`MOTOR_TASK_STACK`).
 - **`SYNC_DEBUG_GPIO_PIN` is per board** (`SYNC_DEBUG_GPIO_PIN_OVERRIDE` in `board_config.h`): `A0` on nRF, GPIO40 (unrouted WROOM pad 33, hand-wired for bench tests) on v3. Never use `A0` on v3: that's GPIO1, the shared DRV2605 enable line, and toggling it wipes every driver's registers.
 - **`BLE_USE_2M_PHY` is tested with `#ifdef`**: `-DBLE_USE_2M_PHY=0` does not disable 2M PHY. `DEBUG_ENABLED`, `SKIP_BOOT_SEQUENCE`, `SYNC_DEBUG_GPIO_ENABLED`, `SYNC_ANCHOR_TIMESTAMPING_ENABLED` are `#ifndef` defaults in `config.h` and are safe to override with `-D`.
+- **The nRF env is built with `-Ofast`** (added by the Adafruit core; implies finite-math-only), so `isnan`/`isfinite` and comparison-based NaN checks are optimised away there. Float validity checks must test the bits, as `isFiniteFloat()` in `profile_manager.cpp` does.
 - **`FIRMWARE_VERSION` comes from the release tag at build time.** `release.yml` strips the leading `v` and passes it as `-DFIRMWARE_VERSION` (overriding the `#ifndef` default in `config.h`) and as `BLUEBUZZAH_VERSION` for the v3 manifest. Local builds and the tag's source tree report the `config.h` default.
 - **`partitions_penta.csv` has a single `ota_0`**: no A/B OTA on v3.
 - **Worktrees go only in `.claude/worktrees/<name>`** inside this repo (gitignored), never beside it in the workspace's `projects/` or anywhere else.

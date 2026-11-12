@@ -251,6 +251,8 @@ void test_getProfileNames_with_null_count(void) {
 
 void test_setParameter_TYPE_valid_LRA(void) {
     profiles->loadProfile(1);
+    TEST_ASSERT_TRUE(profiles->setParameter("TYPE", "ERM"));
+    TEST_ASSERT_EQUAL(ActuatorType::ERM, profiles->getCurrentProfile()->actuatorType);
     TEST_ASSERT_TRUE(profiles->setParameter("TYPE", "LRA"));
 
     const TherapyProfile* p = profiles->getCurrentProfile();
@@ -298,16 +300,6 @@ void test_setParameter_FREQ_valid_max(void) {
     TEST_ASSERT_EQUAL_UINT16(300, p->frequencyHz);
 }
 
-void test_setParameter_FREQ_invalid_below_50(void) {
-    profiles->loadProfile(1);
-    TEST_ASSERT_FALSE(profiles->setParameter("FREQ", "49"));
-}
-
-void test_setParameter_FREQ_invalid_above_300(void) {
-    profiles->loadProfile(1);
-    TEST_ASSERT_FALSE(profiles->setParameter("FREQ", "301"));
-}
-
 // =============================================================================
 // SET PARAMETER TESTS - ON/OFF TIME
 // =============================================================================
@@ -320,14 +312,29 @@ void test_setParameter_ON_valid_range(void) {
     TEST_ASSERT_FLOAT_WITHIN(0.1f, 150.5f, p->timeOnMs);
 }
 
-void test_setParameter_ON_invalid_below_10(void) {
+void test_setParameter_rejects_nan(void) {
     profiles->loadProfile(1);
-    TEST_ASSERT_FALSE(profiles->setParameter("ON", "9"));
+    const TherapyProfile* p = profiles->getCurrentProfile();
+    TEST_ASSERT_FALSE(profiles->setParameter("ON", "nan"));
+    TEST_ASSERT_FALSE(profiles->setParameter("OFF", "nan"));
+    TEST_ASSERT_FALSE(profiles->setParameter("JITTER", "nan"));
+    TEST_ASSERT_EQUAL_FLOAT(100.0f, p->timeOnMs);
+    TEST_ASSERT_EQUAL_FLOAT(67.0f, p->timeOffMs);
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, p->jitterPercent);
 }
 
-void test_setParameter_ON_invalid_above_1000(void) {
+void test_setParameter_rejects_inf(void) {
     profiles->loadProfile(1);
-    TEST_ASSERT_FALSE(profiles->setParameter("ON", "1001"));
+    const TherapyProfile* p = profiles->getCurrentProfile();
+    TEST_ASSERT_FALSE(profiles->setParameter("ON", "inf"));
+    TEST_ASSERT_FALSE(profiles->setParameter("ON", "-inf"));
+    TEST_ASSERT_FALSE(profiles->setParameter("OFF", "inf"));
+    TEST_ASSERT_FALSE(profiles->setParameter("OFF", "-inf"));
+    TEST_ASSERT_FALSE(profiles->setParameter("JITTER", "inf"));
+    TEST_ASSERT_FALSE(profiles->setParameter("JITTER", "-inf"));
+    TEST_ASSERT_EQUAL_FLOAT(100.0f, p->timeOnMs);
+    TEST_ASSERT_EQUAL_FLOAT(67.0f, p->timeOffMs);
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, p->jitterPercent);
 }
 
 void test_setParameter_OFF_valid_range(void) {
@@ -356,16 +363,6 @@ void test_setParameter_SESSION_valid_max(void) {
 
     const TherapyProfile* p = profiles->getCurrentProfile();
     TEST_ASSERT_EQUAL_UINT16(240, p->sessionDurationMin);
-}
-
-void test_setParameter_SESSION_invalid_zero(void) {
-    profiles->loadProfile(1);
-    TEST_ASSERT_FALSE(profiles->setParameter("SESSION", "0"));
-}
-
-void test_setParameter_SESSION_invalid_above_240(void) {
-    profiles->loadProfile(1);
-    TEST_ASSERT_FALSE(profiles->setParameter("SESSION", "241"));
 }
 
 // =============================================================================
@@ -401,7 +398,7 @@ void test_setParameter_AMPMIN_invalid_above_100(void) {
 // =============================================================================
 
 void test_setParameter_PATTERN_rndp(void) {
-    profiles->loadProfile(3);  // Start with gentle (sequential)
+    profiles->loadProfile(5);  // gentle starts as "sequential"
     TEST_ASSERT_TRUE(profiles->setParameter("PATTERN", "rndp"));
 
     const TherapyProfile* p = profiles->getCurrentProfile();
@@ -409,7 +406,7 @@ void test_setParameter_PATTERN_rndp(void) {
 }
 
 void test_setParameter_PATTERN_sequential(void) {
-    profiles->loadProfile(1);  // Start with noisy (rndp)
+    profiles->loadProfile(1);  // regular_vcr starts as "rndp"
     TEST_ASSERT_TRUE(profiles->setParameter("PATTERN", "sequential"));
 
     const TherapyProfile* p = profiles->getCurrentProfile();
@@ -441,16 +438,6 @@ void test_setParameter_JITTER_valid(void) {
     TEST_ASSERT_FLOAT_WITHIN(0.1f, 25.0f, p->jitterPercent);
 }
 
-void test_setParameter_JITTER_invalid_negative(void) {
-    profiles->loadProfile(1);
-    TEST_ASSERT_FALSE(profiles->setParameter("JITTER", "-1"));
-}
-
-void test_setParameter_JITTER_invalid_above_100(void) {
-    profiles->loadProfile(1);
-    TEST_ASSERT_FALSE(profiles->setParameter("JITTER", "101"));
-}
-
 void test_setParameter_MIRROR_enable(void) {
     profiles->loadProfile(1);
     TEST_ASSERT_TRUE(profiles->setParameter("MIRROR", "1"));
@@ -460,7 +447,7 @@ void test_setParameter_MIRROR_enable(void) {
 }
 
 void test_setParameter_MIRROR_disable(void) {
-    profiles->loadProfile(1);
+    profiles->loadProfile(2);  // noisy_vcr starts mirrored
     TEST_ASSERT_TRUE(profiles->setParameter("MIRROR", "0"));
 
     const TherapyProfile* p = profiles->getCurrentProfile();
@@ -473,18 +460,6 @@ void test_setParameter_FINGERS_valid(void) {
 
     const TherapyProfile* p = profiles->getCurrentProfile();
     TEST_ASSERT_EQUAL_UINT8(3, p->numFingers);
-}
-
-void test_setParameter_FINGERS_invalid_zero(void) {
-    profiles->loadProfile(1);
-    TEST_ASSERT_FALSE(profiles->setParameter("FINGERS", "0"));
-}
-
-void test_setParameter_FINGERS_invalid_above_max(void) {
-    profiles->loadProfile(1);
-    char above[4];
-    snprintf(above, sizeof(above), "%d", MAX_ACTUATORS + 1);
-    TEST_ASSERT_FALSE(profiles->setParameter("FINGERS", above));
 }
 
 // =============================================================================
@@ -517,16 +492,6 @@ void test_setParameter_without_profile_loaded_returns_false(void) {
 // SET PARAMETER TESTS - ADDITIONAL BOUNDARY CONDITIONS
 // =============================================================================
 
-void test_setParameter_OFF_invalid_below_10(void) {
-    profiles->loadProfile(1);
-    TEST_ASSERT_FALSE(profiles->setParameter("OFF", "9"));
-}
-
-void test_setParameter_OFF_invalid_above_1000(void) {
-    profiles->loadProfile(1);
-    TEST_ASSERT_FALSE(profiles->setParameter("OFF", "1001"));
-}
-
 void test_setParameter_AMPMAX_invalid_above_100(void) {
     profiles->loadProfile(1);
     TEST_ASSERT_FALSE(profiles->setParameter("AMPMAX", "101"));
@@ -544,7 +509,7 @@ void test_setParameter_AMPMAX_20_is_valid(void) {
 }
 
 void test_setParameter_JITTER_zero_is_valid(void) {
-    profiles->loadProfile(1);
+    profiles->loadProfile(2);  // noisy_vcr starts at 23.5
     TEST_ASSERT_TRUE(profiles->setParameter("JITTER", "0"));
 
     const TherapyProfile* p = profiles->getCurrentProfile();
@@ -557,11 +522,6 @@ void test_setParameter_JITTER_50_is_valid(void) {
 
     const TherapyProfile* p = profiles->getCurrentProfile();
     TEST_ASSERT_FLOAT_WITHIN(0.1f, 50.0f, p->jitterPercent);
-}
-
-void test_setParameter_JITTER_above_50_is_rejected(void) {
-    profiles->loadProfile(1);
-    TEST_ASSERT_FALSE(profiles->setParameter("JITTER", "51"));
 }
 
 void test_setParameter_ON_50_is_valid(void) {
@@ -580,35 +540,12 @@ void test_setParameter_ON_200_is_valid(void) {
     TEST_ASSERT_FLOAT_WITHIN(0.1f, 200.0f, p->timeOnMs);
 }
 
-void test_setParameter_ON_above_200_is_rejected(void) {
-    profiles->loadProfile(1);
-    TEST_ASSERT_FALSE(profiles->setParameter("ON", "201"));
-}
-
-void test_setParameter_ON_below_50_is_rejected(void) {
-    profiles->loadProfile(1);
-    TEST_ASSERT_FALSE(profiles->setParameter("ON", "49"));
-}
-
 void test_setParameter_OFF_30_is_valid(void) {
     profiles->loadProfile(1);
     TEST_ASSERT_TRUE(profiles->setParameter("OFF", "30"));
 
     const TherapyProfile* p = profiles->getCurrentProfile();
     TEST_ASSERT_FLOAT_WITHIN(0.1f, 30.0f, p->timeOffMs);
-}
-
-void test_setParameter_OFF_200_is_valid(void) {
-    profiles->loadProfile(1);
-    TEST_ASSERT_TRUE(profiles->setParameter("OFF", "200"));
-
-    const TherapyProfile* p = profiles->getCurrentProfile();
-    TEST_ASSERT_FLOAT_WITHIN(0.1f, 200.0f, p->timeOffMs);
-}
-
-void test_setParameter_OFF_below_30_is_rejected(void) {
-    profiles->loadProfile(1);
-    TEST_ASSERT_FALSE(profiles->setParameter("OFF", "29"));
 }
 
 void test_setParameter_AMPMIN_below_20_is_rejected(void) {
@@ -660,12 +597,61 @@ void test_setParameter_FINGERS_1_is_valid(void) {
     TEST_ASSERT_EQUAL_UINT8(1, p->numFingers);
 }
 
-void test_setParameter_FINGERS_4_is_valid(void) {
-    profiles->loadProfile(1);
-    TEST_ASSERT_TRUE(profiles->setParameter("FINGERS", "4"));
+// =============================================================================
+// SET PARAMETER TESTS - EXACT BOUNDARIES
+// =============================================================================
 
-    const TherapyProfile* p = profiles->getCurrentProfile();
-    TEST_ASSERT_EQUAL_UINT8(4, p->numFingers);
+void test_setParameter_ON_rejects_49_9_and_200_1(void) {
+    profiles->loadProfile(1);
+    TEST_ASSERT_FALSE(profiles->setParameter("ON", "49.9"));
+    TEST_ASSERT_FALSE(profiles->setParameter("ON", "200.1"));
+    TEST_ASSERT_EQUAL_FLOAT(100.0f, profiles->getCurrentProfile()->timeOnMs);
+}
+
+void test_setParameter_OFF_rejects_29_9_and_200_1(void) {
+    profiles->loadProfile(1);
+    TEST_ASSERT_FALSE(profiles->setParameter("OFF", "29.9"));
+    TEST_ASSERT_FALSE(profiles->setParameter("OFF", "200.1"));
+    TEST_ASSERT_EQUAL_FLOAT(67.0f, profiles->getCurrentProfile()->timeOffMs);
+}
+
+void test_setParameter_JITTER_rejects_minus_0_1_and_50_1(void) {
+    profiles->loadProfile(2);
+    TEST_ASSERT_FALSE(profiles->setParameter("JITTER", "-0.1"));
+    TEST_ASSERT_FALSE(profiles->setParameter("JITTER", "50.1"));
+    TEST_ASSERT_EQUAL_FLOAT(23.5f, profiles->getCurrentProfile()->jitterPercent);
+}
+
+void test_setParameter_FREQ_rejects_49_and_301(void) {
+    profiles->loadProfile(1);
+    TEST_ASSERT_FALSE(profiles->setParameter("FREQ", "49"));
+    TEST_ASSERT_FALSE(profiles->setParameter("FREQ", "301"));
+    TEST_ASSERT_EQUAL_UINT16(250, profiles->getCurrentProfile()->frequencyHz);
+}
+
+void test_setParameter_SESSION_rejects_0_and_241(void) {
+    profiles->loadProfile(1);
+    TEST_ASSERT_FALSE(profiles->setParameter("SESSION", "0"));
+    TEST_ASSERT_FALSE(profiles->setParameter("SESSION", "241"));
+    TEST_ASSERT_EQUAL_UINT16(120, profiles->getCurrentProfile()->sessionDurationMin);
+}
+
+void test_setParameter_FINGERS_rejects_0_and_above_MAX_ACTUATORS(void) {
+    profiles->loadProfile(1);
+    char above[4];
+    snprintf(above, sizeof(above), "%d", MAX_ACTUATORS + 1);
+    TEST_ASSERT_FALSE(profiles->setParameter("FINGERS", "0"));
+    TEST_ASSERT_FALSE(profiles->setParameter("FINGERS", above));
+    TEST_ASSERT_EQUAL_UINT8(MAX_ACTUATORS, profiles->getCurrentProfile()->numFingers);
+}
+
+void test_setParameter_FINGERS_accepts_MAX_ACTUATORS(void) {
+    profiles->loadProfile(1);
+    TEST_ASSERT_TRUE(profiles->setParameter("FINGERS", "1"));
+    char max[4];
+    snprintf(max, sizeof(max), "%d", MAX_ACTUATORS);
+    TEST_ASSERT_TRUE(profiles->setParameter("FINGERS", max));
+    TEST_ASSERT_EQUAL_UINT8(MAX_ACTUATORS, profiles->getCurrentProfile()->numFingers);
 }
 
 // =============================================================================
@@ -964,6 +950,118 @@ void test_loadSettings_custom_override_wins_over_settings(void) {
 }
 
 // =============================================================================
+// PERSISTENCE FAILURE TESTS
+// =============================================================================
+
+void test_saveSettings_returns_false_when_write_fails(void) {
+    fsb::mock::setWriteResult(false);
+    TEST_ASSERT_FALSE(profiles->saveSettings());
+}
+
+void test_loadSettings_rejects_bad_magic(void) {
+    SettingsData data{};
+    data.magic     = SETTINGS_MAGIC ^ 1;
+    data.version   = SETTINGS_VERSION;
+    data.role      = 1;
+    data.profileId = 2;
+    fsb::writeFile(SETTINGS_FILE, reinterpret_cast<const uint8_t*>(&data), sizeof(data));
+
+    profiles->loadProfile(5);
+    TEST_ASSERT_FALSE(profiles->loadSettings());
+    TEST_ASSERT_EQUAL_UINT8(5, profiles->getCurrentProfileId());
+    TEST_ASSERT_EQUAL(DeviceRole::PRIMARY, profiles->getDeviceRole());
+}
+
+void test_loadSettings_rejects_short_file(void) {
+    SettingsData data{};
+    data.magic     = SETTINGS_MAGIC;
+    data.version   = SETTINGS_VERSION;
+    data.role      = 1;
+    data.profileId = 2;
+    fsb::writeFile(SETTINGS_FILE, reinterpret_cast<const uint8_t*>(&data), sizeof(data) - 1);
+
+    profiles->loadProfile(5);
+    TEST_ASSERT_FALSE(profiles->loadSettings());
+    TEST_ASSERT_EQUAL_UINT8(5, profiles->getCurrentProfileId());
+    TEST_ASSERT_EQUAL(DeviceRole::PRIMARY, profiles->getDeviceRole());
+}
+
+void test_saveCustomOverride_returns_false_when_write_fails(void) {
+    profiles->loadProfile(CUSTOM_PROFILE_ID);
+    fsb::mock::setWriteResult(false);
+    TEST_ASSERT_FALSE(profiles->saveCustomOverride());
+    TEST_ASSERT_FALSE(fsb::exists(CUSTOM_OVERRIDE_FILE));
+}
+
+static CustomOverrideData makeValidOverride(void) {
+    CustomOverrideData data{};
+    data.magic              = CUSTOM_OVERRIDE_MAGIC;
+    data.version            = CUSTOM_OVERRIDE_VERSION;
+    data.timeOnMs           = 80.0f;
+    data.timeOffMs          = 53.0f;
+    data.jitterPercent      = 10.0f;
+    data.amplitudeMin       = 60;
+    data.amplitudeMax       = 90;
+    data.sessionDurationMin = 60;
+    data.numFingers         = 2;
+    data.mirrorPattern      = 1;
+    return data;
+}
+
+static void assertCustomDefaultsUnchanged(const TherapyProfile* p) {
+    TEST_ASSERT_EQUAL_FLOAT(100.0f, p->timeOnMs);
+    TEST_ASSERT_EQUAL_FLOAT(67.0f, p->timeOffMs);
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, p->jitterPercent);
+    TEST_ASSERT_EQUAL_UINT8(100, p->amplitudeMin);
+    TEST_ASSERT_EQUAL_UINT8(100, p->amplitudeMax);
+    TEST_ASSERT_EQUAL_UINT16(120, p->sessionDurationMin);
+    TEST_ASSERT_EQUAL_UINT8(MAX_ACTUATORS, p->numFingers);
+    TEST_ASSERT_FALSE(p->mirrorPattern);
+}
+
+void test_loadCustomOverride_rejects_bad_magic(void) {
+    CustomOverrideData data = makeValidOverride();
+    data.magic = CUSTOM_OVERRIDE_MAGIC ^ 1;
+    fsb::writeFile(CUSTOM_OVERRIDE_FILE, reinterpret_cast<const uint8_t*>(&data), sizeof(data));
+
+    profiles->loadProfile(CUSTOM_PROFILE_ID);
+    TEST_ASSERT_FALSE(profiles->loadCustomOverride());
+    assertCustomDefaultsUnchanged(profiles->getCurrentProfile());
+}
+
+void test_loadCustomOverride_rejects_wrong_version(void) {
+    CustomOverrideData data = makeValidOverride();
+    data.version = CUSTOM_OVERRIDE_VERSION + 1;
+    fsb::writeFile(CUSTOM_OVERRIDE_FILE, reinterpret_cast<const uint8_t*>(&data), sizeof(data));
+
+    profiles->loadProfile(CUSTOM_PROFILE_ID);
+    TEST_ASSERT_FALSE(profiles->loadCustomOverride());
+    assertCustomDefaultsUnchanged(profiles->getCurrentProfile());
+}
+
+void test_loadCustomOverride_rejects_short_file(void) {
+    CustomOverrideData data = makeValidOverride();
+    fsb::writeFile(CUSTOM_OVERRIDE_FILE, reinterpret_cast<const uint8_t*>(&data), sizeof(data) - 1);
+
+    profiles->loadProfile(CUSTOM_PROFILE_ID);
+    TEST_ASSERT_FALSE(profiles->loadCustomOverride());
+    assertCustomDefaultsUnchanged(profiles->getCurrentProfile());
+}
+
+void test_loadCustomOverride_ignores_nan_fields(void) {
+    CustomOverrideData data = makeValidOverride();
+    const uint32_t nanBits = 0x7FC00000u;
+    memcpy(&data.timeOnMs, &nanBits, sizeof(nanBits));
+    fsb::writeFile(CUSTOM_OVERRIDE_FILE, reinterpret_cast<const uint8_t*>(&data), sizeof(data));
+
+    // Like an out-of-range field: the NaN keeps the built-in value, the rest apply.
+    profiles->loadProfile(CUSTOM_PROFILE_ID);
+    const TherapyProfile* p = profiles->getCurrentProfile();
+    TEST_ASSERT_EQUAL_FLOAT(100.0f, p->timeOnMs);
+    TEST_ASSERT_EQUAL_FLOAT(53.0f, p->timeOffMs);
+}
+
+// =============================================================================
 // MAIN - RUN ALL TESTS
 // =============================================================================
 
@@ -1015,20 +1113,16 @@ int main(int argc, char **argv) {
     // Set Parameter Tests - FREQ
     RUN_TEST(test_setParameter_FREQ_valid_min);
     RUN_TEST(test_setParameter_FREQ_valid_max);
-    RUN_TEST(test_setParameter_FREQ_invalid_below_50);
-    RUN_TEST(test_setParameter_FREQ_invalid_above_300);
 
     // Set Parameter Tests - ON/OFF
     RUN_TEST(test_setParameter_ON_valid_range);
-    RUN_TEST(test_setParameter_ON_invalid_below_10);
-    RUN_TEST(test_setParameter_ON_invalid_above_1000);
+    RUN_TEST(test_setParameter_rejects_nan);
+    RUN_TEST(test_setParameter_rejects_inf);
     RUN_TEST(test_setParameter_OFF_valid_range);
 
     // Set Parameter Tests - SESSION
     RUN_TEST(test_setParameter_SESSION_valid_min);
     RUN_TEST(test_setParameter_SESSION_valid_max);
-    RUN_TEST(test_setParameter_SESSION_invalid_zero);
-    RUN_TEST(test_setParameter_SESSION_invalid_above_240);
 
     // Set Parameter Tests - AMPLITUDE
     RUN_TEST(test_setParameter_AMPMIN_valid);
@@ -1043,13 +1137,9 @@ int main(int argc, char **argv) {
 
     // Set Parameter Tests - JITTER/MIRROR/FINGERS
     RUN_TEST(test_setParameter_JITTER_valid);
-    RUN_TEST(test_setParameter_JITTER_invalid_negative);
-    RUN_TEST(test_setParameter_JITTER_invalid_above_100);
     RUN_TEST(test_setParameter_MIRROR_enable);
     RUN_TEST(test_setParameter_MIRROR_disable);
     RUN_TEST(test_setParameter_FINGERS_valid);
-    RUN_TEST(test_setParameter_FINGERS_invalid_zero);
-    RUN_TEST(test_setParameter_FINGERS_invalid_above_max);
 
     // Set Parameter Tests - Error Cases
     RUN_TEST(test_setParameter_unknown_param_returns_false);
@@ -1058,27 +1148,27 @@ int main(int argc, char **argv) {
     RUN_TEST(test_setParameter_without_profile_loaded_returns_false);
 
     // Set Parameter Tests - Additional Boundary Conditions
-    RUN_TEST(test_setParameter_OFF_invalid_below_10);
-    RUN_TEST(test_setParameter_OFF_invalid_above_1000);
     RUN_TEST(test_setParameter_AMPMAX_invalid_above_100);
     RUN_TEST(test_setParameter_AMPMAX_20_is_valid);
     RUN_TEST(test_setParameter_JITTER_zero_is_valid);
     RUN_TEST(test_setParameter_JITTER_50_is_valid);
-    RUN_TEST(test_setParameter_JITTER_above_50_is_rejected);
     RUN_TEST(test_setParameter_ON_50_is_valid);
     RUN_TEST(test_setParameter_ON_200_is_valid);
-    RUN_TEST(test_setParameter_ON_above_200_is_rejected);
-    RUN_TEST(test_setParameter_ON_below_50_is_rejected);
     RUN_TEST(test_setParameter_OFF_30_is_valid);
-    RUN_TEST(test_setParameter_OFF_200_is_valid);
-    RUN_TEST(test_setParameter_OFF_below_30_is_rejected);
     RUN_TEST(test_setParameter_AMPMIN_below_20_is_rejected);
     RUN_TEST(test_setParameter_AMPMIN_20_is_valid);
     RUN_TEST(test_setParameter_AMPMIN_above_AMPMAX_is_rejected);
     RUN_TEST(test_setParameter_AMPMAX_below_AMPMIN_is_rejected);
     RUN_TEST(test_setParameter_AMPMIN_equal_AMPMAX_is_valid);
     RUN_TEST(test_setParameter_FINGERS_1_is_valid);
-    RUN_TEST(test_setParameter_FINGERS_4_is_valid);
+
+    RUN_TEST(test_setParameter_ON_rejects_49_9_and_200_1);
+    RUN_TEST(test_setParameter_OFF_rejects_29_9_and_200_1);
+    RUN_TEST(test_setParameter_JITTER_rejects_minus_0_1_and_50_1);
+    RUN_TEST(test_setParameter_FREQ_rejects_49_and_301);
+    RUN_TEST(test_setParameter_SESSION_rejects_0_and_241);
+    RUN_TEST(test_setParameter_FINGERS_rejects_0_and_above_MAX_ACTUATORS);
+    RUN_TEST(test_setParameter_FINGERS_accepts_MAX_ACTUATORS);
 
     // Reset to Defaults Tests
     RUN_TEST(test_resetToDefaults_restores_builtin_values);
@@ -1106,6 +1196,16 @@ int main(int argc, char **argv) {
     RUN_TEST(test_loadSettings_custom_override_wins_over_settings);
     RUN_TEST(test_saveSettings_returns_false_without_storage);
     RUN_TEST(test_loadSettings_returns_false_without_storage);
+
+    // Persistence Failure Tests
+    RUN_TEST(test_saveSettings_returns_false_when_write_fails);
+    RUN_TEST(test_loadSettings_rejects_bad_magic);
+    RUN_TEST(test_loadSettings_rejects_short_file);
+    RUN_TEST(test_saveCustomOverride_returns_false_when_write_fails);
+    RUN_TEST(test_loadCustomOverride_rejects_bad_magic);
+    RUN_TEST(test_loadCustomOverride_rejects_wrong_version);
+    RUN_TEST(test_loadCustomOverride_rejects_short_file);
+    RUN_TEST(test_loadCustomOverride_ignores_nan_fields);
 
     return UNITY_END();
 }
