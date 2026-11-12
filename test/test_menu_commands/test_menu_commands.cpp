@@ -109,13 +109,29 @@ void test_profile_custom_batch_applies(void) {
     TEST_ASSERT_EQUAL_STRING(expected.c_str(), h.send("PROFILE_GET").c_str());
 }
 
-void test_profile_custom_bad_value_rejects_whole_batch(void) {
+void test_profile_custom_bad_first_value_applies_nothing(void) {
     MenuHarness h;
     h.send("PROFILE_LOAD:4");
     const std::string before = h.send("PROFILE_GET");
     TEST_ASSERT_EQUAL_STRING("CMD:PROFILE_CUSTOM\nERROR:Invalid parameter: ON\n\x04",
                              h.send("PROFILE_CUSTOM:ON:5:OFF:53").c_str());
     TEST_ASSERT_EQUAL_STRING(before.c_str(), h.send("PROFILE_GET").c_str());
+}
+
+void test_profile_custom_mid_batch_failure_keeps_earlier_pairs_unsaved(void) {
+    MenuHarness h;
+    h.send("PROFILE_LOAD:4");
+    TEST_ASSERT_EQUAL_STRING("CMD:PROFILE_CUSTOM\nERROR:Invalid parameter: OFF\n\x04",
+                             h.send("PROFILE_CUSTOM:ON:80:OFF:5").c_str());
+    const std::string expected =
+        "CMD:PROFILE_GET\nTYPE:LRA\nFREQ:250\nON:80.0\nOFF:67.0\nSESSION:120\nAMPMIN:100\nAMPMAX:100\n"
+        "PATTERN:rndp\nMIRROR:0\nJITTER:0.0\nFINGERS:" + std::to_string(MAX_ACTUATORS) + "\n\x04";
+    TEST_ASSERT_EQUAL_STRING(expected.c_str(), h.send("PROFILE_GET").c_str());
+
+    ProfileManager reloaded;
+    reloaded.begin(true);
+    TEST_ASSERT_EQUAL_UINT8(4, reloaded.getCurrentProfileId());
+    TEST_ASSERT_EQUAL_FLOAT(100.0f, reloaded.getCurrentProfile()->timeOnMs);
 }
 
 void test_profile_custom_locked_key_rejects_whole_batch(void) {
@@ -131,6 +147,7 @@ void test_param_set_on_custom(void) {
     MenuHarness h;
     h.send("PROFILE_LOAD:4");
     TEST_ASSERT_EQUAL_STRING("CMD:PARAM_SET\nPARAM:ON\nVALUE:80\n\x04", h.send("PARAM_SET:ON:80").c_str());
+    TEST_ASSERT_EQUAL_FLOAT(80.0f, h.profiles.getCurrentProfile()->timeOnMs);
 }
 
 void test_param_set_rejects_nan(void) {
@@ -294,6 +311,7 @@ void test_info_primary_only(void) {
     TEST_ASSERT_EQUAL_STRING(expected.c_str(), h.send("INFO").c_str());
 }
 
+// The controller passes the callback's tokens through unchanged; the callback in main.cpp decides whether a board reports them.
 void test_info_motp_only_when_callback_returns_tokens(void) {
     MenuHarness h;
     h.battery.status.voltage = 4.02f;
@@ -755,7 +773,8 @@ int main(int, char**) {
     RUN_TEST(test_profile_load_out_of_range);
     RUN_TEST(test_profile_load_refused_during_session);
     RUN_TEST(test_profile_custom_batch_applies);
-    RUN_TEST(test_profile_custom_bad_value_rejects_whole_batch);
+    RUN_TEST(test_profile_custom_bad_first_value_applies_nothing);
+    RUN_TEST(test_profile_custom_mid_batch_failure_keeps_earlier_pairs_unsaved);
     RUN_TEST(test_profile_custom_locked_key_rejects_whole_batch);
     RUN_TEST(test_param_set_on_custom);
     RUN_TEST(test_param_set_rejects_nan);

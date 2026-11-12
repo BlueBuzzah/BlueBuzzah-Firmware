@@ -67,7 +67,7 @@ The board is selected by a build macro (`BOARD_BLUEBUZZAH_NRF52` / `BOARD_PENTAB
 
 ## Testing
 
-- Native envs compile `src/` via `test_build_src = true` minus a `build_src_filter` exclusion list. Suites for excluded modules pull the source in directly (`#include "../../src/sync_protocol.cpp"` in `test_sync_protocol`, `test_state_machine`, `test_profile_manager`, `test_therapy_engine`). Including a non-excluded `.cpp` this way gives duplicate symbols.
+- Native envs compile `src/` via `test_build_src = true` minus a `build_src_filter` exclusion list. Suites for excluded modules pull the source in directly (`#include "../../src/sync_protocol.cpp"`): `test_sync_protocol`, `test_state_machine`, `test_profile_manager`, `test_therapy_engine`, `test_activation_queue`, `test_deferred_queue`, and `test_menu_commands` (via `menu_harness.h`: sync_protocol, therapy_engine, state_machine, profile_manager, menu_controller). Including a non-excluded `.cpp` this way gives duplicate symbols.
 - **`test_menu_commands` compiles the real `menu_controller.cpp`** with fakes for `hardware.h` and `ble_manager.h`. It also guards `INTERNAL_MESSAGES[]` routing. `test_motor_check_info` tests the `MOTP`/`MOTS` lines.
 - The exclusion list lives once, in `env:native`; `native_penta`, `native_coverage` and `native_coverage_gcc` reuse it. A new platform-specific `.cpp` must be excluded there, plus the other board's device env.
 - Mocks (`test/mocks/src/Arduino.h`): `mockAdvanceMicros()`, `mockEnableTimeAutoIncrement()`, `MockSerial`. Filesystem mocks are defined per test file.
