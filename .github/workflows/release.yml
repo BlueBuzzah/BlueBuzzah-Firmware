@@ -105,16 +105,22 @@ jobs:
             ${{ env.ARCHIVE_NAME }}.zip
             ${{ env.ARCHIVE_NAME_V3 }}.zip
 
-      # A release is created as a pre-release so nothing finds it as latest
-      # before its assets exist. Promote it now. Tags with a suffix
-      # (v2.3.0-rc.1) are real pre-releases and stay that way.
+      # A full release is published as a pre-release, because the Updater
+      # offers its newest non-pre-release as Latest and would show one with
+      # no firmware to download. /bb-release adds the marker line below to
+      # the notes to ask for promotion once the assets exist. Promote it and
+      # drop the line. A pre-release without the marker stays one.
       - name: Mark release as latest
-        if: ${{ !contains(github.event.release.tag_name, '-') }}
+        if: ${{ github.event.release.prerelease && contains(github.event.release.body, '<!-- promote-to-latest -->') }}
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.event.release.tag_name }}
           REPO: ${{ github.repository }}
-        run: gh release edit "$TAG" --repo "$REPO" --prerelease=false --latest
+        run: |
+          gh release view "$TAG" --repo "$REPO" --json body -q .body \
+            | sed '/<!-- promote-to-latest -->/d' > "$RUNNER_TEMP/notes.md"
+          gh release edit "$TAG" --repo "$REPO" --prerelease=false --latest \
+            --notes-file "$RUNNER_TEMP/notes.md"
 
       - name: Build summary
         env:
