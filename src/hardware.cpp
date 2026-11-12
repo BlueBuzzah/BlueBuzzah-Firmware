@@ -192,9 +192,7 @@ void HapticController::configureDRV2605(Adafruit_DRV2605& drv) {
     }
 }
 
-// OL_LRA_PERIOD (0x20) is the open-loop drive period in 98.49us units, as in
-// configureDRV2605(). This register sets the frequency an LRA is driven at in
-// open-loop mode; CONTROL1's drive time only matters in closed loop.
+// DRV2605 OL_LRA_PERIOD register (open-loop drive period; see olLraPeriod())
 constexpr uint8_t DRV_REG_OL_LRA_PERIOD = 0x20;
 
 // DRV2605 FEEDBACK register and its N_ERM_LRA bit: set by configureDRV2605
