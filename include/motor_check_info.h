@@ -2,11 +2,10 @@
  * @file motor_check_info.h
  * @brief INFO's boot motor check keys (MOTP / MOTS)
  *
- * Shared by MenuController::handleInfo and the test_menu_controller mirror,
- * so the menu tests exercise the real emission logic.
+ * Used by MenuController::handleInfo and tested directly by
+ * test_menu_controller.
  *
- * Header-only with no includes: the menu test defines its own MAX_ACTUATORS
- * and doesn't see menu_controller.h, so this spells out the callback type.
+ * Header-only with no includes, so this spells out the callback type.
  */
 
 #ifndef MOTOR_CHECK_INFO_H
