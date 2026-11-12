@@ -105,6 +105,23 @@ jobs:
             ${{ env.ARCHIVE_NAME }}.zip
             ${{ env.ARCHIVE_NAME_V3 }}.zip
 
+      # A full release is published as a pre-release, because the Updater
+      # offers its newest non-pre-release as Latest and would show one with
+      # no firmware to download. /bb-release adds the marker line below to
+      # the notes to ask for promotion once the assets exist. Promote it and
+      # drop the line. A pre-release without the marker stays one.
+      - name: Mark release as latest
+        if: ${{ github.event.release.prerelease && contains(github.event.release.body, '<!-- promote-to-latest -->') }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          gh release view "$TAG" --repo "$REPO" --json body -q .body \
+            | sed '/<!-- promote-to-latest -->/d' > "$RUNNER_TEMP/notes.md"
+          gh release edit "$TAG" --repo "$REPO" --prerelease=false --latest \
+            --notes-file "$RUNNER_TEMP/notes.md"
+
       - name: Build summary
         env:
           VERSION: ${{ github.event.release.tag_name }}
