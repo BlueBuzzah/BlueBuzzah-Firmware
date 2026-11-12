@@ -219,6 +219,9 @@ BlueBuzzah-Firmware/
 │   ├── internal_messages.h           # Device-to-device prefixes the menu must ignore
 │   ├── hardware.h                    # HapticController, BatteryMonitor, LEDController classes
 │   ├── vbat_estimator.h              # DRV2605 VBAT burst/median/EMA estimator
+│   ├── drive_math.h                  # Battery curve, amplitude-to-RTP and LRA period math (header-only)
+│   ├── motor_check.h                 # Boot motor check tokens, warning rule, fingers patterns use
+│   ├── motor_check_info.h            # INFO MOTP/MOTS line emission
 │   ├── ble_manager.h                 # BLE management class (both backends)
 │   ├── therapy_engine.h              # Therapy execution class, pattern generators
 │   ├── sync_protocol.h               # Sync command serialization, PTP clock sync
@@ -571,7 +574,6 @@ void TherapyEngine::startSession(
     bool isTestMode
 ) {
     // Reset session state
-    _isRunning = true;
     _isPaused = false;
     _cyclesCompleted = 0;
 
@@ -585,6 +587,7 @@ void TherapyEngine::startSession(
 
     // Generate first pattern
     generateNextPattern();
+    _isRunning = true;   // set last, inside a critical section
 
     // Notify macrocycle start (first macrocycle)
     if (_macrocycleStartCallback) {
@@ -710,7 +713,7 @@ static void motorTask(void* pvParameters) {
 
         int64_t delayUs = static_cast<int64_t>(event.timeUs - getMicros());
         if (delayUs <= 0) {
-            if (activationQueue.dequeueNextEvent(event)) executeMotorEvent(event);
+            if (activationQueue.dequeueNextEvent(event)) executeOrDropMotorEvent(event);
             continue;
         }
 
@@ -730,7 +733,7 @@ static void motorTask(void* pvParameters) {
         }
 
         if (activationQueue.dequeueNextEvent(event)) {
-            executeMotorEvent(event);   // ACTIVATE or DEACTIVATE
+            executeOrDropMotorEvent(event);   // ACTIVATE or DEACTIVATE
         }
     }
 }
@@ -898,8 +901,10 @@ TherapyState TherapyStateMachine::determineNextState(TherapyState current, State
 
         case StateTrigger::DISCONNECTED:
             if (current == TherapyState::RUNNING ||
+                current == TherapyState::LOW_BATTERY ||
                 current == TherapyState::PAUSED ||
-                current == TherapyState::READY) {
+                current == TherapyState::READY ||
+                current == TherapyState::PHONE_DISCONNECTED) {
                 return TherapyState::CONNECTION_LOST;
             }
             break;
@@ -1200,7 +1205,7 @@ Other device-to-device messages are plain strings: `IDENTIFY:SECONDARY` (S->P, o
 
 ```text
 START_SESSION:7|81234567
-MC:42|0|5000000|0|1250|100|12|0,2,100|167,0,100|334,3,100|...
+MC:42|0|5000000|0|1250|100|12|0,2,100,10|167,0,100,10|334,3,100,10|...
 PING:1|1234567890
 PONG:1|1234567925|1234567900|1234567950
 MC_ACK:42|5070210|0|287
@@ -1591,9 +1596,9 @@ sequenceDiagram
 
 ```cpp
 // src/main.cpp - centralized safe motor shutdown
-void safeMotorShutdown()
+void safeMotorShutdown(SessionEndReason reason)
 {
-    therapy.stop();            // 1. no new activations
+    therapy.stop(reason);      // 1. no new activations
     deferredQueue.clear();     // 2. no queued haptic work
     activationQueue.clear();   // 3. no scheduled macrocycle events
     haptic.emergencyStop();    // 4. all motors off
@@ -1795,6 +1800,11 @@ bool HapticController::selectChannel(uint8_t finger) {
 }
 
 uint8_t HapticController::amplitudeToRTP(uint8_t amplitude) const {
+    return amplitudeToRtp(amplitude);   // include/drive_math.h
+}
+
+// include/drive_math.h
+constexpr uint8_t amplitudeToRtp(uint8_t amplitude) {
     if (amplitude > MAX_AMPLITUDE) {
         amplitude = MAX_AMPLITUDE;
     }
@@ -1965,7 +1975,7 @@ void BLEManager::_onUartRx(uint16_t connHandle) {
 }
 ```
 
-`processIncomingData()` frames messages on EOT and hands each complete one to `main.cpp` through the `BLEMessageCallback` (`onBLEMessage()`). The ESP32 backend does the same from NimBLE callback classes (`BBServerCallbacks`, `BBRxCharCallbacks`, `BBClientCallbacks`, `BBScanCallbacks`). Callbacks run in SoftDevice/ISR context on v2 and in the NimBLE host task on v3: no I2C there.
+`processIncomingData()` frames messages on EOT and hands each complete one to `main.cpp` through the `BLEMessageCallback` (`onBLEMessage()`). The ESP32 backend does the same from NimBLE callback classes (`BBServerCallbacks`, `BBRxCharCallbacks`, `BBClientCallbacks`, `BBScanCallbacks`). Callbacks run in Bluefruit's callback task on v2 (radio notifications in `radio_anchor.cpp` are true ISRs) and in the NimBLE host task on v3: no I2C there.
 
 ### Testing Checklist
 
@@ -2166,7 +2176,7 @@ The architecture enables confident refactoring, easy testing, and straightforwar
 |----------|-------|-------------|
 | Boot window | 30s | Phone wait after the SECONDARY connects, then auto-start (`STARTUP_WINDOW_MS`) |
 | Keepalive interval | 1s | Idle PING/PONG (unified keepalive + sync); 70ms until clock sync is valid, 250ms during therapy |
-| Keepalive timeout | 6s | No PING (SECONDARY) or PONG (PRIMARY) for 6s |
+| Keepalive timeout | 6s | No PING/MC (SECONDARY) or PONG/MC_ACK (PRIMARY, during therapy) for 6s |
 | BLE connection interval | 7.5-10ms glove link, 30-50ms phone link | Glove link low-latency (6-8 BLE units); phone link 24-40 units, no peripheral latency |
 | BLE supervision timeout | 6s | Disconnect detection (`BLE_TIMEOUT_MS`) |
 | Therapy default ON | 100ms | Burst duration |

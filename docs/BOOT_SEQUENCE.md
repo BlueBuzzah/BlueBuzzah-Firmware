@@ -723,7 +723,7 @@ Advertising (PRIMARY) and scanning (SECONDARY) have no timeout of their own.
 
 When the window expires with the SECONDARY connected and no phone, `autoStartTherapy()` starts a session:
 
-1. **Default Profile**: Uses the current (saved) therapy profile; if none is loaded, the built-in `noisy_vcr` profile
+1. **Default Profile**: Uses the current (saved) therapy profile; if none is loaded, the built-in `regular_vcr` profile
 2. **Duration**: The profile's session duration (120 minutes for the built-in vCR profiles)
 3. **Pattern**: The profile's pattern type, timing, jitter and mirroring
 4. **Glove error gate**: If either glove is in `ERROR` (a boot hardware fault, reported by the SECONDARY with `GLOVE_ERROR`), it doesn't start (`[AUTO] Primary glove error - not starting` or `[AUTO] Secondary glove error - not starting`)

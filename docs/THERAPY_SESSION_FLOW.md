@@ -834,7 +834,8 @@ sequenceDiagram
 | **Lead time calculation**             |    ✓    |     ✗     |
 | **Therapy command distribution**      |    ✓    |     ✗     |
 | **Therapy command execution**         |    ✓    |     ✓     |
-| **Battery monitoring (both gloves)**  |    ✓    |     ✗     |
+| **Battery monitoring (own glove)**    |    ✓    |     ✓     |
+| **Battery gate (both gloves' levels)** |    ✓    |     ✗     |
 | **Battery voltage reporting**         |    ✓    |     ✓     |
 | **Motor activation**                  |    ✓    |     ✓     |
 | **Session state authority**           | Master  | Follower  |

@@ -327,7 +327,7 @@ namespace Colors {
 // include/config.h
 
 #define BATTERY_CRITICAL_VOLTAGE 3.3f
-// Critical battery voltage (immediate shutdown)
+// Critical battery voltage (session stops once BATTERY_CRITICAL_CONFIRM_READINGS readings agree)
 
 #define BATTERY_CRITICAL_CONFIRM_READINGS 2
 // Consecutive readings below a threshold before the level turns low or critical
@@ -991,6 +991,24 @@ enum class PatternType {
     MIRRORED = 2,
 };
 
+enum class SessionEndReason : uint8_t {
+    COMPLETED = 0,   // Ran to its planned length
+    STOPPED,         // Stopped by a command (phone, serial, profile change)
+    BATTERY,         // Critical battery
+    CONNECTION_LOST, // Glove-to-glove link lost
+    ERROR,           // SECONDARY hardware fault, or it rejected every macrocycle
+    POWER_OFF        // Power switch turned off (v3)
+};
+
+struct LastSessionSummary {
+    uint32_t magic;       // LAST_SESSION_MAGIC when valid
+    uint32_t id;          // SESSION_ID the session reported while active
+    uint32_t elapsedSec;  // Wall time from start to end, pauses included
+    uint32_t pausedSec;   // Seconds of elapsedSec spent paused
+    uint32_t totalSec;    // Planned length (SESSION_STATUS TOTAL)
+    SessionEndReason reason;
+};
+
 typedef void (*ActivateCallback)(uint8_t finger, uint8_t amplitude);
 typedef void (*DeactivateCallback)(uint8_t finger);
 typedef void (*CycleCompleteCallback)(uint32_t cycleCount);
@@ -1054,7 +1072,7 @@ public:
     void update();  // MUST be called frequently in loop()
     void pause();
     void resume();
-    void stop();
+    void stop(SessionEndReason reason = SessionEndReason::STOPPED);  // only the first stop of a session records its reason
 
     // =========================================================================
     // STATUS
@@ -1066,11 +1084,19 @@ public:
     uint32_t getCyclesCompleted() const;
     uint32_t getTotalActivations() const;
     uint32_t getElapsedSeconds() const;
+    uint32_t getPausedSeconds() const;
     uint32_t getRemainingSeconds() const;
     uint32_t getDurationSeconds() const;
+    uint32_t getSessionId() const;
     uint8_t getAmplitudeMin() const;
     uint8_t getAmplitudeMax() const;
     PatternType getPatternType() const;
+
+    // Summary of the last finished session, kept in flash (/last_session.bin)
+    const LastSessionSummary* getLastSession() const;  // nullptr when none is valid
+    void loadLastSession();
+    void persistLastSession();
+    void clearLastSession();
 };
 ```
 
@@ -1616,8 +1642,13 @@ Command processing and routing for phone (BLE) and Updater (USB serial) commands
 
 typedef void (*SendResponseCallback)(const char* response);
 typedef void (*RestartCallback)();
+typedef void (*SessionStopCallback)();
 typedef void (*SendToSecondaryCallback)(const char* message);
 typedef bool (*SyncReadyCallback)();
+typedef bool (*BatteryGateCallback)();                        // true if both gloves' batteries allow a session
+typedef const char* (*GloveErrorCallback)();                  // SESSION_START error when a glove is in ERROR, else nullptr
+typedef BatteryLevel (*BatteryLevelCallback)(bool secondary); // a glove's level, as the start gate sees it
+typedef const char* (*MotorCheckCallback)(bool secondary);    // a glove's boot motor check tokens, else nullptr
 
 class MenuController {
 public:

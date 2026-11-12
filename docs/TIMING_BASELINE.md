@@ -1,11 +1,10 @@
 # Timing Synchronization Baseline Metrics
 
 **Date**: December 13, 2025 (baseline measurement)
-**Branch**: `feat/FreeRTOS-task-isolation` (baseline), now `feat/sync-fault-correction`
 **Test Duration**: ~5 minutes
 **Environment**: Indoor, typical usage distance
 
-> **Note**: This baseline was established before the `feat/sync-fault-correction` branch which implements IEEE 1588 PTP clock synchronization, warm-start recovery, and microsecond precision timestamps. Most optimization phases have been completed. Current bilateral sync accuracy is pending re-validation on the 1MHz hardware timebase (see the 2026-06-10 section below).
+> **Note**: This baseline was established before IEEE 1588 PTP clock synchronization, warm-start recovery, and microsecond precision timestamps were implemented. Current bilateral sync accuracy is pending re-validation on the 1MHz hardware timebase (see the 2026-06-10 section below).
 
 ---
 
@@ -38,7 +37,7 @@ EXECUTION DRIFT:
   Late (>1000 μs): 1 (0.2%)
 -------------------------------------
 ONGOING RTT (PRIMARY only):
-  (no RTT data)  ← FIXED: RTT recording now added
+  (no RTT data)
 =====================================
 ```
 
@@ -119,50 +118,12 @@ ONGOING RTT (PRIMARY only):
 ### 4. Missing Data
 
 **RTT Metrics:** "(no RTT data)" on PRIMARY
-- **Issue**: PONG message RTT calculation wasn't being recorded to `latencyMetrics`
-- **Fix Applied**: Added `latencyMetrics.recordRtt()` call in the PONG handler (`main.cpp`)
-- **Next Test**: Re-run with RTT recording to measure network timing
+- **Cause**: PONG message RTT calculation wasn't being recorded to `latencyMetrics`
+- **Fix Applied**: The PONG handler (`main.cpp`) now calls `latencyMetrics.recordRtt()`
 
 **Sync Probing:** "(no sync probing data)"
 - **Expected**: This tracks initial connection sync probing
 - **Not critical**: Ongoing sync quality is what matters for therapy
-
----
-
-## Bottleneck Prioritization
-
-### #1: SECONDARY BLE Receive Jitter (HIGH IMPACT)
-
-**Problem**: Max drift of +4,984μs on SECONDARY
-**Target**: Reduce to <2ms
-**Solutions:**
-1. **Reduce BLE connection interval**: 8ms → 5ms (Phase 3)
-   - Expected improvement: -2-3ms jitter reduction
-2. **Increase RTT quality threshold**: 80ms → 120ms (Phase 5A)
-   - Accept more samples for better network adaptation
-3. **Outlier rejection** in clock sync (Phase 5B)
-   - Filter BLE retransmission spikes
-
-### #2: Motor Activation Latency (MEDIUM IMPACT)
-
-**Problem**: Average +473-500μs drift
-**Target**: Reduce to <200μs
-**Solutions:**
-1. **I2C pre-selection** (Phase 2) - HIGHEST IMPACT
-   - Expected improvement: -400μs activation latency
-   - Already implemented in code, just needs integration
-2. **Tighter FreeRTOS sleep margins** (Phase 6A)
-   - Sleep until 500μs before event (vs current 1ms)
-   - Expected improvement: -200μs jitter reduction
-
-### #3: Clock Sync Precision (LOW IMPACT - ALREADY GOOD)
-
-**Problem**: Unknown (no RTT data yet)
-**Target**: Maintain <1ms offset accuracy
-**Solutions:**
-1. **getMicros() optimization** (Phase 4)
-   - Fast-path atomic operations
-   - Expected improvement: -4μs per call × ~500 calls = ~2ms total savings
 
 ---
 
@@ -179,70 +140,13 @@ ONGOING RTT (PRIMARY only):
 
 ---
 
-## Optimization Roadmap Priority
-
-Based on this baseline, here's the revised implementation priority:
-
-### **Phase 1: Quick Wins** (Week 1)
-1. ✅ **Measurement baseline** (COMPLETED)
-2. **Phase 2: I2C Pre-Selection** - Biggest bang for buck
-   - Expected: -400μs activation latency
-   - Risk: LOW (code exists, just integration)
-3. **Phase 3: BLE Interval Reduction**
-   - Expected: -2-3ms SECONDARY jitter reduction
-   - Risk: LOW (parameter tuning)
-
-**Expected Result After Week 1**: ~1ms avg → **<700μs** avg, ~5ms P95 → **<2ms** P95
-
-### **Phase 2: Algorithm Tuning** (Week 2)
-4. **Phase 4: getMicros() Optimization**
-   - Expected: -2ms total overhead reduction
-5. **Phase 5: Clock Sync Improvements**
-   - RTT threshold increase + outlier rejection
-   - Expected: -300μs offset accuracy improvement
-6. **Phase 6: FreeRTOS Tuning**
-   - Tighter sleep margins + 2000Hz tick rate
-   - Expected: -200μs jitter reduction
-
-**Expected Result After Week 2**: **<500μs** avg, **<1ms** P95 🎯
-
-### **Phase 3: Validation & Polish** (Week 3)
-7. **Phase 7: Diagnostic Tools**
-   - High-resolution logging
-   - GET_SYNC_STATS command
-8. **Long-duration testing** (8-hour sessions, 6ft distance)
-9. **Optional Phase 8: Hardware Timers** (only if <500μs not achieved)
-
----
-
-## Next Steps
-
-### Immediate Actions:
-1. ✅ **Fixed RTT recording** - rebuild firmware (DONE)
-2. **Flash updated firmware** to both devices
-3. **Re-run test** with RTT recording enabled
-4. **Proceed to Phase 2** - I2C Pre-Selection integration
-
-### Expected Outcome:
-- **RTT data** will show network timing (likely 10-30ms round-trip)
-- **Confirm** BLE is the bottleneck (as suspected)
-- **Begin Phase 2** implementation for immediate -400μs improvement
-
----
-
 ## Conclusion
 
-The system is **already performing excellently** with <1ms average bilateral sync. The FreeRTOS refactoring was successful, and motor timing is precise. The primary bottleneck is **SECONDARY BLE receive jitter** causing occasional ~5ms spikes.
-
-**Confidence Level**: HIGH that optimizations will achieve <500μs bilateral sync.
-
-**Recommended Path**: Proceed with Phase 2 (I2C Pre-Selection) immediately - this is the lowest-risk, highest-impact optimization available.
+The December 2025 measurements showed motor timing near 500μs average drift, with the largest outliers on the SECONDARY's BLE receive path (~5ms spikes). The 2026-06-10 section below explains why those averages were largely tick-quantization error.
 
 ---
 
 ## 2026-06-10 — Timing rework (pre-bench)
-
-**Branch:** `feat/sub-50us-bilateral-sync`
 
 ### Root Cause Identified
 
@@ -259,7 +163,7 @@ The +473µs / +500µs average execution drift figures recorded in the December 2
 | **RTT hard ceiling** | Samples with RTT > 60ms are discarded (unchanged value, now correctly measurable). |
 | **Lucky-packet gate** | Only exchanges within `SYNC_LUCKY_RTT_MARGIN_US` (10ms) of the tracked minimum RTT are accepted; minimum decays upward at `SYNC_MIN_RTT_DECAY_US` (200µs/sample). |
 | **Innovation gate** | Offset jumps > `SYNC_INNOVATION_GATE_US` (5ms) are rejected; after `SYNC_INNOVATION_REJECT_LIMIT` (5) such rejections with no accepted sample in between, the next jumping sample hard re-anchors the offset instead of EMA-blending. |
-| **4Hz therapy cadence** | `SYNC_ACTIVE_INTERVAL_MS` = 250ms (was 1s for all states). |
+| **4Hz therapy cadence** | `SYNC_ACTIVE_INTERVAL_MS` = 250ms during therapy (idle stays at 1s). |
 | **Motor path** | First macrocycle event gets I2C pre-selection in the motor task idle window; removed blocking serial read and critical-path `[LEADTIME]` printf from the therapy loop. |
 | **GPIO ground truth** | `SYNC_DEBUG_GPIO_ENABLED` toggles a debug pin (A0 on v2, GPIO40 on v3) on each ACTIVATE; see `docs/SYNC_VALIDATION.md` for the measurement protocol. |
 | **Anchor timestamping (experimental)** | Radio-notification ISR (SWI1, 800µs pre-event) anchors in a 16-slot ring; SECONDARY attaches its rx anchor to PONGs (6-field wire format); PRIMARY pairs with its first post-T1 tx anchor within 25ms; `anchorOffset = secondaryAnchor - primaryAnchor - SYNC_ANCHOR_BIAS_US` replaces PTP when within the 1.5ms pre-filter; PTP fallback per sample. Disabled by default (`SYNC_ANCHOR_TIMESTAMPING_ENABLED 0`). |
