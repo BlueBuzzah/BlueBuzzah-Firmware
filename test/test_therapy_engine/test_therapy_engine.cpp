@@ -491,7 +491,7 @@ void test_TherapyEngine_startSession_mirrored_pattern(void) {
 }
 
 // =============================================================================
-// CALLBACK TESTS
+// AMPLITUDE RANGE TESTS
 // =============================================================================
 
 void test_TherapyEngine_amplitude_range(void) {
@@ -662,6 +662,8 @@ void test_TherapyEngine_default_pattern_type_fallback(void) {
 void test_TherapyEngine_stop_ends_session_and_sends_nothing_more(void) {
     TherapyEngine engine;
     engine.setSendMacrocycleCallback(mockSendMacrocycleCallback);
+    engine.setSchedulingCallbacks(mockScheduleActivationCallback, mockStartSchedulingCallback, mockIsSchedulingCompleteCallback);
+    g_schedulingComplete = true;
     mockSetMillis(1000);
     engine.startSession(100, PatternType::RNDP, 100.0f, 67.0f, 0.0f, 4, true, 100, 100, false);
     engine.update();
@@ -670,7 +672,11 @@ void test_TherapyEngine_stop_ends_session_and_sends_nothing_more(void) {
     engine.stop();
     TEST_ASSERT_FALSE(engine.isRunning());
 
-    mockAdvanceMillis(5000);
+    // The steps that make a running engine send its next macrocycle
+    mockAdvanceMillis(100);
+    engine.update();
+    mockAdvanceMillis(3240);
+    engine.update();
     engine.update();
     TEST_ASSERT_EQUAL_INT(1, g_sendMacrocycleCallCount);
 }
@@ -678,6 +684,8 @@ void test_TherapyEngine_stop_ends_session_and_sends_nothing_more(void) {
 void test_TherapyEngine_pause_holds_session_and_sends_nothing_more(void) {
     TherapyEngine engine;
     engine.setSendMacrocycleCallback(mockSendMacrocycleCallback);
+    engine.setSchedulingCallbacks(mockScheduleActivationCallback, mockStartSchedulingCallback, mockIsSchedulingCompleteCallback);
+    g_schedulingComplete = true;
     mockSetMillis(1000);
     engine.startSession(100, PatternType::RNDP, 100.0f, 67.0f, 0.0f, 4, true, 100, 100, false);
     engine.update();
@@ -687,7 +695,11 @@ void test_TherapyEngine_pause_holds_session_and_sends_nothing_more(void) {
     TEST_ASSERT_TRUE(engine.isRunning());
     TEST_ASSERT_TRUE(engine.isPaused());
 
-    mockAdvanceMillis(5000);
+    // The steps that make a running engine send its next macrocycle
+    mockAdvanceMillis(100);
+    engine.update();
+    mockAdvanceMillis(3240);
+    engine.update();
     engine.update();
     TEST_ASSERT_EQUAL_INT(1, g_sendMacrocycleCallCount);
 }
