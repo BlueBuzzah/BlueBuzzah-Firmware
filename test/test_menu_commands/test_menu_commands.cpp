@@ -282,6 +282,101 @@ void test_session_status_states(void) {
                              h.send("SESSION_STATUS").c_str());
 }
 
+// INFO and BATTERY
+
+static std::string infoHead() {
+    return std::string("CMD:INFO\nROLE:PRIMARY\nNAME:") + BLE_NAME + "\nFW:" + FIRMWARE_VERSION +
+           "\nHW:" + HW_VERSION_STRING + "\nMOTORS:" + std::to_string(MAX_ACTUATORS) + "\n";
+}
+
+void test_info_primary_only(void) {
+    MenuHarness h;
+    h.battery.status.voltage = 4.02f;
+    const std::string expected = infoHead() +
+        "PROFILE:1:regular_vcr\nBATP:4.02\nBATLP:NORMAL\nSECONDARY:0\nBATS:0.00\nSTATUS:IDLE\n\x04";
+    TEST_ASSERT_EQUAL_STRING(expected.c_str(), h.send("INFO").c_str());
+}
+
+void test_info_motp_only_when_callback_returns_tokens(void) {
+    MenuHarness h;
+    h.battery.status.voltage = 4.02f;
+    h.motorChecks[0] = "OK,OK,OK,OK,OPEN";
+    h.motorChecks[1] = "OK,OK,OK,OK,OK";
+    const std::string expected = infoHead() + "MOTP:OK,OK,OK,OK,OPEN\n" +
+        "PROFILE:1:regular_vcr\nBATP:4.02\nBATLP:NORMAL\nSECONDARY:0\nBATS:0.00\nSTATUS:IDLE\n\x04";
+    TEST_ASSERT_EQUAL_STRING(expected.c_str(), h.send("INFO").c_str());
+}
+
+void test_info_deferred_until_secondary_replies(void) {
+    MenuHarness h;
+    h.battery.status.voltage = 4.02f;
+    h.ble.secondaryConnected = true;
+    h.secondaryLevel = BatteryLevel::LOW_CHARGE;
+    TEST_ASSERT_EQUAL_STRING("", h.send("INFO").c_str());
+    TEST_ASSERT_EQUAL_STRING("GET_BATTERY", h.lastToSecondaryCallback.c_str());
+    h.menu.setSecondaryBatteryVoltage(3.85f);
+    h.menu.checkSecondaryBatteryResponse();
+    const std::string expected = infoHead() +
+        "PROFILE:1:regular_vcr\nBATP:4.02\nBATLP:NORMAL\nSECONDARY:1\nBATS:3.85\nBATLS:LOW\nSTATUS:IDLE\n\x04";
+    TEST_ASSERT_EQUAL_STRING(expected.c_str(), h.reply.c_str());
+}
+
+void test_info_secondary_timeout(void) {
+    MenuHarness h;
+    h.battery.status.voltage = 4.02f;
+    h.ble.secondaryConnected = true;
+    h.send("INFO");
+    mockAdvanceMillis(SECONDARY_BATTERY_TIMEOUT_MS - 1);
+    h.menu.checkSecondaryBatteryTimeout();
+    TEST_ASSERT_EQUAL_STRING("", h.reply.c_str());
+    mockAdvanceMillis(2);
+    h.menu.checkSecondaryBatteryTimeout();
+    const std::string expected = infoHead() +
+        "PROFILE:1:regular_vcr\nBATP:4.02\nBATLP:NORMAL\nSECONDARY:1\nBATS:0.00\nSTATUS:IDLE\n\x04";
+    TEST_ASSERT_EQUAL_STRING(expected.c_str(), h.reply.c_str());
+}
+
+void test_info_cancelled_by_next_command(void) {
+    MenuHarness h;
+    h.ble.secondaryConnected = true;
+    h.send("INFO");
+    TEST_ASSERT_EQUAL_STRING("CMD:PING\nPONG:\n\x04", h.send("PING").c_str());
+    h.menu.setSecondaryBatteryVoltage(3.85f);
+    h.menu.checkSecondaryBatteryResponse();
+    mockAdvanceMillis(SECONDARY_BATTERY_TIMEOUT_MS + 1);
+    h.menu.checkSecondaryBatteryTimeout();
+    TEST_ASSERT_EQUAL_STRING("CMD:PING\nPONG:\n\x04", h.reply.c_str());
+}
+
+void test_unsolicited_secondary_battery_is_dropped(void) {
+    MenuHarness h;
+    h.ble.secondaryConnected = true;
+    h.menu.setSecondaryBatteryVoltage(3.85f);
+    h.menu.checkSecondaryBatteryResponse();
+    TEST_ASSERT_EQUAL_STRING("", h.reply.c_str());
+    // The dropped reading must not answer the next request
+    TEST_ASSERT_EQUAL_STRING("", h.send("BATTERY").c_str());
+    h.menu.checkSecondaryBatteryResponse();
+    TEST_ASSERT_EQUAL_STRING("", h.reply.c_str());
+}
+
+void test_battery_primary_only(void) {
+    MenuHarness h;
+    h.battery.status.voltage = 4.02f;
+    TEST_ASSERT_EQUAL_STRING("CMD:BATTERY\nBATP:4.02\nBATLP:NORMAL\nBATS:0.00\n\x04", h.send("BATTERY").c_str());
+}
+
+void test_battery_with_secondary(void) {
+    MenuHarness h;
+    h.battery.status.voltage = 4.02f;
+    h.ble.secondaryConnected = true;
+    h.secondaryLevel = BatteryLevel::LOW_CHARGE;
+    TEST_ASSERT_EQUAL_STRING("", h.send("BATTERY").c_str());
+    h.menu.setSecondaryBatteryVoltage(3.85f);
+    h.menu.checkSecondaryBatteryResponse();
+    TEST_ASSERT_EQUAL_STRING("CMD:BATTERY\nBATP:4.02\nBATLP:NORMAL\nBATS:3.85\nBATLS:LOW\n\x04", h.reply.c_str());
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_ping);
@@ -320,5 +415,14 @@ int main(int, char**) {
     RUN_TEST(test_session_pause_refused_when_idle);
     RUN_TEST(test_session_resume_refused_when_not_paused);
     RUN_TEST(test_session_status_states);
+    // INFO and BATTERY
+    RUN_TEST(test_info_primary_only);
+    RUN_TEST(test_info_motp_only_when_callback_returns_tokens);
+    RUN_TEST(test_info_deferred_until_secondary_replies);
+    RUN_TEST(test_info_secondary_timeout);
+    RUN_TEST(test_info_cancelled_by_next_command);
+    RUN_TEST(test_unsolicited_secondary_battery_is_dropped);
+    RUN_TEST(test_battery_primary_only);
+    RUN_TEST(test_battery_with_secondary);
     return UNITY_END();
 }
