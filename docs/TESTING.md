@@ -43,7 +43,8 @@ BlueBuzzah firmware uses a **dual testing approach**:
 ### Testing Limitations
 
 - Hardware-in-the-loop tests require manual setup
-- CI (`.github/workflows/test.yml`) runs only `native_coverage_gcc` (4-actuator config); run `native_penta` locally for 5-actuator coverage
+- CI (`.github/workflows/test.yml`) runs `native_coverage_gcc` (4-actuator config) and all of `native_penta` (5-actuator config), and fails when line coverage is under 90% (`scripts/coverage_table.sh`)
+- The native exclusion list lives once, in `env:native`; the coverage envs reuse it
 - BLE communication testing requires real hardware
 
 ---

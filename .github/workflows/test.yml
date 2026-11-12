@@ -47,14 +47,14 @@ jobs:
 
       - name: Run v3 (5-actuator) tests
         run: |
-          pio test -e native_penta -f test_board_config -f test_motor_check -f test_menu_controller
+          pio test -e native_penta
 
       - name: Generate lcov report
         if: always()
         run: |
-          lcov --directory .pio/build/native_coverage_gcc --capture --output-file coverage.info
-          lcov --remove coverage.info '*/test/*' '*/Unity/*' '*/mocks/*' '/usr/*' --output-file coverage.lcov --ignore-errors unused
-          lcov --list coverage.lcov
+          lcov --directory .pio/build/native_coverage_gcc --capture --rc branch_coverage=1 --output-file coverage.info
+          lcov --remove coverage.info '*/test/*' '*/Unity/*' '*/mocks/*' '/usr/*' --rc branch_coverage=1 --output-file coverage.lcov --ignore-errors unused
+          sh scripts/coverage_table.sh coverage.lcov 90
 
       - name: Convert to Cobertura XML
         if: always()
@@ -67,7 +67,7 @@ jobs:
           echo "## Test Results + Coverage" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
-          lcov --list coverage.lcov >> $GITHUB_STEP_SUMMARY 2>/dev/null || echo "Coverage data not available"
+          sh scripts/coverage_table.sh coverage.lcov >> $GITHUB_STEP_SUMMARY 2>/dev/null || echo "Coverage data not available"
           echo '```' >> $GITHUB_STEP_SUMMARY
 
       - name: Upload coverage to Codecov
