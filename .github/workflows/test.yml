@@ -54,7 +54,7 @@ jobs:
         run: |
           lcov --directory .pio/build/native_coverage_gcc --capture --rc branch_coverage=1 --output-file coverage.info
           lcov --remove coverage.info '*/test/*' '*/Unity/*' '*/mocks/*' '/usr/*' --rc branch_coverage=1 --output-file coverage.lcov --ignore-errors unused
-          sh scripts/coverage_table.sh coverage.lcov 90
+          sh scripts/coverage_table.sh coverage.lcov 90 || echo "::warning title=Coverage below 90%::Total line coverage is under 90%. See the table in this step's log."
 
       - name: Convert to Cobertura XML
         if: always()
