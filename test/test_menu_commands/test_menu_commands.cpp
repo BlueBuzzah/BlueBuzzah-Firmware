@@ -661,6 +661,84 @@ void test_isInternalMessage_case_sensitive() {
     TEST_ASSERT_FALSE(isInternal("Buzz"));
 }
 
+// Late handshake, state machine refusal and locked profile states
+
+void test_late_identify_is_consumed_without_reply(void) {
+    MenuHarness h;
+    TEST_ASSERT_EQUAL_STRING("", h.send("IDENTIFY:PHONE").c_str());
+    TEST_ASSERT_TRUE(h.lastHandled);
+}
+
+void test_session_start_refused_when_state_machine_rejects(void) {
+    MenuHarness h;
+    h.ble.secondaryConnected = true;
+    h.stateMachine.forceState(TherapyState::LOW_BATTERY);
+    TEST_ASSERT_EQUAL_STRING("CMD:SESSION_START\nERROR:Cannot start in current state\n\x04",
+                             h.send("SESSION_START").c_str());
+    TEST_ASSERT_FALSE(h.therapy.isRunning());
+}
+
+void test_profile_load_refused_while_paused_or_low_battery(void) {
+    MenuHarness h;
+    const char* expected = "CMD:PROFILE_LOAD\nERROR:Session must be stopped before loading a profile\n\x04";
+    h.stateMachine.forceState(TherapyState::PAUSED);
+    TEST_ASSERT_EQUAL_STRING(expected, h.send("PROFILE_LOAD:2").c_str());
+    h.stateMachine.forceState(TherapyState::LOW_BATTERY);
+    TEST_ASSERT_EQUAL_STRING(expected, h.send("PROFILE_LOAD:2").c_str());
+    TEST_ASSERT_EQUAL_INT(0, h.restartCalls);
+}
+
+void test_battery_reports_critical_level(void) {
+    MenuHarness h;
+    h.battery.status.voltage = 3.25f;
+    h.primaryLevel = BatteryLevel::CRITICAL;
+    TEST_ASSERT_EQUAL_STRING("CMD:BATTERY\nBATP:3.25\nBATLP:CRITICAL\nBATS:0.00\n\x04", h.send("BATTERY").c_str());
+}
+
+void test_battery_omits_levels_without_a_reading(void) {
+    MenuHarness h;
+    h.battery.status.voltage = 0.0f;
+    TEST_ASSERT_EQUAL_STRING("CMD:BATTERY\nBATP:0.00\nBATS:0.00\n\x04", h.send("BATTERY").c_str());
+
+    h.battery.status.voltage = 4.02f;
+    h.ble.secondaryConnected = true;
+    h.send("BATTERY");
+    h.menu.setSecondaryBatteryVoltage(0.0f);
+    h.menu.checkSecondaryBatteryResponse();
+    TEST_ASSERT_EQUAL_STRING("CMD:BATTERY\nBATP:4.02\nBATLP:NORMAL\nBATS:0.00\n\x04", h.reply.c_str());
+}
+
+void test_calibrate_stop_cancels_buzz_before_activation(void) {
+    MenuHarness h;
+    h.send("CALIBRATE_START");
+    h.send("CALIBRATE_BUZZ:2:80:2000");
+    h.send("CALIBRATE_STOP");
+    h.menu.updateCalibrationBuzz();
+    TEST_ASSERT_EQUAL_INT(0, h.haptic.activateCalls);
+}
+
+void test_info_truncates_long_firmware_version_and_name(void) {
+    MenuHarness h;
+    // Buffers hold 15 and 31 characters (_firmwareVersion[16], _deviceName[32])
+    h.menu.setDeviceInfo(DeviceRole::PRIMARY, "1234567890123456789", "ThisIsAVeryLongDeviceNameThatShouldBeTruncated");
+    const std::string reply = h.send("INFO");
+    TEST_ASSERT_EQUAL_INT(0, reply.rfind("CMD:INFO\nROLE:PRIMARY\nNAME:ThisIsAVeryLongDeviceNameThatSh\nFW:123456789012345\n", 0));
+}
+
+void test_info_deferred_reply_carries_motor_checks(void) {
+    MenuHarness h;
+    h.battery.status.voltage = 4.02f;
+    h.ble.secondaryConnected = true;
+    h.motorChecks[0] = "OK,OK,OK,OK,OK";
+    h.motorChecks[1] = "NODRIVER,OK,OK,OK,OPEN";
+    TEST_ASSERT_EQUAL_STRING("", h.send("INFO").c_str());
+    h.menu.setSecondaryBatteryVoltage(3.92f);
+    h.menu.checkSecondaryBatteryResponse();
+    const std::string expected = infoHead() + "MOTP:OK,OK,OK,OK,OK\nMOTS:NODRIVER,OK,OK,OK,OPEN\n" +
+        "PROFILE:1:regular_vcr\nBATP:4.02\nBATLP:NORMAL\nSECONDARY:1\nBATS:3.92\nBATLS:NORMAL\nSTATUS:IDLE\n\x04";
+    TEST_ASSERT_EQUAL_STRING(expected.c_str(), h.reply.c_str());
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_ping);
@@ -752,5 +830,14 @@ int main(int, char**) {
     RUN_TEST(test_isInternalMessage_PING_returns_true);
     RUN_TEST(test_isInternalMessage_partial_match_not_prefix_returns_false);
     RUN_TEST(test_isInternalMessage_case_sensitive);
+    // Behaviours around handshake, refusals and levels
+    RUN_TEST(test_late_identify_is_consumed_without_reply);
+    RUN_TEST(test_session_start_refused_when_state_machine_rejects);
+    RUN_TEST(test_profile_load_refused_while_paused_or_low_battery);
+    RUN_TEST(test_battery_reports_critical_level);
+    RUN_TEST(test_battery_omits_levels_without_a_reading);
+    RUN_TEST(test_calibrate_stop_cancels_buzz_before_activation);
+    RUN_TEST(test_info_truncates_long_firmware_version_and_name);
+    RUN_TEST(test_info_deferred_reply_carries_motor_checks);
     return UNITY_END();
 }
