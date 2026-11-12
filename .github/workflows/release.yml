@@ -105,6 +105,17 @@ jobs:
             ${{ env.ARCHIVE_NAME }}.zip
             ${{ env.ARCHIVE_NAME_V3 }}.zip
 
+      # A release is created as a pre-release so nothing finds it as latest
+      # before its assets exist. Promote it now. Tags with a suffix
+      # (v2.3.0-rc.1) are real pre-releases and stay that way.
+      - name: Mark release as latest
+        if: ${{ !contains(github.event.release.tag_name, '-') }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name }}
+          REPO: ${{ github.repository }}
+        run: gh release edit "$TAG" --repo "$REPO" --prerelease=false --latest
+
       - name: Build summary
         env:
           VERSION: ${{ github.event.release.tag_name }}
