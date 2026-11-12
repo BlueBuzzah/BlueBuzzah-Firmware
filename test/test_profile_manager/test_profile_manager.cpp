@@ -323,6 +323,20 @@ void test_setParameter_rejects_nan(void) {
     TEST_ASSERT_EQUAL_FLOAT(0.0f, p->jitterPercent);
 }
 
+void test_setParameter_rejects_inf(void) {
+    profiles->loadProfile(1);
+    const TherapyProfile* p = profiles->getCurrentProfile();
+    TEST_ASSERT_FALSE(profiles->setParameter("ON", "inf"));
+    TEST_ASSERT_FALSE(profiles->setParameter("ON", "-inf"));
+    TEST_ASSERT_FALSE(profiles->setParameter("OFF", "inf"));
+    TEST_ASSERT_FALSE(profiles->setParameter("OFF", "-inf"));
+    TEST_ASSERT_FALSE(profiles->setParameter("JITTER", "inf"));
+    TEST_ASSERT_FALSE(profiles->setParameter("JITTER", "-inf"));
+    TEST_ASSERT_EQUAL_FLOAT(100.0f, p->timeOnMs);
+    TEST_ASSERT_EQUAL_FLOAT(67.0f, p->timeOffMs);
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, p->jitterPercent);
+}
+
 void test_setParameter_OFF_valid_range(void) {
     profiles->loadProfile(1);
     TEST_ASSERT_TRUE(profiles->setParameter("OFF", "200"));
@@ -1034,6 +1048,19 @@ void test_loadCustomOverride_rejects_short_file(void) {
     assertCustomDefaultsUnchanged(profiles->getCurrentProfile());
 }
 
+void test_loadCustomOverride_ignores_nan_fields(void) {
+    CustomOverrideData data = makeValidOverride();
+    const uint32_t nanBits = 0x7FC00000u;
+    memcpy(&data.timeOnMs, &nanBits, sizeof(nanBits));
+    fsb::writeFile(CUSTOM_OVERRIDE_FILE, reinterpret_cast<const uint8_t*>(&data), sizeof(data));
+
+    // Like an out-of-range field: the NaN keeps the built-in value, the rest apply.
+    profiles->loadProfile(CUSTOM_PROFILE_ID);
+    const TherapyProfile* p = profiles->getCurrentProfile();
+    TEST_ASSERT_EQUAL_FLOAT(100.0f, p->timeOnMs);
+    TEST_ASSERT_EQUAL_FLOAT(53.0f, p->timeOffMs);
+}
+
 // =============================================================================
 // MAIN - RUN ALL TESTS
 // =============================================================================
@@ -1090,6 +1117,7 @@ int main(int argc, char **argv) {
     // Set Parameter Tests - ON/OFF
     RUN_TEST(test_setParameter_ON_valid_range);
     RUN_TEST(test_setParameter_rejects_nan);
+    RUN_TEST(test_setParameter_rejects_inf);
     RUN_TEST(test_setParameter_OFF_valid_range);
 
     // Set Parameter Tests - SESSION
@@ -1177,6 +1205,7 @@ int main(int argc, char **argv) {
     RUN_TEST(test_loadCustomOverride_rejects_bad_magic);
     RUN_TEST(test_loadCustomOverride_rejects_wrong_version);
     RUN_TEST(test_loadCustomOverride_rejects_short_file);
+    RUN_TEST(test_loadCustomOverride_ignores_nan_fields);
 
     return UNITY_END();
 }

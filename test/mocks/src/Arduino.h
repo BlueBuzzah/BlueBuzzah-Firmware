@@ -279,7 +279,7 @@ public:
     static const std::string& captured() { return buffer(); }
     static void clearCaptured() { buffer().clear(); }
 
-    size_t print(const char* s) { return append(s); }
+    size_t print(const char* s) { return append(s ? s : ""); }
     size_t print(char c) { return append(std::string(1, c)); }
     size_t print(int n, int base = 10) { return append(formatInt((long)n, base)); }
     size_t print(unsigned int n, int base = 10) { return append(formatUInt((unsigned long)n, base)); }
@@ -287,7 +287,7 @@ public:
     size_t print(unsigned long n, int base = 10) { return append(formatUInt(n, base)); }
     size_t print(double n, int digits = 2) { return append(formatDouble(n, digits)); }
 
-    size_t println(const char* s = "") { return append(s) + append("\n"); }
+    size_t println(const char* s = "") { return append(s ? s : "") + append("\n"); }
     size_t println(char c) { return print(c) + append("\n"); }
     size_t println(int n, int base = 10) { return print(n, base) + append("\n"); }
     size_t println(unsigned int n, int base = 10) { return print(n, base) + append("\n"); }
