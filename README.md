@@ -216,6 +216,7 @@ serial every 60 seconds. Each glove's LED shows its own battery:
 - **[Boot Sequence](docs/BOOT_SEQUENCE.md)**: Boot process and LED indicators
 - **[Therapy Engine](docs/THERAPY_ENGINE.md)**: Pattern generation internals
 - **[Latency Metrics](docs/LATENCY_METRICS.md)**: Performance measurement guide
+- **[Original Parameters](docs/ORIGINAL_PARAMETERS.md)**: Legacy v1 parameter reference
 
 ## License
 

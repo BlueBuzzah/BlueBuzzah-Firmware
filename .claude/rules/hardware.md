@@ -10,16 +10,17 @@ description: Hardware abstraction patterns (nRF52840 + ESP32-S3)
 MCU (nRF52840 default pins / ESP32-S3 SDA=GPIO5, SCL=GPIO6)
 └── I2C Bus @ 400kHz
     └── TCA9548A Multiplexer (0x70)
-        ├── Ch0: DRV2605 - Index finger
-        ├── Ch1: DRV2605 - Middle finger
-        ├── Ch2: DRV2605 - Ring finger
-        ├── Ch3: DRV2605 - Pinky finger
-        └── Ch4: DRV2605 - Thumb (v3 only, MAX_ACTUATORS == 5)
+        ├── Ch0: DRV2605 - Thumb (v3 only, MAX_ACTUATORS == 5) / Pinky (v2)
+        ├── Ch1: DRV2605 - Pinky (v3) / Ring (v2)
+        ├── Ch2: DRV2605 - Ring (v3) / Middle (v2)
+        ├── Ch3: DRV2605 - Middle (v3) / Index (v2)
+        └── Ch4: DRV2605 - Index finger (v3 only)
 ```
 
-That's the v3 wiring. The v2 PCB reverses channels 0-3 (Ch0 = pinky,
-Ch3 = index). Code works in fingers: `selectChannel()` maps finger N to
-`FINGER_CHANNEL(N)` (`board_config.h`), never open a raw channel number.
+Both PCBs route the channels in reverse finger order: finger N is channel
+`MAX_ACTUATORS - 1 - N` (v2: 3 - N, v3: 4 - N). Code works in fingers:
+`selectChannel()` maps finger N to `FINGER_CHANNEL(N)` (`board_config.h`),
+never open a raw channel number.
 
 ## I2C Multiplexer Rules
 
@@ -50,8 +51,8 @@ Different I2C paths need different settling times:
   to POR defaults (standby, silent) while I2C keeps working.
 - GPIO1 = shared DRV2605 EN + TCA9548A reset + LED rail switch. LOW→HIGH **wipes all DRV2605
   registers** — re-run haptic configuration after any toggle.
-- Motor JST silk labels 1–5 are **reversed** vs firmware channels:
-  finger N ↔ port `5−N` (`MOTOR_SILK_PORT()` in `board_config.h`).
+- Motor JST silk labels 1–5 are in finger order: finger N ↔ port `N+1`
+  (`MOTOR_SILK_PORT()` in `board_config.h`), on mux channel `4−N`.
 - QA over serial: `MOTOR_DIAG` (buzz all channels + brownout canary),
   `MOTOR_TEST:<n>` (one finger, 2 s), `MOTOR_PRESENT` (per-port open-load
   probe). DRV2605 built-in diagnostics (MODE=6) are NOT valid for our LRAs —

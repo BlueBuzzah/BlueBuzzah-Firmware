@@ -153,24 +153,27 @@ PRIMARY GLOVE:                  SECONDARY GLOVE:
 
 ### Index-to-Finger Mapping
 
-| Index | Glove | Finger | Motor Channel | Control Path |
-|-------|-------|--------|---------------|--------------|
-| 0 | PRIMARY | Index | 0 | Direct (PRIMARY local) |
-| 1 | PRIMARY | Middle | 1 | Direct (PRIMARY local) |
-| 2 | PRIMARY | Ring | 2 | Direct (PRIMARY local) |
-| 3 | PRIMARY | Pinky | 3 | Direct (PRIMARY local) |
-| 4 | SECONDARY | Index | 0 | Relay (PRIMARY → SECONDARY) |
-| 5 | SECONDARY | Middle | 1 | Relay (PRIMARY → SECONDARY) |
-| 6 | SECONDARY | Ring | 2 | Relay (PRIMARY → SECONDARY) |
-| 7 | SECONDARY | Pinky | 3 | Relay (PRIMARY → SECONDARY) |
+| Index | Glove | Finger | Local finger | Mux channel (v2) | Control Path |
+|-------|-------|--------|--------------|------------------|--------------|
+| 0 | PRIMARY | Index | 0 | 3 | Direct (PRIMARY local) |
+| 1 | PRIMARY | Middle | 1 | 2 | Direct (PRIMARY local) |
+| 2 | PRIMARY | Ring | 2 | 1 | Direct (PRIMARY local) |
+| 3 | PRIMARY | Pinky | 3 | 0 | Direct (PRIMARY local) |
+| 4 | SECONDARY | Index | 0 | 3 | Relay (PRIMARY → SECONDARY) |
+| 5 | SECONDARY | Middle | 1 | 2 | Relay (PRIMARY → SECONDARY) |
+| 6 | SECONDARY | Ring | 2 | 1 | Relay (PRIMARY → SECONDARY) |
+| 7 | SECONDARY | Pinky | 3 | 0 | Relay (PRIMARY → SECONDARY) |
 
-**Motor Channel Calculation**:
+**Local finger and mux channel calculation** (`board_config.h`):
 ```cpp
 // PRIMARY (fingers 0 .. MAX_ACTUATORS-1)
-uint8_t motorChannel = finger;                  // 0→0, 1→1, 2→2, 3→3
+uint8_t localFinger = finger;
 
 // SECONDARY (fingers MAX_ACTUATORS .. 2*MAX_ACTUATORS-1)
-uint8_t motorChannel = finger - MAX_ACTUATORS;  // 4→0, 5→1, 6→2, 7→3 (v2)
+uint8_t localFinger = finger - MAX_ACTUATORS;   // 4→0, 5→1, 6→2, 7→3 (v2)
+
+// Both PCBs route the mux channels in reverse finger order
+#define FINGER_CHANNEL(finger)  (MAX_ACTUATORS - 1 - (finger))  // v2: 3 - N, v3: 4 - N
 ```
 
 ---
@@ -430,7 +433,8 @@ The SECONDARY sends no reply. A relayed buzz with invalid values, or for a SECON
 **Conversion Formula**:
 
 ```cpp
-// HapticController::amplitudeToRTP() - intensity (0-100%) → DRV2605 RTP value (0-127)
+// amplitudeToRtp() in drive_math.h (HapticController::amplitudeToRTP() forwards to it)
+// intensity (0-100%) → DRV2605 RTP value (0-127)
 if (amplitude > MAX_AMPLITUDE) {
     amplitude = MAX_AMPLITUDE;
 }
@@ -591,7 +595,7 @@ Result: All fingers above detection
    **Note**: The firmware uses different I2C timing for different channels:
    ```cpp
    // From config.h:
-   #define I2C_INIT_DELAY_MS 5       // Delay after channel select (fingers 0-3)
+   #define I2C_INIT_DELAY_MS 5       // Delay after channel select (channels 0-3)
    #define I2C_INIT_DELAY_CH4_MS 10  // Extended delay for channel 4 (longer I2C path)
    #define I2C_RETRY_COUNT 3         // Max retries for DRV2605 initialization
    #define I2C_RETRY_DELAY_MS 50     // Delay between retries
@@ -826,7 +830,7 @@ assembled glove. Stop any running session first (they do it automatically).
 | Command | Effect |
 | --- | --- |
 | `MOTOR_DIAG` | Buzzes every channel alone (600 ms, full amplitude) and checks a per-chip reset canary afterward. `*** CHIP RESET` means the supply dipped mid-drive — check the battery (missing, discharged, or miswired). |
-| `MOTOR_TEST:<n>` | Drives finger `n` (`0`–`4`, 0 = index) for 2 s and prints the mux channel it used on v2, or the silk port on v3. Finger N is channel 3 − N on v2 and 4 − N on v3, so `MOTOR_TEST:0` drives the index finger on channel 3 or 4. |
+| `MOTOR_TEST:<n>` | Drives finger `n` (`0`–`3` on v2, `0`–`4` on v3; 0 = index) for 2 s and prints the mux channel it used on v2, or the silk port on v3. Finger N is channel 3 − N on v2 and 4 − N on v3, so `MOTOR_TEST:0` drives the index finger on channel 3 or 4. |
 | `MOTOR_PRESENT` | Open-load probe: runs LRA auto-calibration per channel (each present motor buzzes ~0.5 s) and prints `MOTOR PRESENT` / `NO MOTOR` per finger, with its channel on v2 or its silk port on v3. On v3 it also refreshes the boot motor check (`INFO` `MOTP`, and `MOTS` via `MOTOR_STATUS` on a linked SECONDARY); session patterns keep the boot thumb decision. Runs automatically at every v3 boot; needs battery power (`SUPPLY DIP` output means the results were discarded). |
 
 Wiring facts:

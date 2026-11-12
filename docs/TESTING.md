@@ -68,6 +68,8 @@ BlueBuzzah firmware uses a **dual testing approach**:
 | `test_latency_metrics` | `latency_metrics.cpp` | RTT tracking, drift calculation |
 | `test_profile_manager` | `profile_manager.cpp` | Profile load/save, validation |
 | `test_types` | `types.h` | Struct packing, enum values |
+| `test_board_config` | `board_config.h` (via `config.h`) and the text of `hardware.cpp` | Finger-to-mux-channel wiring per board (`FINGER_CHANNEL`, `MOTOR_SILK_PORT`); scans `hardware.cpp` to confirm mux selection is exclusive and goes through `FINGER_CHANNEL()` |
+| `test_motor_check` | `motor_check.h` | Motor check token format/parse, per-finger warning rule, therapy finger count |
 | `test_menu_commands` | `menu_controller.cpp` (real, with fakes for `hardware.h` and `ble_manager.h`) | Command replies, session gates, INFO/BATTERY, calibration, `INTERNAL_MESSAGES[]` routing |
 | `test_motor_check_info` | `motor_check_info.h` | `MOTP`/`MOTS` lines |
 | `test_activation_queue` | `activation_queue.cpp` | Paired activate/deactivate scheduling |
@@ -79,7 +81,7 @@ BlueBuzzah firmware uses a **dual testing approach**:
 | `test_sync_protocol` | `sync_protocol.cpp` | PTP clock sync, offset calculation |
 | `test_vbat_estimator` | `vbat_estimator.cpp` | DRV2605 VBAT conversion, median-of-burst + EMA |
 
-`test_menu_commands` compiles the real `menu_controller.cpp`; it also guards `INTERNAL_MESSAGES[]` routing. `test_motor_check_info` tests the `MOTP`/`MOTS` lines.
+`test_menu_commands` compiles the real `menu_controller.cpp` (with `profile_manager.cpp`, `state_machine.cpp`, `sync_protocol.cpp` and `therapy_engine.cpp`, through `menu_harness.h`); it also guards `INTERNAL_MESSAGES[]` routing. `test_motor_check_info` tests the `MOTP`/`MOTS` lines. `test_sync_protocol`, `test_state_machine`, `test_profile_manager`, `test_therapy_engine`, `test_activation_queue` and `test_deferred_queue` include their module's `.cpp` directly, because `env:native` excludes it from the source build.
 
 ### Mock Infrastructure
 
@@ -89,8 +91,9 @@ The `test/mocks/` directory provides Arduino API mocks:
 test/mocks/
 ├── library.json              # ArduinoMock library (native platform)
 └── src/
-    ├── Arduino.h             # millis(), micros(), delay(), MockSerial, mockAdvanceMicros()
+    ├── Arduino.h             # millis(), micros(), delay(), MockSerial (captured()/clearCaptured()), mockAdvanceMicros(), mockEnableTimeAutoIncrement()
     ├── Arduino.cpp           # Mock implementations
+    ├── freertos_fake.h       # Minimal FreeRTOS stand-ins for test_activation_queue
     ├── Adafruit_LittleFS.h   # Filesystem stubs
     └── InternalFileSystem.h
 ```
@@ -155,6 +158,9 @@ xcrun llvm-cov show .pio/build/native_coverage/program -instr-profile=default.pr
 lcov --capture --directory .pio/build/native_coverage_gcc -o coverage.info
 lcov --remove coverage.info '*/test/*' -o coverage_filtered.info
 genhtml coverage_filtered.info -o coverage
+
+# Per-file line/branch table for src/ and include/; exits 1 under 90% line coverage (as in CI)
+sh scripts/coverage_table.sh coverage_filtered.info 90
 ```
 
 Open `coverage/index.html` in a browser for visual coverage.
@@ -177,6 +183,12 @@ Open `coverage/index.html` in a browser for visual coverage.
 | `latency_metrics.cpp` | `test_latency_metrics` | RTT calculation, drift statistics |
 | `types.h` | `test_types` | Struct packing, enum values |
 | `fs_backend_mock.cpp` | `test_fs_backend` | Write/read/overwrite/remove round-trips |
+| `activation_queue.cpp` | `test_activation_queue` | Paired activate/deactivate scheduling |
+| `deferred_queue.cpp` | `test_deferred_queue` | Capacity and FIFO order |
+| `drive_math.h` | `test_drive_math` | Battery percent curve, amplitude to RTP, LRA period |
+| `motor_check.h` | `test_motor_check` | Token format/parse, per-finger warning rule |
+| `motor_check_info.h` | `test_motor_check_info` | `MOTP`/`MOTS` lines |
+| `board_config.h` | `test_board_config` | Finger-to-mux-channel wiring per board |
 | `vbat_estimator.cpp` | `test_vbat_estimator` | Raw-to-volts conversion, median outlier rejection, EMA |
 
 ### Tested Functionality
@@ -316,7 +328,7 @@ For testing that requires actual hardware, use manual verification:
 # Connect via serial monitor
 pio device monitor
 
-# Enter calibration mode
+# Enter calibration mode (PRIMARY only; a SECONDARY does not run menu commands)
 CALIBRATE_START
 
 # Test each finger (0-7 on v2, 0-9 on v3; indices past the local motors buzz the SECONDARY)
@@ -647,4 +659,3 @@ If your test needs Arduino APIs, ensure they're mocked in `test/mocks/`:
 
 **Version:** 2.0.0
 **Last Updated:** 2026-01-19
-**Test Suites:** 10 native unit test suites

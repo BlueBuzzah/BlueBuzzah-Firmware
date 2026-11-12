@@ -60,15 +60,15 @@ EXECUTION DRIFT:
   Last:    +89 us
   Average: +127 us
   Min:     -45 us
-  Max:     +2,341 us
-  Jitter:  2,386 us
+  Max:     +2341 us
+  Jitter:  2386 us
   Late (>1000 us): 3 (2.0%)
 -------------------------------------
 ONGOING RTT (PRIMARY only):
-  Last:    14,890 us
-  Average: 15,450 us
-  Min:     14,100 us
-  Max:     24,500 us
+  Last:    14890 us
+  Average: 15450 us
+  Min:     14100 us
+  Max:     24500 us
   Samples: 5
 =====================================
 ```
@@ -203,7 +203,7 @@ Execution-latency difference: ~215 us (SECONDARY later)
 
 ### Scheduled Execution Flow
 
-1. PRIMARY prepares each macrocycle for its fixed grid slot; the first slot is `now + adaptiveLeadTime + jitterGuard`. A macrocycle that cannot get its full lead is skipped, never compressed
+1. PRIMARY prepares each macrocycle for its fixed grid slot and sends it `SYNC_MAX_LEAD_TIME_US + MACROCYCLE_PREPARE_MARGIN_US` (300ms) before its first onset; the first slot is `now + 300ms + jitterGuard`. A macrocycle that cannot get its adaptive lead time is skipped, never compressed
 2. PRIMARY sends MACROCYCLE with all of the macrocycle's events batched (3 patterns × fingers: 12 at 4 fingers, 15 at 5) to SECONDARY
 3. Both devices enqueue events to ActivationQueue
 4. FreeRTOS motor task (Priority 4) processes queue:

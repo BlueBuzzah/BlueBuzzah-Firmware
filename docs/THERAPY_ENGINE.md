@@ -105,7 +105,7 @@ public:
                       bool isTestMode);
     void pause();
     void resume();
-    void stop();
+    void stop(SessionEndReason reason = SessionEndReason::STOPPED);
 
     // CRITICAL: Must call in loop() - drives the state machine
     void update();
@@ -187,7 +187,7 @@ flowchart TD
 
 **Key Points:**
 - `update()` MUST be called on every `loop()` iteration
-- No `delay()` calls inside TherapyEngine—session and relax timing use `millis()` comparisons
+- No `delay()` calls inside TherapyEngine—session length uses `millis()` and macrocycle grid timing uses `getMicros()` comparisons
 - All hardware operations are performed via callbacks, not direct calls
 - FreeRTOS motor task handles precise timing of activations
 
@@ -522,7 +522,7 @@ What the PRIMARY callbacks do:
 
 | Callback | Implementation (`main.cpp`) |
 |----------|-----------------------------|
-| `onSendMacrocycle` | Clears the activation queue, sets `clockOffset = syncProtocol.getCorrectedOffset()`, serializes with `SyncCommand::serializeMacrocycle()`, and sends to the SECONDARY. If the send fails it sets `g_skipLocalMacrocycle` so the PRIMARY skips the macrocycle too rather than buzzing one hand. Returns early when no SECONDARY is connected. |
+| `onSendMacrocycle` | Returns early when no SECONDARY is connected. Without a usable clock offset (`syncProtocol.hasUsableOffset()` false) it sets `g_skipLocalMacrocycle` and neither glove plays the macrocycle. Otherwise it drops queued activations (`clearActivations()`; pending turn-offs still run), sets `clockOffset = syncProtocol.getCorrectedOffset()`, serializes with `SyncCommand::serializeMacrocycle()`, and sends to the SECONDARY. If the send or serialization fails it sets `g_skipLocalMacrocycle` so the PRIMARY skips the macrocycle too rather than buzzing one hand. |
 | `onScheduleActivation` | `activationQueue.enqueue(activateTimeUs, finger, amplitude, durationMs, frequencyHz)` unless `g_skipLocalMacrocycle` is set |
 | `onStartScheduling` | `activationQueue.scheduleNext()` (wakes the motor task) |
 | `onIsSchedulingComplete` | `activationQueue.isComplete()` |
@@ -604,6 +604,11 @@ void TherapyEngine::update() {
         }
     }
 
+    // Shift the grid origin by the time spent paused since the last call
+    if (_gridOriginUs != 0) {
+        // ... _gridOriginUs += (_pausedMs - _appliedPauseMs) * 1000
+    }
+
     // Execute macrocycle batching (MACROCYCLE-only architecture)
     executeMacrocycleStep();
 }
@@ -632,7 +637,7 @@ static void motorTask(void* pvParameters) {
         if (delayUs <= 0) {
             // Event time already passed - execute immediately
             if (activationQueue.dequeueNextEvent(event)) {
-                executeMotorEvent(event);
+                executeOrDropMotorEvent(event);
             }
             continue;
         }
@@ -654,7 +659,7 @@ static void motorTask(void* pvParameters) {
         }
 
         if (activationQueue.dequeueNextEvent(event)) {
-            executeMotorEvent(event);
+            executeOrDropMotorEvent(event);
         }
     }
 }
@@ -871,8 +876,9 @@ Voltage and frequency are fixed in this function; no profile parameter changes t
 **Amplitude Mapping**:
 
 ```cpp
-// src/hardware.cpp - amplitude (0-100%) -> DRV2605 RTP value (0-127)
-uint8_t HapticController::amplitudeToRTP(uint8_t amplitude) const {
+// include/drive_math.h - amplitude (0-100%) -> DRV2605 RTP value (0-127)
+// (HapticController::amplitudeToRTP() forwards to this)
+constexpr uint8_t amplitudeToRtp(uint8_t amplitude) {
     if (amplitude > MAX_AMPLITUDE) {
         amplitude = MAX_AMPLITUDE;
     }
