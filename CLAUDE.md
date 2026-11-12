@@ -71,7 +71,7 @@ The board is selected by a build macro (`BOARD_BLUEBUZZAH_NRF52` / `BOARD_PENTAB
 - **`test_menu_commands` compiles the real `menu_controller.cpp`** with fakes for `hardware.h` and `ble_manager.h`. It also guards `INTERNAL_MESSAGES[]` routing. `test_motor_check_info` tests the `MOTP`/`MOTS` lines.
 - The exclusion list lives once, in `env:native`; `native_penta`, `native_coverage` and `native_coverage_gcc` reuse it. A new platform-specific `.cpp` must be excluded there, plus the other board's device env.
 - Mocks (`test/mocks/src/Arduino.h`): `mockAdvanceMicros()`, `mockEnableTimeAutoIncrement()`, `MockSerial` (`captured()`/`clearCaptured()`). `test/mocks/src/freertos_fake.h` stands in for FreeRTOS in `test_activation_queue`. The in-memory filesystem is `src/fs_backend_mock.cpp`, which the native envs build.
-- CI (`test.yml`) runs `native_coverage_gcc` (4-actuator) plus all of `native_penta` (5-actuator), and fails under 90% line coverage (`scripts/coverage_table.sh`). Run `native_penta` locally for anything touching `MAX_ACTUATORS`.
+- CI (`test.yml`) runs `native_coverage_gcc` (4-actuator) plus all of `native_penta` (5-actuator), and warns (without failing) under 90% line coverage (`scripts/coverage_table.sh`). Run `native_penta` locally for anything touching `MAX_ACTUATORS`.
 
 ## Gotchas
 
