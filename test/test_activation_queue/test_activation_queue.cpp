@@ -58,7 +58,7 @@ void test_dequeue_returns_events_in_time_order(void) {
     TEST_ASSERT_FALSE(activationQueue.dequeueNextEvent(ev));
 }
 
-void test_enqueue_fails_when_full_and_rolls_back(void) {
+void test_enqueue_fails_when_full(void) {
     for (int i = 0; i < 32; i++) {
         TEST_ASSERT_TRUE(activationQueue.enqueue(1000 + i, 0, 50, 1, 250));
     }
@@ -129,7 +129,7 @@ int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_enqueue_adds_activate_and_deactivate);
     RUN_TEST(test_dequeue_returns_events_in_time_order);
-    RUN_TEST(test_enqueue_fails_when_full_and_rolls_back);
+    RUN_TEST(test_enqueue_fails_when_full);
     RUN_TEST(test_enqueue_rolls_back_when_only_one_slot_left);
     RUN_TEST(test_enqueue_fails_when_mutex_unavailable);
     RUN_TEST(test_enqueue_notifies_motor_task);
