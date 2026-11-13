@@ -21,7 +21,7 @@ Average skew between the gloves went from about 1.5 ms to about 13 µs, and the 
 
 "Start" is the mean of five runs on `3e3f71b`. "Final" is the mean of three runs on `39a7d41`. Both sets are a `TEST` session with no phone connected. The full comparison, including the phone-connected runs, is in [Starting and final metrics](#starting-and-final-metrics).
 
-The final numbers apply to v2 builds with `-DSYNC_ANCHOR_TIMESTAMPING_ENABLED=1` on both gloves. That flag is still off by default, so a default build still behaves like the "Start" column.
+The final numbers apply to v2 builds with anchor timestamping on, on both gloves. They were measured with `-DSYNC_ANCHOR_TIMESTAMPING_ENABLED=1`; that is now the v2 default. It stays off on v3, which has no radio anchors.
 
 ## Method
 
@@ -233,4 +233,4 @@ Timing inside a macrocycle was about 10 µs before any change and is about 10 µ
 - **Phone cases not covered:** start-up with a phone already connected, and the PRIMARY reboot that a `PROFILE_LOAD` from the app causes.
 - **The reply-leg assumption.** The coarse reference relies on the PONG taking one connection interval. That held in every run, but it is a property of this v2 link, not of BLE.
 - **v3 is unmeasured.** It has no radio anchors, so it syncs on PTP alone. The bias found in step 3 may apply there, and its size on NimBLE is unknown.
-- **Off by default.** Anchor timestamping still needs its build flag on both gloves. Default builds were not improved by this work.
+- **v2 only.** Anchor timestamping has since been made the v2 default. v3 builds are unchanged by this work.

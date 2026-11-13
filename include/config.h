@@ -123,12 +123,18 @@
 #define SYNC_WARM_START_MIN_SAMPLES 3        // Confirmatory samples required for warm-start
 #define SYNC_WARM_START_TOLERANCE_US 5000    // 5ms tolerance for confirmatory sample validation
 
-// Connection-anchor timestamping (EXPERIMENTAL)
+// Connection-anchor timestamping
 // Hardware-timestamps BLE radio events via SoftDevice radio notifications and
 // derives clock offset from paired anchors. Falls back to PTP per-sample.
 // Both gloves MUST run the same setting (PONG payload format changes).
+// On by default on v2. Off on v3: it has no radio notifications, and the
+// reply-leg correction applied without an anchor is unmeasured on NimBLE.
 #ifndef SYNC_ANCHOR_TIMESTAMPING_ENABLED
+#if defined(BOARD_BLUEBUZZAH_NRF52)
+#define SYNC_ANCHOR_TIMESTAMPING_ENABLED 1
+#else
 #define SYNC_ANCHOR_TIMESTAMPING_ENABLED 0
+#endif
 #endif
 #define SYNC_ANCHOR_RING_SIZE 16              // Recent radio-event timestamps kept
 #define SYNC_ANCHOR_RX_WINDOW_US 15000        // Max age of rx anchor vs rx callback (event len 12.5ms + margin)
