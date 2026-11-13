@@ -618,7 +618,9 @@ The outlier rejection uses MAD (Median Absolute Deviation) with minimum 5ms:
 
 ### Motivation
 
-Standard PTP offset estimation averages out asymmetric BLE path delays. When the SoftDevice schedules the radio connection event at a predictable wall-clock instant on both devices, each glove can record an independent "anchor" timestamp of that event and use the difference as a direct physical clock comparison — bypassing the asymmetry problem entirely.
+PTP offset estimation assumes the PING and the PONG take equally long. Between the gloves they don't. The PONG (central to peripheral) waits for the next connection event, so it takes about one connection interval. The PING takes anything from under a millisecond up to one interval, depending on where in the interval it was handed to the radio. Bench measurement on v2 at a 10ms interval put the PTP offset wrong by half the difference, `(RTT - 2 x interval) / 2`: about -4ms at a 12ms RTT and near zero at 20ms (`docs/TIMING_BASELINE.md`, 2026-11-12). The shortest round trips are the most lopsided, so RTT filtering alone can't fix it.
+
+Both gloves see the same connection events, though. Each one records an "anchor" timestamp of every event, and the difference between the two gloves' anchors of the same event is a direct clock comparison that doesn't depend on either leg's delay.
 
 ### Radio Notification Anchors
 
@@ -647,24 +649,51 @@ PRIMARY detects the anchor format by the presence of data field index 4 (`hasDat
 
 **PRIMARY (tx anchor):** After T1 is stamped at SoftDevice handoff, PRIMARY searches its anchor ring for the first anchor that arrives within `SYNC_ANCHOR_TX_WINDOW_US` (25ms) of T1. The 25ms window is approximately 2× the maximum BLE connection interval, which is long enough to always capture the next connection event after the PING is handed off.
 
+That first anchor is not always the right one. The anchor fires about 800µs before its event, so a PING handed off inside that lead is carried by an event whose anchor has already passed, and gets paired with the next event: the offset comes out exactly one connection interval off. A PING that misses its event is off the other way. On the bench 7-44% of exchanges per run were paired a whole number of intervals off, in bursts lasting seconds, because the PING's position in the interval drifts slowly. [Pairing Correction](#pairing-correction) puts them back.
+
 ### Offset Calculation
 
 ```text
 anchorOffset = secondaryAnchor - primaryAnchor - SYNC_ANCHOR_BIAS_US
 ```
 
-`SYNC_ANCHOR_BIAS_US` is a calibrated constant (default 0) that corrects for any systematic asymmetry between the peripheral (PRIMARY) and central (SECONDARY) radio-event timing. Positive values correct for peripheral RX-window widening where PRIMARY's anchor fires slightly early relative to SECONDARY's.
+`SYNC_ANCHOR_BIAS_US` is a calibrated constant (50µs, measured on v2 with the logic analyzer) that corrects for any systematic asymmetry between the peripheral (PRIMARY) and central (SECONDARY) radio-event timing. Positive values correct for peripheral RX-window widening where PRIMARY's anchor fires slightly early relative to SECONDARY's.
 
-The anchor offset replaces the PTP offset for that sample when it is considered plausible (see pre-filter below). PTP is still calculated on every exchange and used as the fallback.
+The anchor offset replaces the PTP offset for that sample once its pairing has been corrected and checked (next section). PTP is still calculated on every exchange, but only to build the reference used for that correction.
 
-### Pre-filter Against Converged Median
+### Pairing Correction
 
-Before an anchor offset is accepted, it is checked against the current converged PTP median. If the deviation exceeds `SYNC_ANCHOR_PREFILTER_US` (1.5ms), the anchor pair is rejected and the PTP offset for that exchange is used instead. This prevents implausible anchor readings (missed connection event, ring-wrap collision) from corrupting the EMA.
+Every exchange feeds a **coarse reference**, whether or not it has an anchor:
+
+```text
+coarse sample = ptpOffset + interval - RTT / 2      (only if RTT <= 2 x interval + 1ms)
+reference     = median of the last 7 coarse samples (needs at least 3)
+```
+
+The correction term is the PTP error above, with the reply leg taken as one interval. An exchange whose reply was retransmitted can still pass the RTT limit (a 21ms exchange with a short PING and a two-interval reply reads 10ms low), which is why the reference is a median and never a single sample. On the bench it sat 0.07-0.18ms from the true offset.
+
+Each anchor offset is then **snapped**: shifted by a whole number of connection intervals to the value nearest the reference (`SimpleSyncProtocol::snapAnchorOffset()`).
+
+| Case | Result |
+|------|--------|
+| Snapped offset within `SYNC_ANCHOR_SNAP_TOLERANCE_US` (750µs) of the reference | Used as the sample |
+| Further away: not a whole-interval mispair (an advertising or phone-link event) | Anchor rejected, the reference is used as the sample |
+| No anchor in the PONG, or none found on PRIMARY | The reference is used as the sample |
+| No reference yet, clock sync not valid yet | Exchange skipped, up to `SYNC_ANCHOR_ACQUIRE_SKIP_LIMIT` (10) |
+| No reference yet, past that limit or sync already valid | Raw PTP offset |
+
+So once the reference exists, no sample is the raw PTP offset. The skip covers the first few exchanges after a connect: their raw PTP offsets would otherwise set the initial median milliseconds off, and the first macrocycles of a session would start out while the EMA caught up. The limit lets a link too slow to produce a reference still sync on PTP.
+
+Nothing here compares an anchor with the offset currently held. An earlier pre-filter did (`SYNC_ANCHOR_PREFILTER_US`), and when the initial median settled on mispaired anchors it rejected every correct one from then on, leaving the gloves one interval apart for the session. The reference is rebuilt from the last seven exchanges, so it can't hold a wrong value.
+
+The sample then goes through the same RTT, lucky-packet and innovation gates as a PTP sample.
 
 ### Caveats
 
 - **Both-gloves-same-flag requirement:** A SECONDARY built with the anchor flag emits 6-data-field PONGs; one built without it emits plain PONGs. PRIMARY parses either form, but only computes anchor offsets when it is built with the flag and receives a 6-field PONG. Otherwise the exchange is a plain PTP sample. This is safe (it falls back to PTP), but both gloves need the flag if anchor-based accuracy is the goal.
-- **Dual-link suppression:** On nRF52840, when PRIMARY is simultaneously connected to a phone app and to SECONDARY, the SoftDevice schedules two separate connection intervals. The anchor ring may contain events from either link. The `SYNC_ANCHOR_RX_WINDOW_US` and `SYNC_ANCHOR_TX_WINDOW_US` windows are sized conservatively to select the correct event, but this has not been validated under all dual-link timing configurations. Use with caution on dual-connected hardware.
+- **Start order:** The SoftDevice only accepts the radio-notification configuration while the radio is idle. `BLEManager::begin()` therefore calls `radioAnchorBegin()` before the role setup, because a PRIMARY starts advertising there. Called any later, it fails with `NRF_ERROR_INVALID_STATE` on a PRIMARY and sync silently stays on PTP. The boot log says which happened: `[SYNC] Radio-anchor timestamping active` or `[SYNC] WARNING: radio-anchor init failed - PTP-only sync`.
+- **Dual link:** When PRIMARY is connected to a phone and to SECONDARY, its anchor ring holds events from both links, and from advertising. An anchor from the wrong link is not a whole number of glove-link intervals off, so the snap tolerance rejects it and the reference is used for that sample. With a phone connected on the bench, about 13-15% of anchors were rejected this way, against 2-4% without, and skew was unchanged. Start-up with a phone already connected has not been measured.
+- **Reply leg assumption:** The coarse reference relies on the PONG taking one connection interval. That is how a central-to-peripheral reply behaves on the v2 SoftDevice link, and it held in every bench run, but it is a property of this link, not of BLE.
 
 ---
 
@@ -727,8 +756,12 @@ Sync state variables are accessed from both main loop and BLE callbacks. Key con
 | Anchor ring size (`SYNC_ANCHOR_RING_SIZE`) [experimental] | 16 slots | Radio-notification timestamps retained |
 | Anchor RX window (`SYNC_ANCHOR_RX_WINDOW_US`) [experimental] | 15ms | Max age of rx anchor vs rx callback |
 | Anchor TX window (`SYNC_ANCHOR_TX_WINDOW_US`) [experimental] | 25ms | Max lookahead from PING handoff to tx anchor |
-| Anchor bias (`SYNC_ANCHOR_BIAS_US`) [experimental] | 0µs | Calibrated central-vs-peripheral constant (set during bench validation) |
-| Anchor pre-filter (`SYNC_ANCHOR_PREFILTER_US`) [experimental] | 1.5ms | Reject anchor pairs deviating more than this from converged median |
+| Anchor bias (`SYNC_ANCHOR_BIAS_US`) [experimental] | 50µs | Central-vs-peripheral constant, measured on v2 with the logic analyzer |
+| Coarse samples (`SYNC_ANCHOR_COARSE_SAMPLES`) [experimental] | 7 | Corrected PTP offsets whose median is the pairing reference |
+| Coarse minimum (`SYNC_ANCHOR_COARSE_MIN_SAMPLES`) [experimental] | 3 | Coarse samples needed before the reference is used |
+| Coarse RTT margin (`SYNC_ANCHOR_COARSE_RTT_MARGIN_US`) [experimental] | 1ms | A coarse sample needs RTT within two intervals plus this |
+| Snap tolerance (`SYNC_ANCHOR_SNAP_TOLERANCE_US`) [experimental] | 750µs | Snapped anchor must land this close to the reference |
+| Acquire skip limit (`SYNC_ANCHOR_ACQUIRE_SKIP_LIMIT`) [experimental] | 10 | Exchanges skipped while waiting for the reference during initial sync |
 
 ---
 
