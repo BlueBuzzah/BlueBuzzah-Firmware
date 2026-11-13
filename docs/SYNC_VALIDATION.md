@@ -13,6 +13,10 @@ preparation and the probe points differ:
 3. [Capture](#capture) and [run the sessions](#run-the-sessions) (both versions)
 4. [Analyse](#analyse) and [record the results](#record-results) (both versions)
 
+To improve sync instead of only measuring it, follow the
+[optimization loop](#optimization-loop). It is written for an AI coding agent
+working with a person at the bench.
+
 A capture gives up to three measurements:
 
 | Measurement | Channels | What it covers |
@@ -274,8 +278,125 @@ skew" is the script's `mean |offset|`, and "P95 skew" is its `P95 |offset|`.
 | After connection-anchor timestamping        | < 50 µs  | < 200 µs |
 
 Connection-anchor timestamping (`radio_anchor.cpp`) exists only on v2. On v3
-it's an inert stub, so only the first gate applies there. It is off by
-default on v2 as well, so a default build is measured against the first gate.
+it's an inert stub, so only the first gate applies there. It is on by
+default on v2, so a default v2 build is measured against the second gate.
+
+## Optimization loop
+
+Use this when a run misses a gate, or when a sync change needs proving. It is
+written for an AI coding agent with shell access to the repo, both gloves on
+USB and the analyzer wired. A person stays at the bench and makes the calls
+marked below.
+
+### Before the first change
+
+1. Ask the person to confirm the wiring, close PulseView and say which serial
+   port is which glove.
+2. Create a branch off `main`. Never iterate on `main`.
+3. Run `scripts/sync_capture.sh` three times on the unmodified firmware. This
+   is the baseline. One run is not enough: the mean skew moves between runs.
+4. Check each run is valid before reading its numbers:
+   - at least 300 pairs and no unpaired edges
+   - the boot lines in both logs show the build you meant to flash, for
+     example `[SYNC] Radio-anchor timestamping active` on **both** gloves
+   - the connection interval in the PRIMARY log is the one you expect
+
+### Find where the error is
+
+The script's summary says how large the skew is, not where it comes from.
+Before changing anything, break the run down:
+
+- **Split the pairs by macrocycle.** On v2 a `TEST` session is 36
+  macrocycles of 12 activations. Skew that is steady inside a macrocycle and steps between them
+  is a clock-offset error. Skew that varies inside a macrocycle is scheduling
+  or execution.
+- **Match each macrocycle to the offset it was sent with.** With `DEBUG:1`
+  the PRIMARY logs `[MACROCYCLE] Sent seq=... offset=...`, and a `[SYNC]`
+  line for every PING/PONG exchange. The true clock offset for a macrocycle is
+  the offset it was sent with minus the skew the analyzer measured for it.
+  Plotted over a run, the true offset is a smooth line with a small drift.
+  Every sample the firmware took can then be scored against that line.
+- **Look for structure in the bad samples.** Errors that depend on the round
+  trip time point at the two legs of the exchange taking different times.
+  Errors of a whole connection interval point at a message paired with the
+  wrong radio event.
+
+Trust the analyzer over the firmware's own figures. Its offset, lateness and
+`GET_SYNC_STATS` share one clock mapping and can't see an error in it.
+
+### One iteration
+
+Do these in order, one change at a time:
+
+1. **State the hypothesis and the expected result** to the person: what you
+   will change, and what the next capture should show if you are right.
+2. **Replay it offline first** when the change is a rule for accepting,
+   rejecting or correcting samples. Apply the rule to the samples in earlier
+   runs' logs and compare against the true-offset line. Include the worst run
+   you have, not only the good ones.
+3. **Make the change,** as small as it can be. Add or update a native test
+   for any new logic, using rows from a real run where possible.
+4. **Build and test:** `pio run -e adafruit_feather_nrf52840` (or the v3
+   environment) and `pio test -e native`.
+5. **Commit.** A work-in-progress commit is fine. If the state is known to be
+   wrong, say so in the message.
+6. **Get the person's go, then flash both gloves** with the debug pin
+   enabled. `python deploy.py` flashes both and sets their roles. Never flash
+   without a go unless the person has said they don't need to be asked.
+7. **Capture** with `scripts/sync_capture.sh`.
+8. **Read the result against the expectation.** Report the script's numbers,
+   whether they matched, and what you conclude. If they didn't match, say so
+   plainly and work out why before the next change.
+
+A change that looks good on one run is not proven. Repeat the capture three
+times before building on it or tuning a constant from it.
+
+### Rules
+
+- **One change per flash.** Two changes in one build can't be told apart.
+- **Every number maps to a commit.** If a run was made from uncommitted code,
+  write down what it actually ran in a notes file beside the runs.
+- **Keep an escape route.** A filter that judges new samples against the
+  offset currently held can lock onto a wrong value and then reject every
+  correct sample. Judge samples against something independent of the held
+  offset, and keep a fallback for when the better source is missing.
+- **Check the start, not only the average.** Look at the first macrocycle
+  after a boot and after a reconnect. The first few samples set the initial
+  offset, and an error there can persist or hide inside a good mean.
+- **A measured constant gets its measurement.** When a run shows a steady
+  bias, confirm it over three runs before putting a value in `config.h`, and
+  say in the comment how it was measured.
+- **Don't widen the claim.** A result holds for the hardware version, the
+  connection interval and the phone state it was measured in. v2 results say
+  nothing about v3.
+- **When a tool fails, find out why** before working around it. Known causes:
+  PulseView holding the analyzer, a serial port opened with echo on, and
+  `pio device monitor` needing a terminal.
+
+### When to stop
+
+The work is done when all of these hold on the same commit:
+
+1. Three consecutive Run 1 captures pass the gate for that hardware version.
+2. A capture with a phone connected passes it (`NO_REBOOT=1`).
+3. A capture of a session started from the app passes it (`NO_TEST=1`).
+4. No run has unpaired edges, and the first macrocycle of each is within the
+   gate.
+
+Stop and ask the person instead of continuing when a change makes the result
+worse twice in a row, when the cause would need a hardware change, or when
+the next step would alter the wire format between the gloves.
+
+### Hand over
+
+1. [Record the results](#record-results), with the baseline and final runs
+   and the commits they ran on.
+2. Update `docs/SYNCHRONIZATION_PROTOCOL.md` for any behaviour that changed.
+3. List what was not measured: the soak test, the other hardware version, the
+   motor channels if D2 and D3 were not wired.
+4. Tell the person the gloves are still running the bench build. It has the
+   debug pin enabled and is not release firmware.
+5. Push and open a pull request only when the person asks.
 
 ## Soft metrics
 
