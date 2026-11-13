@@ -61,6 +61,14 @@ PLATFORMIO_BUILD_FLAGS=-DSYNC_DEBUG_GPIO_ENABLED=1 pio run -e adafruit_feather_n
 Record the commit you flashed (`git rev-parse --short HEAD`). Every result
 needs it. The debug pin is the Feather's **A0** header pin.
 
+To measure with connection-anchor timestamping, add
+`-DSYNC_ANCHOR_TIMESTAMPING_ENABLED=1` to the same flags, on both gloves. Each
+glove then prints `[SYNC] Radio-anchor timestamping active` at boot. If either
+one prints `radio-anchor init failed`, the run is measuring PTP only.
+
+`python deploy.py` flashes both gloves and sets their roles in one go, and it
+passes `PLATFORMIO_BUILD_FLAGS` through to the build.
+
 ### Wire
 
 | Analyzer | Connect to | Required |
@@ -205,6 +213,31 @@ the negotiated connection interval each time a link connects:
 **Save each run twice:** File → Save (`.sr`, keeps the raw capture), and
 File → Export → Value Change Dump (`.vcd`, used by the analysis).
 
+## Automated run
+
+`scripts/sync_capture.sh` does the capture, the session and the analysis in
+one command, without PulseView. It needs `sigrok-cli`, and PulseView must be
+closed because it holds the analyzer.
+
+```bash
+scripts/sync_capture.sh                            # Run 1: reboot both gloves, TEST, analyse
+NO_REBOOT=1 scripts/sync_capture.sh                # TEST with a phone left connected
+NO_REBOOT=1 NO_TEST=1 scripts/sync_capture.sh      # Run 2: wait for a session started from the app
+```
+
+Each run goes into `temp/analyzer-runs/<timestamp>/`: the capture (`.sr` and
+`.vcd`), both gloves' serial logs from boot, the commit and the
+`sync_skew.py` output. A `TEST` run ends when the session does. An app-started
+run captures for the full time, 180 seconds unless you pass another number.
+
+- The serial ports default to `/dev/cu.usbmodem101` (PRIMARY) and
+  `/dev/cu.usbmodem1101` (SECONDARY). Set `PRIMARY=` and `SECONDARY=` for
+  yours.
+- It captures D0 and D1. Set `CHANNELS=D0,D1,D2,D3` for the motor channels.
+- It sends `DEBUG:1` before `TEST`, so the PRIMARY log has the `[SYNC]` lines.
+- Commit before flashing. The run records `git rev-parse --short HEAD`, which
+  only identifies the firmware if the tree was clean.
+
 ## Analyse
 
 ```bash
@@ -240,7 +273,8 @@ skew" is the script's `mean |offset|`, and "P95 skew" is its `P95 |offset|`.
 | After connection-anchor timestamping        | < 50 µs  | < 200 µs |
 
 Connection-anchor timestamping (`radio_anchor.cpp`) exists only on v2. On v3
-it's an inert stub, so only the first gate applies there.
+it's an inert stub, so only the first gate applies there. It is off by
+default on v2 as well, so a default build is measured against the first gate.
 
 ## Soft metrics
 

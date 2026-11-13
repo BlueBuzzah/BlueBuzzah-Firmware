@@ -8,6 +8,8 @@
 #include "ble_manager.h"
 #include "sync_protocol.h"  // For getMicros() - overflow-safe 64-bit timestamp
 #include "platform.h"
+#include "config.h"
+#include "radio_anchor.h"
 
 // =============================================================================
 // GLOBAL INSTANCE (needed for static callbacks)
@@ -172,6 +174,13 @@ bool BLEManager::begin(DeviceRole role, const char* deviceName) {
         // causing RTT > 30ms and clock sync failures
         Bluefruit.Central.setConnInterval(connIntervalMin, connIntervalMax);
     }
+
+#if SYNC_ANCHOR_TIMESTAMPING_ENABLED
+    // Radio notifications can only be configured while the radio is idle: the
+    // SoftDevice refuses once advertising has started, which setupPrimaryMode()
+    // does. main.cpp reports the result (its later call is a no-op when active).
+    radioAnchorBegin();
+#endif
 
     // Setup role-specific configuration
     if (role == DeviceRole::PRIMARY) {

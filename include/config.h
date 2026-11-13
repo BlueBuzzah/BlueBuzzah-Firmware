@@ -133,10 +133,18 @@
 #define SYNC_ANCHOR_RING_SIZE 16              // Recent radio-event timestamps kept
 #define SYNC_ANCHOR_RX_WINDOW_US 15000        // Max age of rx anchor vs rx callback (event len 12.5ms + margin)
 #define SYNC_ANCHOR_TX_WINDOW_US 25000        // Max lookahead from PING handoff to its tx anchor (2x max CI + margin)
-#define SYNC_ANCHOR_BIAS_US 0                 // Calibrated central-vs-peripheral constant (set during bench validation). Positive corrects for peripheral RX-window widening - PRIMARY's anchor fires slightly early.
-#define SYNC_ANCHOR_PREFILTER_US 1500         // Reject anchor pairs deviating > 1.5ms from the
-                                               // converged offset (catches within-gate mispairs
-                                               // from phone-link/advertising anchors on PRIMARY)
+#define SYNC_ANCHOR_BIAS_US 50                // Central-vs-peripheral constant, measured on v2 with the logic analyzer (docs/SYNC_VALIDATION.md). Positive corrects for peripheral RX-window widening - PRIMARY's anchor fires slightly early.
+// Anchor pairing. A PING handed to the radio inside the notification lead pairs
+// with the wrong connection event, so its anchor offset is off by whole connection
+// intervals. It is shifted back to the interval nearest a coarse reference: the
+// median of recent PTP offsets corrected for the reply leg taking one interval.
+#define SYNC_ANCHOR_COARSE_SAMPLES 7          // Coarse samples kept; the median outvotes retransmitted replies
+#define SYNC_ANCHOR_COARSE_MIN_SAMPLES 3      // Coarse samples needed before the reference is used
+#define SYNC_ANCHOR_COARSE_RTT_MARGIN_US 1000 // A coarse sample needs RTT <= 2 intervals + this (one hop each way)
+#define SYNC_ANCHOR_ACQUIRE_SKIP_LIMIT 10      // Exchanges skipped while waiting for the reference before
+                                               // initial sync settles for raw PTP (a link too slow to give one)
+#define SYNC_ANCHOR_SNAP_TOLERANCE_US 750     // Shifted anchor must land this close to the reference (rejects
+                                               // phone-link/advertising anchors, which aren't whole intervals off)
 
 // Lead time calculation constants
 #define SYNC_MIN_LEAD_TIME_US 70000           // 70ms minimum lead time for MACROCYCLE

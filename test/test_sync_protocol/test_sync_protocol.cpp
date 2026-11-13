@@ -2011,6 +2011,68 @@ void test_maintenance_innovation_gate(void) {
     TEST_ASSERT_TRUE(sync.updateOffsetEMAWithQuality(20000, 10000));
 }
 
+// Rows are (anchorOffset, ptpOffset, rtt) from bench run 2026-11-12-20-30-13 on
+// v2 at a 10ms connection interval; the logic analyzer put the true offset at
+// about 4190us. Most start-up anchors there were paired one interval late.
+void test_anchor_snap_corrects_whole_interval_mispairs(void) {
+    SimpleSyncProtocol sync;
+    const uint32_t CI = 10000;
+    int64_t snapped = 0;
+    int32_t intervals = 0;
+
+    // No reference yet
+    TEST_ASSERT_FALSE(sync.snapAnchorOffset(-5782, CI, snapped, intervals));
+
+    // 35ms exchange (retransmitted) is ignored; three clean ones make the reference
+    sync.addCoarseOffsetSample(2358, 35325, CI);
+    sync.addCoarseOffsetSample(-50, 11130, CI);
+    sync.addCoarseOffsetSample(-214, 10845, CI);
+    int64_t coarse = 0;
+    TEST_ASSERT_FALSE(sync.getCoarseOffset(coarse));
+    sync.addCoarseOffsetSample(4630, 20519, CI);
+    TEST_ASSERT_TRUE(sync.getCoarseOffset(coarse));
+    TEST_ASSERT_INT64_WITHIN(400, 4190, coarse);
+
+    // Paired one interval late: moved back by one interval
+    TEST_ASSERT_TRUE(sync.snapAnchorOffset(-5782, CI, snapped, intervals));
+    TEST_ASSERT_EQUAL_INT64(4218, snapped);
+    TEST_ASSERT_EQUAL_INT32(-1, intervals);
+
+    // Paired correctly: untouched
+    TEST_ASSERT_TRUE(sync.snapAnchorOffset(4196, CI, snapped, intervals));
+    TEST_ASSERT_EQUAL_INT64(4196, snapped);
+    TEST_ASSERT_EQUAL_INT32(0, intervals);
+
+    // Three intervals early
+    TEST_ASSERT_TRUE(sync.snapAnchorOffset(34200, CI, snapped, intervals));
+    TEST_ASSERT_EQUAL_INT64(4200, snapped);
+    TEST_ASSERT_EQUAL_INT32(3, intervals);
+
+    // Not a whole number of intervals off (advertising or phone-link anchor)
+    TEST_ASSERT_FALSE(sync.snapAnchorOffset(4190 + 6000, CI, snapped, intervals));
+    // Unknown connection interval
+    TEST_ASSERT_FALSE(sync.snapAnchorOffset(4196, 0, snapped, intervals));
+}
+
+void test_anchor_coarse_reference_outvotes_slow_replies(void) {
+    SimpleSyncProtocol sync;
+    const uint32_t CI = 10000;
+    // 21.2ms exchanges whose reply took two intervals pass the RTT limit and
+    // read about 10ms low; they must not move the median.
+    sync.addCoarseOffsetSample(-50, 11130, CI);
+    sync.addCoarseOffsetSample(-5065, 21180, CI);
+    sync.addCoarseOffsetSample(-28, 11202, CI);
+    sync.addCoarseOffsetSample(-5039, 21224, CI);
+    sync.addCoarseOffsetSample(-39, 11193, CI);
+    int64_t coarse = 0;
+    TEST_ASSERT_TRUE(sync.getCoarseOffset(coarse));
+    TEST_ASSERT_INT64_WITHIN(400, 4190, coarse);
+
+    // A reset clears the reference
+    sync.resetClockSync();
+    TEST_ASSERT_FALSE(sync.getCoarseOffset(coarse));
+}
+
 void test_maintenance_min_rtt_decay(void) {
     SimpleSyncProtocol sync;
     for (int i = 0; i < 5; i++) sync.addOffsetSample(0);
@@ -2411,6 +2473,8 @@ int main(int argc, char **argv) {
     // Maintenance-mode quality-gated EMA update
     RUN_TEST(test_maintenance_rejects_high_rtt);
     RUN_TEST(test_maintenance_innovation_gate);
+    RUN_TEST(test_anchor_snap_corrects_whole_interval_mispairs);
+    RUN_TEST(test_anchor_coarse_reference_outvotes_slow_replies);
     RUN_TEST(test_maintenance_min_rtt_decay);
     RUN_TEST(test_maintenance_routes_to_sample_collection_before_valid);
     RUN_TEST(test_maintenance_step_change_reanchors);

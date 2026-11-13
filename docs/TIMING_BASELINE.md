@@ -4,7 +4,7 @@
 **Test Duration**: ~5 minutes
 **Environment**: Indoor, typical usage distance
 
-> **Note**: This baseline was established before IEEE 1588 PTP clock synchronization, warm-start recovery, and microsecond precision timestamps were implemented. Current bilateral sync accuracy is pending re-validation on the 1MHz hardware timebase (see the 2026-06-10 section below).
+> **Note**: This baseline was established before IEEE 1588 PTP clock synchronization, warm-start recovery, and microsecond precision timestamps were implemented. Bilateral sync was first measured externally on 2026-11-12 (see that section at the end): about 1.5ms average on PTP alone, and 11-20µs with connection-anchor timestamping on v2.
 
 ---
 
@@ -181,5 +181,94 @@ Per the `docs/SYNC_VALIDATION.md` acceptance gates:
 
 | Date | Config | Avg skew | P95 skew | Max skew | Notes |
 |------|--------|----------|----------|----------|-------|
-| — | timebase + TX-stamp + filters (anchor off) | — | — | — | pending |
-| — | anchor timestamping enabled | — | — | — | pending |
+| 2026-11-12 | timebase + TX-stamp + filters (anchor off) | 1.2-1.9 ms | 3.6-3.7 ms | 4.1 ms | v2, fails the first gate. PTP leg asymmetry; see the 2026-11-12 section |
+| 2026-11-12 | anchor timestamping enabled | 11-20 µs | 24-37 µs | 130 µs | v2, passes both gates after the pairing fixes; see the 2026-11-12 section |
+
+---
+
+## 2026-11-12 — v2 bench validation (logic analyzer)
+
+First external measurement of bilateral trigger skew, following `docs/SYNC_VALIDATION.md`.
+
+| | |
+|---|---|
+| **Hardware** | v2 (Feather nRF52840), one pair |
+| **Method** | Debug pin (A0) on each glove into an fx2lafw logic analyzer at 2 MHz, analysed with `scripts/sync_skew.py`. Runs driven by `scripts/sync_capture.sh` |
+| **Session** | `TEST` (120 s, 432 activations per glove) unless noted |
+| **Profile** | `TEST` runs: the loaded profile, logged as pattern `rndp`, jitter 23.5%, mirror on. App-started run: `quick_test` (300 s session) |
+| **Glove link** | 10.00 ms connection interval, 2M PHY |
+| **Build** | `-DSYNC_DEBUG_GPIO_ENABLED=1`, plus `-DSYNC_ANCHOR_TIMESTAMPING_ENABLED=1` for the anchor runs |
+
+Bilateral offsets are SECONDARY minus PRIMARY. "Avg" is the script's `mean |offset|` and "P95" its `P95 |offset|`. No run had an unpaired edge.
+
+### Results
+
+| Firmware | Runs | Phone | Avg skew | P95 skew | Worst case |
+|---|---|---|---|---|---|
+| `3e3f71b`, PTP only | 4 | No | 1.22-1.87 ms | 3.65-3.74 ms | -4.07 ms |
+| `39a7d41`, anchors | 3 | No | 11-16 µs | 24-34 µs | -124 µs |
+| `39a7d41`, anchors | 1 | Connected | 19 µs | 37 µs | -130 µs |
+| `39a7d41`, anchors, session started from the app (647 pairs in 180 s) | 1 | Connected | 20 µs | 36 µs | -94 µs |
+
+The first row fails the first acceptance gate (< 300 µs avg, < 1 ms P95). The anchor rows pass both gates (< 50 µs avg, < 200 µs P95).
+
+Script output for the last run without a phone (`39a7d41`):
+
+```text
+Firmware trigger offset (debug pin: D1 - D0)
+  pairs              : 432  (unpaired: PRIMARY 0, SECONDARY 0)
+  mean               : -0.003 ms  (SECONDARY first)
+  std deviation      : 0.013 ms
+  mean |offset|      : 0.011 ms
+  P95 |offset|       : 0.024 ms
+  worst case         : -0.089 ms
+```
+
+### Findings
+
+1. **Scheduling was never the problem.** Within one macrocycle the two gloves agreed to about 10 µs in every run, PTP or anchors. All of the skew was a per-macrocycle step: the clock offset the macrocycle was sent with.
+2. **The measurement is trustworthy.** Sent offset minus measured skew gives the true offset, and it came out as a smooth line drifting about 3 ppm, moving at most 22-27 µs between macrocycles.
+3. **PTP is biased by leg asymmetry.** Each PTP sample was off by about `(RTT - 2 x interval) / 2`: the reply always takes one connection interval and the PING takes 1-10 ms.
+
+   | RTT | Median PTP sample error |
+   |---|---|
+   | 12 ms | -4.05 ms |
+   | 15 ms | -2.60 ms |
+   | 17 ms | -1.50 ms |
+   | 18 ms | -0.64 ms |
+   | 20 ms | +0.36 ms |
+
+   The lucky-packet gate prefers the shortest round trips, which are the most biased. Skew followed the RTT as it wandered between 12 and 20 ms.
+4. **Anchor timestamping had never run on a PRIMARY.** `radioAnchorBegin()` was called after advertising had started, and the SoftDevice refuses the radio-notification configuration once the radio is in use. The PRIMARY logged `radio-anchor init failed` at boot and used PTP for every sample.
+5. **Correctly paired anchors are accurate to tens of µs.** They landed 15-47 µs from the true offset, with a steady +48 µs bias over four runs (1,728 pairs), now `SYNC_ANCHOR_BIAS_US = 50`.
+6. **Anchors mispair by whole connection intervals.** A PING handed to the radio inside the 800 µs notification lead is paired with the next event. Between 7% and 44% of exchanges per run were affected, in bursts.
+7. **Judging anchors against the held offset is unsafe.** An intermediate build dropped any anchor more than 1.5 ms from the current offset. In one run four of the first five anchors were mispaired the same way, the initial median settled 10 ms off, and every correct anchor after that was rejected: the gloves ran 9.8 ms apart for the whole session.
+
+### Fixes (branch `fix/sync-anchor-pairing`)
+
+| Commit | Change |
+|---|---|
+| `6c430ad` | Start radio anchors before advertising on nRF52 |
+| `5a748a6` | Pair anchors by snapping them, in whole connection intervals, to a coarse reference (median of the last 7 RTT-corrected PTP offsets). Samples without a usable anchor use the reference. Anchor bias set to 50 µs |
+| `39a7d41` | Skip the exchanges that arrive before the reference exists during initial sync, so the first macrocycle of a session isn't sent with a raw-PTP median |
+
+The pairing rule was replayed against 3,477 logged exchanges from seven runs before it was built: 97% of samples kept, none snapped to a wrong interval. On the bench, 33-88 anchors per run were shifted back and used.
+
+Intermediate results on the way there, each with anchors enabled and no phone:
+
+| Build | Avg skew | P95 skew | Worst case | What was still wrong |
+|---|---|---|---|---|
+| Anchors, mispairs fall back to PTP | 412 µs | 1.85 ms | -3.62 ms | Bursts of mispairs fed raw PTP into the offset |
+| Mispairs dropped, bias 0 (4 runs) | 46-64 µs | 70-97 µs | -387 µs | Steady +48 µs bias |
+| Mispairs dropped, bias 50 | 26 µs | 115 µs | +436 µs | One missing anchor fell back to PTP before session start |
+| Missing anchors dropped too | 9.81 ms | 9.98 ms | -10.05 ms | Locked one interval off (finding 7) |
+| Snap to coarse reference (3 runs) | 18-32 µs | 38-146 µs | -613 µs | First macrocycle up to 0.58 ms off (raw PTP in the initial median) |
+
+### Not yet measured
+
+- Start-up with a phone already connected, and the reboot a `PROFILE_LOAD` from the app causes.
+- The soak test in `docs/SYNC_VALIDATION.md`.
+- Motor drive offset and command-to-drive delay (D2/D3 were not connected).
+- v3. It has no radio anchors, so the PTP bias in finding 3 may apply there as measured here; the size of it on NimBLE is unknown.
+
+Anchor timestamping remains off by default. These results apply to v2 builds with `-DSYNC_ANCHOR_TIMESTAMPING_ENABLED=1` on both gloves.
