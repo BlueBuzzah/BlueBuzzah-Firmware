@@ -238,6 +238,11 @@ run captures for the full time, 180 seconds unless you pass another number.
 - The serial ports default to `/dev/cu.usbmodem101` (PRIMARY) and
   `/dev/cu.usbmodem1101` (SECONDARY). Set `PRIMARY=` and `SECONDARY=` for
   yours.
+- It has only been run on v2. The commands and log lines it relies on are the
+  same on v3, but a v3 glove's USB port is likely to drop when it reboots.
+  The script reopens a port that comes back, and that path is untested on
+  real hardware. On the first v3 run, check that both logs start at
+  `[BOOT] Serial ready`. If they don't, use `NO_REBOOT=1`.
 - It captures D0 and D1. Set `CHANNELS=D0,D1,D2,D3` for the motor channels.
 - It sends `DEBUG:1` before `TEST`, so the PRIMARY log has the `[SYNC]` lines.
 - Commit before flashing. The run records `git rev-parse --short HEAD`, which
@@ -297,9 +302,13 @@ marked below.
    is the baseline. One run is not enough: the mean skew moves between runs.
 4. Check each run is valid before reading its numbers:
    - at least 300 pairs and no unpaired edges
-   - the boot lines in both logs show the build you meant to flash, for
-     example `[SYNC] Radio-anchor timestamping active` on **both** gloves
-   - the connection interval in the PRIMARY log is the one you expect
+   - the boot lines in both logs show the build you meant to flash. On v2
+     that includes `[SYNC] Radio-anchor timestamping active` on **both**
+     gloves. v3 never prints that line: check `[CLOCK] 1MHz hardware timebase
+     active` and `[BLE] PHY in effect: TX 2M, RX 2M` instead
+   - the glove link's connection interval, read from the PRIMARY log. v2
+     holds 10 ms. v3 negotiates between 7.5 and 10 ms, so read it for every
+     run and never assume it
 
 ### Find where the error is
 
@@ -323,6 +332,19 @@ Before changing anything, break the run down:
 
 Trust the analyzer over the firmware's own figures. Its offset, lateness and
 `GET_SYNC_STATS` share one clock mapping and can't see an error in it.
+
+**First runs on v3.** v3 syncs on the PING/PONG round trip alone. On v2 that
+method measured 1.2-1.9 ms average skew, because the reply leg took about one
+connection interval while the PING took less. The error in each sample was
+close to half of (round trip time minus two connection intervals). Test for
+the same cause first: score each `[SYNC] RTT=... offset=...` sample against
+the true-offset line and see whether its error follows that formula. NimBLE
+may schedule the reply differently, so treat the v2 figure as a hypothesis,
+not a result. The v2 correction for it is compiled in only with
+connection-anchor timestamping, which is off on v3.
+
+The session shape also differs. Count the macrocycles and the activations in
+each from the first v3 capture before splitting the pairs.
 
 ### One iteration
 
@@ -377,7 +399,10 @@ times before building on it or tuning a constant from it.
 
 The work is done when all of these hold on the same commit:
 
-1. Three consecutive Run 1 captures pass the gate for that hardware version.
+1. Three consecutive Run 1 captures pass the gate for that hardware version:
+   the second gate on v2, the first gate on v3. Tuning won't take v3 past the
+   first gate. That needs a timestamp source tied to the radio's connection
+   events, which is a design change to agree with the person first.
 2. A capture with a phone connected passes it (`NO_REBOOT=1`).
 3. A capture of a session started from the app passes it (`NO_TEST=1`).
 4. No run has unpaired edges, and the first macrocycle of each is within the
