@@ -166,7 +166,7 @@ The +473µs / +500µs average execution drift figures recorded in the December 2
 | **4Hz therapy cadence** | `SYNC_ACTIVE_INTERVAL_MS` = 250ms during therapy (idle stays at 1s). |
 | **Motor path** | First macrocycle event gets I2C pre-selection in the motor task idle window; removed blocking serial read and critical-path `[LEADTIME]` printf from the therapy loop. |
 | **GPIO ground truth** | `SYNC_DEBUG_GPIO_ENABLED` toggles a debug pin (A0 on v2, GPIO40 on v3) on each ACTIVATE; see `docs/SYNC_VALIDATION.md` for the measurement protocol. |
-| **Anchor timestamping (experimental)** | Radio-notification ISR (SWI1, 800µs pre-event) anchors in a 16-slot ring; SECONDARY attaches its rx anchor to PONGs (6-field wire format); PRIMARY pairs with its first post-T1 tx anchor within 25ms; `anchorOffset = secondaryAnchor - primaryAnchor - SYNC_ANCHOR_BIAS_US` replaces PTP when within the 1.5ms pre-filter; PTP fallback per sample. Disabled by default (`SYNC_ANCHOR_TIMESTAMPING_ENABLED 0`). |
+| **Anchor timestamping (experimental)** | Radio-notification ISR (SWI1, 800µs pre-event) anchors in a 16-slot ring; SECONDARY attaches its rx anchor to PONGs (6-field wire format); PRIMARY pairs with its first post-T1 tx anchor within 25ms; `anchorOffset = secondaryAnchor - primaryAnchor - SYNC_ANCHOR_BIAS_US` replaces PTP when within the 1.5ms pre-filter; PTP fallback per sample. Disabled by default at the time (`SYNC_ANCHOR_TIMESTAMPING_ENABLED 0`); since on by default on v2. |
 
 ### Expected Outcomes
 
@@ -271,4 +271,4 @@ Intermediate results on the way there, each with anchors enabled and no phone:
 - Motor drive offset and command-to-drive delay (D2/D3 were not connected).
 - v3. It has no radio anchors, so the PTP bias in finding 3 may apply there as measured here; the size of it on NimBLE is unknown.
 
-Anchor timestamping remains off by default. These results apply to v2 builds with `-DSYNC_ANCHOR_TIMESTAMPING_ENABLED=1` on both gloves.
+These results apply to v2 builds with anchor timestamping on, on both gloves. It was off by default when they were measured (enabled with `-DSYNC_ANCHOR_TIMESTAMPING_ENABLED=1`) and has since been made the v2 default. It stays off on v3.

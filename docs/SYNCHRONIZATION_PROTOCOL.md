@@ -478,7 +478,7 @@ The PRIMARY sends `STOP_SESSION` whenever its session ends while the SECONDARY i
 | `PONG` (legacy) | S → P | seq, tx_micros, T2, T3 (T2High, T2Low, T3High, T3Low once either exceeds 32 bits) | `PONG:42\|1000550\|1000500\|1000600` |
 | `PONG` (anchor, 6 data fields) | S → P | seq, tx_micros, T2High, T2Low, T3High, T3Low, AnchorHigh, AnchorLow — *see anchor section* | `PONG:42\|1000550\|0\|1000500\|0\|1000600\|0\|999800` |
 
-PONG has two wire forms; see [Connection-Anchor Timestamping](#connection-anchor-timestamping-experimental) for the 6-data-field format and detection rules. When anchor timestamping is disabled (default), only the legacy 4-field form is used.
+PONG has two wire forms; see [Connection-Anchor Timestamping](#connection-anchor-timestamping) for the 6-data-field format and detection rules. When anchor timestamping is disabled (the v3 default), only the legacy 4-field form is used.
 
 > **The PONG `timestamp` field is the message construction time, not `0`.** The `SyncCommand` constructor stamps `getMicros()` and `createPongWithTimestamps` / `createPongWithAnchor` never override it, so the field carries the PONG's build time (between T2 and T3). The PTP math reads T2/T3 from the positional data fields and ignores this field. Earlier doc revisions that showed `PONG:…|0|…` were inaccurate.
 
@@ -612,9 +612,9 @@ The outlier rejection uses MAD (Median Absolute Deviation) with minimum 5ms:
 
 ---
 
-## Connection-Anchor Timestamping (Experimental)
+## Connection-Anchor Timestamping
 
-> **Status:** Off by default (`SYNC_ANCHOR_TIMESTAMPING_ENABLED 0`). **v2 (nRF52) only**: radio notifications are a SoftDevice feature, and on v3 `radio_anchor` is an inert stub, so sync stays on PTP. PRIMARY parses every PONG form regardless of the flag, so mismatched builds fall back to PTP rather than breaking.
+> **Status:** On by default on v2, off on v3 (`SYNC_ANCHOR_TIMESTAMPING_ENABLED` in `config.h`). **v2 (nRF52) only**: radio notifications are a SoftDevice feature, and on v3 `radio_anchor` is an inert stub, so sync stays on PTP. PRIMARY parses every PONG form regardless of the flag, so mismatched builds fall back to PTP rather than breaking.
 
 ### Motivation
 
@@ -753,15 +753,15 @@ Sync state variables are accessed from both main loop and BLE callbacks. Key con
 | Minimum RTT decay (`SYNC_MIN_RTT_DECAY_US`) | 200µs/sample | Per-sample upward creep of tracked minRTT |
 | Innovation gate (`SYNC_INNOVATION_GATE_US`) | 5ms | Reject offset jumps larger than this threshold |
 | Innovation reject limit (`SYNC_INNOVATION_REJECT_LIMIT`) | 5 samples | Persistent deviation triggers hard re-anchor |
-| Anchor ring size (`SYNC_ANCHOR_RING_SIZE`) [experimental] | 16 slots | Radio-notification timestamps retained |
-| Anchor RX window (`SYNC_ANCHOR_RX_WINDOW_US`) [experimental] | 15ms | Max age of rx anchor vs rx callback |
-| Anchor TX window (`SYNC_ANCHOR_TX_WINDOW_US`) [experimental] | 25ms | Max lookahead from PING handoff to tx anchor |
-| Anchor bias (`SYNC_ANCHOR_BIAS_US`) [experimental] | 50µs | Central-vs-peripheral constant, measured on v2 with the logic analyzer |
-| Coarse samples (`SYNC_ANCHOR_COARSE_SAMPLES`) [experimental] | 7 | Corrected PTP offsets whose median is the pairing reference |
-| Coarse minimum (`SYNC_ANCHOR_COARSE_MIN_SAMPLES`) [experimental] | 3 | Coarse samples needed before the reference is used |
-| Coarse RTT margin (`SYNC_ANCHOR_COARSE_RTT_MARGIN_US`) [experimental] | 1ms | A coarse sample needs RTT within two intervals plus this |
-| Snap tolerance (`SYNC_ANCHOR_SNAP_TOLERANCE_US`) [experimental] | 750µs | Snapped anchor must land this close to the reference |
-| Acquire skip limit (`SYNC_ANCHOR_ACQUIRE_SKIP_LIMIT`) [experimental] | 10 | Exchanges skipped while waiting for the reference during initial sync |
+| Anchor ring size (`SYNC_ANCHOR_RING_SIZE`) | 16 slots | Radio-notification timestamps retained |
+| Anchor RX window (`SYNC_ANCHOR_RX_WINDOW_US`) | 15ms | Max age of rx anchor vs rx callback |
+| Anchor TX window (`SYNC_ANCHOR_TX_WINDOW_US`) | 25ms | Max lookahead from PING handoff to tx anchor |
+| Anchor bias (`SYNC_ANCHOR_BIAS_US`) | 50µs | Central-vs-peripheral constant, measured on v2 with the logic analyzer |
+| Coarse samples (`SYNC_ANCHOR_COARSE_SAMPLES`) | 7 | Corrected PTP offsets whose median is the pairing reference |
+| Coarse minimum (`SYNC_ANCHOR_COARSE_MIN_SAMPLES`) | 3 | Coarse samples needed before the reference is used |
+| Coarse RTT margin (`SYNC_ANCHOR_COARSE_RTT_MARGIN_US`) | 1ms | A coarse sample needs RTT within two intervals plus this |
+| Snap tolerance (`SYNC_ANCHOR_SNAP_TOLERANCE_US`) | 750µs | Snapped anchor must land this close to the reference |
+| Acquire skip limit (`SYNC_ANCHOR_ACQUIRE_SKIP_LIMIT`) | 10 | Exchanges skipped while waiting for the reference during initial sync |
 
 ---
 

@@ -61,10 +61,11 @@ PLATFORMIO_BUILD_FLAGS=-DSYNC_DEBUG_GPIO_ENABLED=1 pio run -e adafruit_feather_n
 Record the commit you flashed (`git rev-parse --short HEAD`). Every result
 needs it. The debug pin is the Feather's **A0** header pin.
 
-To measure with connection-anchor timestamping, add
-`-DSYNC_ANCHOR_TIMESTAMPING_ENABLED=1` to the same flags, on both gloves. Each
-glove then prints `[SYNC] Radio-anchor timestamping active` at boot. If either
-one prints `radio-anchor init failed`, the run is measuring PTP only.
+Connection-anchor timestamping is on by default on v2. To measure PTP alone,
+add `-DSYNC_ANCHOR_TIMESTAMPING_ENABLED=0` to the same flags, on both gloves.
+With it on, each glove prints `[SYNC] Radio-anchor timestamping active` at
+boot. If either one prints `radio-anchor init failed`, the run is measuring PTP
+only.
 
 `python deploy.py` flashes both gloves and sets their roles in one go, and it
 passes `PLATFORMIO_BUILD_FLAGS` through to the build.
