@@ -133,7 +133,7 @@
 #define SYNC_ANCHOR_RING_SIZE 16              // Recent radio-event timestamps kept
 #define SYNC_ANCHOR_RX_WINDOW_US 15000        // Max age of rx anchor vs rx callback (event len 12.5ms + margin)
 #define SYNC_ANCHOR_TX_WINDOW_US 25000        // Max lookahead from PING handoff to its tx anchor (2x max CI + margin)
-#define SYNC_ANCHOR_BIAS_US 0                 // Calibrated central-vs-peripheral constant (set during bench validation). Positive corrects for peripheral RX-window widening - PRIMARY's anchor fires slightly early.
+#define SYNC_ANCHOR_BIAS_US 50                // Central-vs-peripheral constant, measured on v2 with the logic analyzer (docs/SYNC_VALIDATION.md). Positive corrects for peripheral RX-window widening - PRIMARY's anchor fires slightly early.
 #define SYNC_ANCHOR_PREFILTER_US 1500         // Reject anchor pairs deviating > 1.5ms from the
                                                // converged offset (catches within-gate mispairs
                                                // from phone-link/advertising anchors on PRIMARY)

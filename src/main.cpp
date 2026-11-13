@@ -2794,12 +2794,15 @@ void onBLEMessage(uint16_t connHandle, const char *message, uint64_t rxTimestamp
 
                 // Calculate PTP clock offset
                 int64_t offset = syncProtocol.calculatePTPOffset(t1, t2, t3, t4);
+                bool dropSample = false;  // no usable anchor on an anchor build
 
 #if SYNC_ANCHOR_TIMESTAMPING_ENABLED
                 // Anchor-paired offset: PRIMARY's anchor of the connection
                 // event that carried the PING (first anchor after the
                 // late-stamped T1 handoff) vs SECONDARY's anchor of the same
-                // event. Falls back to the PTP offset otherwise.
+                // event. Until clock sync is valid a sample without a usable
+                // anchor falls back to the PTP offset; after that it is dropped.
+                bool anchorUsed = false;
                 if (secondaryAnchor != 0)
                 {
                     uint64_t primaryAnchor = 0;
@@ -2812,7 +2815,11 @@ void onBLEMessage(uint16_t connHandle, const char *message, uint64_t rxTimestamp
                         // between the T1 handoff and the glove-link event lands the
                         // pairing 1-4ms off - inside the innovation gate. Once sync
                         // has converged, reject anchor pairs that deviate implausibly
-                        // from the current offset and fall back to PTP for this sample.
+                        // from the current offset; the sample is then dropped: its PTP offset
+                        // is off by half the difference between the two legs' delays
+                        // (measured at up to 5ms), far worse than holding the offset.
+                        // Known limit: no escape if anchors mispair or go missing for good; the
+                        // offset then only follows crystal drift until the link resets.
                         // Pre-convergence, anchors pass through: the initial median/MAD
                         // filtering handles outliers, and getMedianOffset() would be 0
                         // (meaningless to compare against).
@@ -2833,6 +2840,7 @@ void onBLEMessage(uint16_t connHandle, const char *message, uint64_t rxTimestamp
                                               (long)(anchorOffset - offset));
                             }
                             offset = anchorOffset;
+                            anchorUsed = true;
                         }
                         else if (profiles.getDebugMode())
                         {
@@ -2841,13 +2849,20 @@ void onBLEMessage(uint16_t connHandle, const char *message, uint64_t rxTimestamp
                         }
                     }
                 }
+                // Covers a mispaired anchor and a missing one alike.
+                dropSample = !anchorUsed && syncProtocol.isClockSyncValid();
+                if (dropSample && profiles.getDebugMode())
+                {
+                    Serial.println(F("[SYNC] no usable anchor - sample dropped"));
+                }
 #endif
 
                 // Quality-gated update: routes to initial sample collection
                 // until valid, then applies RTT + lucky-packet + innovation
                 // gates before the maintenance EMA (a single retransmission-
                 // affected exchange must not corrupt the offset mid-therapy)
-                bool sampleAccepted = syncProtocol.updateOffsetEMAWithQuality(offset, rtt);
+                bool sampleAccepted = !dropSample &&
+                                      syncProtocol.updateOffsetEMAWithQuality(offset, rtt);
 
                 // Also update RTT-based latency for backward compatibility
                 syncProtocol.updateLatency(rtt);
