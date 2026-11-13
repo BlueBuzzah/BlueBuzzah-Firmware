@@ -7,7 +7,7 @@
 #   scripts/sync_capture.sh [longest capture in seconds, default 180]
 #
 # Quit PulseView first: it holds the analyzer.
-# Overrides: PRIMARY=/dev/cu.x SECONDARY=/dev/cu.y CHANNELS=D0,D1,D2,D3 NO_REBOOT=1
+# Overrides: PRIMARY=/dev/cu.x SECONDARY=/dev/cu.y CHANNELS=D0,D1,D2,D3 NO_REBOOT=1 NO_TEST=1
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -55,6 +55,17 @@ done
 grep -aq 'SECONDARY: Connected' "$dir/primary.log" || { echo "Gloves didn't link within 60 s"; exit 1; }
 sleep 5  # ponytail: fixed wait for clock sync; raise it if TEST is refused "Sync not ready"
 
+# NO_TEST=1: the session is started from the app instead. Wait for it, then
+# capture for the full time (nothing is sent, so a running session isn't disturbed).
+if [ -n "${NO_TEST:-}" ]; then
+    echo "Start a session from the app (waiting up to 5 minutes)..."
+    for _ in $(seq 300); do
+        grep -aq 'RUNNING' "$dir/primary.log" && break
+        sleep 1
+    done
+    grep -aq 'RUNNING' "$dir/primary.log" || { echo "No session started"; exit 1; }
+fi
+
 sigrok-cli -d fx2lafw -c samplerate=2M -C "$CHANNELS" --time "${SECS}s" \
     -o "$dir/capture.sr" &
 sigrok_pid=$!
@@ -63,9 +74,11 @@ sleep 1
 kill -0 $sigrok_pid 2>/dev/null || { echo "Analyzer didn't start (is PulseView open?)"; exit 1; }
 
 echo "Capturing ${SECS}s into $dir"
-printf 'DEBUG:1\n' >&3
-sleep 2
-printf 'TEST\n' >&3
+if [ -z "${NO_TEST:-}" ]; then
+    printf 'DEBUG:1\n' >&3
+    sleep 2
+    printf 'TEST\n' >&3
+fi
 
 # Done when the PRIMARY reports the session over; the capture time is the fallback.
 until grep -aq 'TEST COMPLETE' "$dir/primary.log" || ! kill -0 $sigrok_pid 2>/dev/null; do
