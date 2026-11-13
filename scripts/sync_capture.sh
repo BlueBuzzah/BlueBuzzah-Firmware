@@ -7,7 +7,7 @@
 #   scripts/sync_capture.sh [longest capture in seconds, default 180]
 #
 # Quit PulseView first: it holds the analyzer.
-# Overrides: PRIMARY=/dev/cu.x SECONDARY=/dev/cu.y CHANNELS=D0,D1,D2,D3
+# Overrides: PRIMARY=/dev/cu.x SECONDARY=/dev/cu.y CHANNELS=D0,D1,D2,D3 NO_REBOOT=1
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -30,21 +30,24 @@ open_ports() {
 
 # Reboot both gloves so the logs start at boot. The USB ports drop and come
 # back; the firmware waits up to 3 s for the port to be opened before printing.
+# NO_REBOOT=1 skips this, to keep a phone connected to the PRIMARY.
 open_ports
-printf 'REBOOT\n' >&3
-printf 'REBOOT\n' >&4
-sleep 1
-exec 3>&- 4>&-
-for port in "$PRIMARY" "$SECONDARY"; do
-    for _ in $(seq 100); do [ -e "$port" ] && break; sleep 0.1; done
-    [ -e "$port" ] || { echo "$port didn't come back after the reboot"; exit 1; }
-done
-open_ports
+if [ -z "${NO_REBOOT:-}" ]; then
+    printf 'REBOOT\n' >&3
+    printf 'REBOOT\n' >&4
+    sleep 1
+    exec 3>&- 4>&-
+    for port in "$PRIMARY" "$SECONDARY"; do
+        for _ in $(seq 100); do [ -e "$port" ] && break; sleep 0.1; done
+        [ -e "$port" ] || { echo "$port didn't come back after the reboot"; exit 1; }
+    done
+    open_ports
+fi
 tee "$dir/primary.log" <&3 &          # PRIMARY output is also shown live
 cat <&4 > "$dir/secondary.log" &
 trap 'kill $(jobs -p) 2>/dev/null || true' EXIT
 
-echo "Rebooted both gloves, waiting for them to link..."
+echo "Waiting for the gloves to report their link..."
 for _ in $(seq 60); do
     grep -aq 'SECONDARY: Connected' "$dir/primary.log" && break
     sleep 1
