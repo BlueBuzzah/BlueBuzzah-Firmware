@@ -656,6 +656,34 @@ public:
     [[nodiscard]] bool updateOffsetEMAWithQuality(int64_t offset, uint32_t rttUs);
 
     /**
+     * @brief Feed one PING/PONG exchange into the coarse offset reference
+     *
+     * The reply (central to peripheral) waits for the next connection event,
+     * so it takes one interval while the PING takes anything up to one. That
+     * makes the PTP offset wrong by (rtt - 2 * interval) / 2, which this
+     * removes. Exchanges longer than two intervals plus a margin had a
+     * retransmission and are ignored; the few that slip through are outvoted
+     * by the median.
+     */
+    void addCoarseOffsetSample(int64_t ptpOffset, uint32_t rttUs, uint32_t connIntervalUs);
+
+    /**
+     * @brief Median of the recent coarse samples
+     * @return false until SYNC_ANCHOR_COARSE_MIN_SAMPLES have been collected
+     */
+    [[nodiscard]] bool getCoarseOffset(int64_t& coarseOut) const;
+
+    /**
+     * @brief Move an anchor offset to the connection interval nearest the coarse reference
+     *
+     * @param intervalsOut Whole intervals the anchor was off by (0 = paired correctly)
+     * @return false if there is no reference yet, or the shifted offset is more
+     *         than SYNC_ANCHOR_SNAP_TOLERANCE_US from it (not a whole-interval mispair)
+     */
+    [[nodiscard]] bool snapAnchorOffset(int64_t anchorOffset, uint32_t connIntervalUs,
+                                        int64_t& snappedOut, int32_t& intervalsOut) const;
+
+    /**
      * @brief Tracked minimum RTT used by the lucky-packet gate (µs)
      */
     uint32_t getMinRtt() const { return _minRttUs; }
@@ -795,6 +823,11 @@ private:
     // Maintenance-mode gating state
     uint32_t _minRttUs;           // Decaying minimum RTT (lucky-packet gate)
     uint8_t _innovationRejects;   // Consecutive innovation-gate rejections
+
+    // Coarse offset reference for anchor pairing (ring, guarded by the critical section)
+    int64_t _coarseSamples[SYNC_ANCHOR_COARSE_SAMPLES] = {};
+    uint8_t _coarseIndex = 0;
+    uint8_t _coarseCount = 0;
 
     // Warm-start cache for quick reconnection
     struct WarmStartCache {

@@ -1053,6 +1053,11 @@ void SimpleSyncProtocol::resetClockSync() {
     _innovationRejects = 0;
     _minRttUs = UINT32_MAX;
 
+    PLATFORM_CRITICAL_ENTER();
+    _coarseIndex = 0;
+    _coarseCount = 0;
+    PLATFORM_CRITICAL_EXIT();
+
     // Reset warm-start mode but PRESERVE cache
     // Cache is only cleared by invalidateWarmStartCache() or expiration
     // This allows tryWarmStart() to restore from cached state
@@ -1169,6 +1174,66 @@ bool SimpleSyncProtocol::updateOffsetEMAWithQuality(int64_t offset, uint32_t rtt
     _innovationRejects = 0;
 
     updateOffsetEMA(offset);
+    return true;
+}
+
+void SimpleSyncProtocol::addCoarseOffsetSample(int64_t ptpOffset, uint32_t rttUs, uint32_t connIntervalUs) {
+    if (connIntervalUs == 0 || rttUs > 2 * connIntervalUs + SYNC_ANCHOR_COARSE_RTT_MARGIN_US) {
+        return;
+    }
+    int64_t coarse = ptpOffset + static_cast<int64_t>(connIntervalUs) - static_cast<int64_t>(rttUs / 2);
+
+    PLATFORM_CRITICAL_ENTER();
+    _coarseSamples[_coarseIndex] = coarse;
+    _coarseIndex = static_cast<uint8_t>((_coarseIndex + 1) % SYNC_ANCHOR_COARSE_SAMPLES);
+    if (_coarseCount < SYNC_ANCHOR_COARSE_SAMPLES) {
+        _coarseCount++;
+    }
+    PLATFORM_CRITICAL_EXIT();
+}
+
+bool SimpleSyncProtocol::getCoarseOffset(int64_t& coarseOut) const {
+    int64_t sorted[SYNC_ANCHOR_COARSE_SAMPLES];
+    PLATFORM_CRITICAL_ENTER();
+    uint8_t count = _coarseCount;
+    memcpy(sorted, _coarseSamples, sizeof(sorted));
+    PLATFORM_CRITICAL_EXIT();
+
+    if (count < SYNC_ANCHOR_COARSE_MIN_SAMPLES) {
+        return false;
+    }
+    // Until the ring wraps, the first `count` slots are the valid ones
+    for (uint8_t i = 1; i < count; i++) {
+        int64_t v = sorted[i];
+        uint8_t j = i;
+        for (; j > 0 && sorted[j - 1] > v; j--) {
+            sorted[j] = sorted[j - 1];
+        }
+        sorted[j] = v;
+    }
+    coarseOut = sorted[count / 2];
+    return true;
+}
+
+bool SimpleSyncProtocol::snapAnchorOffset(int64_t anchorOffset, uint32_t connIntervalUs,
+                                          int64_t& snappedOut, int32_t& intervalsOut) const {
+    int64_t coarse = 0;
+    if (connIntervalUs == 0 || !getCoarseOffset(coarse)) {
+        return false;
+    }
+    const int64_t interval = static_cast<int64_t>(connIntervalUs);
+    int64_t diff = anchorOffset - coarse;
+    // Round to the nearest whole interval (integer division truncates toward zero)
+    int64_t intervals = (diff >= 0 ? diff + interval / 2 : diff - interval / 2) / interval;
+    int64_t snapped = anchorOffset - intervals * interval;
+
+    int64_t residual = snapped - coarse;
+    if (residual < 0) residual = -residual;
+    if (residual > static_cast<int64_t>(SYNC_ANCHOR_SNAP_TOLERANCE_US)) {
+        return false;
+    }
+    snappedOut = snapped;
+    intervalsOut = static_cast<int32_t>(intervals);
     return true;
 }
 

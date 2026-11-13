@@ -2794,66 +2794,57 @@ void onBLEMessage(uint16_t connHandle, const char *message, uint64_t rxTimestamp
 
                 // Calculate PTP clock offset
                 int64_t offset = syncProtocol.calculatePTPOffset(t1, t2, t3, t4);
-                bool dropSample = false;  // no usable anchor on an anchor build
-
 #if SYNC_ANCHOR_TIMESTAMPING_ENABLED
                 // Anchor-paired offset: PRIMARY's anchor of the connection
                 // event that carried the PING (first anchor after the
                 // late-stamped T1 handoff) vs SECONDARY's anchor of the same
-                // event. Until clock sync is valid a sample without a usable
-                // anchor falls back to the PTP offset; after that it is dropped.
+                // event. A PING handed off inside the notification lead pairs
+                // with the next event instead, so the pairing is shifted by
+                // whole connection intervals to match the coarse reference.
+                // Without a usable anchor the coarse reference itself is used:
+                // the raw PTP offset is off by half the difference between the
+                // two legs' delays (measured at up to 5ms).
+                const uint32_t connIntervalUs =
+                    static_cast<uint32_t>(ble.getConnectionIntervalMs(connHandle) * 1000.0f + 0.5f);
+                const int64_t ptpOffset = offset;
+                syncProtocol.addCoarseOffsetSample(ptpOffset, rtt, connIntervalUs);
+
                 bool anchorUsed = false;
-                if (secondaryAnchor != 0)
+                uint64_t primaryAnchor = 0;
+                if (secondaryAnchor != 0 &&
+                    radioAnchorFindAfter(t1, SYNC_ANCHOR_TX_WINDOW_US, primaryAnchor))
                 {
-                    uint64_t primaryAnchor = 0;
-                    if (radioAnchorFindAfter(t1, SYNC_ANCHOR_TX_WINDOW_US, primaryAnchor))
+                    int64_t anchorOffset = (int64_t)secondaryAnchor - (int64_t)primaryAnchor
+                                           - (int64_t)SYNC_ANCHOR_BIAS_US;
+                    int64_t snapped = 0;
+                    int32_t intervals = 0;
+                    if (syncProtocol.snapAnchorOffset(anchorOffset, connIntervalUs, snapped, intervals))
                     {
-                        int64_t anchorOffset = (int64_t)secondaryAnchor - (int64_t)primaryAnchor
-                                               - (int64_t)SYNC_ANCHOR_BIAS_US;
-
-                        // Mispair pre-filter: a phone-link/advertising anchor caught
-                        // between the T1 handoff and the glove-link event lands the
-                        // pairing 1-4ms off - inside the innovation gate. Once sync
-                        // has converged, reject anchor pairs that deviate implausibly
-                        // from the current offset; the sample is then dropped: its PTP offset
-                        // is off by half the difference between the two legs' delays
-                        // (measured at up to 5ms), far worse than holding the offset.
-                        // Known limit: no escape if anchors mispair or go missing for good; the
-                        // offset then only follows crystal drift until the link resets.
-                        // Pre-convergence, anchors pass through: the initial median/MAD
-                        // filtering handles outliers, and getMedianOffset() would be 0
-                        // (meaningless to compare against).
-                        bool anchorPlausible = true;
-                        if (syncProtocol.isClockSyncValid())
+                        if (profiles.getDebugMode())
                         {
-                            int64_t deviation = anchorOffset - syncProtocol.getMedianOffset();
-                            if (deviation < 0) deviation = -deviation;
-                            anchorPlausible = (deviation <= static_cast<int64_t>(SYNC_ANCHOR_PREFILTER_US));
+                            Serial.printf("[SYNC] anchorOffset=%ld ptpOffset=%ld delta=%ld shift=%ld\n",
+                                          (long)snapped, (long)ptpOffset,
+                                          (long)(snapped - ptpOffset), (long)intervals);
                         }
-
-                        if (anchorPlausible)
-                        {
-                            if (profiles.getDebugMode())
-                            {
-                                Serial.printf("[SYNC] anchorOffset=%ld ptpOffset=%ld delta=%ld\n",
-                                              (long)anchorOffset, (long)offset,
-                                              (long)(anchorOffset - offset));
-                            }
-                            offset = anchorOffset;
-                            anchorUsed = true;
-                        }
-                        else if (profiles.getDebugMode())
-                        {
-                            Serial.printf("[SYNC] anchor mispair rejected: anchorOffset=%ld median=%ld\n",
-                                          (long)anchorOffset, (long)syncProtocol.getMedianOffset());
-                        }
+                        offset = snapped;
+                        anchorUsed = true;
+                    }
+                    else if (profiles.getDebugMode())
+                    {
+                        // No reference yet, or a phone-link/advertising anchor
+                        // (those aren't a whole number of intervals off)
+                        Serial.printf("[SYNC] anchor rejected: anchorOffset=%ld\n", (long)anchorOffset);
                     }
                 }
-                // Covers a mispaired anchor and a missing one alike.
-                dropSample = !anchorUsed && syncProtocol.isClockSyncValid();
-                if (dropSample && profiles.getDebugMode())
+                int64_t coarseOffset = 0;
+                if (!anchorUsed && syncProtocol.getCoarseOffset(coarseOffset))
                 {
-                    Serial.println(F("[SYNC] no usable anchor - sample dropped"));
+                    offset = coarseOffset;
+                    if (profiles.getDebugMode())
+                    {
+                        Serial.printf("[SYNC] no usable anchor: coarseOffset=%ld ptpOffset=%ld\n",
+                                      (long)coarseOffset, (long)ptpOffset);
+                    }
                 }
 #endif
 
@@ -2861,8 +2852,7 @@ void onBLEMessage(uint16_t connHandle, const char *message, uint64_t rxTimestamp
                 // until valid, then applies RTT + lucky-packet + innovation
                 // gates before the maintenance EMA (a single retransmission-
                 // affected exchange must not corrupt the offset mid-therapy)
-                bool sampleAccepted = !dropSample &&
-                                      syncProtocol.updateOffsetEMAWithQuality(offset, rtt);
+                bool sampleAccepted = syncProtocol.updateOffsetEMAWithQuality(offset, rtt);
 
                 // Also update RTT-based latency for backward compatibility
                 syncProtocol.updateLatency(rtt);
