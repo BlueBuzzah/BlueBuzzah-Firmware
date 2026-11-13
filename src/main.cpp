@@ -2794,6 +2794,7 @@ void onBLEMessage(uint16_t connHandle, const char *message, uint64_t rxTimestamp
 
                 // Calculate PTP clock offset
                 int64_t offset = syncProtocol.calculatePTPOffset(t1, t2, t3, t4);
+                bool skipSample = false;
 #if SYNC_ANCHOR_TIMESTAMPING_ENABLED
                 // Anchor-paired offset: PRIMARY's anchor of the connection
                 // event that carried the PING (first anchor after the
@@ -2836,6 +2837,14 @@ void onBLEMessage(uint16_t connHandle, const char *message, uint64_t rxTimestamp
                         Serial.printf("[SYNC] anchor rejected: anchorOffset=%ld\n", (long)anchorOffset);
                     }
                 }
+                // The first exchanges after a (re)connect come before the
+                // reference exists. Their raw PTP offsets would set the initial
+                // median milliseconds off, so they are skipped, up to a limit.
+                static uint8_t acquireSkips = 0;
+                if (syncProtocol.isClockSyncValid())
+                {
+                    acquireSkips = 0;
+                }
                 int64_t coarseOffset = 0;
                 if (!anchorUsed && syncProtocol.getCoarseOffset(coarseOffset))
                 {
@@ -2846,13 +2855,24 @@ void onBLEMessage(uint16_t connHandle, const char *message, uint64_t rxTimestamp
                                       (long)coarseOffset, (long)ptpOffset);
                     }
                 }
+                else if (!anchorUsed && !syncProtocol.isClockSyncValid() &&
+                         acquireSkips < SYNC_ANCHOR_ACQUIRE_SKIP_LIMIT)
+                {
+                    acquireSkips++;
+                    skipSample = true;
+                    if (profiles.getDebugMode())
+                    {
+                        Serial.println(F("[SYNC] waiting for the anchor reference - sample skipped"));
+                    }
+                }
 #endif
 
                 // Quality-gated update: routes to initial sample collection
                 // until valid, then applies RTT + lucky-packet + innovation
                 // gates before the maintenance EMA (a single retransmission-
                 // affected exchange must not corrupt the offset mid-therapy)
-                bool sampleAccepted = syncProtocol.updateOffsetEMAWithQuality(offset, rtt);
+                bool sampleAccepted = !skipSample &&
+                                      syncProtocol.updateOffsetEMAWithQuality(offset, rtt);
 
                 // Also update RTT-based latency for backward compatibility
                 syncProtocol.updateLatency(rtt);

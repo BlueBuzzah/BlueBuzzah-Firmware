@@ -141,6 +141,8 @@
 #define SYNC_ANCHOR_COARSE_SAMPLES 7          // Coarse samples kept; the median outvotes retransmitted replies
 #define SYNC_ANCHOR_COARSE_MIN_SAMPLES 3      // Coarse samples needed before the reference is used
 #define SYNC_ANCHOR_COARSE_RTT_MARGIN_US 1000 // A coarse sample needs RTT <= 2 intervals + this (one hop each way)
+#define SYNC_ANCHOR_ACQUIRE_SKIP_LIMIT 10      // Exchanges skipped while waiting for the reference before
+                                               // initial sync settles for raw PTP (a link too slow to give one)
 #define SYNC_ANCHOR_SNAP_TOLERANCE_US 750     // Shifted anchor must land this close to the reference (rejects
                                                // phone-link/advertising anchors, which aren't whole intervals off)
 
