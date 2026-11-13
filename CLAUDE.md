@@ -107,4 +107,5 @@ BlueBuzzah is a volunteer-driven, open-source DIY project, not a medical or ther
 | `docs/THERAPY_ENGINE.md`           | Pattern generation internals   |
 | `docs/THERAPY_SESSION_FLOW.md`     | Session state machine flow     |
 | `docs/TIMING_BASELINE.md`          | Timing analysis and profiling  |
+| `docs/SYNC_OPTIMIZATION_REPORT.md` | 2026-11-12 bilateral sync bench work: process, changes, before and after |
 | `docs/ORIGINAL_PARAMETERS.md`      | Legacy parameter reference     |
